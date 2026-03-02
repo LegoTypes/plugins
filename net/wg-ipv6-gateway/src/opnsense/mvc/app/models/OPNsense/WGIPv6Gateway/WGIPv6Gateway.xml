@@ -1,0 +1,47 @@
+<model>
+    <mount>//OPNsense/WGIPv6Gateway</mount>
+    <version>1.0.0</version>
+    <description>WireGuard IPv6 Gateway companion settings</description>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <gateways>
+            <gateway type="ArrayField">
+                <enabled type="BooleanField">
+                    <Default>1</Default>
+                    <Required>Y</Required>
+                </enabled>
+                <description type="TextField">
+                    <Required>N</Required>
+                </description>
+                <ipv4_gateway type="ModelRelationField">
+                    <Model>
+                        <Gateways>
+                            <source>OPNsense.Routing.Gateways</source>
+                            <items>gateway_item</items>
+                            <display>name</display>
+                            <filters>
+                                <ipprotocol>/^inet$/</ipprotocol>
+                            </filters>
+                        </Gateways>
+                    </Model>
+                    <BlankDesc>Select a WireGuard gateway...</BlankDesc>
+                    <Required>Y</Required>
+                    <ValidationMessage>Select the IPv4 WireGuard gateway.</ValidationMessage>
+                </ipv4_gateway>
+                <ipv6_gw_address type="TextField">
+                    <Required>Y</Required>
+                    <Mask>/^[0-9a-fA-F:]+$/</Mask>
+                    <ValidationMessage>Enter a valid IPv6 gateway hop address (e.g. fd00::1:2).</ValidationMessage>
+                </ipv6_gw_address>
+                <ipv6_address type="TextField">
+                    <Required>Y</Required>
+                    <Mask>/^[0-9a-fA-F:\/]+$/</Mask>
+                    <ValidationMessage>Enter a valid IPv6 address with prefix (e.g. fd00::1:1/128).</ValidationMessage>
+                </ipv6_address>
+            </gateway>
+        </gateways>
+    </items>
+</model>

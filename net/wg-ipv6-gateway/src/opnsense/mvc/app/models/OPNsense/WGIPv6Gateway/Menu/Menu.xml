@@ -1,0 +1,7 @@
+<menu>
+    <VPN>
+        <WireGuard>
+            <IPv6Gateway order="45" VisibleName="IPv6 Gateway" url="/ui/wgipv6gateway"/>
+        </WireGuard>
+    </VPN>
+</menu>
