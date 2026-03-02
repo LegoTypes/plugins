@@ -1,0 +1,12 @@
+WireGuard IPv6 Gateway Companion Plugin
+
+Manages IPv6 routing through WireGuard tunnels on OPNsense. Solves the
+limitation that all ProtonVPN (and similar) WireGuard tunnels share the
+same IPv6 tunnel address by allowing unique ULA addresses per interface.
+
+Features:
+- Associate IPv6 addresses/gateways with existing WireGuard IPv4 gateways
+- Automatically create and maintain IPv6 interface routes
+- Mirror IPv6 gateway health status from the corresponding IPv4 gateway
+- Re-add routes when WireGuard tunnels restart (WAN failover, config change)
+- Gateway group support for IPv6 failover across multiple WG tunnels

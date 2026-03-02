@@ -1,0 +1,9 @@
+<acl>
+    <page-vpn-wgipv6gateway>
+        <name>VPN: WireGuard IPv6 Gateway</name>
+        <patterns>
+            <pattern>ui/wgipv6gateway/*</pattern>
+            <pattern>api/wgipv6gateway/*</pattern>
+        </patterns>
+    </page-vpn-wgipv6gateway>
+</acl>
