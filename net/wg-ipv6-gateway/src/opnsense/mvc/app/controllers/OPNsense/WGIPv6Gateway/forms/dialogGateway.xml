@@ -1,0 +1,33 @@
+<form>
+    <field>
+        <id>gateway.enabled</id>
+        <label>Enabled</label>
+        <type>checkbox</type>
+        <help><![CDATA[Enable this IPv6 gateway mapping.]]></help>
+    </field>
+    <field>
+        <id>gateway.description</id>
+        <label>Description</label>
+        <type>text</type>
+        <help><![CDATA[Descriptive name (auto-generated if empty).]]></help>
+    </field>
+    <field>
+        <id>gateway.ipv4_gateway</id>
+        <label>IPv4 WG Gateway</label>
+        <type>dropdown</type>
+        <help><![CDATA[Select the IPv4 WireGuard gateway. The IPv6 addresses
+        will be auto-detected from the WireGuard tunnel configuration.]]></help>
+    </field>
+    <field>
+        <id>gateway.ipv6_gw_address</id>
+        <label>IPv6 Gateway Address</label>
+        <type>text</type>
+        <help><![CDATA[IPv6 next-hop address for routing (auto-derived from tunnel config).]]></help>
+    </field>
+    <field>
+        <id>gateway.ipv6_address</id>
+        <label>IPv6 Interface Address</label>
+        <type>text</type>
+        <help><![CDATA[IPv6 address assigned to the WG interface (auto-derived from tunnel config).]]></help>
+    </field>
+</form>
