@@ -1,0 +1,14 @@
+<form>
+    <field>
+        <type>header</type>
+        <label>General</label>
+    </field>
+    <field>
+        <id>wgipv6gateway.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help><![CDATA[Enable WireGuard IPv6 gateway management. When enabled, the plugin
+        creates IPv6 interface routes on WireGuard tunnels and mirrors IPv6
+        gateway health from the corresponding IPv4 gateway.]]></help>
+    </field>
+</form>

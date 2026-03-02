@@ -1,0 +1,6 @@
+# WireGuard IPv6 Gateway health mirror
+# Checks IPv4 dpinger status and toggles IPv6 gateway disabled state
+* * * * *	root	/usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
+* * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
+* * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
+* * * * *	root	sleep 45 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
