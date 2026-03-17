@@ -131,13 +131,23 @@ do_configure_routes() {
         configure_gateway "${iface}" "${addr}" "${gw}" "${ipv4}"
     done
 
+    touch "${STATE_DIR}/enabled"
     log_msg "IPv6 gateway routes configured"
 }
 
-# Output JSON status of all gateways
+# Output status of all gateways.
+# The first line must contain "is running" or "not running" for the
+# OPNsense service framework (ApiMutableServiceControllerBase) to
+# detect the service state on the dashboard widget.
 do_status() {
     local gateways
     gateways=$(parse_config)
+
+    if [ -f "${STATE_DIR}/enabled" ]; then
+        echo "wgipv6gateway is running"
+    else
+        echo "wgipv6gateway is not running"
+    fi
 
     printf '{"gateways":['
     local first=1
@@ -189,6 +199,7 @@ case "$1" in
         ;;
     stop)
         cleanup_gateways
+        rm -f "${STATE_DIR}/enabled"
         log_msg "stopped"
         ;;
     restart)

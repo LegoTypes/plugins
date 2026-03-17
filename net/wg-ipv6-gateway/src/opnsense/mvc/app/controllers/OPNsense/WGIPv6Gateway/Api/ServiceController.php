@@ -52,14 +52,24 @@ class ServiceController extends ApiMutableServiceControllerBase
         return ['status' => 'ok'];
     }
 
+    /**
+     * Extend the base status with gateway detail from the status script.
+     */
     public function statusAction()
     {
+        $result = parent::statusAction();
+
         $backend = new Backend();
         $response = $backend->configdRun('wgipv6gateway status');
-        $data = json_decode($response, true);
-        if ($data === null) {
-            return ['status' => 'error', 'message' => 'Failed to parse status output'];
+        // The status script outputs a "is running" line followed by JSON;
+        // extract the JSON portion.
+        if (preg_match('/(\{.*\})/s', $response, $matches)) {
+            $data = json_decode($matches[1], true);
+            if ($data !== null) {
+                $result['gateways'] = $data['gateways'] ?? [];
+            }
         }
-        return $data;
+
+        return $result;
     }
 }
