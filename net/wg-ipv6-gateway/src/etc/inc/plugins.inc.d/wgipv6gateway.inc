@@ -39,6 +39,7 @@ function wgipv6gateway_services()
                 'stop' => ['wgipv6gateway stop'],
                 'restart' => ['wgipv6gateway restart'],
             ],
+            'nocheck' => true,
             'name' => 'wgipv6gateway',
         ];
     }
