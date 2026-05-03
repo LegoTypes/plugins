@@ -10,9 +10,9 @@
 # 2. Creates interface host routes for IPv6 gateways
 # 3. Mirrors IPv6 gateway health from corresponding IPv4 gateways
 #
-# Configuration is read from OPNsense config.xml via the MVC model.
+# Configuration is read from the OPNsense MVC models via gateway_config.php.
 
-CONFIG_XML="/conf/config.xml"
+CONFIG_HELPER="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/gateway_config.php"
 LOGGER_TAG="wgipv6gw"
 STATE_DIR="/var/run/wgipv6gateway"
 
@@ -20,56 +20,10 @@ log_msg() {
     logger -t "${LOGGER_TAG}" "$1"
 }
 
-# Parse gateway entries from config.xml
+# Parse gateway entries from the MVC model helper.
 # Output: enabled|wg_device|ipv6_address|ipv6_gw_addr|ipv4_gw_name|description
 parse_config() {
-    local enabled
-    enabled=$(/usr/local/bin/xmllint --xpath \
-        "string(//OPNsense/WGIPv6Gateway/enabled)" "${CONFIG_XML}" 2>/dev/null)
-    if [ "${enabled}" != "1" ]; then
-        return 1
-    fi
-
-    local count
-    count=$(/usr/local/bin/xmllint --xpath \
-        "count(//OPNsense/WGIPv6Gateway/gateways/gateway)" "${CONFIG_XML}" 2>/dev/null)
-    if [ -z "${count}" ] || [ "${count}" = "0" ]; then
-        return 1
-    fi
-
-    local i=1
-    while [ "${i}" -le "${count}" ]; do
-        local gw_enabled ipv4_ref ipv6_addr ipv6_gw_addr gw_desc
-        gw_enabled=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/WGIPv6Gateway/gateways/gateway[${i}]/enabled)" "${CONFIG_XML}" 2>/dev/null)
-        ipv4_ref=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/WGIPv6Gateway/gateways/gateway[${i}]/ipv4_gateway)" "${CONFIG_XML}" 2>/dev/null)
-        ipv6_addr=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/WGIPv6Gateway/gateways/gateway[${i}]/ipv6_address)" "${CONFIG_XML}" 2>/dev/null)
-        ipv6_gw_addr=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/WGIPv6Gateway/gateways/gateway[${i}]/ipv6_gw_address)" "${CONFIG_XML}" 2>/dev/null)
-        gw_desc=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/WGIPv6Gateway/gateways/gateway[${i}]/description)" "${CONFIG_XML}" 2>/dev/null)
-
-        # Resolve IPv4 gateway UUID to get interface and name
-        local ipv4_gw_name ipv4_gw_iface dev_name
-        ipv4_gw_name=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/Gateways/gateway_item[@uuid='${ipv4_ref}']/name)" "${CONFIG_XML}" 2>/dev/null)
-        ipv4_gw_iface=$(/usr/local/bin/xmllint --xpath \
-            "string(//OPNsense/Gateways/gateway_item[@uuid='${ipv4_ref}']/interface)" "${CONFIG_XML}" 2>/dev/null)
-
-        # Resolve interface identifier to device name
-        if [ -n "${ipv4_gw_iface}" ]; then
-            dev_name=$(/usr/local/bin/xmllint --xpath \
-                "string(//interfaces/${ipv4_gw_iface}/if)" "${CONFIG_XML}" 2>/dev/null)
-        fi
-
-        if [ "${gw_enabled}" = "1" ] && [ -n "${dev_name}" ] && [ -n "${ipv6_addr}" ] && [ -n "${ipv6_gw_addr}" ]; then
-            echo "${gw_enabled}|${dev_name}|${ipv6_addr}|${ipv6_gw_addr}|${ipv4_gw_name}|${gw_desc:-${ipv4_gw_name}-ipv6}"
-        fi
-
-        i=$((i + 1))
-    done
+    /usr/local/bin/php "${CONFIG_HELPER}"
 }
 
 # Add IPv6 address and interface route for a single gateway
