@@ -44,10 +44,12 @@ function miniupnpd_firewall($fw)
         return;
     }
 
+    /* required for IPv4: */
     $fw->registerAnchor('miniupnpd', 'rdr');
+    /* required for IPv6: */
     $fw->registerAnchor('miniupnpd', 'fw');
+    /* required for IPv4 NAT hairpinning: */
     $fw->registerAnchor('miniupnpd', 'nat', 0, 'head');
-    $fw->registerAnchor('miniupnpd', 'binat');
 }
 
 function miniupnpd_services()
@@ -82,18 +84,16 @@ function miniupnpd_start()
         return;
     }
 
-    $log_level = $config['installedpackages']['miniupnpd']['config'][0]['log_level'] ?? '';
-
     $cmd_frmt = ['/usr/local/sbin/miniupnpd -f %s -P %s'];
     $cmd_args = ['/var/etc/miniupnpd.conf', '/var/run/miniupnpd.pid'];
 
-    switch ($log_level) {
+    switch ($config['installedpackages']['miniupnpd']['config'][0]['log_level'] ?? '') {
         case 'debug':
-            $cmd_frmt[] = '-v';
-            /* FALLTHROUGH */
+            $cmd_frmt[] = '-vv';
+            break;
         case 'info':
             $cmd_frmt[] = '-v';
-            /* FALLTHROUGH */
+            break;
         default:
             break;
     }
@@ -105,8 +105,8 @@ function miniupnpd_stop()
 {
     killbypid('/var/run/miniupnpd.pid');
 
-    mwexecf('/sbin/pfctl -a miniupnpd -Fr');
-    mwexecf('/sbin/pfctl -a miniupnpd -Fn');
+    mwexecf('/sbin/pfctl -a miniupnpd -F rules');
+    mwexecf('/sbin/pfctl -a miniupnpd -F nat');
 }
 
 function miniupnpd_configure()
@@ -221,11 +221,15 @@ function miniupnpd_configure_do($verbose = false)
                 $config_text .= "bitrate_up={$upload}\n";
             }
 
-            if (!empty($upnp_config['allow_third_party_mapping'])) {
+            if (in_array($upnp_config['allow_third_party_mapping'] ?? '', ['1', 'upnp-igd'])) {
                 $config_text .= "secure_mode=no\n";
-                $config_text .= "pcp_allow_thirdparty=yes\n";
             } else {
                 $config_text .= "secure_mode=yes\n";
+            }
+
+            if (in_array($upnp_config['allow_third_party_mapping'] ?? '', ['1', 'pcp'])) {
+                $config_text .= "pcp_allow_thirdparty=yes\n";
+            } else {
                 $config_text .= "pcp_allow_thirdparty=no\n";
             }
 
