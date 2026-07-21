@@ -4,3 +4,9 @@
 * * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
 * * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
 * * * * *	root	sleep 45 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
+
+# Route reconciliation safety net. The event hooks in plugins.inc.d cover the
+# known ways the gateway host routes get dropped; this catches anything that
+# removes them without firing a hook, so a lost route self-heals within a minute
+# instead of sitting broken until someone notices the gateway is down.
+* * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/wgipv6gw.sh reconcile
