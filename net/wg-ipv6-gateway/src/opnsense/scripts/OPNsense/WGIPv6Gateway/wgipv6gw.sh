@@ -77,7 +77,7 @@ do_configure_routes() {
     local gateways
     gateways=$(parse_config)
     if [ $? -ne 0 ] || [ -z "${gateways}" ]; then
-        log_msg "no enabled gateways configured"
+        [ "$1" = "quiet" ] || log_msg "no enabled gateways configured"
         return
     fi
 
@@ -86,7 +86,7 @@ do_configure_routes() {
     done
 
     touch "${STATE_DIR}/enabled"
-    log_msg "IPv6 gateway routes configured"
+    [ "$1" = "quiet" ] || log_msg "IPv6 gateway routes configured"
 }
 
 # Output status of all gateways.
@@ -163,11 +163,16 @@ case "$1" in
     configure_routes)
         do_configure_routes
         ;;
+    reconcile)
+        # Idempotent repair pass for event hooks and cron: adds only what is
+        # missing and stays silent unless it actually had to fix something.
+        do_configure_routes quiet
+        ;;
     status)
         do_status
         ;;
     *)
-        echo "Usage: $0 {start|stop|restart|configure_routes|status}"
+        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|status}"
         exit 1
         ;;
 esac
