@@ -136,6 +136,20 @@ foreach ($argv ?? [] as $arg) {
     }
 }
 
+/*
+ * Single-instance guard. Cron fires this script four times a minute
+ * (0/15/30/45s). A tick that changes a gateway blocks below until a full
+ * routing reconfigure completes (dpinger torn down and rebuilt), which can
+ * outlast the 15s spacing. Two overlapping runs would issue overlapping
+ * reconfigures, and those race dpinger's teardown against another's rebuild
+ * and leave it dead -- at which point every gateway reads a false "down".
+ * If another run holds the lock, skip this tick; the next one catches up.
+ */
+$selfLock = fopen('/tmp/wgipv6gw_health.lock', 'c');
+if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
+    exit(0);
+}
+
 // Read our plugin config to get mappings
 $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
 if ((string)$mdl->enabled !== '1') {
@@ -237,8 +251,28 @@ foreach ($mdl->gateways->gateway->iterateItems() as $uuid => $item) {
 }
 
 if ($configChanged) {
-    $routingMdl->serializeToConfig();
-    Config::getInstance()->save();
-    // Trigger gateway reconfiguration so dpinger/groups pick up the change
-    (new OPNsense\Core\Backend())->configdRun('interface routes configure');
+    /*
+     * Applying a gateway change means a full routing reconfigure, which
+     * restarts every dpinger on the box. It must not run concurrently with
+     * another routing reconfigure: overlapping reconfigures race dpinger's
+     * teardown against another's rebuild and leave it dead, showing every
+     * gateway as a false "down". Serialize on the same lock OPNsense's own
+     * gateway-alarm reconfigure uses (interface routes alarm ->
+     * flock /tmp/filter_reload_gateway.lock). configdRun is synchronous, so
+     * the lock covers the whole reconfigure.
+     *
+     * Acquire the lock BEFORE persisting so config and applied state stay
+     * consistent: if we cannot serialize, leave the change for the next tick
+     * rather than saving a force_down we would not apply.
+     */
+    $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
+    if ($gwLock !== false && flock($gwLock, LOCK_EX)) {
+        $routingMdl->serializeToConfig();
+        Config::getInstance()->save();
+        (new OPNsense\Core\Backend())->configdRun('interface routes configure');
+        flock($gwLock, LOCK_UN);
+        fclose($gwLock);
+    } elseif ($gwLock !== false) {
+        fclose($gwLock);
+    }
 }
