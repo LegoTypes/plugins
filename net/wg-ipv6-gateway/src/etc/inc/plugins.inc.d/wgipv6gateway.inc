@@ -85,7 +85,7 @@ function wgipv6gateway_configure_do($verbose = false)
         flush();
     }
 
-    mwexec('/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/wgipv6gw.sh reconcile');
+    mwexecf('/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/wgipv6gw.sh reconcile');
 
     if ($verbose) {
         echo "done.\n";
