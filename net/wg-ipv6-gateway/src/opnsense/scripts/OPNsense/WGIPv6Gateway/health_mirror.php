@@ -208,6 +208,17 @@ foreach ($mdl->gateways->gateway->iterateItems() as $uuid => $item) {
     // Find the corresponding IPv6 gateway and toggle force_down (with hysteresis).
     foreach ($routingMdl->gateway_item->iterateItems() as $gwUuid => $gw6) {
         if ((string)$gw6->name === $ipv6GwName) {
+            /*
+             * A disabled gateway is already out of the default-gateway election
+             * and out of every gateway group, so force_down would not change
+             * its effect. Writing it anyway saves config and reconfigures
+             * routing, which restarts every dpinger on the box -- the same
+             * churn the settle guard above exists to absorb. Leave it alone.
+             */
+            if ((string)$gw6->disabled === '1') {
+                break;
+            }
+
             $currentDown = ((string)$gw6->force_down === '1');
             $down = wgipv6_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled);
             $shouldForceDown = $down ? '1' : '0';
