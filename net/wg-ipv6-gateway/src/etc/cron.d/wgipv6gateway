@@ -1,5 +1,5 @@
-# WireGuard IPv6 Gateway health mirror
-# Checks IPv4 dpinger status and toggles IPv6 gateway disabled state
+# WireGuard tunnel health mirror: holds each tunnel down while its bound WAN is
+# down, and each IPv6 tunnel gateway down while its own IPv4 tunnel is
 * * * * *	root	/usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
 * * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
 * * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/health_mirror.php
@@ -8,5 +8,6 @@
 # Route reconciliation safety net. The event hooks in plugins.inc.d cover the
 # known ways the gateway host routes get dropped; this catches anything that
 # removes them without firing a hook, so a lost route self-heals within a minute
-# instead of sitting broken until someone notices the gateway is down.
+# instead of sitting broken until someone notices the gateway is down. It also
+# runs default_guard.php, which removes any default route through a tunnel.
 * * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/wgipv6gw.sh reconcile
