@@ -6,32 +6,41 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Health mirror daemon: watches each IPv4 WireGuard gateway's dpinger loss and
- * toggles the paired IPv6 gateway's force_down state so the IPv6 side fails over
- * in lockstep with IPv4.
+ * Health mirror for the WireGuard tunnel gateways. Two passes, one save:
  *
- * Threshold-aware: an IPv6 gateway is forced down when its IPv4 gateway crosses
- * that gateway's own losshigh watermark (its Packet Loss failover point), and
- * brought back when loss falls to losslow, holding state in between (hysteresis)
- * exactly as dpinger does. A missing/unreadable socket counts as down. Gateways
- * with no loss threshold configured fall back to 100%-loss (fully-dead) only.
+ * 1. Underlay: a tunnel is bound to exactly one WAN -- the gateway of the /32
+ *    static route to its peer's endpoint -- and is forced down whenever that WAN
+ *    is not up: disabled, force_down, absent from gateway status, or in a state
+ *    a downloss gateway group treats as down (down, loss, delay+loss). A tunnel
+ *    never migrates to the other WAN. Only a force_down this pass set itself is
+ *    ever released, so an operator's manual force_down on a tunnel is left alone.
+ *
+ * 2. IPv6: each IPv6 tunnel gateway follows its own IPv4 tunnel and nothing
+ *    else. IPv6 rides inside the IPv4 tunnel and Proton NATs it server-side, so
+ *    it depends on no native IPv6 upstream. It is forced down when its IPv4
+ *    tunnel's loss crosses that gateway's losshigh (recovering at losslow,
+ *    holding in between, exactly as dpinger does), when its dpinger socket is
+ *    missing, or when the IPv4 gateway itself is force_down (pass 1, or by hand).
+ *
+ * Keeping tunnel gateways out of the default-gateway election is NOT this
+ * script's job: the sentinel gateways and default_guard.php do that.
  *
  * Settle guard: a dpinger that has just started reports 0% loss because it has
  * no samples yet, not because the path is healthy. Every routing reconfigure
  * restarts all dpingers -- including the reconfigure this script itself triggers
  * when it changes a gateway -- so without this the mirror releases gateways in
- * the middle of a WAN outage and then forces them down again on the next tick.
- * While a gateway's dpinger socket is younger than the settle window, a healthy
- * reading is ignored: it can still trip a gateway DOWN, but it can never bring
- * one back UP. Failover speed is unaffected; only spurious recovery is blocked.
+ * the middle of an outage and forces them down again on the next tick. While a
+ * gateway's dpinger socket is younger than the settle window, a healthy reading
+ * is ignored: it can still trip a gateway DOWN, never bring one back UP. The
+ * window is the gateway's own time_period (SETTLE_FALLBACK_SECONDS if unset);
+ * --settle=N overrides it and --settle=0 disables the guard. It applies to the
+ * WAN reading in pass 1 and the tunnel reading in pass 2.
  *
- * The window defaults to the IPv4 gateway's own time_period (dpinger's loss
- * averaging window -- the interval it must fill before loss means anything),
- * falling back to SETTLE_FALLBACK_SECONDS when that is unset. Override with
- * --settle=N seconds, or --settle=0 to disable the guard entirely.
+ * --dry reports every decision against live config and live gateway status
+ * without writing or reconfiguring anything. --selftest exercises the decision
+ * logic without touching config.
  *
  * Runs from /etc/cron.d/wgipv6gateway four times a minute (offsets 0/15/30/45s).
- * Run with --selftest to exercise the decision logic without touching config.
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
@@ -42,6 +51,9 @@ $logTag = 'wgipv6gw-health';
 
 /* Used only when a gateway has no time_period configured. */
 const SETTLE_FALLBACK_SECONDS = 60;
+
+/* IPv4 tunnel gateways whose force_down pass 1 set, and so may release. */
+const UNDERLAY_HELD_FILE = '/var/db/wgipv6gateway/underlay_held.json';
 
 function logMsg($tag, $msg) {
     syslog(LOG_NOTICE, "[$tag] $msg");
@@ -90,6 +102,186 @@ function wgipv6_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settle
     return $currentDown;            // between watermarks => hold (hysteresis)
 }
 
+/**
+ * Is a WAN gateway status "down" for a downloss gateway group? Same semantics
+ * as GatewayGroups::gatewayIsUp('downloss', ...): latency alone never counts.
+ *
+ * @param string|null $status gateway_status.php status, null when absent
+ * @return bool true => down
+ */
+function wgipv6_wan_status_down($status) {
+    return $status === null || in_array($status, ['down', 'force_down', 'loss', 'delay+loss'], true);
+}
+
+/**
+ * Underlay decision for one tunnel.
+ *
+ * @param array $wan  ['disabled' => bool, 'force_down' => bool,
+ *                     'status' => string|null, 'settled' => bool]
+ * @param bool  $held this pass currently holds the tunnel down
+ * @return bool true => the tunnel must be held down
+ */
+function wgipv6_decide_underlay(array $wan, $held) {
+    if ($wan['disabled'] || $wan['force_down'] || wgipv6_wan_status_down($wan['status'])) {
+        return true;
+    }
+    // WAN reads up. A dpinger restarted by the last reconfigure reads up with
+    // no samples, so only a settled reading may release a held tunnel.
+    return $wan['settled'] ? false : $held;
+}
+
+/**
+ * Loss watermarks for a gateway, normalised. Empty/zero losshigh means the
+ * gateway has no loss alarm, so only a fully-dead path counts as down.
+ *
+ * @param object $gw gateway_item node
+ * @return array [int $lossLow, int $lossHigh]
+ */
+function wgipv6_watermarks($gw) {
+    $high = (int)(string)$gw->losshigh;
+    if ($high <= 0) {
+        $high = 100;
+    }
+    $low = (int)(string)$gw->losslow;
+    if ($low < 0 || $low > $high) {
+        $low = $high;
+    }
+    return [$low, $high];
+}
+
+/**
+ * How long this gateway's dpinger needs before a healthy reading means
+ * anything: its own loss averaging window, unless overridden.
+ *
+ * @param object   $gw       gateway_item node
+ * @param int|null $override --settle=N, or null to use the gateway's own
+ * @return int seconds
+ */
+function wgipv6_settle_window($gw, $override) {
+    if ($override !== null) {
+        return $override;
+    }
+    $window = (int)(string)$gw->time_period;
+    return $window > 0 ? $window : SETTLE_FALLBACK_SECONDS;
+}
+
+/**
+ * Is this gateway's dpinger old enough for a healthy reading to count?
+ *
+ * @param object   $gw       gateway_item node
+ * @param int|null $override --settle=N
+ * @return array [bool $settled, int|null $ageSeconds, int $windowSeconds]
+ */
+function wgipv6_settled($gw, $override) {
+    $window = wgipv6_settle_window($gw, $override);
+    $age = wgipv6_socket_age("/var/run/dpinger_{$gw->name}.sock");
+    return [($window === 0) || ($age !== null && $age >= $window), $age, $window];
+}
+
+/**
+ * Current dpinger loss for a gateway, read from its control socket.
+ *
+ * @param string $name gateway name
+ * @return int|null loss percent, null when the socket is absent or unreadable
+ */
+function wgipv6_read_loss($name) {
+    $sock = "/var/run/dpinger_{$name}.sock";
+    if (!file_exists($sock)) {
+        return null;
+    }
+    $fp = @stream_socket_client("unix://{$sock}", $errno, $errstr, 1);
+    if (!$fp) {
+        return null;
+    }
+    fwrite($fp, "\n");
+    $line = fgets($fp, 1024);
+    fclose($fp);
+    if (!$line) {
+        return null;
+    }
+    $parts = preg_split('/\s+/', trim($line));
+    $loss = end($parts);
+    return is_numeric($loss) ? (int)$loss : null;
+}
+
+/**
+ * The WAN each tunnel gateway is bound to, keyed by IPv4 tunnel gateway name.
+ * The binding is declared once: the /32 static route to the tunnel peer's
+ * endpoint names the WAN gateway. Tunnels with no such route are absent.
+ *
+ * @param object $routingMdl OPNsense\Routing\Gateways
+ * @return array name => WAN gateway name
+ */
+function wgipv6_tunnel_underlays($routingMdl) {
+    $root = Config::getInstance()->object();
+    $routeByNet = [];
+    foreach ((new OPNsense\Routes\Route())->route->iterateItems() as $route) {
+        if ((string)$route->enabled === '1') {
+            $routeByNet[(string)$route->network] = (string)$route->gateway;
+        }
+    }
+    $endpointByUuid = [];
+    foreach ((new OPNsense\Wireguard\Client())->clients->client->iterateItems() as $uuid => $peer) {
+        $endpointByUuid[$uuid] = (string)$peer->serveraddress;
+    }
+    $wanByDevice = [];
+    foreach ((new OPNsense\Wireguard\Server())->servers->server->iterateItems() as $server) {
+        foreach (array_filter(explode(',', (string)$server->peers)) as $peerUuid) {
+            $net = ($endpointByUuid[$peerUuid] ?? '') . '/32';
+            if (isset($routeByNet[$net])) {
+                $wanByDevice['wg' . (string)$server->instance] = $routeByNet[$net];
+            }
+        }
+    }
+    $result = [];
+    foreach ($routingMdl->gateway_item->iterateItems() as $gw) {
+        if ((string)$gw->ipprotocol !== 'inet') {
+            continue;
+        }
+        $if = (string)$gw->interface;
+        $device = isset($root->interfaces->$if) ? (string)$root->interfaces->$if->if : '';
+        if (isset($wanByDevice[$device])) {
+            $result[(string)$gw->name] = $wanByDevice[$device];
+        }
+    }
+    return $result;
+}
+
+/**
+ * Live status of every monitored gateway, as the GUI and the groups see it.
+ *
+ * @return array|null name => status string, null when status is unavailable
+ */
+function wgipv6_gateway_status() {
+    $json = shell_exec('/usr/local/opnsense/scripts/routes/gateway_status.php');
+    $data = is_string($json) ? json_decode($json, true) : null;
+    if (!is_array($data)) {
+        return null;
+    }
+    $status = [];
+    foreach ($data as $name => $row) {
+        $status[$name] = (string)($row['status'] ?? '');
+    }
+    return $status;
+}
+
+/**
+ * Tunnels this script holds down, persisted so ownership survives reboots.
+ *
+ * @return array name => true
+ */
+function wgipv6_load_held() {
+    $data = @json_decode((string)@file_get_contents(UNDERLAY_HELD_FILE), true);
+    return is_array($data) ? array_fill_keys(array_filter($data, 'is_string'), true) : [];
+}
+
+function wgipv6_save_held(array $held) {
+    @mkdir(dirname(UNDERLAY_HELD_FILE), 0700, true);
+    $tmp = UNDERLAY_HELD_FILE . '.tmp';
+    file_put_contents($tmp, json_encode(array_keys($held)));
+    rename($tmp, UNDERLAY_HELD_FILE);
+}
+
 // Self-test: validate the decision logic in isolation, no config access.
 if (in_array('--selftest', $argv ?? [], true)) {
     $cases = [
@@ -112,27 +304,46 @@ if (in_array('--selftest', $argv ?? [], true)) {
         ['unsettled no data => down',    null, 20,  10,  false, false, true],
         ['unsettled in band => hold',    15,   20,  10,  true,  false, true],
     ];
+    $up = ['disabled' => false, 'force_down' => false, 'status' => 'none', 'settled' => true];
+    $underlayCases = [
+        // description, wan, held, expectedDown
+        ['WAN up, settled => up',              $up, false, false],
+        ['WAN up, settled, was held => up',    $up, true,  false],
+        ['WAN delay only => up',               ['status' => 'delay'] + $up, false, false],
+        ['WAN disabled => down',               ['disabled' => true] + $up, false, true],
+        ['WAN force_down => down',             ['force_down' => true] + $up, false, true],
+        ['WAN absent from status => down',     ['status' => null] + $up, false, true],
+        ['WAN down => down',                   ['status' => 'down'] + $up, false, true],
+        ['WAN loss => down',                   ['status' => 'loss'] + $up, false, true],
+        ['WAN delay+loss => down',             ['status' => 'delay+loss'] + $up, false, true],
+        ['WAN up, unsettled, held => hold',    ['settled' => false] + $up, true,  true],
+        ['WAN up, unsettled, not held => up',  ['settled' => false] + $up, false, false],
+    ];
     $fail = 0;
     foreach ($cases as $c) {
         [$desc, $lv, $hi, $lo, $cur, $settled, $exp] = $c;
         $got = wgipv6_decide_down($lv, $hi, $lo, $cur, $settled);
-        if ($got !== $exp) {
-            $fail++;
-        }
-        printf("[%s] %s\n", $got === $exp ? 'PASS' : 'FAIL', $desc);
+        $fail += $got === $exp ? 0 : 1;
+        printf("[%s] ipv6: %s\n", $got === $exp ? 'PASS' : 'FAIL', $desc);
     }
-    printf("%d/%d passed\n", count($cases) - $fail, count($cases));
+    foreach ($underlayCases as $c) {
+        [$desc, $wan, $held, $exp] = $c;
+        $got = wgipv6_decide_underlay($wan, $held);
+        $fail += $got === $exp ? 0 : 1;
+        printf("[%s] underlay: %s\n", $got === $exp ? 'PASS' : 'FAIL', $desc);
+    }
+    $total = count($cases) + count($underlayCases);
+    printf("%d/%d passed\n", $total - $fail, $total);
     exit($fail === 0 ? 0 : 1);
 }
 
-/*
- * Settle window override: --settle=N seconds, 0 disables the guard. Without it
- * each gateway uses its own time_period.
- */
 $settleOverride = null;
+$dryRun = false;
 foreach ($argv ?? [] as $arg) {
     if (strpos($arg, '--settle=') === 0) {
         $settleOverride = max(0, (int)substr($arg, strlen('--settle=')));
+    } elseif ($arg === '--dry') {
+        $dryRun = true;
     }
 }
 
@@ -150,104 +361,155 @@ if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
 
-// Read our plugin config to get mappings
 $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
 if ((string)$mdl->enabled !== '1') {
     exit(0);
 }
 
 $routingMdl = new OPNsense\Routing\Gateways();
+$gwByName = [];
+foreach ($routingMdl->gateway_item->iterateItems() as $gw) {
+    $gwByName[(string)$gw->name] = $gw;
+}
 $configChanged = false;
 
-foreach ($mdl->gateways->gateway->iterateItems() as $uuid => $item) {
+/* ---- pass 1: underlay -------------------------------------------------- */
+
+$status = wgipv6_gateway_status();
+$held = wgipv6_load_held();
+$heldChanged = false;
+
+if ($status === null) {
+    /* Without status every WAN would read absent and every tunnel would be
+     * forced down on a transient read failure. Skip the pass this tick. */
+    logMsg($logTag, 'gateway status unavailable; underlay pass skipped this tick');
+    if ($dryRun) {
+        echo "underlay: gateway status unavailable, pass skipped\n";
+    }
+} else {
+    foreach (wgipv6_tunnel_underlays($routingMdl) as $tunnelName => $wanName) {
+        $tunnel = $gwByName[$tunnelName] ?? null;
+        if ($tunnel === null || (string)$tunnel->disabled === '1') {
+            continue;
+        }
+        $wanGw = $gwByName[$wanName] ?? null;
+        [$wanSettled, $wanAge, $wanWindow] = $wanGw !== null
+            ? wgipv6_settled($wanGw, $settleOverride) : [true, null, 0];
+        $wan = [
+            'disabled' => $wanGw === null || (string)$wanGw->disabled === '1',
+            'force_down' => $wanGw !== null && (string)$wanGw->force_down === '1',
+            'status' => $status[$wanName] ?? null,
+            'settled' => $wanSettled,
+        ];
+        $isHeld = isset($held[$tunnelName]);
+        $manual = (string)$tunnel->force_down === '1' && !$isHeld;
+        $down = wgipv6_decide_underlay($wan, $isHeld);
+
+        $wanDesc = $wan['disabled'] ? 'disabled' : ($wan['force_down'] ? 'force_down'
+            : ($wan['status'] ?? 'absent') . ($wanSettled ? '' : " settling {$wanAge}/{$wanWindow}s"));
+
+        if ($dryRun) {
+            printf(
+                "underlay %-18s on %-12s WAN %-24s -> %s\n",
+                $tunnelName,
+                $wanName,
+                $wanDesc,
+                $manual ? 'manual force_down, left alone' : ($down ? 'held down' : 'up')
+            );
+        }
+        if ($manual) {
+            continue;
+        }
+        if ($down && !$isHeld) {
+            $held[$tunnelName] = true;
+            $heldChanged = true;
+            $tunnel->force_down = '1';
+            $configChanged = true;
+            if (!$dryRun) {
+                logMsg($logTag, "{$tunnelName}: force_down (underlay {$wanName} {$wanDesc})");
+            }
+        } elseif (!$down && $isHeld) {
+            unset($held[$tunnelName]);
+            $heldChanged = true;
+            $tunnel->force_down = '0';
+            $configChanged = true;
+            if (!$dryRun) {
+                logMsg($logTag, "{$tunnelName}: online (underlay {$wanName} {$wanDesc})");
+            }
+        }
+    }
+    /* forget tunnels that no longer exist */
+    foreach (array_keys($held) as $name) {
+        if (!isset($gwByName[$name])) {
+            unset($held[$name]);
+            $heldChanged = true;
+        }
+    }
+}
+
+/* ---- pass 2: IPv6 follows its own IPv4 tunnel -------------------------- */
+
+foreach ($mdl->gateways->gateway->iterateItems() as $item) {
     if ((string)$item->enabled !== '1') {
         continue;
     }
-
-    $ipv4Ref = (string)$item->ipv4_gateway;
-
-    // Resolve IPv4 gateway name
-    $ipv4Gw = $routingMdl->getNodeByReference('gateway_item.' . $ipv4Ref);
-    if ($ipv4Gw == null) {
+    $ipv4Gw = $routingMdl->getNodeByReference('gateway_item.' . (string)$item->ipv4_gateway);
+    if ($ipv4Gw === null) {
         continue;
     }
     $ipv4Name = (string)$ipv4Gw->name;
-    $ipv6GwName = $ipv4Name . '-ipv6';
-
-    // Loss watermarks from the IPv4 gateway. Empty/zero losshigh means the
-    // gateway has no loss alarm, so only a fully-dead tunnel forces the IPv6
-    // side down (preserves the original 100%-loss behavior).
-    $lossHigh = (int)(string)$ipv4Gw->losshigh;
-    if ($lossHigh <= 0) {
-        $lossHigh = 100;
-    }
-    $lossLow = (int)(string)$ipv4Gw->losslow;
-    if ($lossLow < 0 || $lossLow > $lossHigh) {
-        $lossLow = $lossHigh;
-    }
-
+    $gw6 = $gwByName[$ipv4Name . '-ipv6'] ?? null;
     /*
-     * Settle window for this gateway: how long dpinger needs before a healthy
-     * reading means anything. time_period is dpinger's loss averaging window.
+     * A disabled gateway is already out of the default-gateway election and out
+     * of every gateway group, so force_down would not change its effect, and
+     * writing it would reconfigure routing for nothing. Leave it alone.
      */
-    $settleWindow = $settleOverride;
-    if ($settleWindow === null) {
-        $settleWindow = (int)(string)$ipv4Gw->time_period;
-        if ($settleWindow <= 0) {
-            $settleWindow = SETTLE_FALLBACK_SECONDS;
-        }
+    if ($gw6 === null || (string)$gw6->disabled === '1') {
+        continue;
     }
 
-    // Read current IPv4 dpinger loss from its control socket (null if no data).
-    $sock = "/var/run/dpinger_{$ipv4Name}.sock";
-    $sockAge = wgipv6_socket_age($sock);
-    $settled = ($settleWindow === 0) || ($sockAge !== null && $sockAge >= $settleWindow);
-    $lossVal = null;
-    if (file_exists($sock)) {
-        $fp = @stream_socket_client("unix://{$sock}", $errno, $errstr, 1);
-        if ($fp) {
-            fwrite($fp, "\n");
-            $line = fgets($fp, 1024);
-            fclose($fp);
-            if ($line) {
-                $parts = preg_split('/\s+/', trim($line));
-                $loss = end($parts);
-                if (is_numeric($loss)) {
-                    $lossVal = (int)$loss;
-                }
-            }
-        }
+    [$lossLow, $lossHigh] = wgipv6_watermarks($ipv4Gw);
+    [$settled, $sockAge, $settleWindow] = wgipv6_settled($ipv4Gw, $settleOverride);
+    $lossVal = wgipv6_read_loss($ipv4Name);
+    $currentDown = (string)$gw6->force_down === '1';
+    $ipv4Forced = (string)$ipv4Gw->force_down === '1';     // includes pass 1's writes
+    $down = $ipv4Forced || wgipv6_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled);
+    $lossStr = $lossVal === null ? 'no-data' : "{$lossVal}% loss";
+    $why = $ipv4Forced ? 'IPv4 force_down' : ($down ? 'IPv4 unhealthy' : 'IPv4 healthy');
+
+    if ($dryRun) {
+        printf(
+            "ipv6     %-22s force_down %s -> %s  (%s; %s %s%s)\n",
+            (string)$gw6->name,
+            $currentDown ? '1' : '0',
+            $down ? '1' : '0',
+            $why,
+            $ipv4Name,
+            $lossStr,
+            $settled ? '' : "; settling {$sockAge}/{$settleWindow}s"
+        );
+        continue;
     }
-
-    // Find the corresponding IPv6 gateway and toggle force_down (with hysteresis).
-    foreach ($routingMdl->gateway_item->iterateItems() as $gwUuid => $gw6) {
-        if ((string)$gw6->name === $ipv6GwName) {
-            /*
-             * A disabled gateway is already out of the default-gateway election
-             * and out of every gateway group, so force_down would not change
-             * its effect. Writing it anyway saves config and reconfigures
-             * routing, which restarts every dpinger on the box -- the same
-             * churn the settle guard above exists to absorb. Leave it alone.
-             */
-            if ((string)$gw6->disabled === '1') {
-                break;
-            }
-
-            $currentDown = ((string)$gw6->force_down === '1');
-            $down = wgipv6_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled);
-            $shouldForceDown = $down ? '1' : '0';
-
-            if ((string)$gw6->force_down !== $shouldForceDown) {
-                $gw6->force_down = $shouldForceDown;
-                $configChanged = true;
-                $lossStr = ($lossVal === null) ? 'no-data' : "{$lossVal}% loss";
-                $state = $down ? 'force_down' : 'online';
-                $settleStr = $settled ? '' : "; dpinger settling {$sockAge}/{$settleWindow}s";
-                logMsg($logTag, "{$ipv6GwName}: {$state} (IPv4 {$ipv4Name} {$lossStr}; watermarks {$lossLow}/{$lossHigh}{$settleStr})");
-            }
-            break;
-        }
+    if ($down !== $currentDown) {
+        $gw6->force_down = $down ? '1' : '0';
+        $configChanged = true;
+        $settleStr = $settled ? '' : "; dpinger settling {$sockAge}/{$settleWindow}s";
+        logMsg($logTag, sprintf(
+            '%s: %s (%s; %s %s; watermarks %d/%d%s)',
+            (string)$gw6->name,
+            $down ? 'force_down' : 'online',
+            $why,
+            $ipv4Name,
+            $lossStr,
+            $lossLow,
+            $lossHigh,
+            $settleStr
+        ));
     }
+}
+
+if ($dryRun) {
+    exit(0);
 }
 
 if ($configChanged) {
@@ -263,16 +525,22 @@ if ($configChanged) {
      *
      * Acquire the lock BEFORE persisting so config and applied state stay
      * consistent: if we cannot serialize, leave the change for the next tick
-     * rather than saving a force_down we would not apply.
+     * rather than saving a force_down we would not apply. The held set is
+     * written only once the config it describes has been saved.
      */
     $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
     if ($gwLock !== false && flock($gwLock, LOCK_EX)) {
         $routingMdl->serializeToConfig();
         Config::getInstance()->save();
+        if ($heldChanged) {
+            wgipv6_save_held($held);
+        }
         (new OPNsense\Core\Backend())->configdRun('interface routes configure');
         flock($gwLock, LOCK_UN);
         fclose($gwLock);
     } elseif ($gwLock !== false) {
         fclose($gwLock);
     }
+} elseif ($heldChanged) {
+    wgipv6_save_held($held);
 }
