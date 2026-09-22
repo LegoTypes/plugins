@@ -321,17 +321,22 @@ function wgipv6_replay_alarm(array $expected, $logTag) {
     if (!empty($pending)) {
         logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway');
     }
-    /* -o closes the lock fd before running the command, as the stock
-     * routes.alarm action does. Without it every descendant inherits the
-     * locked descriptor, and a daemon the reconfigure (re)starts -- filterlog
-     * did, 2026-09-22 -- holds the gateway lock for as long as it lives,
-     * blocking every later reconfigure and silently dropping every alarm. */
-    exec(sprintf(
-        '/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm %s',
-        escapeshellarg(implode(',', array_keys($expected)))
-    ), $out, $rc);
-    if ($rc !== 0) {
-        logMsg($logTag, "alarm replay for " . implode(',', array_keys($expected)) . " failed (rc {$rc})");
+    /*
+     * Run it through configd, never exec() from here: PHP opens files without
+     * close-on-exec, so anything this process starts inherits its open lock
+     * files -- including the single-instance lock -- and a daemon the
+     * reconfigure (re)starts keeps them for as long as it lives. Both happened
+     * on 2026-09-22: a restarted filterlog held first the gateway lock
+     * (blocking every reconfigure, dropping every alarm) and then this
+     * script's own lock (every later tick exited at the guard). configd starts
+     * the action from its own process, which holds neither.
+     */
+    $result = trim((new OPNsense\Core\Backend())->configdpRun(
+        'wgipv6gateway replay_alarm',
+        [implode(',', array_keys($expected))]
+    ));
+    if ($result !== 'OK') {
+        logMsg($logTag, 'alarm replay for ' . implode(',', array_keys($expected)) . " failed: {$result}");
     }
 }
 
