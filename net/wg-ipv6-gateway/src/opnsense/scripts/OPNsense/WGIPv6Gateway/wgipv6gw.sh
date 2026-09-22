@@ -13,6 +13,7 @@
 # Configuration is read from the OPNsense MVC models via gateway_config.php.
 
 CONFIG_HELPER="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/gateway_config.php"
+GUARD="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/default_guard.php"
 LOGGER_TAG="wgipv6gw"
 STATE_DIR="/var/run/wgipv6gateway"
 
@@ -167,6 +168,8 @@ case "$1" in
         # Idempotent repair pass for event hooks and cron: adds only what is
         # missing and stays silent unless it actually had to fix something.
         do_configure_routes quiet
+        # Then make sure no tunnel carries a default route (see default_guard.php).
+        /usr/local/bin/php "${GUARD}"
         ;;
     status)
         do_status
