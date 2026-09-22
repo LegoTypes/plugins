@@ -282,6 +282,59 @@ function wgipv6_save_held(array $held) {
     rename($tmp, UNDERLAY_HELD_FILE);
 }
 
+/**
+ * Replay the gateway alarm OPNsense dropped for our own force_down changes.
+ *
+ * The reconfigure below restarts dpinger and SIGHUPs gateway_watcher, which
+ * then raises "none -> force_down" (or back) for the gateways we changed and
+ * calls the routes.alarm action. That action is
+ * `flock -n -E 0 /tmp/filter_reload_gateway.lock rc.routing_configure alarm`:
+ * non-blocking, so while we still hold the lock it silently does nothing. The
+ * filter is then never rebuilt with the new status of dpinger-monitored
+ * gateways -- their status comes from the watcher, which had not re-read
+ * config when our reconfigure generated the ruleset -- and 20-recover never
+ * kills their states. Observed 2026-09-22: a forced-down tunnel stayed the
+ * group's route-to until an unrelated reconfigure.
+ *
+ * So, lock released: wait until gateway status shows what we wrote, then run
+ * the alarm path ourselves, blocking on the lock. It reconfigures routing
+ * without restarting monitors, runs the monitor syshooks (state kill) for the
+ * named gateways, and rebuilds the filter.
+ *
+ * @param array $expected name => bool force_down for every gateway we changed
+ */
+function wgipv6_replay_alarm(array $expected, $logTag) {
+    $deadline = time() + 20;
+    do {
+        $status = wgipv6_gateway_status() ?? [];
+        $pending = [];
+        foreach ($expected as $name => $down) {
+            if (isset($status[$name]) && (($status[$name] === 'force_down') !== $down)) {
+                $pending[] = $name;
+            }
+        }
+        if (empty($pending)) {
+            break;
+        }
+        sleep(1);
+    } while (time() < $deadline);
+    if (!empty($pending)) {
+        logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway');
+    }
+    /* -o closes the lock fd before running the command, as the stock
+     * routes.alarm action does. Without it every descendant inherits the
+     * locked descriptor, and a daemon the reconfigure (re)starts -- filterlog
+     * did, 2026-09-22 -- holds the gateway lock for as long as it lives,
+     * blocking every later reconfigure and silently dropping every alarm. */
+    exec(sprintf(
+        '/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm %s',
+        escapeshellarg(implode(',', array_keys($expected)))
+    ), $out, $rc);
+    if ($rc !== 0) {
+        logMsg($logTag, "alarm replay for " . implode(',', array_keys($expected)) . " failed (rc {$rc})");
+    }
+}
+
 // Self-test: validate the decision logic in isolation, no config access.
 if (in_array('--selftest', $argv ?? [], true)) {
     $cases = [
@@ -372,6 +425,7 @@ foreach ($routingMdl->gateway_item->iterateItems() as $gw) {
     $gwByName[(string)$gw->name] = $gw;
 }
 $configChanged = false;
+$alarmExpected = [];    // name => force_down we wrote, for wgipv6_replay_alarm()
 
 /* ---- pass 1: underlay -------------------------------------------------- */
 
@@ -425,6 +479,7 @@ if ($status === null) {
             $heldChanged = true;
             $tunnel->force_down = '1';
             $configChanged = true;
+            $alarmExpected[$tunnelName] = true;
             if (!$dryRun) {
                 logMsg($logTag, "{$tunnelName}: force_down (underlay {$wanName} {$wanDesc})");
             }
@@ -433,6 +488,7 @@ if ($status === null) {
             $heldChanged = true;
             $tunnel->force_down = '0';
             $configChanged = true;
+            $alarmExpected[$tunnelName] = false;
             if (!$dryRun) {
                 logMsg($logTag, "{$tunnelName}: online (underlay {$wanName} {$wanDesc})");
             }
@@ -493,6 +549,7 @@ foreach ($mdl->gateways->gateway->iterateItems() as $item) {
     if ($down !== $currentDown) {
         $gw6->force_down = $down ? '1' : '0';
         $configChanged = true;
+        $alarmExpected[(string)$gw6->name] = $down;
         $settleStr = $settled ? '' : "; dpinger settling {$sockAge}/{$settleWindow}s";
         logMsg($logTag, sprintf(
             '%s: %s (%s; %s %s; watermarks %d/%d%s)',
@@ -538,6 +595,7 @@ if ($configChanged) {
         (new OPNsense\Core\Backend())->configdRun('interface routes configure');
         flock($gwLock, LOCK_UN);
         fclose($gwLock);
+        wgipv6_replay_alarm($alarmExpected, $logTag);
     } elseif ($gwLock !== false) {
         fclose($gwLock);
     }
