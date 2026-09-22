@@ -2,7 +2,7 @@
 <?php
 
 /*
- * Copyright (C) 2026 cayossarian
+ * Copyright (C) 2026 cayossarian (Bill Flood)
  * All rights reserved.
  * BSD 2-Clause License
  *
