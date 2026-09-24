@@ -13,6 +13,10 @@
  *   php config_race.php                 run the test
  *   php config_race.php --set=IDX:TEXT  (child) locked write of one row
  *   php config_race.php --read          (child) print the descriptions as JSON
+ *
+ * Exit 0: all checks passed. Exit 1: a check failed. Exit 2: the test itself
+ * could not run (a child process failed) -- originals are restored in every
+ * case the restore itself can run.
  */
 
 require '/usr/local/opnsense/mvc/script/load_phalcon.php';
@@ -43,8 +47,7 @@ function race_child(array $args) {
     $cmd = implode(' ', array_map('escapeshellarg', array_merge(['/usr/local/bin/php', __FILE__], $args)));
     exec($cmd, $out, $rc);
     if ($rc !== 0) {
-        fwrite(STDERR, 'child failed: ' . implode(' ', $args) . "\n");
-        exit(2);
+        throw new RuntimeException('child failed: ' . implode(' ', $args));
     }
     return implode("\n", $out);
 }
@@ -72,6 +75,7 @@ if (!is_array($orig) || count($orig) < 2) {
     exit(2);
 }
 $fail = 0;
+$crashed = false;
 try {
     /* Control: the old pattern -- load, a concurrent write lands, save the
      * snapshot -- loses the concurrent write. If it does not, this test
@@ -96,6 +100,10 @@ try {
     printf("[%s] locked commit keeps the concurrent write (row0=%s row1=%s)\n",
         $kept ? 'PASS' : 'FAIL', $now[0], $now[1]);
     $fail += $kept ? 0 : 1;
+} catch (Throwable $e) {
+    fwrite(STDERR, 'ERROR: ' . $e->getMessage() . "\n");
+    $fail++;
+    $crashed = true;
 } finally {
     race_set_locked(0, $orig[0]);
     race_set_locked(1, $orig[1]);
@@ -103,4 +111,4 @@ try {
     printf("[%s] original descriptions restored\n", $back === $orig ? 'PASS' : 'FAIL');
     $fail += $back === $orig ? 0 : 1;
 }
-exit($fail === 0 ? 0 : 1);
+exit($crashed ? 2 : ($fail === 0 ? 0 : 1));
