@@ -1,5 +1,7 @@
 <script>
     $(document).ready(function () {
+        var flushing = false;
+
         function fmtAge(s) {
             if (s === null || s === undefined) return '—';
             if (s < 120) return s + ' s';
@@ -41,6 +43,7 @@
             $('#banners').empty();
             $('#last-flush').text('');
             var lastSummary = $('#last-flush-summary').empty();
+            var resultShown = $('#result').is(':visible');
             var tbody = $('#aliases tbody').empty();
             // ajaxGet hands over {} when the request itself failed
             if (!data || (!data.error && !Array.isArray(data.aliases))) { banner('danger', requestFailed); return; }
@@ -88,7 +91,7 @@
             });
             if (data.last_flush) {
                 $('#last-flush').text("{{ lang._('Last flush:') }} " + new Date(data.last_flush.at * 1000).toLocaleString());
-                if (data.last_flush.summary && data.last_flush.summary.length) {
+                if (!resultShown && data.last_flush.summary && data.last_flush.summary.length) {
                     lastSummary.append(summaryTable(data.last_flush.summary));
                 }
             }
@@ -116,6 +119,7 @@
 
         $('#btn-refresh').on('click', refresh);
         $('#btn-flush').on('click', function () {
+            if (flushing) return;
             var btn = $(this);
             BootstrapDialog.show({
                 type: BootstrapDialog.TYPE_DANGER,
@@ -127,12 +131,15 @@
                 }, {
                     label: "{{ lang._('Yes') }}",
                     action: function (dialogRef) {
+                        if (flushing) return;
+                        dialogRef.close();
+                        flushing = true;
                         btn.prop('disabled', true);
                         ajaxCall('/api/macaliascache/service/flush', {}, function (data) {
+                            flushing = false;
                             btn.prop('disabled', false);
                             renderResult(data);
                             refresh();
-                            dialogRef.close();
                         });
                     }
                 }]
