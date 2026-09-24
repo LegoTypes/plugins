@@ -10,7 +10,7 @@
         }
 
         function banner(kind, text) {
-            $('#banners').append($('<div class="alert"/>').addClass('alert-' + kind).text(text));
+            return $('<div class="alert"/>').addClass('alert-' + kind).text(text);
         }
 
         var requestFailed = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
@@ -26,91 +26,135 @@
         }
 
         function summaryTable(summary) {
-            var t = $('<table class="table table-condensed"/>').append(
-                $('<tr/>').append('<th>{{ lang._("Alias") }}</th><th>{{ lang._("Before") }}</th><th>{{ lang._("After") }}</th><th>{{ lang._("Removed") }}</th><th>{{ lang._("Added") }}</th>'));
+            var thead = $('<thead/>').append($('<tr/>').append(
+                $('<th/>').text("{{ lang._('Alias') }}"),
+                $('<th/>').text("{{ lang._('Before') }}"),
+                $('<th/>').text("{{ lang._('After') }}"),
+                $('<th/>').text("{{ lang._('Removed') }}"),
+                $('<th/>').text("{{ lang._('Added') }}")));
+            var tbody = $('<tbody/>');
             $.each(summary, function (i, s) {
-                t.append($('<tr/>')
+                tbody.append($('<tr/>')
                     .append($('<td/>').text(s.name))
                     .append($('<td/>').text(s.before === null ? '—' : s.before))
                     .append($('<td/>').text(s.after === null ? '—' : s.after))
                     .append($('<td/>').text(s.removed.join(', ') || '—'))
                     .append($('<td/>').text(s.added.join(', ') || '—')));
             });
-            return t;
+            return $('<table class="table table-striped table-condensed"/>').append(thead, tbody);
+        }
+
+        function summaryHeading(text) {
+            return $('<p/>').append($('<strong/>').text(text));
+        }
+
+        function summaryTotals(summary) {
+            var removed = 0, added = 0, changed = 0;
+            $.each(summary, function (i, s) {
+                removed += s.removed.length;
+                added += s.added.length;
+                if (s.removed.length || s.added.length) changed++;
+            });
+            return { removed: removed, added: added, changed: changed };
+        }
+
+        function completionText(totals) {
+            var prefix = "{{ lang._('Flush complete at') }} " + new Date().toLocaleTimeString() + ": ";
+            if (totals.removed === 0 && totals.added === 0) {
+                return prefix + "{{ lang._('every alias already matched host discovery; nothing changed.') }}";
+            }
+            return prefix + "{{ lang._('removed') }} " + totals.removed + " {{ lang._('address(es), added') }} " + totals.added +
+                " {{ lang._('across') }} " + totals.changed + " {{ lang._('alias(es).') }}";
         }
 
         function render(data) {
-            $('#banners').empty();
-            $('#last-flush').text('');
-            var lastSummary = $('#last-flush-summary').empty();
+            var banners = [];
             var resultShown = $('#result').is(':visible');
-            var tbody = $('#aliases tbody').empty();
+            var lastFlushText = '';
+            var lastSummaryBuilt = [];
+            var tbody = $('<tbody/>');
+
             // ajaxGet hands over {} when the request itself failed
-            if (!data || (!data.error && !Array.isArray(data.aliases))) { banner('danger', requestFailed); return; }
-            if (data.error) { banner('danger', errorText(data)); return; }
-            if (data.source === null || data.source === undefined) {
-                banner('warning', "{{ lang._('The host list could not be read; the current addresses shown may be incomplete.') }}");
-            } else if (data.source === 'arp-ndp') {
-                banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}");
-            }
-            if (!data.aliases.length) {
-                tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
-            }
-            $.each(data.aliases, function (i, a) {
-                var oldest = null;
-                $.each(a.macs, function (j, m) {
-                    if (m.cache_age_s !== null && (oldest === null || m.cache_age_s > oldest)) oldest = m.cache_age_s;
-                });
-                var detail = $('<tr class="mac-detail"/>').hide();
-                var cell = $('<td colspan="6"/>');
-                $.each(a.macs, function (j, m) {
-                    var current = {};
-                    $.each(m.current_items, function (k, ip) { current[ip] = true; });
-                    var list = $('<ul class="list-unstyled"/>');
-                    $.each(m.cache_items, function (k, ip) {
-                        var li = $('<li/>').text(ip);
-                        if (!current[ip]) li.addClass('text-danger').append(' ' + "{{ lang._('(cached only — removed by a flush)') }}");
-                        list.append(li);
+            if (!data || (!data.error && !Array.isArray(data.aliases))) {
+                banners.push(banner('danger', requestFailed));
+            } else if (data.error) {
+                banners.push(banner('danger', errorText(data)));
+            } else {
+                if (data.source === null || data.source === undefined) {
+                    banners.push(banner('warning', "{{ lang._('The host list could not be read; the current addresses shown may be incomplete.') }}"));
+                } else if (data.source === 'arp-ndp') {
+                    banners.push(banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}"));
+                }
+                if (!data.aliases.length) {
+                    tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
+                }
+                $.each(data.aliases, function (i, a) {
+                    var oldest = null;
+                    $.each(a.macs, function (j, m) {
+                        if (m.cache_age_s !== null && (oldest === null || m.cache_age_s > oldest)) oldest = m.cache_age_s;
                     });
-                    $.each(m.current_items, function (k, ip) {
-                        if (m.cache_items.indexOf(ip) < 0) list.append($('<li class="text-muted"/>').text(ip + ' ' + "{{ lang._('(current, not yet cached)') }}"));
+                    var detail = $('<tr class="mac-detail"/>').hide();
+                    var cell = $('<td colspan="6"/>');
+                    $.each(a.macs, function (j, m) {
+                        var current = {};
+                        $.each(m.current_items, function (k, ip) { current[ip] = true; });
+                        var list = $('<ul class="list-unstyled"/>');
+                        $.each(m.cache_items, function (k, ip) {
+                            var li = $('<li/>').text(ip);
+                            if (!current[ip]) li.addClass('text-danger').append(' ' + "{{ lang._('(cached only — removed by a flush)') }}");
+                            list.append(li);
+                        });
+                        $.each(m.current_items, function (k, ip) {
+                            if (m.cache_items.indexOf(ip) < 0) list.append($('<li class="text-muted"/>').text(ip + ' ' + "{{ lang._('(current, not yet cached)') }}"));
+                        });
+                        cell.append($('<strong/>').text(m.mac + ' — ' + "{{ lang._('cache age') }} " + fmtAge(m.cache_age_s)), list);
                     });
-                    cell.append($('<strong/>').text(m.mac + ' — ' + "{{ lang._('cache age') }} " + fmtAge(m.cache_age_s)), list);
+                    if (!a.macs.length) cell.text("{{ lang._('No host currently matches these entries.') }}");
+                    detail.append(cell);
+                    var row = $('<tr class="mac-alias" style="cursor:pointer"/>')
+                        .append($('<td/>').text(a.name))
+                        .append($('<td/>').text(a.entries.join(', ')))
+                        .append($('<td/>').text(a.nested_by.join(', ') || '—'))
+                        .append($('<td/>').text(a.pf_count === null ? '—' : a.pf_count))
+                        .append($('<td/>').text(a.macs.length))
+                        .append($('<td/>').text(fmtAge(oldest)))
+                        .on('click', function () { detail.toggle(); });
+                    tbody.append(row, detail);
                 });
-                if (!a.macs.length) cell.text("{{ lang._('No host currently matches these entries.') }}");
-                detail.append(cell);
-                var row = $('<tr class="mac-alias" style="cursor:pointer"/>')
-                    .append($('<td/>').text(a.name))
-                    .append($('<td/>').text(a.entries.join(', ')))
-                    .append($('<td/>').text(a.nested_by.join(', ') || '—'))
-                    .append($('<td/>').text(a.pf_count === null ? '—' : a.pf_count))
-                    .append($('<td/>').text(a.macs.length))
-                    .append($('<td/>').text(fmtAge(oldest)))
-                    .on('click', function () { detail.toggle(); });
-                tbody.append(row, detail);
-            });
-            if (data.last_flush) {
-                $('#last-flush').text("{{ lang._('Last flush:') }} " + new Date(data.last_flush.at * 1000).toLocaleString());
-                if (!resultShown && data.last_flush.summary && data.last_flush.summary.length) {
-                    lastSummary.append(summaryTable(data.last_flush.summary));
+                if (data.last_flush) {
+                    lastFlushText = "{{ lang._('Last flush:') }} " + new Date(data.last_flush.at * 1000).toLocaleString();
+                    if (!resultShown && data.last_flush.summary && data.last_flush.summary.length) {
+                        lastSummaryBuilt.push(summaryHeading("{{ lang._('Last flush result') }}"), summaryTable(data.last_flush.summary));
+                    }
                 }
             }
+
+            $('#banners').empty().append(banners);
+            $('#last-flush').text(lastFlushText);
+            $('#last-flush-summary').empty().append(lastSummaryBuilt);
+            $('#aliases tbody').replaceWith(tbody);
         }
 
         function renderResult(data) {
-            var panel = $('#result').empty().show();
+            var built = [];
             // ajaxCall hands over the jqXHR (no JSON) when the request itself failed
             if (!data || (!data.error && !data.summary && !data.note)) {
-                panel.append($('<div class="alert alert-danger"/>').text(requestFailed));
-                return;
+                built.push($('<div class="alert alert-danger"/>').text(requestFailed));
+            } else if (data.error) {
+                built.push($('<div class="alert alert-danger"/>').text(errorText(data)));
+            } else if (data.note) {
+                built.push($('<div class="alert alert-info"/>').text(data.note));
+            } else {
+                var totals = summaryTotals(data.summary);
+                built.push($('<div class="alert alert-success"/>').text(completionText(totals)));
+                built.push(summaryHeading("{{ lang._('Result of this flush') }}"));
+                built.push(summaryTable(data.summary));
+                if (data.update_tables && data.update_tables.rc !== 0) {
+                    built.push($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
+                }
+                built.push($('<p class="text-muted"/>').text("{{ lang._('Alias refreshes requested while the flush held the lock (cron, filter reload, alias Apply) run at the next minute.') }}"));
             }
-            if (data.error) { panel.append($('<div class="alert alert-danger"/>').text(errorText(data))); return; }
-            if (data.note) { panel.append($('<div class="alert alert-info"/>').text(data.note)); return; }
-            panel.append(summaryTable(data.summary));
-            if (data.update_tables && data.update_tables.rc !== 0) {
-                panel.append($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
-            }
-            panel.append($('<p class="text-muted"/>').text("{{ lang._('Alias refreshes requested while the flush held the lock (cron, filter reload, alias Apply) run at the next minute.') }}"));
+            $('#result').empty().append(built).show();
         }
 
         function refresh() {
@@ -121,6 +165,7 @@
         $('#btn-flush').on('click', function () {
             if (flushing) return;
             var btn = $(this);
+            var label = btn.contents();
             BootstrapDialog.show({
                 type: BootstrapDialog.TYPE_DANGER,
                 title: "{{ lang._('MAC Alias Cache') }}",
@@ -134,10 +179,10 @@
                         if (flushing) return;
                         dialogRef.close();
                         flushing = true;
-                        btn.prop('disabled', true);
+                        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-pulse fa-fw"></i> {{ lang._("Flushing…") }}');
                         ajaxCall('/api/macaliascache/service/flush', {}, function (data) {
                             flushing = false;
-                            btn.prop('disabled', false);
+                            btn.prop('disabled', false).empty().append(label);
                             renderResult(data);
                             refresh();
                         });
