@@ -1,12 +1,42 @@
 WireGuard IPv6 Gateway Companion Plugin
 
-Manages IPv6 routing through WireGuard tunnels on OPNsense. Solves the
-limitation that all ProtonVPN (and similar) WireGuard tunnels share the
-same IPv6 tunnel address by allowing unique ULA addresses per interface.
+Makes IPv6 gateways and gateway groups usable over WireGuard VPN tunnels
+(ProtonVPN and similar), which OPNsense cannot do on its own: every
+tunnel gets the same provider-assigned IPv6 address, and a WireGuard
+IPv6 gateway has no health monitoring of its own.
 
 Features:
-- Associate IPv6 addresses/gateways with existing WireGuard IPv4 gateways
-- Automatically create and maintain IPv6 interface routes
-- Mirror IPv6 gateway health status from the corresponding IPv4 gateway
-- Re-add routes when WireGuard tunnels restart (WAN failover, config change)
-- Gateway group support for IPv6 failover across multiple WG tunnels
+- Gives each WireGuard IPv6 gateway its own address and next hop, tied to
+  its IPv4 tunnel gateway, and keeps the interface address and host route
+  in place: at boot, on gateway and WAN address events, and every minute
+  as a safety net
+- Health mirror (every 15 s):
+  - binds each tunnel to the WAN its endpoint route uses and holds the
+    tunnel down while that WAN is down, so a tunnel never migrates to the
+    other WAN
+  - forces each IPv6 tunnel gateway down when its own IPv4 tunnel loses
+    packets, loses its monitor or is forced down, using that gateway's
+    loss thresholds with hysteresis
+  - ignores a freshly restarted monitor's readings until they settle, so
+    a gateway is never released in the middle of an outage
+  - replays the gateway alarm its own reconfigure would otherwise drop,
+    so firewall rules and states follow the change
+- Default-route guard: removes a default route that points through a
+  tunnel or other non-default gateway, for IPv4 and IPv6, working
+  together with address-less sentinel gateways that keep tunnels out of
+  the default-gateway election
+- Leaves disabled gateways and an operator's manual force-down alone
+
+Plugin Changelog
+================
+
+1.0
+
+* Per-tunnel IPv6 addresses and gateway host routes, restored at boot,
+  on gateway and WAN events, and by a one-minute reconcile
+* Health mirror with WAN binding, IPv6-follows-IPv4, loss hysteresis and
+  a settle guard for freshly restarted monitors
+* Serialised reconfigures and a configd alarm replay, so the mirror
+  cannot starve itself or drop gateway alarms
+* Default-route guard for tunnels and other non-default gateways
+* Dashboard service status detection
