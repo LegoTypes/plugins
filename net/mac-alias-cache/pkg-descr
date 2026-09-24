@@ -1,0 +1,15 @@
+MAC Alias Cache
+
+OPNsense resolves MAC-type firewall aliases through a cache that keeps
+the last addresses of a MAC which host discovery no longer reports for
+up to 12 hours. This plugin shows what each MAC alias resolves to and
+rebuilds every MAC alias, and every alias nesting one, from current
+host discovery data on demand (Firewall > Diagnostics > MAC Alias Cache,
+or "configctl macaliascache flush").
+
+Plugin Changelog
+================
+
+1.0
+
+* Initial release
