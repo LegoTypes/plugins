@@ -42,7 +42,7 @@ def env(tmp_path):
         cat "$f"
     """)
     update = _exe(tmp_path / "update_tables.py", f"""
-        echo "$@" > "{tmp_path}/update_args"
+        echo "$@" >> "{tmp_path}/update_args"
         printf '192.0.2.50\\n' > "{pf}/DevMacs"
         printf '192.0.2.50\\n' > "{pf}/Parent"
         echo '{{"status": "ok"}}'
@@ -163,6 +163,59 @@ def test_flush_reports_update_tables_failure_and_empty_output(env):
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert out["update_tables"] == {"rc": 3, "output": ""}
     assert not (tmp / "arp.cache").exists()
+
+
+def test_flush_reports_update_tables_stderr_in_output(env):
+    # a crash's traceback usually lands on stderr; it must not be dropped
+    cfg, tmp = env
+    cfg["update_tables"] = _exe(tmp / "failing_update_stderr", """
+        echo "boom" >&2
+        exit 5
+    """)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["update_tables"]["rc"] == 5
+    assert "boom" in out["update_tables"]["output"]
+
+
+def test_flush_releases_lock_after_success(env):
+    cfg, tmp = env
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    with open(cfg["lock_file"], "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must not raise: lock was released
+
+
+def test_flush_releases_lock_after_too_soon(env):
+    cfg, tmp = env
+    (tmp / "last.json").write_text(json.dumps({"at": 4995.0, "summary": []}))
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["error"] == "too_soon"
+    with open(cfg["lock_file"], "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # must not raise: lock was released
+
+
+def test_flush_rate_limit_race_through_lock_handoff(env, monkeypatch):
+    # Flush A's "after" pfctl reads happen once the lock is already released (see
+    # cmd_flush). A second flush (B) queued on that same lock can therefore acquire
+    # it *during* A's after-reads. B must see A's rate-limit marker already written
+    # and stand down, rather than racing A into a second full rebuild.
+    cfg, tmp = env
+    real_pf_set = macalias.pf_set
+    state = {"calls": 0, "nested": None}
+
+    def fake_pf_set(cfg_, name):
+        state["calls"] += 1
+        # calls 1-2 are A's "before" reads (still holding the lock); call 3 is the
+        # first "after" read, made right after A released the lock in its finally
+        if state["calls"] == 3 and state["nested"] is None:
+            state["nested"] = macalias.cmd_flush(cfg_, clock=lambda: 5001.0, sleep=lambda s: None)
+        return real_pf_set(cfg_, name)
+
+    monkeypatch.setattr(macalias, "pf_set", fake_pf_set)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert state["nested"]["error"] == "too_soon"
+    assert (tmp / "update_args").read_text().strip().splitlines() == ["--aliases DevMacs,Parent"]
 
 
 def test_main_always_prints_json_and_exits_zero(capsys):
