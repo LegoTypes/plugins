@@ -240,10 +240,14 @@ class SettingsController extends ApiMutableModelControllerBase
                 $newGw->force_down = '0';
                 $newGw->priority = '255';
                 $newGw->disabled = '0';
-                $routingMdl->serializeToConfig();
-                Config::getInstance()->save();
                 $created[] = $gwName;
             }
+        }
+
+        if (!empty($created)) {
+            $routingMdl->serializeToConfig();
+            // save() releases the config lock, so it must be the last step, once.
+            Config::getInstance()->save();
         }
 
         return ['status' => 'ok', 'created' => $created];
