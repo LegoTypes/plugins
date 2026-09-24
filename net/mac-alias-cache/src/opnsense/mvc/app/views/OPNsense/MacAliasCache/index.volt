@@ -60,17 +60,19 @@
 
         function resultHeadingText(totals) {
             if (totals.removed === 0 && totals.added === 0) {
-                return "Result of this flush: nothing changed";
+                return "{{ lang._('Result of this flush') }}: {{ lang._('nothing changed') }}";
             }
             var parts = [];
             if (totals.removed > 0) {
-                parts.push("removed " + totals.removed + " " + (totals.removed === 1 ? "address" : "addresses"));
+                var addr = totals.removed === 1 ? "{{ lang._('address') }}" : "{{ lang._('addresses') }}";
+                parts.push("{{ lang._('removed') }} " + totals.removed + " " + addr);
             }
             if (totals.added > 0) {
-                parts.push("added " + totals.added + " " + (totals.added === 1 ? "address" : "addresses"));
+                var addr = totals.added === 1 ? "{{ lang._('address') }}" : "{{ lang._('addresses') }}";
+                parts.push("{{ lang._('added') }} " + totals.added + " " + addr);
             }
-            var alias = totals.changed === 1 ? "alias" : "aliases";
-            return "Result of this flush: " + parts.join(", ") + " across " + totals.changed + " " + alias;
+            var alias = totals.changed === 1 ? "{{ lang._('alias') }}" : "{{ lang._('aliases') }}";
+            return "{{ lang._('Result of this flush') }}: " + parts.join(", ") + " {{ lang._('across') }} " + totals.changed + " " + alias;
         }
 
         function render(data) {
