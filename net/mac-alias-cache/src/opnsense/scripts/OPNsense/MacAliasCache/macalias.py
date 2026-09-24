@@ -69,8 +69,8 @@ def _write_json_atomic(path, obj):
     """ write obj as JSON to a temp file beside path, then rename it over path """
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".%s." % os.path.basename(path), suffix=".tmp")
     try:
-        os.fchmod(fd, 0o644)  # mkstemp creates 0600; match a plain open() under umask 022
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w") as f:  # closes fd on every path out of the with block, chmod failure included
+            os.fchmod(f.fileno(), 0o644)  # mkstemp creates 0600; match a plain open() under umask 022
             json.dump(obj, f)
         os.replace(tmp, path)
     except BaseException:
@@ -79,6 +79,28 @@ def _write_json_atomic(path, obj):
         except FileNotFoundError:
             pass
         raise
+
+
+def _sweep_stale_temps(path, now, max_age=60):
+    """ delete our own atomic-write temp files beside path (name .<basename>.<random>.tmp,
+    see _write_json_atomic) older than max_age seconds; catches orphans left by a kill
+    between mkstemp and os.replace
+    """
+    directory = os.path.dirname(path) or "."
+    prefix = ".%s." % os.path.basename(path)
+    try:
+        names = os.listdir(directory)
+    except FileNotFoundError:
+        return
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".tmp")):
+            continue
+        full = os.path.join(directory, name)
+        try:
+            if now - os.stat(full).st_mtime > max_age:
+                os.unlink(full)
+        except FileNotFoundError:
+            pass
 
 
 def seed_cache(rows, now):
@@ -164,6 +186,10 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         if (last and isinstance(last.get("at"), (int, float))
                 and 0 <= now - last["at"] < cfg["min_interval"]):
             return {"error": "too_soon", "detail": "last flush %.0fs ago" % (now - last["at"])}
+
+        # sweep orphans from a prior kill between mkstemp and os.replace before writing again
+        _sweep_stale_temps(cfg["cache_file"], now)
+        _sweep_stale_temps(cfg["last_file"], now)
 
         tables = read_tables(cfg)
         names = lib.refresh_set(tables)

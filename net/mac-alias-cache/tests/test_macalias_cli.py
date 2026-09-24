@@ -189,6 +189,19 @@ def test_write_json_atomic_failure_keeps_original(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["out.json"]
 
 
+def test_write_json_atomic_fchmod_failure_leaves_no_temp(tmp_path, monkeypatch):
+    target = tmp_path / "out.json"
+
+    def boom(fd, mode):
+        raise OSError("fchmod failed")
+
+    monkeypatch.setattr(macalias.os, "fchmod", boom)
+    with pytest.raises(OSError):
+        macalias._write_json_atomic(str(target), {"a": 1})
+    assert not target.exists()
+    assert [p.name for p in tmp_path.iterdir()] == []
+
+
 def test_flush_writes_state_files_atomically(env, monkeypatch):
     cfg, tmp = env
     replaced = []
@@ -203,6 +216,21 @@ def test_flush_writes_state_files_atomically(env, monkeypatch):
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert "error" not in out
     assert replaced == ["arp.cache", "last.json", "last.json"]
+
+
+def test_flush_sweeps_stale_temp_files_for_cache_file(env):
+    # orphans from a kill between mkstemp and os.replace: stale ones are swept, fresh ones survive
+    cfg, tmp = env
+    old = tmp / ".arp.cache.oldrand.tmp"
+    old.write_text("stale")
+    os.utime(old, (5000.0 - 120, 5000.0 - 120))
+    fresh = tmp / ".arp.cache.freshrand.tmp"
+    fresh.write_text("fresh")
+    os.utime(fresh, (5000.0, 5000.0))
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert not old.exists()
+    assert fresh.exists()
 
 
 def test_flush_too_soon_changes_nothing(env):
