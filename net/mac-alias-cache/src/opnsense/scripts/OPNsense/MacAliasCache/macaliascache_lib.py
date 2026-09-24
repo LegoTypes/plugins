@@ -92,3 +92,50 @@ def refresh_set(tables):
     """ the --aliases argument for update_tables.py: mac aliases plus everything nesting them """
     macs = set(mac_aliases(tables))
     return sorted(macs | set(nesting_closure(tables, macs)))
+
+
+def alias_view(tables, cache, hosts, pf_counts, now):
+    """ status rows, one per mac alias """
+    current = {}
+    for row in hosts:
+        if len(row) >= 3:
+            current.setdefault(row[1].lower(), set()).add(row[2])
+    cache = {mac.lower(): value for mac, value in cache.items()}
+    known = set(current) | set(cache)
+    rows = []
+    for name, entries in sorted(mac_aliases(tables).items()):
+        macs = sorted({mac for matched in expand_entries(entries, known).values() for mac in matched})
+        mac_rows = []
+        for mac in macs:
+            cached = cache.get(mac) or {}
+            last_seen = cached.get("last_seen")
+            mac_rows.append({
+                "mac": mac,
+                "cache_items": sorted(cached.get("items", [])),
+                "cache_age_s": int(now - last_seen) if isinstance(last_seen, (int, float)) else None,
+                "current_items": sorted(current.get(mac, set())),
+            })
+        rows.append({
+            "name": name,
+            "entries": entries,
+            "macs": mac_rows,
+            "nested_by": nesting_closure(tables, [name]),
+            "pf_count": pf_counts.get(name),
+        })
+    return rows
+
+
+def summarise(before, after):
+    """ per alias: pf set sizes before/after a flush and the addresses added/removed """
+    result = []
+    for name in sorted(set(before) | set(after)):
+        b, a = before.get(name), after.get(name)
+        both = b is not None and a is not None
+        result.append({
+            "name": name,
+            "before": len(b) if b is not None else None,
+            "after": len(a) if a is not None else None,
+            "added": sorted(set(a) - set(b)) if both else [],
+            "removed": sorted(set(b) - set(a)) if both else [],
+        })
+    return result
