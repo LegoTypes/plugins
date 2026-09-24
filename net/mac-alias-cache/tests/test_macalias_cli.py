@@ -189,15 +189,29 @@ def test_write_json_atomic_failure_keeps_original(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == ["out.json"]
 
 
-def test_write_json_atomic_fchmod_failure_leaves_no_temp(tmp_path, monkeypatch):
+def test_write_json_atomic_fchmod_failure_closes_fd_and_leaves_no_temp(tmp_path, monkeypatch):
     target = tmp_path / "out.json"
+    recorded = {}
+    real_mkstemp = macalias.tempfile.mkstemp
+
+    def spy_mkstemp(*args, **kwargs):
+        fd, tmp = real_mkstemp(*args, **kwargs)
+        recorded["fd"] = fd
+        return fd, tmp
 
     def boom(fd, mode):
         raise OSError("fchmod failed")
 
+    monkeypatch.setattr(macalias.tempfile, "mkstemp", spy_mkstemp)
     monkeypatch.setattr(macalias.os, "fchmod", boom)
+
     with pytest.raises(OSError):
         macalias._write_json_atomic(str(target), {"a": 1})
+
+    # immediately, before opening anything else that could reuse the fd number
+    with pytest.raises(OSError):
+        os.fstat(recorded["fd"])
+
     assert not target.exists()
     assert [p.name for p in tmp_path.iterdir()] == []
 
