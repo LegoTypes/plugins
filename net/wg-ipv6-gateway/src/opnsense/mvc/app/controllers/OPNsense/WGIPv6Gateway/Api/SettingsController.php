@@ -167,7 +167,25 @@ class SettingsController extends ApiMutableModelControllerBase
      */
     public function ensureGatewayObjectsAction()
     {
-        $mdl = $this->getModel();
+        /* Re-read config.xml under its lock before building the models, so the
+         * saves below cannot write back a snapshot older than a concurrent
+         * change. Fresh model instances, not getModel()'s cached one. */
+        Config::getInstance()->lock();
+        try {
+            return $this->ensureGatewayObjectsLocked();
+        } finally {
+            Config::getInstance()->unlock();
+        }
+    }
+
+    /**
+     * Body of ensureGatewayObjectsAction(); runs with the config lock held.
+     *
+     * @return array status and the names of the gateways created
+     */
+    private function ensureGatewayObjectsLocked()
+    {
+        $mdl = new \OPNsense\WGIPv6Gateway\WGIPv6Gateway();
         $routingMdl = new \OPNsense\Routing\Gateways();
         $created = [];
 
