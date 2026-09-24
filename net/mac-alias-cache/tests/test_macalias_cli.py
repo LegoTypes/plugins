@@ -119,9 +119,13 @@ def test_flush_seeds_cache_from_hosts_forces_expiry_runs_targeted_update(env):
 
 def test_flush_seeds_every_ip_per_mac_and_skips_short_rows(env):
     cfg, tmp = env
-    cfg["list_hosts"] = [_exe(tmp / "multi_hosts", """
-        echo '{"source": "discovery", "rows": [["vlan0.65", "aa:bb:cc:00:00:01", "192.0.2.50"], ["vlan0.65", "aa:bb:cc:00:00:01", "2001:db8::50"], ["vlan0.65", "aa:bb:cc:00:00:02"], ["vlan0.66", "AA:BB:CC:00:00:03", "192.0.2.77"]]}'
-    """), "-n"]
+    listing = json.dumps({"source": "discovery", "rows": [
+        ["vlan0.65", "aa:bb:cc:00:00:01", "192.0.2.50"],
+        ["vlan0.65", "aa:bb:cc:00:00:01", "2001:db8::50"],
+        ["vlan0.65", "aa:bb:cc:00:00:02"],
+        ["vlan0.66", "AA:BB:CC:00:00:03", "192.0.2.77"],
+    ]})
+    cfg["list_hosts"] = [_exe(tmp / "multi_hosts", "echo '%s'\n" % listing), "-n"]
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert "error" not in out
     # MAC keys kept exactly as list_hosts returns them, as core's ArpCache.current_cache does
