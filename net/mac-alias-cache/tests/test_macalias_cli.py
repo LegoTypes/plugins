@@ -199,6 +199,18 @@ def test_flush_skips_pf_flush_when_update_tables_fails_to_start(env):
     assert not (tmp / "pfctl_flush_args").exists()
 
 
+def test_flush_skips_pf_flush_when_txt_is_undecodable(env):
+    # not provably empty: treat as non-empty rather than let UnicodeDecodeError
+    # (a ValueError) escape cmd_flush after update_tables already ran
+    cfg, tmp = env
+    (tmp / "aliastables" / "DevMacs.txt").write_bytes(b"\xff\xfe")
+    (tmp / "aliastables" / "Parent.txt").write_bytes(b"\xff\xfe")
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert out["emptied"] == []
+    assert not (tmp / "pfctl_flush_args").exists()
+
+
 def _snapshot(tmp):
     return (
         (tmp / "arp.cache").read_bytes(),
