@@ -100,11 +100,13 @@ def test_status_missing_pf_table_is_null(env):
     assert out["aliases"][0]["pf_count"] is None
 
 
-def test_flush_deletes_cache_forces_expiry_runs_targeted_update(env):
+def test_flush_seeds_cache_from_hosts_forces_expiry_runs_targeted_update(env):
     cfg, tmp = env
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert "error" not in out
-    assert not (tmp / "arp.cache").exists()
+    # seeded from the validated list_hosts rows only, in core's ArpCache format
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["192.0.2.50"], "last_seen": 5000.0}}
     assert os.stat(tmp / "aliastables" / "DevMacs.md5.txt").st_mtime == 0
     assert os.stat(tmp / "aliastables" / "Parent.md5.txt").st_mtime != 0   # parents follow via rel_alias.expired()
     assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
@@ -113,6 +115,90 @@ def test_flush_deletes_cache_forces_expiry_runs_targeted_update(env):
     assert by_name["Parent"]["removed"] == ["192.0.2.99"]
     assert out["update_tables"]["rc"] == 0
     assert json.loads((tmp / "last.json").read_text())["at"] == 5000.0
+
+
+def test_flush_seeds_every_ip_per_mac_and_skips_short_rows(env):
+    cfg, tmp = env
+    cfg["list_hosts"] = [_exe(tmp / "multi_hosts", """
+        echo '{"source": "discovery", "rows": [["vlan0.65", "aa:bb:cc:00:00:01", "192.0.2.50"], ["vlan0.65", "aa:bb:cc:00:00:01", "2001:db8::50"], ["vlan0.65", "aa:bb:cc:00:00:02"], ["vlan0.66", "AA:BB:CC:00:00:03", "192.0.2.77"]]}'
+    """), "-n"]
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    # MAC keys kept exactly as list_hosts returns them, as core's ArpCache.current_cache does
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["192.0.2.50", "2001:db8::50"], "last_seen": 5000.0},
+        "AA:BB:CC:00:00:03": {"items": ["192.0.2.77"], "last_seen": 5000.0},
+    }
+
+
+def _snapshot(tmp):
+    return (
+        (tmp / "arp.cache").read_bytes(),
+        os.stat(tmp / "aliastables" / "DevMacs.md5.txt").st_mtime,
+        os.stat(tmp / "aliastables" / "Parent.md5.txt").st_mtime,
+    )
+
+
+@pytest.mark.parametrize("body", [
+    "echo not-json\n",
+    "echo '{\"source\": \"discovery\", \"rows\": []}'\n",
+    "echo '{\"source\": \"discovery\", \"rows\": [[\"vlan0.65\", \"aa:bb:cc:00:00:01\"]]}'\n",
+    "exit 1\n",
+], ids=["non-json", "empty-rows", "only-short-rows", "no-output"])
+def test_flush_refuses_when_hosts_unavailable(env, body):
+    cfg, tmp = env
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", body), "-n"]
+    before = _snapshot(tmp)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out == {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert not (tmp / "last.json").exists()   # rate limit not armed
+    assert sorted(p.name for p in tmp.iterdir() if p.name.startswith((".", "tmp"))) == []
+
+
+def test_flush_rate_limit_ignores_future_timestamp(env):
+    # a backwards clock step must not lock flush out indefinitely
+    cfg, tmp = env
+    (tmp / "last.json").write_text(json.dumps({"at": 5100.0, "summary": []}))
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert json.loads((tmp / "last.json").read_text())["at"] == 5000.0
+
+
+def test_write_json_atomic_replaces_and_leaves_no_temp(tmp_path):
+    target = tmp_path / "out.json"
+    target.write_text("old")
+    macalias._write_json_atomic(str(target), {"a": 1})
+    assert json.loads(target.read_text()) == {"a": 1}
+    assert [p.name for p in tmp_path.iterdir()] == ["out.json"]
+    # same mode a plain open() gives under the usual 022 umask, not mkstemp's 0600
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o644
+
+
+def test_write_json_atomic_failure_keeps_original(tmp_path):
+    target = tmp_path / "out.json"
+    target.write_text("old")
+    with pytest.raises(TypeError):
+        macalias._write_json_atomic(str(target), {"a": object()})
+    assert target.read_text() == "old"
+    assert [p.name for p in tmp_path.iterdir()] == ["out.json"]
+
+
+def test_flush_writes_state_files_atomically(env, monkeypatch):
+    cfg, tmp = env
+    replaced = []
+    real_replace = os.replace
+
+    def spy(src, dst):
+        assert os.path.dirname(src) == os.path.dirname(dst)
+        replaced.append(os.path.basename(dst))
+        real_replace(src, dst)
+
+    monkeypatch.setattr(macalias.os, "replace", spy)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert replaced == ["arp.cache", "last.json", "last.json"]
 
 
 def test_flush_too_soon_changes_nothing(env):
@@ -162,7 +248,8 @@ def test_flush_reports_update_tables_failure_and_empty_output(env):
     cfg["update_tables"] = _exe(tmp / "failing_update", "exit 3\n")
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert out["update_tables"] == {"rc": 3, "output": ""}
-    assert not (tmp / "arp.cache").exists()
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["192.0.2.50"], "last_seen": 5000.0}}
 
 
 def test_flush_reports_update_tables_stderr_in_output(env):
