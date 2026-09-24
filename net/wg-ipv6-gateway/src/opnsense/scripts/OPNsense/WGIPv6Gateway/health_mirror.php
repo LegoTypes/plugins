@@ -121,10 +121,10 @@ if ($dryRun) {
     exit(0);
 }
 
-foreach ($plan['log'] as $msg) {
-    logMsg($logTag, $msg);
-}
 if (empty($plan['changes'])) {
+    foreach ($plan['log'] as $msg) {
+        logMsg($logTag, $msg);
+    }
     if ($plan['held_changed']) {
         wgipv6_save_held($plan['held']);
     }
@@ -132,33 +132,52 @@ if (empty($plan['changes'])) {
 }
 
 /*
- * Applying a gateway change means a full routing reconfigure, which
- * restarts every dpinger on the box. It must not run concurrently with
- * another routing reconfigure: overlapping reconfigures race dpinger's
- * teardown against another's rebuild and leave it dead, showing every
- * gateway as a false "down". Serialize on the same lock OPNsense's own
- * gateway-alarm reconfigure uses (interface routes alarm ->
- * flock /tmp/filter_reload_gateway.lock). configdRun is synchronous, so
- * the lock covers the whole reconfigure.
+ * A change is needed. Commit it in the order every config writer follows
+ * (spec 2026-09-24 section 4.6):
  *
- * Acquire the lock BEFORE persisting so config and applied state stay
- * consistent: if we cannot serialize, leave the change for the next tick
- * rather than saving a force_down we would not apply. The held set is
- * written only once the config it describes has been saved.
+ *   1. /tmp/filter_reload_gateway.lock -- applying force_down is a full
+ *      routing reconfigure, which restarts every dpinger; overlapping
+ *      reconfigures leave dpinger dead. Same lock routes.alarm uses.
+ *   2. Live readings, collected again: the wait for the lock can be long,
+ *      and gateway_status.php reads config under a shared lock, so it must
+ *      run before step 3, never inside it.
+ *   3. Config::lock(), which re-reads config.xml; the decisions are planned
+ *      again from fresh models, so a GUI save made while this run waited is
+ *      kept, not overwritten with the snapshot this run started from.
+ *   4. Save, unlock, then apply and replay the alarm the reconfigure drops.
+ *
+ * If the lock cannot be taken, leave the change for the next tick rather than
+ * saving a force_down we would not apply.
  */
 $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
-if ($gwLock !== false && flock($gwLock, LOCK_EX)) {
-    $routingMdl = new OPNsense\Routing\Gateways();
-    wgipv6_apply_changes($routingMdl, $plan['changes']);
-    $routingMdl->serializeToConfig();
-    OPNsense\Core\Config::getInstance()->save();
-    if ($plan['held_changed']) {
-        wgipv6_save_held($plan['held']);
+if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
+    if ($gwLock !== false) {
+        fclose($gwLock);
     }
+    exit(0);
+}
+$live = wgipv6_collect_live();
+$commit = wgipv6_locked_commit(function () use ($live, $held, $settleOverride) {
+    $plan = wgipv6_plan(wgipv6_collect_config(), $live, $held, $settleOverride);
+    if (!empty($plan['changes'])) {
+        $routingMdl = new OPNsense\Routing\Gateways();
+        wgipv6_apply_changes($routingMdl, $plan['changes']);
+        $routingMdl->serializeToConfig();
+    }
+    return ['save' => !empty($plan['changes']), 'plan' => $plan];
+});
+$plan = $commit['plan'];
+foreach ($plan['log'] as $msg) {
+    logMsg($logTag, $msg);
+}
+if ($plan['held_changed']) {
+    wgipv6_save_held($plan['held']);
+}
+if (!empty($plan['changes'])) {
     (new OPNsense\Core\Backend())->configdRun('interface routes configure');
-    flock($gwLock, LOCK_UN);
-    fclose($gwLock);
+}
+flock($gwLock, LOCK_UN);
+fclose($gwLock);
+if (!empty($plan['changes'])) {
     wgipv6_replay_alarm($plan['changes'], $logTag);
-} elseif ($gwLock !== false) {
-    fclose($gwLock);
 }
