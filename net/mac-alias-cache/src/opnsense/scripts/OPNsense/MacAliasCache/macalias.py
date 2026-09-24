@@ -162,7 +162,9 @@ def _flush_emptied_tables(cfg, names):
     to the new content count, so it never runs PF.flush for an alias whose rebuilt
     content is now empty; pf keeps the stale addresses until the next non-targeted
     (cron) run. Flush pf ourselves for any such alias. A missing .txt means "not
-    managed / unknown": do nothing. Errors are per-table and never abort the flush.
+    managed / unknown": do nothing. Undecodable content is not provably empty:
+    treat it as non-empty, do nothing. Errors are per-table and never abort the
+    flush.
     """
     flushed = []
     for name in names:
@@ -170,7 +172,7 @@ def _flush_emptied_tables(cfg, names):
         try:
             with open(path) as f:
                 lines = f.readlines()
-        except OSError:
+        except (OSError, ValueError):  # ValueError includes UnicodeDecodeError
             continue
         if any(line.strip() for line in lines):
             continue
