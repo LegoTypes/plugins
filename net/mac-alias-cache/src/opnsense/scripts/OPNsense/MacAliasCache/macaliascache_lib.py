@@ -64,3 +64,31 @@ def expand_entries(entries, macs):
     """ each entry -> every known MAC starting with it, the rule ArpCache.iter_addresses applies """
     known = sorted({mac.lower() for mac in macs})
     return {entry: [mac for mac in known if mac.startswith(entry.lower())] for entry in entries}
+
+
+def nesting_closure(tables, targets):
+    """
+    Every alias that nests a target, directly or through other aliases. Matching is on
+    whole address tokens (a nested alias is listed by exact name). Computed here rather
+    than via core's get_affected_aliases, which reuses dep_lists across iterations and
+    can skip a parent.
+    """
+    targets = set(targets)
+    found = set()
+    frontier = set(targets)
+    while frontier:
+        nxt = set()
+        for name, table in tables.items():
+            if name in found or name in targets:
+                continue
+            if frontier.intersection(table["address"]):
+                nxt.add(name)
+        found |= nxt
+        frontier = nxt
+    return sorted(found)
+
+
+def refresh_set(tables):
+    """ the --aliases argument for update_tables.py: mac aliases plus everything nesting them """
+    macs = set(mac_aliases(tables))
+    return sorted(macs | set(nesting_closure(tables, macs)))
