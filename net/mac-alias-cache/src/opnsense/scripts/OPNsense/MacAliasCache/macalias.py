@@ -34,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -62,6 +63,33 @@ def _read_json(path):
         return data if isinstance(data, dict) else None
     except (OSError, ValueError):
         return None
+
+
+def _write_json_atomic(path, obj):
+    """ write obj as JSON to a temp file beside path, then rename it over path """
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".%s." % os.path.basename(path), suffix=".tmp")
+    try:
+        os.fchmod(fd, 0o644)  # mkstemp creates 0600; match a plain open() under umask 022
+        with os.fdopen(fd, "w") as f:
+            json.dump(obj, f)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def seed_cache(rows, now):
+    """ {mac: {"items": [ip, ...], "last_seen": now}} in core's ArpCache format; the
+    MAC key is kept exactly as list_hosts returns it (core's current_cache does the same)
+    """
+    cache = {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, (list, tuple)) and len(row) >= 3:
+            cache.setdefault(row[1], {"items": [], "last_seen": now})["items"].append(row[2])
+    return cache
 
 
 def read_tables(cfg):
@@ -132,7 +160,9 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # rate limit checked under the lock, so a flush that finished while we waited wins
         last = _read_json(cfg["last_file"])
         now = clock()
-        if last and isinstance(last.get("at"), (int, float)) and now - last["at"] < cfg["min_interval"]:
+        # lower bound: a backwards clock step must not lock flush out indefinitely
+        if (last and isinstance(last.get("at"), (int, float))
+                and 0 <= now - last["at"] < cfg["min_interval"]):
             return {"error": "too_soon", "detail": "last flush %.0fs ago" % (now - last["at"])}
 
         tables = read_tables(cfg)
@@ -140,12 +170,21 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         if not names:
             return {"aliases": [], "note": "no mac aliases"}
 
+        # Read the host list before any side effect. Core's ArpCache.current_cache()
+        # turns a list_hosts failure into {} without raising; with the cache gone
+        # that would empty every mac alias and every alias nesting one. Refuse
+        # instead, change nothing and leave the rate limit unarmed.
+        source, rows = read_hosts(cfg)
+        seeded = seed_cache(rows, now) if source is not None else {}
+        if not seeded:
+            return {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
+
         before = {name: pf_set(cfg, name) for name in names}
 
-        try:
-            os.unlink(cfg["cache_file"])
-        except FileNotFoundError:
-            pass
+        # Replace the cache with current data only (core's exact format), so stale
+        # MACs are dropped; if list_hosts fails again inside update_tables, core
+        # then merges into this rather than into {}.
+        _write_json_atomic(cfg["cache_file"], seeded)
 
         for name in lib.mac_aliases(tables):
             md5 = os.path.join(cfg["aliastables_dir"], "%s.md5.txt" % name)
@@ -173,16 +212,14 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # still doing the post-release "after" pfctl reads), reads the last.json
         # from before this flush started, and runs a second full rebuild instead
         # of standing down.
-        with open(cfg["last_file"], "w") as f:
-            json.dump({"at": now, "summary": []}, f)
+        _write_json_atomic(cfg["last_file"], {"at": now, "summary": []})
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)
-    with open(cfg["last_file"], "w") as f:
-        json.dump({"at": now, "summary": summary}, f)
+    _write_json_atomic(cfg["last_file"], {"at": now, "summary": summary})
     return {"before": before, "after": after, "summary": summary, "update_tables": update}
 
 
