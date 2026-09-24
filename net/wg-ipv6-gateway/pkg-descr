@@ -30,6 +30,14 @@ Features:
 Plugin Changelog
 ================
 
+1.1
+
+* The health mirror re-reads config under the config lock before saving,
+  so a change saved in the GUI while it runs is never reverted
+* Mirror decisions are a pure function of a snapshot; --snapshot and
+  --plan-from=FILE capture and replay one
+* Applying the plugin's settings builds its models under the config lock
+
 1.0
 
 * Per-tunnel IPv6 addresses and gateway host routes, restored at boot,
