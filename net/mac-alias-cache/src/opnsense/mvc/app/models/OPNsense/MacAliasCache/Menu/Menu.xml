@@ -1,0 +1,7 @@
+<menu>
+    <Firewall>
+        <Diagnostics>
+            <MacAliasCache VisibleName="MAC Alias Cache" url="/ui/macaliascache"/>
+        </Diagnostics>
+    </Firewall>
+</menu>

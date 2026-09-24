@@ -1,0 +1,9 @@
+<acl>
+    <page-firewall-macaliascache>
+        <name>Firewall: Diagnostics: MAC Alias Cache</name>
+        <patterns>
+            <pattern>ui/macaliascache/*</pattern>
+            <pattern>api/macaliascache/*</pattern>
+        </patterns>
+    </page-firewall-macaliascache>
+</acl>
