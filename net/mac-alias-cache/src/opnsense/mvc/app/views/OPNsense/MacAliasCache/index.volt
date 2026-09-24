@@ -58,13 +58,19 @@
             return { removed: removed, added: added, changed: changed };
         }
 
-        function completionText(totals) {
-            var prefix = "{{ lang._('Flush complete at') }} " + new Date().toLocaleTimeString() + ": ";
+        function resultHeadingText(totals) {
             if (totals.removed === 0 && totals.added === 0) {
-                return prefix + "{{ lang._('every alias already matched host discovery; nothing changed.') }}";
+                return "Result of this flush: nothing changed";
             }
-            return prefix + "{{ lang._('removed') }} " + totals.removed + " {{ lang._('address(es), added') }} " + totals.added +
-                " {{ lang._('across') }} " + totals.changed + " {{ lang._('alias(es).') }}";
+            var parts = [];
+            if (totals.removed > 0) {
+                parts.push("removed " + totals.removed + " " + (totals.removed === 1 ? "address" : "addresses"));
+            }
+            if (totals.added > 0) {
+                parts.push("added " + totals.added + " " + (totals.added === 1 ? "address" : "addresses"));
+            }
+            var alias = totals.changed === 1 ? "alias" : "aliases";
+            return "Result of this flush: " + parts.join(", ") + " across " + totals.changed + " " + alias;
         }
 
         function render(data) {
@@ -146,8 +152,7 @@
                 built.push($('<div class="alert alert-info"/>').text(data.note));
             } else {
                 var totals = summaryTotals(data.summary);
-                built.push($('<div class="alert alert-success"/>').text(completionText(totals)));
-                built.push(summaryHeading("{{ lang._('Result of this flush') }}"));
+                built.push(summaryHeading(resultHeadingText(totals)));
                 built.push(summaryTable(data.summary));
                 if (data.update_tables && data.update_tables.rc !== 0) {
                     built.push($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
