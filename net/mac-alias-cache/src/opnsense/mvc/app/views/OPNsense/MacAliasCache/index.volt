@@ -11,20 +11,43 @@
             $('#banners').append($('<div class="alert"/>').addClass('alert-' + kind).text(text));
         }
 
+        var requestFailed = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
+
         function errorText(data) {
             var map = {
                 busy: "{{ lang._('The alias update lock is busy (a refresh is running). Try again in a moment.') }}",
                 too_soon: "{{ lang._('A flush ran less than 10 seconds ago.') }}",
+                hosts_unavailable: "{{ lang._('The host list could not be read (host discovery unavailable); nothing was changed.') }}",
                 backend: "{{ lang._('The backend returned an unexpected response:') }} ",
             };
             return (map[data.error] || (data.error + ': ')) + (data.detail || '');
         }
 
+        function summaryTable(summary) {
+            var t = $('<table class="table table-condensed"/>').append(
+                $('<tr/>').append('<th>{{ lang._("Alias") }}</th><th>{{ lang._("Before") }}</th><th>{{ lang._("After") }}</th><th>{{ lang._("Removed") }}</th><th>{{ lang._("Added") }}</th>'));
+            $.each(summary, function (i, s) {
+                t.append($('<tr/>')
+                    .append($('<td/>').text(s.name))
+                    .append($('<td/>').text(s.before === null ? '—' : s.before))
+                    .append($('<td/>').text(s.after === null ? '—' : s.after))
+                    .append($('<td/>').text(s.removed.join(', ') || '—'))
+                    .append($('<td/>').text(s.added.join(', ') || '—')));
+            });
+            return t;
+        }
+
         function render(data) {
             $('#banners').empty();
+            $('#last-flush').text('');
+            var lastSummary = $('#last-flush-summary').empty();
             var tbody = $('#aliases tbody').empty();
+            // ajaxGet hands over {} when the request itself failed
+            if (!data || (!data.error && !Array.isArray(data.aliases))) { banner('danger', requestFailed); return; }
             if (data.error) { banner('danger', errorText(data)); return; }
-            if (data.source !== 'discovery') {
+            if (data.source === null || data.source === undefined) {
+                banner('warning', "{{ lang._('The host list could not be read; the current addresses shown may be incomplete.') }}");
+            } else if (data.source === 'arp-ndp') {
                 banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}");
             }
             if (!data.aliases.length) {
@@ -65,24 +88,22 @@
             });
             if (data.last_flush) {
                 $('#last-flush').text("{{ lang._('Last flush:') }} " + new Date(data.last_flush.at * 1000).toLocaleString());
+                if (data.last_flush.summary && data.last_flush.summary.length) {
+                    lastSummary.append(summaryTable(data.last_flush.summary));
+                }
             }
         }
 
         function renderResult(data) {
             var panel = $('#result').empty().show();
+            // ajaxCall hands over the jqXHR (no JSON) when the request itself failed
+            if (!data || (!data.error && !data.summary && !data.note)) {
+                panel.append($('<div class="alert alert-danger"/>').text(requestFailed));
+                return;
+            }
             if (data.error) { panel.append($('<div class="alert alert-danger"/>').text(errorText(data))); return; }
             if (data.note) { panel.append($('<div class="alert alert-info"/>').text(data.note)); return; }
-            var t = $('<table class="table table-condensed"/>').append(
-                $('<tr/>').append('<th>{{ lang._("Alias") }}</th><th>{{ lang._("Before") }}</th><th>{{ lang._("After") }}</th><th>{{ lang._("Removed") }}</th><th>{{ lang._("Added") }}</th>'));
-            $.each(data.summary, function (i, s) {
-                t.append($('<tr/>')
-                    .append($('<td/>').text(s.name))
-                    .append($('<td/>').text(s.before === null ? '—' : s.before))
-                    .append($('<td/>').text(s.after === null ? '—' : s.after))
-                    .append($('<td/>').text(s.removed.join(', ') || '—'))
-                    .append($('<td/>').text(s.added.join(', ') || '—')));
-            });
-            panel.append(t);
+            panel.append(summaryTable(data.summary));
             if (data.update_tables && data.update_tables.rc !== 0) {
                 panel.append($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
             }
@@ -95,11 +116,26 @@
 
         $('#btn-refresh').on('click', refresh);
         $('#btn-flush').on('click', function () {
-            var btn = $(this).prop('disabled', true);
-            ajaxCall('/api/macaliascache/service/flush', {}, function (data) {
-                btn.prop('disabled', false);
-                renderResult(data);
-                refresh();
+            var btn = $(this);
+            BootstrapDialog.show({
+                type: BootstrapDialog.TYPE_DANGER,
+                title: "{{ lang._('MAC Alias Cache') }}",
+                message: "{{ lang._('Rebuild all MAC aliases and the aliases nesting them from current host discovery data? Addresses no longer reported will be removed from firewall rules.') }}",
+                buttons: [{
+                    label: "{{ lang._('No') }}",
+                    action: function (dialogRef) { dialogRef.close(); }
+                }, {
+                    label: "{{ lang._('Yes') }}",
+                    action: function (dialogRef) {
+                        btn.prop('disabled', true);
+                        ajaxCall('/api/macaliascache/service/flush', {}, function (data) {
+                            btn.prop('disabled', false);
+                            renderResult(data);
+                            refresh();
+                            dialogRef.close();
+                        });
+                    }
+                }]
             });
         });
         refresh();
@@ -112,6 +148,7 @@
     <button class="btn btn-primary" id="btn-flush"><i class="fa fa-recycle fa-fw"></i> {{ lang._('Flush & rebuild') }}</button>
     <button class="btn btn-default" id="btn-refresh"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
     <span id="last-flush" class="text-muted" style="margin-left: 1em;"></span>
+    <div id="last-flush-summary" style="margin-top: 1em;"></div>
     <div id="result" style="display: none; margin-top: 1em;"></div>
     <table class="table table-striped" id="aliases" style="margin-top: 1em;">
         <thead>
