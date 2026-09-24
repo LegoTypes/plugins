@@ -36,8 +36,13 @@ def env(tmp_path):
     (tmp_path / "arp.cache").write_text(json.dumps(
         {"aa:bb:cc:00:00:01": {"items": ["192.0.2.50", "192.0.2.99"], "last_seen": 1000.0}}))
     pfctl = _exe(tmp_path / "pfctl", f"""
-        # pfctl -t NAME -T show
+        # pfctl -t NAME -T show|flush
         f="{pf}/$2"
+        if [ "$4" = "flush" ]; then
+            : > "$f"
+            echo "$@" >> "{tmp_path}/pfctl_flush_args"
+            exit 0
+        fi
         [ -f "$f" ] || {{ echo "pfctl: Table does not exist." >&2; exit 1; }}
         cat "$f"
     """)
@@ -133,6 +138,65 @@ def test_flush_seeds_every_ip_per_mac_and_skips_short_rows(env):
         "aa:bb:cc:00:00:01": {"items": ["192.0.2.50", "2001:db8::50"], "last_seen": 5000.0},
         "AA:BB:CC:00:00:03": {"items": ["192.0.2.77"], "last_seen": 5000.0},
     }
+
+
+def test_flush_flushes_pf_table_left_empty_by_targeted_update(env):
+    # core's update_tables.py never flushes pf for an alias whose targeted-mode
+    # (--aliases) rebuild left its .txt empty (cnt_alias_pf_content is forced to
+    # cnt_alias_content in that mode); the plugin must do it itself.
+    cfg, tmp = env
+    cfg["update_tables"] = _exe(tmp / "empty_update", f"""
+        echo "$@" >> "{tmp}/update_args"
+        : > "{tmp}/aliastables/DevMacs.txt"
+        : > "{tmp}/aliastables/Parent.txt"
+        echo '{{"status": "ok"}}'
+    """)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert out["emptied"] == ["DevMacs", "Parent"]
+    assert (tmp / "pf" / "DevMacs").read_text() == ""
+    assert (tmp / "pf" / "Parent").read_text() == ""
+    by_name = {r["name"]: r for r in out["summary"]}
+    assert sorted(by_name["DevMacs"]["removed"]) == ["192.0.2.50", "192.0.2.99"]
+    assert sorted(by_name["Parent"]["removed"]) == ["192.0.2.50", "192.0.2.99"]
+
+
+def test_flush_skips_pf_flush_when_rebuilt_txt_is_not_empty(env):
+    cfg, tmp = env
+    cfg["update_tables"] = _exe(tmp / "nonempty_update", f"""
+        echo "$@" >> "{tmp}/update_args"
+        printf '192.0.2.50\\n' > "{tmp}/aliastables/DevMacs.txt"
+        printf '192.0.2.50\\n' > "{tmp}/aliastables/Parent.txt"
+        printf '192.0.2.50\\n' > "{tmp}/pf/DevMacs"
+        printf '192.0.2.50\\n' > "{tmp}/pf/Parent"
+        echo '{{"status": "ok"}}'
+    """)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert out["emptied"] == []
+    assert not (tmp / "pfctl_flush_args").exists()
+
+
+def test_flush_skips_pf_flush_when_txt_missing(env):
+    # the default fake update_tables (see env fixture) never writes aliastables/*.txt:
+    # a missing .txt means "not managed / unknown"
+    cfg, tmp = env
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert "error" not in out
+    assert out["emptied"] == []
+    assert not (tmp / "pfctl_flush_args").exists()
+
+
+def test_flush_skips_pf_flush_when_update_tables_fails_to_start(env):
+    cfg, tmp = env
+    # pre-existing empty .txt: if rc weren't None this would qualify for a flush
+    (tmp / "aliastables" / "DevMacs.txt").write_text("")
+    (tmp / "aliastables" / "Parent.txt").write_text("")
+    cfg["update_tables"] = str(tmp / "does-not-exist")
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["update_tables"]["rc"] is None
+    assert out["emptied"] == []
+    assert not (tmp / "pfctl_flush_args").exists()
 
 
 def _snapshot(tmp):
