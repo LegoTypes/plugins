@@ -157,6 +157,36 @@ def acquire_lock(cfg, sleep):
             waited += cfg["lock_retry"]
 
 
+def _flush_emptied_tables(cfg, names):
+    """ core's update_tables.py --aliases (targeted) mode forces cnt_alias_pf_content
+    to the new content count, so it never runs PF.flush for an alias whose rebuilt
+    content is now empty; pf keeps the stale addresses until the next non-targeted
+    (cron) run. Flush pf ourselves for any such alias. A missing .txt means "not
+    managed / unknown": do nothing. Errors are per-table and never abort the flush.
+    """
+    flushed = []
+    for name in names:
+        path = os.path.join(cfg["aliastables_dir"], "%s.txt" % name)
+        try:
+            with open(path) as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        if any(line.strip() for line in lines):
+            continue
+        if not pf_set(cfg, name):
+            continue
+        try:
+            subprocess.run(
+                [cfg["pfctl"], "-t", name, "-T", "flush"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        flushed.append(name)
+    return flushed
+
+
 def cmd_status(cfg, now):
     tables = read_tables(cfg)
     source, hosts = read_hosts(cfg)
@@ -233,6 +263,11 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         except OSError as e:
             update = {"rc": None, "output": str(e)}
 
+        # Core's update_tables.py --aliases mode never flushes pf for an alias whose
+        # rebuild left it empty (see _flush_emptied_tables). Do it ourselves, still
+        # under the lock, unless the child never ran to completion.
+        emptied = _flush_emptied_tables(cfg, names) if update["rc"] is not None else []
+
         # Arm the rate limit before releasing the lock. Otherwise a flush queued
         # behind us acquires the lock the instant we release it below (while we're
         # still doing the post-release "after" pfctl reads), reads the last.json
@@ -246,7 +281,7 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)
     _write_json_atomic(cfg["last_file"], {"at": now, "summary": summary})
-    return {"before": before, "after": after, "summary": summary, "update_tables": update}
+    return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied}
 
 
 def main(argv):
