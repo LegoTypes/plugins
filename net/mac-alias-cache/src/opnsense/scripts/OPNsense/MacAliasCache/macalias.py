@@ -157,11 +157,24 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
                 [cfg["update_tables"], "--aliases", ",".join(names)],
                 capture_output=True, text=True, timeout=cfg["update_timeout"],
             )
-            update = {"rc": proc.returncode, "output": proc.stdout.strip()}
+            if proc.returncode == 0:
+                output = proc.stdout.strip()
+            else:
+                # a crash's traceback is usually on stderr; keep both so it isn't lost
+                output = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
+            update = {"rc": proc.returncode, "output": output}
         except subprocess.TimeoutExpired:
             update = {"rc": None, "output": "timeout after %ss" % cfg["update_timeout"]}
         except OSError as e:
             update = {"rc": None, "output": str(e)}
+
+        # Arm the rate limit before releasing the lock. Otherwise a flush queued
+        # behind us acquires the lock the instant we release it below (while we're
+        # still doing the post-release "after" pfctl reads), reads the last.json
+        # from before this flush started, and runs a second full rebuild instead
+        # of standing down.
+        with open(cfg["last_file"], "w") as f:
+            json.dump({"at": now, "summary": []}, f)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
