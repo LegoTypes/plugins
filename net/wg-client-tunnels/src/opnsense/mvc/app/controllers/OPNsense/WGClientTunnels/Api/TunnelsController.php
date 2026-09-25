@@ -169,7 +169,8 @@ class TunnelsController extends ApiControllerBase
          * failed step is never reported as success -- the uuid and the apply-pending finding are what
          * let the GUI offer Apply again */
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$result['uuid'], 'first'], 300);
-        $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
+        /* the save's own notes (a failed apply-pending mark) first, then the apply's */
+        $applyErrors = array_merge(array_values($result['errors']), is_array($apply['errors'] ?? null) ? array_values($apply['errors']) : []);
         return [
             'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
             'saved' => true, 'uuid' => $result['uuid'], 'changes' => $result['changes'],
@@ -246,7 +247,8 @@ class TunnelsController extends ApiControllerBase
         /* saved, and marked apply-pending with its mode by wgct_edit_commit() until an apply of at least
          * that mode completes (S5 review I2); 'ok' reflects only whether this apply succeeded */
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$uuid, $result['apply_mode']], 300);
-        $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
+        /* the save's own notes (a failed apply-pending mark) first, then the apply's */
+        $applyErrors = array_merge(array_values($result['errors']), is_array($apply['errors'] ?? null) ? array_values($apply['errors']) : []);
         return [
             'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
             'saved' => true, 'uuid' => $uuid, 'changes' => $result['changes'],
