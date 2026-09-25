@@ -232,6 +232,18 @@ function wgipv6_derive(array $core, array $managed) {
 }
 
 /**
+ * @param array $core wgipv6_core_snapshot()
+ * @return array<string, true> wgN device names of every WireGuard instance
+ */
+function wgipv6_wg_devices(array $core): array {
+    $out = [];
+    foreach ($core['instances'] as $inst) {
+        $out['wg' . $inst['instance']] = true;
+    }
+    return $out;
+}
+
+/**
  * The routes that can bind a tunnel (spec 2.2): enabled /32 IPv4 routes whose
  * gateway is not on a WireGuard device. Pure. Derivation and Rebind both use
  * this, so they cannot disagree on what a binding is.
@@ -240,10 +252,7 @@ function wgipv6_derive(array $core, array $managed) {
  * @return array<string, array{ip: string, gateway: string}> route uuid => binding
  */
 function wgipv6_binding_routes(array $core): array {
-    $wgDevices = [];
-    foreach ($core['instances'] as $inst) {
-        $wgDevices['wg' . $inst['instance']] = true;
-    }
+    $wgDevices = wgipv6_wg_devices($core);
     $out = [];
     foreach ($core['routes'] as $uuid => $r) {
         if (!$r['enabled'] || substr($r['network'], -3) !== '/32') {
