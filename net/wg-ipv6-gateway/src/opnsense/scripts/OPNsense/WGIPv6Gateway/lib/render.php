@@ -124,19 +124,26 @@ function wgipv6_in_filter_reload(array $frames) {
 /**
  * The plugins_firewall hook body. Never throws.
  *
- * $wanted, $loader and $writer are injectable so the self-test can exercise
- * every path without config, pf or the filesystem.
+ * $wanted, $loader, $writer and $inReload are injectable so the self-test can
+ * exercise every path without config, pf or the filesystem -- in particular,
+ * $inReload lets a case force "inside a real filter reload" true or false
+ * without a stand-in for core's filter_configure_sync (defining one globally
+ * would collide with the real function in a process that has filter.inc
+ * loaded, and risks triggering an actual reload).
  */
-function wgipv6_render_firewall($fw, $wanted = null, $apply = true, &$rendered = null, $loader = null, $writer = null) {
+function wgipv6_render_firewall($fw, $wanted = null, $apply = true, &$rendered = null, $loader = null, $writer = null, $inReload = null) {
     $rendered = ['at' => time(), 'failed' => false, 'error' => '', 'enabled' => false,
                  'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     $loader = $loader ?? 'wgipv6_load_mss_anchor';
     $writer = $writer ?? 'wgipv6_write_rendered';
+    $inReload = $inReload ?? function () {
+        return wgipv6_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
+    };
     /* $apply already lets the self-test force pfctl/write off; it is also
      * gated on actually being inside a filter reload, so a rules-listing
      * call (list_non_mvc_rules.php, firewall_rule_lookup.php) that merely
      * enumerates rules for display never touches pf or rendered.json. */
-    $apply = $apply && wgipv6_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
+    $apply = $apply && $inReload();
     try {
         /* register the anchor first: a later failure (derivation, malformed
          * pins) still leaves it in the ruleset, with whatever it last
@@ -187,15 +194,10 @@ function wgipv6_render_selftest() {
         };
     };
 
-    /* a local stand-in for core's real filter_configure_sync, so a case can
-     * put wgipv6_render_firewall() inside an actual filter-reload call
-     * stack without loading filter.inc. In production, filter_configure_sync
-     * already exists (it is the real caller), so this is never defined. */
-    if (!function_exists('filter_configure_sync')) {
-        function filter_configure_sync(callable $fn) {
-            return $fn();
-        }
-    }
+    /* $inReload stubs stand in for "inside a real filter reload"; never
+     * force it true without also stubbing $loader and $writer, or the case
+     * would run the real pfctl call and/or write the real rendered.json. */
+    $inReloadTrue = function () { return true; };
 
     $pins = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
     $mss = ['match on wg1 inet proto tcp all scrub (max-mss 1336)'];
@@ -253,49 +255,51 @@ function wgipv6_render_selftest() {
     $total++;
     printf("[%s] render_firewall: malformed pins throw building rules => anchor kept, failed recorded\n", $ok ? 'PASS' : 'FAIL');
 
-    /* case 5: $apply=true but NOT inside a real filter reload (this is the
-     * unadorned self-test call stack) => the loader is never invoked */
+    /* case 5: apply=true but $inReload says no (the default would also say
+     * no here, since the self-test itself is not inside a real filter
+     * reload) => neither the loader nor the writer is invoked */
     $fw = $makeFw();
     $rendered = null;
     $loaderCalls = 0;
+    $writerCalls = 0;
     $loader = function ($lines) use (&$loaderCalls) { $loaderCalls++; return true; };
+    $writer = function ($r) use (&$writerCalls) { $writerCalls++; return true; };
     wgipv6_render_firewall($fw, function () use ($pins, $mss) {
         return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
-    }, true, $rendered, $loader);
-    $ok = $loaderCalls === 0 && $rendered['failed'] === false;
+    }, true, $rendered, $loader, $writer, function () { return false; });
+    $ok = $loaderCalls === 0 && $writerCalls === 0 && $rendered['failed'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] render_firewall: apply=true outside a filter reload => loader not called\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] render_firewall: apply=true, not in a filter reload => loader and writer not called\n", $ok ? 'PASS' : 'FAIL');
 
-    /* case 6: inside a real filter reload, the loader fails => failed true,
-     * with pins/mss/rules kept */
+    /* case 6: inside a (stubbed) real filter reload, the loader fails =>
+     * failed true, with pins/mss/rules kept. The writer is stubbed too, so
+     * this case cannot reach the real wgipv6_write_rendered(). */
     $fw = $makeFw();
     $rendered = null;
     $loader = function ($lines) { return false; };
-    filter_configure_sync(function () use ($fw, &$rendered, $loader, $pins, $mss) {
-        wgipv6_render_firewall($fw, function () use ($pins, $mss) {
-            return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
-        }, true, $rendered, $loader);
-    });
+    $writer = function ($r) { return true; };
+    wgipv6_render_firewall($fw, function () use ($pins, $mss) {
+        return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
+    }, true, $rendered, $loader, $writer, $inReloadTrue);
     $ok = $rendered['failed'] === true && $rendered['pins'] === $pins && $rendered['mss'] === $mss
         && count($fw->rules) === 2 && $fw->anchors === [[WGIPV6_MSS_ANCHOR, 'fw', 'head']];
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] render_firewall: inside a filter reload, loader fails => failed true, pins/mss/rules kept\n", $ok ? 'PASS' : 'FAIL');
 
-    /* case 7: inside a real filter reload, the writer throws => caught, no
-     * exception escapes */
+    /* case 7: inside a (stubbed) real filter reload, the writer throws =>
+     * caught, no exception escapes. The loader is stubbed too, so this case
+     * cannot reach the real pfctl. */
     $fw = $makeFw();
     $rendered = null;
     $loader = function ($lines) { return true; };
     $writer = function ($r) { throw new \RuntimeException('write boom'); };
     $escaped = null;
     try {
-        filter_configure_sync(function () use ($fw, &$rendered, $loader, $writer, $pins, $mss) {
-            wgipv6_render_firewall($fw, function () use ($pins, $mss) {
-                return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
-            }, true, $rendered, $loader, $writer);
-        });
+        wgipv6_render_firewall($fw, function () use ($pins, $mss) {
+            return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
+        }, true, $rendered, $loader, $writer, $inReloadTrue);
     } catch (\Throwable $e) {
         $escaped = $e;
     }
