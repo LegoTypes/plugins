@@ -210,38 +210,63 @@ function wgct_pending_outcome(array $steps, array $failed): ?string {
 
 /**
  * Record that an instance's saved change still needs a mode's apply: the
- * stronger of that mode and one already recorded is kept, with the new time.
- * Pure.
+ * stronger of that mode and one already recorded is kept, with the new time
+ * and a new mark, which tells this record apart from every earlier one
+ * (wgct_pending_settle()). Pure.
  *
- * @param array<string, array{at: int, mode: string}> $all wgct_read_apply_pending()
- * @return array<string, array{at: int, mode: string}>
+ * @param array<string, array{at: int, mode: string, mark: int}> $all wgct_read_apply_pending()
+ * @return array<string, array{at: int, mode: string, mark: int}>
  */
-function wgct_pending_mark(array $all, string $uuid, string $mode, int $at): array {
+function wgct_pending_mark(array $all, string $uuid, string $mode, int $at, int $mark): array {
     $recorded = $all[$uuid]['mode'] ?? null;
     if ($recorded !== null && array_search($recorded, WGCT_APPLY_MODES, true) > array_search($mode, WGCT_APPLY_MODES, true)) {
         $mode = $recorded;
     }
-    $all[$uuid] = ['at' => $at, 'mode' => $mode];
+    $all[$uuid] = ['at' => $at, 'mode' => $mode, 'mark' => $mark];
     return $all;
 }
 
 /**
- * Apply an outcome (wgct_pending_outcome()) to the record: 'forget' drops it,
- * a completed mode drops it when that mode is at least as strong as the one
- * recorded. Pure.
+ * Apply an outcome (wgct_pending_outcome()) to the record: 'forget' drops it;
+ * a completed mode drops it only when the record is still the one this apply
+ * began against ($seen: a change saved while the apply ran marked a new one,
+ * whose own apply it did not run) and that mode is at least as strong as the
+ * one recorded. Pure.
  *
- * @param array<string, array{at: int, mode: string}> $all wgct_read_apply_pending()
- * @return array<string, array{at: int, mode: string}>
+ * @param array<string, array{at: int, mode: string, mark: int}> $all  wgct_read_apply_pending()
+ * @param array{at: int, mode: string, mark: int}|null         $seen the record just before the apply's first step
+ * @return array<string, array{at: int, mode: string, mark: int}>
  */
-function wgct_pending_settle(array $all, string $uuid, string $outcome): array {
+function wgct_pending_settle(array $all, string $uuid, string $outcome, ?array $seen): array {
     if (!isset($all[$uuid])) {
         return $all;
     }
-    if ($outcome === 'forget'
-        || array_search($outcome, WGCT_APPLY_MODES, true) >= array_search($all[$uuid]['mode'], WGCT_APPLY_MODES, true)) {
+    if ($outcome === 'forget') {
+        unset($all[$uuid]);
+    } elseif ($all[$uuid] === $seen
+        && array_search($outcome, WGCT_APPLY_MODES, true) >= array_search($all[$uuid]['mode'], WGCT_APPLY_MODES, true)) {
         unset($all[$uuid]);
     }
     return $all;
+}
+
+/**
+ * Mark apply-pending after a save without letting a failed mark read as a
+ * failed save: the change is in config either way, so the failure is noted
+ * in the result (errors['pending']) and the apply still runs.
+ *
+ * @param array    $result wgct_result() of a saved action
+ * @param callable(): void $mark the mark
+ * @return array $result, with errors['pending'] when the mark failed
+ */
+function wgct_mark_after_save(array $result, callable $mark): array {
+    try {
+        $mark();
+    } catch (\Throwable $e) {
+        $result['errors']['pending'] = 'saved, but its apply-pending record could not be written (' . $e->getMessage()
+            . '); if the apply does not complete, run `tunnel.php apply ' . $result['uuid'] . '`';
+    }
+    return $result;
 }
 
 /**
@@ -345,7 +370,7 @@ function wgct_gateway_lock(): \SplFileObject {
 
 /**
  * @param mixed $data json_decode() of the pending file -- a JSON boundary, hence mixed
- * @return array<string, array{at: int, mode: string}> instance uuid => when its
+ * @return array<string, array{at: int, mode: string, mark: int}> instance uuid => when its
  *         apply was requested and the mode it needs; a bare time (a 3.0 record,
  *         always Create's) reads as mode first; anything malformed reads as
  *         nothing pending
@@ -360,16 +385,17 @@ function wgct_pending_from_json(mixed $data): array {
             continue;
         }
         if (is_int($record)) {
-            $out[$uuid] = ['at' => $record, 'mode' => 'first'];
+            $out[$uuid] = ['at' => $record, 'mode' => 'first', 'mark' => 0];
         } elseif (is_array($record) && is_int($record['at'] ?? null) && in_array($record['mode'] ?? null, WGCT_APPLY_MODES, true)) {
-            $out[$uuid] = ['at' => $record['at'], 'mode' => (string)$record['mode']];
+            $mark = $record['mark'] ?? 0;
+            $out[$uuid] = ['at' => $record['at'], 'mode' => (string)$record['mode'], 'mark' => is_int($mark) ? $mark : 0];
         }
     }
     return $out;
 }
 
 /**
- * @return array<string, array{at: int, mode: string}> wgct_pending_from_json() of the file, [] when there is none
+ * @return array<string, array{at: int, mode: string, mark: int}> wgct_pending_from_json() of the file, [] when there is none
  */
 function wgct_read_pending_file(string $path): array {
     $raw = is_file($path) ? file_get_contents($path) : false;
@@ -377,7 +403,7 @@ function wgct_read_pending_file(string $path): array {
 }
 
 /**
- * @return array<string, array{at: int, mode: string}> instance uuid => when its apply was requested, and the mode it needs
+ * @return array<string, array{at: int, mode: string, mark: int}> instance uuid => when its apply was requested, and the mode it needs
  */
 function wgct_read_apply_pending(): array {
     return wgct_read_pending_file(WGCT_APPLY_PENDING_FILE);
@@ -385,10 +411,11 @@ function wgct_read_apply_pending(): array {
 
 /**
  * Change the pending record read-modify-write, serialized on a close-on-exec
- * lock beside the file (so a mark and a settle never lose each other); written
+ * lock beside the file (so a mark and a settle never lose each other's write, and
+ * a settle never clears a mark it did not see: wgct_pending_settle()); written
  * atomically, and only when the change changed something.
  *
- * @param callable(array<string, array{at: int, mode: string}>): array<string, array{at: int, mode: string}> $change
+ * @param callable(array<string, array{at: int, mode: string, mark: int}>): array<string, array{at: int, mode: string, mark: int}> $change
  */
 function wgct_update_apply_pending(callable $change): void {
     $dir = dirname(WGCT_APPLY_PENDING_FILE);
@@ -419,14 +446,21 @@ function wgct_mark_apply_pending(string $uuid, string $mode): void {
         /* never InvalidArgumentException: this runs after a save, and the CLI reads that one as a pre-write input error */
         throw new \LogicException('not an apply mode: ' . substr($mode, 0, 20));
     }
-    wgct_update_apply_pending(fn (array $all): array => wgct_pending_mark($all, $uuid, $mode, time()));
+    wgct_update_apply_pending(fn (array $all): array => wgct_pending_mark($all, $uuid, $mode, time(), hrtime(true)));
+}
+
+/**
+ * @return array{at: int, mode: string, mark: int}|null the instance's pending record, as an apply sees it before its first step
+ */
+function wgct_apply_pending_record(string $uuid): ?array {
+    return wgct_read_apply_pending()[$uuid] ?? null;
 }
 
 /**
  * Settle the record with an apply's outcome (wgct_pending_outcome(), wgct_pending_settle()).
  */
-function wgct_settle_apply_pending(string $uuid, string $outcome): void {
-    wgct_update_apply_pending(fn (array $all): array => wgct_pending_settle($all, $uuid, $outcome));
+function wgct_settle_apply_pending(string $uuid, string $outcome, ?array $seen): void {
+    wgct_update_apply_pending(fn (array $all): array => wgct_pending_settle($all, $uuid, $outcome, $seen));
 }
 
 /**
@@ -645,12 +679,14 @@ function wgct_routing_action(callable $commit, bool $dry): array {
     $lock = wgct_gateway_lock();
     $result = wgct_result();
     $ours = [];
+    $seen = null;
     $pending = null;
     try {
         try {
             $result = $commit();
             if ($result['ok'] && $result['saved']) {
                 $ours = $result['gateways'];
+                $seen = $result['uuid'] !== '' ? wgct_apply_pending_record($result['uuid']) : null;
                 wgct_write_route_todos($result['route_todos']);
                 if ($result['reset_interface'] !== null) {
                     if (!function_exists('interface_reset')) {
@@ -701,7 +737,7 @@ function wgct_routing_action(callable $commit, bool $dry): array {
     }
     $outcome = wgct_pending_outcome($result['steps'], $failed);
     if ($result['uuid'] !== '' && $outcome !== null) {
-        wgct_settle_apply_pending($result['uuid'], $outcome);
+        wgct_settle_apply_pending($result['uuid'], $outcome, $seen);
     }
     return $result;
 }
@@ -741,6 +777,7 @@ function wgct_filter_action(callable $commit): array {
             throw new \LogicException("a filter-only action may not run {$action} without the gateway lock");
         }
     }
+    $seen = $result['uuid'] !== '' ? wgct_apply_pending_record($result['uuid']) : null;
     $result['apply'] = wgct_run_steps($result['steps']);
     $result['after'] = wgct_after_apply([], null);
     $failed = wgct_failed_steps($result['apply']);
@@ -750,7 +787,7 @@ function wgct_filter_action(callable $commit): array {
     }
     $outcome = wgct_pending_outcome($result['steps'], $failed);
     if ($result['uuid'] !== '' && $outcome !== null) {
-        wgct_settle_apply_pending($result['uuid'], $outcome);
+        wgct_settle_apply_pending($result['uuid'], $outcome, $seen);
     }
     return $result;
 }
@@ -770,7 +807,8 @@ function wgct_filter_action(callable $commit): array {
  * @throws \InvalidArgumentException for an unknown mode, before anything runs
  */
 function wgct_apply_only(string $uuid, ?string $mode = null): array {
-    $mode ??= wgct_rerun_mode(wgct_read_apply_pending()[$uuid]['mode'] ?? null);
+    $seen = wgct_apply_pending_record($uuid);
+    $mode ??= wgct_rerun_mode($seen['mode'] ?? null);
     $steps = wgct_apply_mode_steps($mode, $uuid);
     $t = wgct_derive(wgct_core_snapshot(), [$uuid])['tunnels'][0];
     if (in_array('instance-missing', array_column($t['findings'], 'code'), true)) {
@@ -812,7 +850,7 @@ function wgct_apply_only(string $uuid, ?string $mode = null): array {
     }
     $outcome = wgct_pending_outcome($steps, $failed);
     if ($outcome !== null) {
-        wgct_settle_apply_pending($uuid, $outcome);
+        wgct_settle_apply_pending($uuid, $outcome, $seen);
     }
     return $result;
 }
@@ -854,7 +892,7 @@ function wgct_apply_selftest(): int {
     $u1 = '00000000-0000-4000-8000-000000000001';
     wgct_check($t, 'apply: the pending record keeps only uuid entries with a time (and a mode, once written by 3.1)',
         wgct_pending_from_json([$u1 => 1700000000, 'not-a-uuid' => 1, '00000000-0000-4000-8000-000000000002' => 'soon'])
-            === [$u1 => ['at' => 1700000000, 'mode' => 'first']]);
+            === [$u1 => ['at' => 1700000000, 'mode' => 'first', 'mark' => 0]]);
     wgct_check($t, 'apply: a malformed pending record reads as nothing pending',
         wgct_pending_from_json('garbage') === [] && wgct_pending_from_json(null) === []);
     wgct_check($t, 'apply: dry flag -- absent, empty, "0", 0 and false all mean real',
@@ -932,26 +970,38 @@ function wgct_apply_selftest(): int {
         && wgct_pending_outcome(array_slice(WGCT_CREATE_APPLY_STEPS, 1), []) === null);
     wgct_check($t, 'apply: a saved Remove forgets the record even when its apply failed (the instance is gone from config)',
         wgct_pending_outcome(WGCT_REMOVE_APPLY_STEPS, ['filter reload']) === 'forget');
-    $rec = wgct_pending_mark([], $u1, 'filter', 100);
-    wgct_check($t, 'apply: pending mark -- the stronger of the recorded and the new mode is kept, with the new time',
-        $rec === [$u1 => ['at' => 100, 'mode' => 'filter']]
-        && wgct_pending_mark($rec, $u1, 'tunnel', 200) === [$u1 => ['at' => 200, 'mode' => 'tunnel']]
-        && wgct_pending_mark(wgct_pending_mark($rec, $u1, 'tunnel', 200), $u1, 'routes', 300) === [$u1 => ['at' => 300, 'mode' => 'tunnel']]);
-    $routes = wgct_pending_mark([], $u1, 'routes', 100);
-    wgct_check($t, 'apply: pending settle -- a complete mode at least as strong as the record clears it; a weaker one keeps it',
-        wgct_pending_settle($routes, $u1, 'filter') === $routes
-        && wgct_pending_settle($routes, $u1, 'routes') === []
-        && wgct_pending_settle($routes, $u1, 'tunnel') === []
-        && wgct_pending_settle(wgct_pending_mark([], $u1, 'tunnel', 1), $u1, 'first') !== []
-        && wgct_pending_settle(wgct_pending_mark([], $u1, 'first', 1), $u1, 'first') === []
-        && wgct_pending_settle(wgct_pending_mark([], $u1, 'tunnel', 1), $u1, 'forget') === []
-        && wgct_pending_settle([], $u1, 'tunnel') === []);
+    $rec = wgct_pending_mark([], $u1, 'filter', 100, 1);
+    wgct_check($t, 'apply: pending mark -- the stronger of the recorded and the new mode is kept, with the new time and mark',
+        $rec === [$u1 => ['at' => 100, 'mode' => 'filter', 'mark' => 1]]
+        && wgct_pending_mark($rec, $u1, 'tunnel', 200, 2) === [$u1 => ['at' => 200, 'mode' => 'tunnel', 'mark' => 2]]
+        && wgct_pending_mark(wgct_pending_mark($rec, $u1, 'tunnel', 200, 2), $u1, 'routes', 300, 3) === [$u1 => ['at' => 300, 'mode' => 'tunnel', 'mark' => 3]]);
+    $routes = wgct_pending_mark([], $u1, 'routes', 100, 1);
+    $seen = $routes[$u1];
+    $tunnelRec = wgct_pending_mark([], $u1, 'tunnel', 1, 1);
+    $firstRec = wgct_pending_mark([], $u1, 'first', 1, 1);
+    wgct_check($t, 'apply: pending settle -- a complete mode at least as strong as the record it began against clears it; a weaker one keeps it',
+        wgct_pending_settle($routes, $u1, 'filter', $seen) === $routes
+        && wgct_pending_settle($routes, $u1, 'routes', $seen) === []
+        && wgct_pending_settle($routes, $u1, 'tunnel', $seen) === []
+        && wgct_pending_settle($tunnelRec, $u1, 'first', $tunnelRec[$u1]) !== []
+        && wgct_pending_settle($firstRec, $u1, 'first', $firstRec[$u1]) === []
+        && wgct_pending_settle($tunnelRec, $u1, 'forget', null) === []
+        && wgct_pending_settle([], $u1, 'tunnel', null) === []);
+    $remarked = wgct_pending_mark(wgct_pending_mark([], $u1, 'tunnel', 100, 1), $u1, 'filter', 100, 2);
+    wgct_check($t, 'apply: pending settle -- a record re-marked (or first marked) while the apply ran is kept, even by a stronger complete apply',
+        wgct_pending_settle($remarked, $u1, 'tunnel', ['at' => 100, 'mode' => 'tunnel', 'mark' => 1]) === $remarked
+        && wgct_pending_settle($remarked, $u1, 'tunnel', null) === $remarked);
+    $saved = wgct_result(['ok' => true, 'saved' => true, 'uuid' => $u1]);
+    $failedMark = wgct_mark_after_save($saved, function (): void { throw new \RuntimeException('disk full'); });
+    wgct_check($t, 'apply: a mark that fails after the save is noted in the result (saved stays true), never thrown',
+        $failedMark['saved'] === true && $failedMark['ok'] === true && str_contains($failedMark['errors']['pending'] ?? '', 'disk full')
+        && wgct_mark_after_save($saved, function (): void {}) === $saved);
     wgct_check($t, 'apply: the Apply button re-runs the recorded mode; Create\'s first apply and no record re-run as the tunnel apply',
         wgct_rerun_mode('filter') === 'filter' && wgct_rerun_mode('routes') === 'routes'
         && wgct_rerun_mode('first') === 'tunnel' && wgct_rerun_mode('tunnel') === 'tunnel' && wgct_rerun_mode(null) === 'tunnel');
     wgct_check($t, 'apply: pending file -- a 3.0 bare time reads as Create\'s (first); a malformed mode or uuid reads as nothing',
-        wgct_pending_from_json([$u1 => 7]) === [$u1 => ['at' => 7, 'mode' => 'first']]
-        && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'routes']]) === [$u1 => ['at' => 7, 'mode' => 'routes']]
+        wgct_pending_from_json([$u1 => 7]) === [$u1 => ['at' => 7, 'mode' => 'first', 'mark' => 0]]
+        && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'routes', 'mark' => 5]]) === [$u1 => ['at' => 7, 'mode' => 'routes', 'mark' => 5]]
         && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'none']]) === []
         && wgct_pending_from_json([$u1 => ['at' => '7', 'mode' => 'filter']]) === []
         && wgct_pending_from_json(['x' => 7]) === [] && wgct_pending_from_json('x') === []);

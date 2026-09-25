@@ -303,7 +303,7 @@ function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): arra
         ])];
     }, 'create ' . $prep['req']['name']);
     if ($result['saved']) {
-        wgct_mark_apply_pending($result['uuid'], 'first');
+        $result = wgct_mark_after_save($result, fn () => wgct_mark_apply_pending($result['uuid'], 'first'));
     }
     return $result;
 }
@@ -735,7 +735,7 @@ function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $g
         ])];
     }, 'edit ' . $uuid);
     if ($result['saved']) {
-        wgct_mark_apply_pending($uuid, $result['apply_mode']);
+        $result = wgct_mark_after_save($result, fn () => wgct_mark_apply_pending($uuid, $result['apply_mode']));
     }
     return $result;
 }
