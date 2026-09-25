@@ -1,0 +1,63 @@
+<form>
+    <field>
+        <id>create.config</id>
+        <label>WireGuard config</label>
+        <type>textbox</type>
+        <height>10</height>
+        <help>The provider's wg-quick file: paste it, or use "Load file" (read by your browser; nothing is uploaded). Only PrivateKey, Address, the peer's PublicKey, PresharedKey and Endpoint (an IPv4 address) are used. The private key is stored in the WireGuard instance, as the WireGuard page stores it, and is never shown again.</help>
+    </field>
+    <field>
+        <id>create.name</id>
+        <label>Name</label>
+        <type>text</type>
+        <help>1 to 27 letters, digits, "_" or "-". Names the instance, the peer and the gateways (NAME and NAME-ipv6); the interface gets it without "-" and "_".</help>
+    </field>
+    <field>
+        <id>create.wan</id>
+        <label>Bound WAN</label>
+        <type>dropdown</type>
+        <help>The WAN gateway named by the /32 route to the endpoint. The tunnel never leaves by another WAN, and is held down while this one is down.</help>
+    </field>
+    <field>
+        <id>create.monitor</id>
+        <label>Monitor IP</label>
+        <type>text</type>
+        <help>An IPv4 address pinged through the tunnel. Nothing else may use it: no other gateway's monitor or address, no DNS server or forwarder, no endpoint.</help>
+    </field>
+    <field>
+        <id>create.ipv6</id>
+        <label>IPv6</label>
+        <type>checkbox</type>
+        <help>Add an IPv6 gateway that follows the IPv4 tunnel's health. It starts forced down; the health mirror releases it once the IPv4 tunnel is healthy. Only possible when the config has an IPv6 Address: without one the provider assigned no IPv6 address to this peer, and the box stays off.</help>
+    </field>
+    <field>
+        <id>create.unique</id>
+        <label>Unique addressing</label>
+        <type>checkbox</type>
+        <help>Give this tunnel the address fd00::N:1/128 instead of the config's IPv6 address. FreeBSD refuses one IPv6 address on two interfaces, and some providers hand every config the same one. The provider must accept and translate the substituted source address (Proton does). Checked by default when the config's IPv6 address is already on a WireGuard instance, or when the managed tunnels already use fd00::N:1 (this site's convention); uncheck it to use the config's address.</help>
+    </field>
+    <field>
+        <id>create.mtu</id>
+        <label>MTU</label>
+        <type>text</type>
+        <help>Measured from the bound WAN's address to the endpoint: path MTU minus 60, from 1280 to 1420. You may override it.</help>
+    </field>
+    <field>
+        <id>create.template</id>
+        <label>Template tunnel</label>
+        <type>dropdown</type>
+        <help>Copy the gateway thresholds and every enabled outbound NAT rule (IPv6 rules only with IPv6 on) from this tunnel. On a blank slate choose none, and pick the NAT sources below.</help>
+    </field>
+    <field>
+        <id>create.nat4</id>
+        <label>IPv4 NAT sources</label>
+        <type>select_multiple</type>
+        <help>Without a template: one outbound NAT rule per network, translating to the tunnel's address. With none, the inner-source block drops everything a LAN sends into the tunnel.</help>
+    </field>
+    <field>
+        <id>create.nat6</id>
+        <label>IPv6 NAT sources</label>
+        <type>select_multiple</type>
+        <help>The same, for IPv6.</help>
+    </field>
+</form>

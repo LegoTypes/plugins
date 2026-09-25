@@ -1,0 +1,14 @@
+<form>
+    <field>
+        <id>rebind.wan</id>
+        <label>Bind to WAN</label>
+        <type>dropdown</type>
+        <help>Writes a /32 route to the peer's current endpoint via this WAN gateway.</help>
+    </field>
+    <field>
+        <id>rebind.stale</id>
+        <label>Delete old route</label>
+        <type>dropdown</type>
+        <help>A stale endpoint route: a /32 route via a WAN to an address no peer uses any more. It is deleted, with its kernel route, only when you choose it here.</help>
+    </field>
+</form>
