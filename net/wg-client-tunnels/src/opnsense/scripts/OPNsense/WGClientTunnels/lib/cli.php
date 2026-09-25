@@ -319,7 +319,7 @@ function wgct_cli_selftest(): int {
     $codes = [
         wgct_cli_own_selftest(), wgct_tunnels_selftest(), wgct_render_selftest(), wgct_wgconf_selftest(),
         wgct_refs_selftest(), wgct_actions_selftest(), wgct_mtu_selftest(), wgct_apply_selftest(),
-        wgct_migration_selftest(),
+        wgct_migration_selftest(), wgct_view_selftest(),
     ];
     return max($codes) === 0 ? 0 : 1;
 }

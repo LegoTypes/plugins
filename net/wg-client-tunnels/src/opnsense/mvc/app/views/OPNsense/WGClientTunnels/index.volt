@@ -5,9 +5,8 @@
  #}
 
 <style>
-    .wgct-table a.wgct-link { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
-    .wgct-table a.wgct-link:hover { text-decoration: none; border-bottom-style: solid; }
-    .wgct-table td.wgct-nowrap { white-space: nowrap; }
+    a.wgct-link { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+    a.wgct-link:hover { text-decoration: none; border-bottom-style: solid; }
     .wgct-result pre { white-space: pre-wrap; }
 </style>
 
@@ -45,12 +44,20 @@
             return $('<a/>').addClass('wgct-link').attr('href', href).text(plain(text));
         }
 
-        function gwCell(name, status, statusText, held) {
-            var cell = $('<td class="wgct-nowrap"/>');
-            if (name === null) {
-                return cell.text('—');
+        function dash() {
+            return $('<span/>').text('—');
+        }
+
+        /* the grid's cells (core UIBootgrid formatters, (column, row) signature). Each returns a DOM node
+         * built with .text()/.attr(), never an HTML string, so no config-derived value (a tunnel, interface
+         * or gateway name, a finding text) is ever parsed as markup. Row values arrive entity-encoded like
+         * every API reply and pass through plain() exactly once: inside link(), or right before .text() or
+         * .attr(). */
+        function gwNode(name, status, statusText, held) {
+            if (!name) {
+                return dash()[0];
             }
-            cell.append(link(name, links.gateways));
+            var cell = $('<div/>').append(link(name, links.gateways));
             if (statusText) {
                 var cls;
                 if (status === 'none') {
@@ -65,22 +72,55 @@
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
             }
-            return cell;
+            return cell[0];
         }
 
-        function findingBadges(findings) {
-            var cell = $('<td/>');
-            if (!findings.length) {
-                return cell.text('—');
-            }
-            $.each(findings, function (i, f) {
-                cell.append($('<span class="label" style="display:inline-block; margin:1px;"/>')
-                    .addClass(f.blocking ? 'label-danger' : 'label-warning')
-                    .attr('title', plain(f.detail) + ' — ' + plain(f.fix))
-                    .text(plain(f.code)), ' ');
-            });
-            return cell;
+        function linkOrDash(text, href) {
+            return (text ? link(text, href) : dash())[0];
         }
+
+        var gridFormatters = {
+            tunnel: function (column, t) {
+                var cell = $('<div/>').append(link(t.name, links.instance));
+                if (t.device) {
+                    var ifaceLabel = t.interface_descr || t.interface;
+                    cell.append($('<br/>'), $('<small class="text-muted"/>').append(t.interface
+                        ? link(t.device + (ifaceLabel ? ' / ' + ifaceLabel : ''), links.iface + encodeURIComponent(plain(t.interface)))
+                        : link(t.device + ' — ' + "{{ lang._('not assigned') }}", links.assignments)));
+                }
+                if (t.enabled !== '1') {
+                    cell.append(' ', $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"));
+                }
+                return cell[0];
+            },
+            endpoint: function (column, t) { return linkOrDash(t.endpoint, links.peers); },
+            boundwan: function (column, t) { return linkOrDash(t.bound_wan, links.routes); },
+            mtu: function (column, t) {
+                var cell = $('<div/>').text(t.mtu);
+                if (t.clamp_text) {
+                    cell.append($('<br/>'), $('<small class="text-muted"/>').text(plain(t.clamp_text)));
+                }
+                return cell[0];
+            },
+            gw4: function (column, t) { return gwNode(t.gw4, t.gw4_status, t.gw4_status_text, t.held); },
+            gw6: function (column, t) { return gwNode(t.gw6, t.gw6_status, t.gw6_status_text, false); },
+            nat: function (column, t) { return linkOrDash(t.nat_text, links.nat); },
+            groups: function (column, t) { return linkOrDash(t.groups_text, links.groups); },
+            /* bootgrid-tooltip: the grid gives each badge core's tooltip, which shows the title as text */
+            findings: function (column, t) {
+                if (!t.findings.length) {
+                    return dash()[0];
+                }
+                var cell = $('<div/>');
+                $.each(t.findings, function (i, f) {
+                    cell.append($('<span class="label bootgrid-tooltip" style="display:inline-block; margin:1px;"/>')
+                        .addClass(f.blocking ? 'label-danger' : 'label-warning')
+                        .attr('title', plain(f.detail) + ' — ' + plain(f.fix))
+                        .text(plain(f.code)), ' ');
+                });
+                return cell[0];
+            }
+        };
 
         /* ---- action results ---- */
 
@@ -130,6 +170,7 @@
 
         function runApply(uuid, name) {
             ajaxCall('/api/wgclienttunnels/tunnels/apply/' + uuid, {}, function (r, status) {
+                refreshAll();
                 showResult(titleText("{{ lang._('Apply') }} " + plain(name)), r, status, uuid, name);
             });
         }
@@ -157,15 +198,16 @@
                  * failure gets a plainer message instead of a misleading "Apply again". */
                 body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
                     ? "{{ lang._('Saved; the apply did not complete. Apply again, or use the Apply button in the tunnel row.') }}"
-                    : "{{ lang._('Saved; the follow-up step above did not complete. Reload the list and check the system log.') }}"
+                    : "{{ lang._('Saved; the follow-up step above did not complete. Check the list and the system log.') }}"
                 ));
             }
+            /* the caller has already reloaded the lists when the reply arrived: they are current behind
+             * this dialog, not only once it is closed */
             BootstrapDialog.show({
                 type: failed ? BootstrapDialog.TYPE_DANGER : BootstrapDialog.TYPE_INFO,
                 title: title,
                 message: body,
-                buttons: buttons,
-                onhidden: function () { refresh(); }
+                buttons: buttons
             });
         }
 
@@ -181,7 +223,10 @@
                         cssClass: 'btn-primary',
                         action: function (d) {
                             d.close();
-                            ajaxCall(url, {}, function (r, status) { showResult(title, r, status); });
+                            ajaxCall(url, {}, function (r, status) {
+                                refreshAll();
+                                showResult(title, r, status);
+                            });
                         }
                     });
                 }
@@ -197,7 +242,8 @@
         /* ---- dialogs ---- */
 
         function loadOptions(done) {
-            ajaxGet('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
+            /* POST like the lists: the choices (templates, stale routes) change with every action */
+            ajaxCall('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
                 if (!data || status !== 'success' || data.status !== 'ok') {
                     showResult("{{ lang._('Client tunnels') }}", null, status);
                     return;
@@ -357,6 +403,8 @@
                 ajaxCall('/api/wgclienttunnels/tunnels/create', data, function (r, status) {
                     $('#btn_dialogCreate_save').prop('disabled', false);
                     $('#btn_dialogCreate_save_progress').removeClass('fa fa-spinner fa-pulse');
+                    /* every reply, a refusal included: a failure after the save still leaves a tunnel to show */
+                    refreshAll();
                     if (status === 'success' && r && r.result === 'saved') {
                         $('#dialogCreate').modal('hide');
                         /* applyName is the submitted name, never the dialog title (review finding 4) */
@@ -368,7 +416,7 @@
                     $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
                     if (status !== 'success') {
                         /* the request died after the save, perhaps: the list shows apply-pending and an Apply button then */
-                        box.append($('<div class="alert alert-warning"/>').text("{{ lang._('If the tunnel appears in the list after Refresh view with the finding apply-pending, it was saved: press its Apply button.') }}"));
+                        box.append($('<div class="alert alert-warning"/>').text("{{ lang._('If the tunnel appears in the list with the finding apply-pending, it was saved: press its Apply button.') }}"));
                     }
                 });
             };
@@ -406,6 +454,7 @@
                     ajaxCall('/api/wgclienttunnels/tunnels/rebind/' + t.uuid, getFormData('frm_dialogRebind'), function (r, status) {
                         $('#btn_dialogRebind_save').prop('disabled', false);
                         $('#btn_dialogRebind_save_progress').removeClass('fa fa-spinner fa-pulse');
+                        refreshAll();
                         /* saved === true even with an apply error still means the route write happened:
                          * close and show it (changes plus the apply error), never leave it stuck behind the
                          * form (review finding 3) */
@@ -424,78 +473,57 @@
 
         /* ---- the lists ---- */
 
-        function actionButtons(t) {
-            var cell = $('<td class="wgct-nowrap"/>');
-            var codes = $.map(t.findings, function (f) { return f.code; });
-            if (codes.indexOf('apply-pending') !== -1) {
-                cell.append($('<button type="button" class="btn btn-warning btn-xs"/>')
-                    .attr('title', "{{ lang._('Run the tunnel apply again') }}")
-                    .append($('<i class="fa fa-play fa-fw"/>'), ' ', $('<span/>').text("{{ lang._('Apply') }}"))
-                    .on('click', function () { runApply(t.uuid, t.name || t.uuid); }), ' ');
+        /* the managed tunnels: core's grid over search_grid (POST, like every core grid), which pages,
+         * sorts and searches server side. No selection column and no add/edit/delete: the row commands are
+         * the plugin's own actions, Rebind and Apply only on the rows whose findings call for them. */
+        var tunnelsGrid = $("#{{ formGridTunnels['table_id'] }}").UIBootgrid({
+            search: '/api/wgclienttunnels/tunnels/search_grid',
+            options: {
+                selection: false,
+                responsive: true,
+                formatters: gridFormatters
+            },
+            commands: {
+                wgct_apply: {
+                    classname: 'fa fa-fw fa-play',
+                    title: "{{ lang._('Run the tunnel apply again') }}",
+                    sequence: 10,
+                    filter: function (cell) { return cell.getData().apply_pending === true; },
+                    method: function (event, cell) {
+                        var t = cell.getData();
+                        runApply(t.uuid, t.name);
+                    },
+                    /* the one command that finishes an interrupted Create: make it stand out */
+                    onRendered: function () { this.removeClass('btn-default').addClass('btn-warning'); }
+                },
+                wgct_rebind: {
+                    classname: 'fa fa-fw fa-link',
+                    title: "{{ lang._('Rebind to a WAN') }}",
+                    sequence: 20,
+                    filter: function (cell) { return cell.getData().unbound === true; },
+                    method: function (event, cell) { openRebind(cell.getData()); }
+                },
+                wgct_remove: {
+                    classname: 'fa fa-fw fa-trash-o',
+                    title: "{{ lang._('Remove') }}",
+                    sequence: 30,
+                    method: function (event, cell) {
+                        var t = cell.getData();
+                        confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name)), '/api/wgclienttunnels/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
+                    }
+                }
             }
-            if (codes.indexOf('unbound') !== -1) {
-                cell.append($('<button type="button" class="btn btn-default btn-xs"/>')
-                    .attr('title', "{{ lang._('Rebind to a WAN') }}")
-                    .append($('<i class="fa fa-link fa-fw"/>'))
-                    .on('click', function () { openRebind(t); }), ' ');
-            }
-            cell.append($('<button type="button" class="btn btn-default btn-xs"/>')
-                .attr('title', "{{ lang._('Remove') }}")
-                .append($('<i class="fa fa-trash fa-fw"/>'))
-                .on('click', function () {
-                    confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name || t.uuid)), '/api/wgclienttunnels/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
-                }));
-            return cell;
-        }
+        });
 
-        function render(data) {
+        /* the global findings and the WireGuard instances the plugin does not manage */
+        function renderLists(data) {
             var banners = [];
-            var tbody = $('<tbody/>');
             var ubody = $('<tbody/>');
             if (!data || data.status !== 'ok') {
                 banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? plain(data.errorMessage) : failedText));
             } else {
                 $.each(data.global, function (i, f) {
                     banners.push($('<div class="alert alert-warning"/>').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
-                });
-                if (!data.tunnels.length) {
-                    tbody.append($('<tr/>').append($('<td colspan="10"/>').text("{{ lang._('No managed tunnels.') }}")));
-                }
-                $.each(data.tunnels, function (i, t) {
-                    var name = $('<td class="wgct-nowrap"/>').append(link(t.name || t.uuid, links.instance));
-                    if (t.device) {
-                        var ifaceLabel = t.interface_descr || t.interface;
-                        name.append($('<br/>'), $('<small class="text-muted"/>').append(t.interface
-                            ? link(t.device + (ifaceLabel ? ' / ' + ifaceLabel : ''), links.iface + encodeURIComponent(t.interface))
-                            : link(t.device + ' — ' + "{{ lang._('not assigned') }}", links.assignments)));
-                    }
-                    if (!t.enabled) {
-                        name.append(' ', $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"));
-                    }
-                    var nat = [];
-                    if (t.nat_display.inet.length) nat.push('v4: ' + t.nat_display.inet.join(', '));
-                    if (t.nat_display.inet6.length) nat.push('v6: ' + t.nat_display.inet6.join(', '));
-                    var mtuCell = $('<td class="wgct-nowrap"/>').text(t.mtu);
-                    if (t.clamp) {
-                        var clampParts = [];
-                        if (t.clamp.v4 !== null) clampParts.push('v4 ' + t.clamp.v4);
-                        if (t.clamp.v6 !== null) clampParts.push('v6 ' + t.clamp.v6);
-                        if (clampParts.length) {
-                            mtuCell.append($('<br/>'), $('<small class="text-muted"/>').text('MSS ' + clampParts.join(' / ')));
-                        }
-                    }
-                    tbody.append($('<tr/>').append(
-                        name,
-                        $('<td class="wgct-nowrap"/>').append(t.endpoint ? link(t.endpoint, links.peers) : $('<span/>').text('—')),
-                        $('<td/>').append(t.bound_wan ? link(t.bound_wan, links.routes) : $('<span/>').text('—')),
-                        mtuCell,
-                        gwCell(t.gw4, t.gw4_status, t.gw4_status_text, t.held),
-                        gwCell(t.gw6, t.gw6_status, t.gw6_status_text, false),
-                        $('<td/>').append(nat.length ? link(nat.join('; '), links.nat) : $('<span/>').text('—')),
-                        $('<td/>').append(t.groups.length ? link(t.groups.join(', '), links.groups) : $('<span/>').text('—')),
-                        findingBadges(t.findings),
-                        actionButtons(t)
-                    ));
                 });
                 if (!data.unmanaged.length) {
                     ubody.append($('<tr/>').append($('<td colspan="5"/>').text("{{ lang._('Every WireGuard instance is managed.') }}")));
@@ -504,7 +532,7 @@
                     ubody.append($('<tr/>').append(
                         $('<td/>').append(link(u.name, links.instance)),
                         $('<td/>').text(plain(u.device)),
-                        $('<td/>').append(u.endpoint ? link(u.endpoint, links.peers) : $('<span/>').text('—')),
+                        $('<td/>').append(linkOrDash(u.endpoint, links.peers)),
                         $('<td/>').append(u.enabled
                             ? $('<span/>').text("{{ lang._('yes') }}")
                             : $('<span class="label label-default"/>').text("{{ lang._('disabled') }}")),
@@ -517,12 +545,25 @@
                 });
             }
             $('#tunnel-banners').empty().append(banners);
-            $('#tunnels-table tbody').replaceWith(tbody);
             $('#unmanaged-table tbody').replaceWith(ubody);
         }
 
-        function refresh() {
-            ajaxGet('/api/wgclienttunnels/tunnels/search', {}, function (data, status) { render(status === 'success' ? data : null); });
+        /* POST, like the grid: an action's reply is followed by a fresh read, never a stored one. Only the
+         * latest request renders, so a slow reply can never overwrite a newer one. */
+        var listsRequest = 0;
+        function refreshLists() {
+            var request = ++listsRequest;
+            ajaxCall('/api/wgclienttunnels/tunnels/search', {}, function (data, status) {
+                if (request === listsRequest) {
+                    renderLists(status === 'success' ? data : null);
+                }
+            });
+        }
+
+        /* after every action that can change the list, and on Refresh view */
+        function refreshAll() {
+            tunnelsGrid.bootgrid('reload');
+            refreshLists();
         }
 
         /* ---- wiring ---- */
@@ -537,7 +578,7 @@
                 saveFormToEndpoint('/api/wgclienttunnels/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
                 return dfObj;
             },
-            onAction: function () { refresh(); }
+            onAction: function () { refreshAll(); }
         });
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
@@ -577,8 +618,11 @@
         $('#btn-sentinel').on('click', function () {
             confirmAction("{{ lang._('Ensure sentinel') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
         });
-        $('#btn-refresh').on('click', refresh);
-        refresh();
+        $('#btn-refresh').on('click', refreshAll);
+        /* the grid's own refresh button reloads the grid; bring the banners and the unmanaged list along */
+        $("#{{ formGridTunnels['table_id'] }}-refresh-button").on('click', refreshLists);
+        /* the grid loads itself */
+        refreshLists();
     });
 </script>
 
@@ -600,25 +644,11 @@
         <div id="tunnel-banners"></div>
         <button class="btn btn-primary" id="btn-create" type="button"><i class="fa fa-plus fa-fw"></i> {{ lang._('Create') }}</button>
         <button class="btn btn-default" id="btn-refresh" type="button"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
-        <table class="table table-striped table-condensed wgct-table" id="tunnels-table" style="margin-top: 1em;">
-            <thead>
-                <tr>
-                    <th>{{ lang._('Tunnel') }}</th>
-                    <th>{{ lang._('Endpoint') }}</th>
-                    <th>{{ lang._('Bound WAN') }}</th>
-                    <th>{{ lang._('MTU') }}</th>
-                    <th>{{ lang._('IPv4 gateway') }}</th>
-                    <th>{{ lang._('IPv6 gateway') }}</th>
-                    <th>{{ lang._('Outbound NAT') }}</th>
-                    <th>{{ lang._('Groups') }}</th>
-                    <th>{{ lang._('Findings') }}</th>
-                    <th>{{ lang._('Actions') }}</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+        <div style="margin-top: 1em;">
+            {{ partial('layout_partials/base_bootgrid_table', formGridTunnels + {'command_width': '110', 'hide_add': true, 'hide_delete': true}) }}
+        </div>
         <h4>{{ lang._('WireGuard instances the plugin does not manage') }}</h4>
-        <table class="table table-striped table-condensed wgct-table" id="unmanaged-table">
+        <table class="table table-striped table-condensed" id="unmanaged-table">
             <thead>
                 <tr>
                     <th>{{ lang._('Instance') }}</th>
