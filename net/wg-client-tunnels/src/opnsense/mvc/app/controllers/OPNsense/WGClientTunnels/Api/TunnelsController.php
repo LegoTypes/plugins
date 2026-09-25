@@ -76,7 +76,7 @@ class TunnelsController extends ApiControllerBase
 
     /**
      * Create's and Edit's choices: the WANs that can bind a tunnel, the template
-     * tunnels, the NAT sources (kind interface or alias), the IPv6 addresses on
+     * tunnels, the NAT sources (interfaces and aliases), the IPv6 addresses on
      * instances, the fd00::N:1 convention and the stale routes.
      *
      * @return array<string, list<array<string, string>>|list<string>|bool>
@@ -105,12 +105,12 @@ class TunnelsController extends ApiControllerBase
         foreach ($core['interfaces'] as $key => $if) {
             if (wgct_is_nat_interface_key((string)$key) && $if['enable'] && !isset($wgDevices[$if['if']])
                 && strncmp($if['if'], 'lo', 2) !== 0) {
-                $sources[] = ['value' => (string)$key, 'label' => ($if['descr'] !== '' ? $if['descr'] : strtoupper((string)$key)) . ' net', 'kind' => 'interface'];
+                $sources[] = ['value' => (string)$key, 'label' => ($if['descr'] !== '' ? $if['descr'] : strtoupper((string)$key)) . ' net'];
             }
         }
         foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
             if (in_array((string)$alias->type, self::NAT_ALIAS_TYPES, true)) {
-                $sources[] = ['value' => (string)$alias->name, 'label' => (string)$alias->name . ' (alias)', 'kind' => 'alias'];
+                $sources[] = ['value' => (string)$alias->name, 'label' => (string)$alias->name . ' (alias)'];
             }
         }
         $stale = [];
