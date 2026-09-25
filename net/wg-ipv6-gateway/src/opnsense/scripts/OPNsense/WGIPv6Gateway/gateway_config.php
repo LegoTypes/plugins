@@ -6,10 +6,12 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Emits enabled WireGuard IPv6 gateway mappings for wgipv6gw.sh.
+ * Emits the IPv6 route set of every managed tunnel, derived from core config,
+ * for wgipv6gw.sh.
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
+require_once __DIR__ . '/lib/tunnels.php';
 
 function sanitizeField($value): string
 {
@@ -17,43 +19,22 @@ function sanitizeField($value): string
 }
 
 $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
-if ((string)$mdl->enabled !== '1') {
+if ((string)$mdl->enabled !== '1' || (string)$mdl->ipv6_routes !== '1') {
     exit(0);
 }
 
-$routingMdl = new OPNsense\Routing\Gateways();
-$gatewaysByName = $routingMdl->gatewaysIndexedByName();
-
-foreach ($mdl->gateways->gateway->iterateItems() as $uuid => $item) {
-    if ((string)$item->enabled !== '1') {
+$derived = wgipv6_derive(wgipv6_core_snapshot(), wgipv6_split_csv((string)$mdl->managed));
+foreach ($derived['tunnels'] as $t) {
+    if (!$t['enabled'] || wgipv6_blocked($t) || $t['gw4'] === null || $t['gw6'] === null
+        || $t['ipv6_address'] === null || (string)$t['ipv6_next_hop'] === '') {
         continue;
     }
-
-    $ipv4Ref = (string)$item->ipv4_gateway;
-    $ipv4Gw = $routingMdl->getNodeByReference('gateway_item.' . $ipv4Ref);
-    if ($ipv4Gw == null) {
-        continue;
-    }
-
-    $ipv4Name = (string)$ipv4Gw->name;
-    $devName = $gatewaysByName[$ipv4Name]['if'] ?? '';
-    $ipv6Address = (string)$item->ipv6_address;
-    $ipv6Gateway = (string)$item->ipv6_gw_address;
-    $description = (string)$item->description;
-    if ($description === '') {
-        $description = $ipv4Name . '-ipv6';
-    }
-
-    if ($devName === '' || $ipv6Address === '' || $ipv6Gateway === '') {
-        continue;
-    }
-
     echo implode('|', [
         '1',
-        sanitizeField($devName),
-        sanitizeField($ipv6Address),
-        sanitizeField($ipv6Gateway),
-        sanitizeField($ipv4Name),
-        sanitizeField($description),
+        sanitizeField($t['device']),
+        sanitizeField($t['ipv6_address']),
+        sanitizeField($t['ipv6_next_hop']),
+        sanitizeField($t['gw4']),
+        sanitizeField($t['gw6']),
     ]) . PHP_EOL;
 }
