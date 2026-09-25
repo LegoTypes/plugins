@@ -4,6 +4,12 @@
  # BSD 2-Clause License
  #}
 
+<style>
+    #tunnels-table a.wgct-link { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+    #tunnels-table a.wgct-link:hover { text-decoration: none; border-bottom-style: solid; }
+    #tunnels-table td.wgct-nowrap { white-space: nowrap; }
+</style>
+
 <script>
     $(document).ready(function () {
         var links = {
@@ -15,11 +21,11 @@
         };
 
         function link(text, href) {
-            return $('<a/>').attr('href', href).text(text);
+            return $('<a/>').addClass('wgct-link').attr('href', href).text(text);
         }
 
         function gwCell(name, status, statusText, held) {
-            var cell = $('<td/>');
+            var cell = $('<td class="wgct-nowrap"/>');
             if (name === null) {
                 return cell.text('—');
             }
@@ -71,7 +77,7 @@
                     tbody.append($('<tr/>').append($('<td colspan="9"/>').text("{{ lang._('No managed tunnels.') }}")));
                 }
                 $.each(data.tunnels, function (i, t) {
-                    var name = $('<td/>').append(link(t.name || t.uuid, links.instance));
+                    var name = $('<td class="wgct-nowrap"/>').append(link(t.name || t.uuid, links.instance));
                     if (t.device) {
                         var ifaceLabel = t.interface_descr || t.interface;
                         name.append($('<br/>'), $('<small class="text-muted"/>').text(t.device + (ifaceLabel ? ' / ' + ifaceLabel : '')));
@@ -84,7 +90,7 @@
                     if (t.nat_display.inet6.length) nat.push('v6: ' + t.nat_display.inet6.join(', '));
                     tbody.append($('<tr/>').append(
                         name,
-                        $('<td/>').text(t.endpoint || '—'),
+                        $('<td class="wgct-nowrap"/>').text(t.endpoint || '—'),
                         $('<td/>').append(t.bound_wan ? link(t.bound_wan, links.routes) : $('<span/>').text('—')),
                         $('<td/>').text(t.mtu),
                         gwCell(t.gw4, t.gw4_status, t.gw4_status_text, t.held),
