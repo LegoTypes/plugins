@@ -63,9 +63,11 @@ try {
         }
     }
 
+    /* Already normalised: a corrupt/malformed freshness.json reads back as
+     * ['reload' => null, 'anchor_fail_hash' => null], not a TypeError. */
     $fileState = wgipv6_read_freshness_state();
-    $reloadState = $fileState['reload'] ?? null;
-    $anchorFailHash = $fileState['anchor_fail_hash'] ?? null;
+    $reloadState = $fileState['reload'];
+    $anchorFailHash = $fileState['anchor_fail_hash'];
 
     $plan = wgipv6_freshness_plan($wanted, $rendered, $errorMtime, $reloadState, time());
 
@@ -107,16 +109,31 @@ try {
             syslog(LOG_NOTICE, '[wgipv6gw-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
         if ($success && $rendered !== null) {
-            /* Re-read just before writing: if a real filter reload already
-             * re-rendered since we read $rendered above, its record is newer
-             * and must not be clobbered with what we read at the start. */
+            /* Re-read just before writing and compare the whole record, not
+             * just 'at': if anything else -- most likely a real filter
+             * reload -- wrote a new rendered.json since we read $rendered at
+             * the top of the script, that newer record must not be
+             * clobbered with what this tick started from. */
             $latest = wgipv6_read_rendered();
-            if ($latest !== null && $latest['at'] === $rendered['at']) {
-                $rendered['mss'] = $wanted['mss'];
-                $rendered['failed'] = false;
-                $rendered['error'] = '';
-                wgipv6_write_rendered($rendered);
+            if ($latest !== null && $latest === $rendered) {
+                $updated = $rendered;
+                $updated['mss'] = $wanted['mss'];
+                $updated['failed'] = false;
+                $updated['error'] = '';
+                wgipv6_write_rendered($updated);
             }
+        }
+    } elseif (!$plan['reload'] && $plan['state'] === null) {
+        /* Plan is fully "current": if a prior anchor failure was pending,
+         * something else (most likely a full filter reload) already fixed
+         * it. Clear the remembered hash and report the recovery once, via
+         * the same pure decision an actual anchor-retry success uses, so a
+         * later, identical failure is reported again rather than staying
+         * silent forever because of a hash recorded before the fix. */
+        $logPlan = wgipv6_anchor_log_plan($anchorFailHash, true, $wanted['mss']);
+        $newAnchorFailHash = $logPlan['fail_hash'];
+        if ($logPlan['log_recovery']) {
+            syslog(LOG_NOTICE, '[wgipv6gw-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
     }
 
