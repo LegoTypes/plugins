@@ -523,6 +523,18 @@ function wgct_replay_set(array $ours, ?array $before, ?array $after, array $forc
 }
 
 /**
+ * The todo key for a kernel route that has no static route of its own (Edit's
+ * old monitor host route): rc.routing_configure consumes every
+ * /tmp/delete_route_*.todo, so any 36-character key works. Derived from the
+ * gateway and the address, so the same hand-off is idempotent and two pending
+ * ones for one gateway never overwrite each other. Pure.
+ */
+function wgct_route_todo_key(string $gatewayUuid, string $ip): string {
+    $h = md5("{$gatewayUuid}|{$ip}");
+    return substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-' . substr($h, 12, 4) . '-' . substr($h, 16, 4) . '-' . substr($h, 20, 12);
+}
+
+/**
  * core's own "delete this kernel route" hand-off (RoutesController::delrouteAction):
  * rc.routing_configure consumes /tmp/delete_route_<uuid>.todo files at the
  * next `interface routes configure`.
