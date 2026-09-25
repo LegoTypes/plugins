@@ -186,6 +186,9 @@ function wgipv6_derive(array $core, array $managed) {
         if (!$r['enabled'] || substr($r['network'], -3) !== '/32') {
             continue;
         }
+        if (filter_var(substr($r['network'], 0, -3), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+            continue;
+        }
         $g = $core['gateways'][$r['gateway']] ?? null;
         $dev = $g !== null ? ($core['interfaces'][$g['interface']]['if'] ?? '') : '';
         if (!isset($wgDevices[$dev])) {
@@ -457,6 +460,24 @@ function wgipv6_tunnels_selftest() {
             function ($c) { $c['gateways']['tun_a']['monitor'] = '203.0.113.53'; return $c; }, ['i-a'], ['monitor-shared'], true],
         ['monitor shared with another gateway => monitor-shared',
             function ($c) { $c['gateways']['WAN_A']['monitor'] = '203.0.113.9'; return $c; }, ['i-a'], ['monitor-shared'], true],
+        ['route via the tunnel device itself is excluded (spec 3.1) => unbound, no stale-route',
+            function ($c) {
+                $c['routes']['r-a']['enabled'] = false;
+                $c['routes']['r-b'] = ['network' => '198.51.100.10/32', 'gateway' => 'tun_a', 'enabled' => true];
+                return $c;
+            }, ['i-a'], ['unbound'], false],
+        ['no IPv4 outbound NAT => nat-missing, enforceable',
+            function ($c) { $c['snat'] = [$c['snat'][1]]; return $c; }, ['i-a'], ['nat-missing'], true],
+        ['IPv6 gateway removed, IPv6 address kept => ipv6-incomplete, enforceable',
+            function ($c) { unset($c['gateways']['tun_a-ipv6']); return $c; }, ['i-a'], ['ipv6-incomplete'], true],
+        ['two IPv6 tunnel addresses => ipv6-incomplete, enforceable',
+            function ($c) { $c['instances']['i-a']['tunneladdress'][] = 'fd00::1:3/128'; return $c; }, ['i-a'], ['ipv6-incomplete'], true],
+        ['bound WAN interface disabled => wan-unavailable, enforceable',
+            function ($c) { $c['interfaces']['opt1']['enable'] = false; return $c; }, ['i-a'], ['wan-unavailable'], true],
+        ['zero peers => not-single-peer',
+            function ($c) { $c['instances']['i-a']['peers'] = []; return $c; }, ['i-a'], ['not-single-peer'], false],
+        ['IPv6 endpoint => endpoint-unsupported',
+            function ($c) { $c['peers']['p-a']['serveraddress'] = '2001:db8::10'; return $c; }, ['i-a'], ['endpoint-unsupported'], false],
     ];
     $fail = 0;
     $total = 0;
@@ -472,6 +493,49 @@ function wgipv6_tunnels_selftest() {
             printf("       codes %s enforceable %s\n", json_encode($codes($t)), var_export($t['enforceable'], true));
         }
     }
+
+    /* wan-unavailable via an unknown gateway name on the route: bound_wan is still set to it */
+    $c = $base();
+    $c['routes']['r-a']['gateway'] = 'NOPE';
+    $t = wgipv6_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $codes($t) === ['wan-unavailable'] && $t['enforceable'] === true && $t['bound_wan'] === 'NOPE';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: unknown gateway name on the route => wan-unavailable, bound_wan is the route's gateway\n", $ok ? 'PASS' : 'FAIL');
+
+    /* interface MTU equal to the instance MTU => no override finding, mtu is the instance's */
+    $c = $base();
+    $c['interfaces']['opt11']['mtu'] = '1376';
+    $t = wgipv6_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $codes($t) === [] && $t['enforceable'] === true && $t['mtu'] === 1376;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: interface MTU equal to instance MTU => no finding, mtu 1376\n", $ok ? 'PASS' : 'FAIL');
+
+    /* neither instance nor interface sets an MTU => the WireGuard default */
+    $c = $base();
+    $c['instances']['i-a']['mtu'] = '';
+    $t = wgipv6_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $codes($t) === [] && $t['enforceable'] === true && $t['mtu'] === 1420;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: no instance or interface MTU => default 1420\n", $ok ? 'PASS' : 'FAIL');
+
+    /* an IPv6-looking "/32" network string must never become a binding or stale-route candidate */
+    $c = $base();
+    $c['peers']['p-a']['serveraddress'] = '198.51.100.20';
+    $c['routes']['r-c'] = ['network' => '2001:db8::/32', 'gateway' => 'WAN_A', 'enabled' => true];
+    $t = wgipv6_derive($c, ['i-a'])['tunnels'][0];
+    $staleDetail = '';
+    foreach ($t['findings'] as $f) {
+        if ($f['code'] === 'stale-route') {
+            $staleDetail = $f['detail'];
+        }
+    }
+    $ok = $codes($t) === ['stale-route', 'unbound'] && $t['enforceable'] === false && strpos($staleDetail, '2001:db8') === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: non-IPv4 \"/32\" network string is not a binding-route candidate\n", $ok ? 'PASS' : 'FAIL');
 
     /* record fields on the healthy tunnel */
     $t = wgipv6_derive($base(), ['i-a'])['tunnels'][0];
