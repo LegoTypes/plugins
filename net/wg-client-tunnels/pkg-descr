@@ -10,6 +10,10 @@ Features:
 - Create a tunnel from a pasted wg-quick config -- WireGuard instance and
   peer, interface, IPv4 and IPv6 gateways, endpoint route to the chosen WAN
   and outbound NAT, in one save -- with the MTU measured from that WAN
+- Edit a tunnel in place -- outbound NAT sources, MTU, monitor IP, bound
+  WAN, IPv6 on or off, or a server swap from a replacement wg-quick config
+  -- with a preview of exactly what changes; its name, device, interface
+  and gateway names never change, so groups and rules keep working
 - Remove a tunnel and everything it owns (refused while anything references
   it), Rebind an unbound tunnel to a WAN, Adopt an existing WireGuard
   instance, and Ensure sentinel (the NO_DEFAULT4/NO_DEFAULT6 gateways), each
@@ -46,6 +50,20 @@ Features:
 
 Plugin Changelog
 ================
+
+3.1
+
+* Edit a managed tunnel from the Tunnels tab or tunnel.php edit (JSON on
+  stdin): outbound NAT sources, MTU, monitor IP, bound WAN, IPv6 on/off and
+  a server swap; the preview lists exactly what changes, an edit that
+  changes nothing saves nothing, a refusal writes nothing, and the apply
+  follows the change (NAT alone reloads the filter without the gateway
+  lock; a tunnel change ends with wireguard restart)
+* A saved change whose apply did not complete stays apply-pending with the
+  apply it still needs; tunnel.php apply UUID (the Apply button) runs that
+  apply, and only a complete one clears it. Create's re-run is the tunnel
+  apply, which now ends with wireguard restart, so a re-run handshakes via
+  the bound WAN; tunnel.php apply UUID filter|routes|first|tunnel names one
 
 3.0
 
