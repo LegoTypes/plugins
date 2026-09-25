@@ -12,11 +12,12 @@ use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
 
 /**
- * The Tunnels tab (spec 6, 7). search and options are views derived from core
- * on every request. Create is the one write done in-process, because only it
- * may see the private key (spec 6.1); it then runs the keyless configd action
- * `wgclienttunnels apply`. Every other action runs in its own process through
- * configd, with uuids, gateway names and addresses as its only parameters.
+ * The Tunnels tab (spec 6, 7). search, search_grid and options are views
+ * derived from core on every request. Create is the one write done in-process,
+ * because only it may see the private key (spec 6.1); it then runs the keyless
+ * configd action `wgclienttunnels apply`. Every other action runs in its own
+ * process through configd, with uuids, gateway names and addresses as its only
+ * parameters.
  */
 class TunnelsController extends ApiControllerBase
 {
@@ -25,42 +26,31 @@ class TunnelsController extends ApiControllerBase
     private const GATEWAY_NAME = '/^[a-zA-Z0-9_-]{1,32}$/';
     private const NAT_ALIAS_TYPES = ['host', 'network', 'networkgroup', 'dynipv6host'];
 
+    /**
+     * The whole view: the managed tunnels, the global findings and the unmanaged
+     * instances. GET or POST; the Tunnels tab posts it for its banners and the
+     * unmanaged list.
+     */
     public function searchAction(): array
     {
         require_once self::LIB . '/view.php';
         $view = wgct_tunnel_view();
-        $core = $view['core'];
-        $status = [];
-        $statusText = [];
-        /* configd output: a JSON boundary, decoded to mixed and checked row by row */
-        $raw = json_decode((string)(new Backend())->configdRun('interface gateways status'), true);
-        if (is_array($raw)) {
-            foreach ($raw as $key => $row) {
-                $name = is_array($row) && isset($row['name']) ? (string)$row['name'] : (string)$key;
-                $status[$name] = is_array($row) ? (string)($row['status'] ?? '') : '';
-                $statusText[$name] = is_array($row) ? (string)($row['status_translated'] ?? ($row['status'] ?? '')) : '';
-            }
-        }
-        $held = array_flip($view['held']);
-        $natName = function (string $src) use ($core): string {
-            return isset($core['interfaces'][$src]) && $core['interfaces'][$src]['descr'] !== ''
-                ? $core['interfaces'][$src]['descr']
-                : $src;
-        };
-        $tunnels = [];
-        foreach ($view['tunnels'] as $t) {
-            $t['gw4_status'] = $t['gw4'] !== null ? ($status[$t['gw4']] ?? 'unknown') : null;
-            $t['gw4_status_text'] = $t['gw4'] !== null ? ($statusText[$t['gw4']] ?? 'unknown') : null;
-            $t['gw6_status'] = $t['gw6'] !== null ? ($status[$t['gw6']] ?? 'unknown') : null;
-            $t['gw6_status_text'] = $t['gw6'] !== null ? ($statusText[$t['gw6']] ?? 'unknown') : null;
-            $t['held'] = $t['gw4'] !== null && isset($held[$core['gateways'][$t['gw4']]['uuid']]);
-            $t['nat_display'] = [
-                'inet' => array_map($natName, $t['nat']['inet']),
-                'inet6' => array_map($natName, $t['nat']['inet6']),
-            ];
-            $tunnels[] = $t;
-        }
-        return ['status' => 'ok', 'tunnels' => $tunnels, 'global' => $view['global'], 'unmanaged' => $view['unmanaged']];
+        return [
+            'status' => 'ok', 'tunnels' => wgct_tunnel_rows($view, $this->gatewayStatus()),
+            'global' => $view['global'], 'unmanaged' => $view['unmanaged'],
+        ];
+    }
+
+    /**
+     * The Tunnels grid: one flat row per managed tunnel (wgct_grid_row()), paged,
+     * sorted and searched by core's recordset search from the grid's POST
+     * (rowCount, current, sort, searchPhrase).
+     */
+    public function searchGridAction(): array
+    {
+        require_once self::LIB . '/view.php';
+        $rows = array_map('wgct_grid_row', wgct_tunnel_rows(wgct_tunnel_view(), $this->gatewayStatus()));
+        return $this->searchRecordsetBase($rows, WGCT_GRID_SEARCH_FIELDS, 'name');
     }
 
     public function optionsAction(): array
@@ -261,6 +251,16 @@ class TunnelsController extends ApiControllerBase
             }
         }
         return ['result' => 'failed', 'validations' => $validations, 'errors' => $general, 'changes' => $changes];
+    }
+
+    /**
+     * @return array{status: array<string, string>, text: array<string, string>}
+     *         wgct_gateway_status_maps() of core's gateway status
+     */
+    private function gatewayStatus(): array
+    {
+        /* configd output: a JSON boundary, decoded to mixed and checked row by row */
+        return wgct_gateway_status_maps(json_decode((string)(new Backend())->configdRun('interface gateways status'), true));
     }
 
     /**
