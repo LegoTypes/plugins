@@ -27,4 +27,22 @@
         <type>checkbox</type>
         <help>Remove a default route through a tunnel or any other non-default gateway, for both address families.</help>
     </field>
+    <field>
+        <id>wgipv6gateway.wan_pins</id>
+        <label>WAN pins</label>
+        <type>checkbox</type>
+        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to.</help>
+    </field>
+    <field>
+        <id>wgipv6gateway.inner_source</id>
+        <label>Only NATed traffic into tunnels</label>
+        <type>checkbox</type>
+        <help>Block any packet that would enter a tunnel without having been translated to the tunnel's own address.</help>
+    </field>
+    <field>
+        <id>wgipv6gateway.mss_clamp</id>
+        <label>MSS clamp</label>
+        <type>checkbox</type>
+        <help>Clamp TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), both directions.</help>
+    </field>
 </form>

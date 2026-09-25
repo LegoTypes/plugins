@@ -15,7 +15,10 @@
 require_once __DIR__ . '/lib/tunnels.php';
 
 if (in_array('--selftest', $argv ?? [], true)) {
-    exit(wgipv6_tunnels_selftest());
+    require_once __DIR__ . '/lib/render.php';
+    $tunnelsRc = wgipv6_tunnels_selftest();
+    $renderRc = wgipv6_render_selftest();
+    exit($tunnelsRc !== 0 || $renderRc !== 0 ? 1 : 0);
 }
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
