@@ -220,6 +220,23 @@ function wgipv6_is_nat_interface_key(string $key): bool {
 }
 
 /**
+ * Replace whole tokens -- not inside a longer word, so wg2 leaves wg20 and
+ * opt12 leaves opt12ip alone -- in one pass, so a replacement is never
+ * replaced again. Pure.
+ *
+ * @param string                $text
+ * @param array<string, string> $map old token => new token
+ * @return string
+ */
+function wgipv6_retoken(string $text, array $map): string {
+    if ($map === []) {
+        return $text;
+    }
+    $pattern = '/\b(' . implode('|', array_map(fn (string|int $k): string => preg_quote((string)$k, '/'), array_keys($map))) . ')\b/';
+    return preg_replace_callback($pattern, fn (array $m): string => $map[$m[1]], $text) ?? $text;
+}
+
+/**
  * Everything Create will write, or why it cannot (spec 6.1). Pure.
  *
  * @param array $snap the action snapshot (see Task 3 Interfaces)
@@ -364,6 +381,34 @@ function wgipv6_plan_create(array $snap, array $req, array $conf): array {
         }
     }
 
+    /*
+     * The template's NAT rules to copy: enabled, IPv6 ones only with IPv6 on,
+     * in sequence order. One whose source, destination or target names the
+     * template's own interface (optT, or its address optTip) would, copied,
+     * still name the template's interface: refused, nothing written.
+     */
+    $tplRules = [];
+    if ($tpl !== null) {
+        $tplRules = array_filter($snap['snat_rules'], fn (array $r): bool => $r['interface'] === $tpl['interface'] && $r['enabled'] === '1'
+            && ($r['ipprotocol'] === 'inet' || ($ipv6 && $r['ipprotocol'] === 'inet6')));
+        uasort($tplRules, fn (array $a, array $b): int => (int)$a['sequence'] <=> (int)$b['sequence']);
+        $ownNames = [$tpl['interface'], $tpl['interface'] . 'ip'];
+        $selfRefs = [];
+        foreach ($tplRules as $ruleUuid => $r) {
+            foreach (['source_net', 'destination_net', 'target'] as $field) {
+                $values = array_map('trim', explode(',', $r['fields'][$field] ?? ''));
+                foreach (array_intersect($values, $ownNames) as $value) {
+                    $label = ($r['fields']['description'] ?? '') !== '' ? "\"{$r['fields']['description']}\"" : (string)$ruleUuid;
+                    $selfRefs[] = "outbound NAT rule {$label} has {$value} in {$field}";
+                }
+            }
+        }
+        if ($selfRefs !== []) {
+            $e['template'] = "{$tpl['name']}'s " . implode('; ', array_unique($selfRefs))
+                . ": copied to the new tunnel it would still name {$tpl['name']}'s interface; change the rule to a network or alias, or create without a template";
+        }
+    }
+
     /* NAT sources, used only without a template; the IPv6 list only with IPv6 on */
     $sources = ['inet' => $req['nat']['inet'], 'inet6' => $ipv6 ? $req['nat']['inet6'] : []];
     if ($req['template'] === '') {
@@ -425,11 +470,17 @@ function wgipv6_plan_create(array $snap, array $req, array $conf): array {
         ])];
     }
     if ($tpl !== null) {
-        $rules = array_filter($snap['snat_rules'], fn (array $r): bool => $r['interface'] === $tpl['interface'] && $r['enabled'] === '1'
-            && ($r['ipprotocol'] === 'inet' || ($ipv6 && $r['ipprotocol'] === 'inet6')));
-        uasort($rules, fn (array $a, array $b): int => (int)$a['sequence'] <=> (int)$b['sequence']);
-        foreach ($rules as $r) {
-            $plan['nat'][] = $r['fields'];
+        /* a description naming the template's device or interface names the new tunnel's instead */
+        $tokens = [$tpl['interface'] => $opt];
+        if ($tpl['device'] !== '') {
+            $tokens[$tpl['device']] = $device;
+        }
+        foreach ($tplRules as $r) {
+            $fields = $r['fields'];
+            if (isset($fields['description'])) {
+                $fields['description'] = wgipv6_retoken($fields['description'], $tokens);
+            }
+            $plan['nat'][] = $fields;
         }
     } else {
         foreach (['inet', 'inet6'] as $family) {
@@ -904,6 +955,33 @@ function wgipv6_actions_selftest(): int {
         && !isset($p['nat'][0]['interface']) && !isset($p['nat'][0]['sequence']));
     wgipv6_check($t, 'create: the change list names unique addressing and raises no NAT warning',
         $has($p['changes'], 'unique addressing: fd00::3:1/128') && !$has($p['changes'], 'nat-missing'));
+
+    /* the NAT copy names the new tunnel, and refuses a rule that names the template's own interface */
+    $s = $snap;
+    $s['snat_rules']['s-a1']['fields']['description'] = 'tun_a wg1 via opt11 (not wg10, opt11ip or xwg1)';
+    $p = wgipv6_plan_create($s, $req, $conf);
+    wgipv6_check($t, 'create: a copied rule\'s description names the new device and interface (whole tokens only)',
+        $p['errors'] === [] && $p['nat'][1]['description'] === 'tun_a wg3 via opt4 (not wg10, opt11ip or xwg1)'
+        && $p['nat'][0]['description'] === 'tailnet via tunnel');
+    wgipv6_check($t, 'retoken: one pass, so a replacement is never replaced again; an empty map changes nothing',
+        wgipv6_retoken('wg1 opt11 wg2', ['wg1' => 'wg2', 'wg2' => 'wg1']) === 'wg2 opt11 wg1' && wgipv6_retoken('wg1', []) === 'wg1');
+    foreach ([
+        ['target is the template\'s interface address', 's-a1', 'target', 'opt11ip'],
+        ['destination is the template\'s interface net', 's-a1', 'destination_net', 'opt11'],
+        ['source is the template\'s interface net', 's-a2', 'source_net', 'opt11'],
+    ] as [$desc, $rule, $field, $value]) {
+        $s = $snap;
+        $s['snat_rules'][$rule]['fields'][$field] = $value;
+        $p = wgipv6_plan_create($s, $req, $conf);
+        wgipv6_check($t, "create: a template NAT rule whose {$desc} => template refused, nothing planned",
+            array_keys($p['errors']) === ['template'] && str_contains($p['errors']['template'], "{$value} in {$field}")
+            && $p['nat'] === [] && $p['gateways'] === []);
+    }
+    $s = $snap;
+    $s['snat_rules']['s-a4']['fields']['target'] = 'opt11ip';        // disabled: not copied
+    $s['snat_rules']['s-a3']['fields']['destination_net'] = 'opt11';  // IPv6: not copied with IPv6 off
+    wgipv6_check($t, 'create: a rule that is not copied (disabled, or IPv6 with IPv6 off) may name the template interface',
+        wgipv6_plan_create($s, ['ipv6' => false] + $req, $conf)['errors'] === []);
 
     /* unique addressing default (ruling 3): the fixture's tun_a is fd00::1:1 on wg1, so the convention is in use */
     $c = $conf;

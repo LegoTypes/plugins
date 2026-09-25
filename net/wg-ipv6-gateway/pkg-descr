@@ -47,7 +47,9 @@ Plugin Changelog
 * Every action saves once under the config lock, applies through configd
   and replays gateway alarms dropped while it held the gateway lock
 * A Create whose apply did not complete shows the apply-pending finding
-  and an Apply button
+  and an Apply button, across a reboot
+* Create installs the endpoint route before the tunnel's first handshake,
+  and Rebind restarts the tunnel, so it handshakes via the bound WAN
 * tunnel.php command line; tunnels.php stays as its list alias
 
 2.1

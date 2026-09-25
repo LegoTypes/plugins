@@ -120,18 +120,26 @@ class TunnelsController extends ApiControllerBase
             return ['result' => 'failed', 'errors' => ['the create form was empty']];
         }
         $secrets = [];
+        /* the saved instance's uuid, once wgipv6_create_commit() has returned one */
+        $uuid = '';
         try {
             $prep = wgipv6_create_prepare($raw, true);
             $secrets = array_values($prep['secret']);
             if ($prep['errors'] !== []) {
                 return $this->formFailure($prep['errors'], $prep['notes']);
             }
-            $result = wgipv6_create_commit($prep, false);
+            /* spec 4.6: gateway lock (bounded, ruling 22), then Config::lock() inside the commit; the lock is
+             * released before the configd apply below, which takes it itself (holding it across would deadlock) */
+            $result = wgipv6_gateway_locked_commit(function () use ($prep, &$uuid): array {
+                $created = wgipv6_create_commit($prep, false);
+                $uuid = $created['saved'] ? $created['uuid'] : '';
+                return $created;
+            });
         } catch (\Throwable $e) {
             syslog(LOG_ERR, '[wgipv6gw-action] create failed: ' . wgipv6_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
-            return ['result' => 'failed', 'errors' => [
-                'Create failed; the system log has the reason (never the key). If this happened after '
-                . 'the save, the change is in config and only its apply is incomplete: reload the list and use Apply.',
+            return ['result' => 'failed', 'uuid' => $uuid, 'errors' => [
+                'Create failed; the system log has the reason (never the key). ' . wgipv6_failure_footer('create', $uuid)
+                . ' A saved tunnel shows the apply-pending finding and an Apply button once the list is reloaded.',
             ]];
         }
         unset($prep, $raw, $secrets);
