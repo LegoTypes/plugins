@@ -97,11 +97,24 @@ function wgipv6gateway_configure_do($verbose = false)
  * derived from the managed tunnels at every filter reload (boot included).
  * lib/render.php catches every error, so a plugin fault never aborts core's
  * filter reload; it is reported as the render-failed finding instead.
+ *
+ * A require_once of a file that does not exist is a fatal E_COMPILE_ERROR,
+ * not a \Throwable -- the try/catch below cannot catch it. During the deploy
+ * swap window (plugin directories replaced while this .inc file, which core
+ * loads separately, stays) or after a failed deploy, the library can be
+ * briefly or permanently missing, and any filter reload (a gateway alarm,
+ * boot) must not die because of it. is_readable() turns that into an
+ * ordinary logged skip instead.
  */
 function wgipv6gateway_firewall($fw)
 {
+    $lib = '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/render.php';
+    if (!is_readable($lib) || !is_readable(dirname($lib) . '/tunnels.php')) {
+        syslog(LOG_ERR, '[wgipv6gw-render] plugin library missing; rules not rendered');
+        return;
+    }
     try {
-        require_once '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/render.php';
+        require_once $lib;
         wgipv6_render_firewall($fw);
     } catch (\Throwable $e) {
         syslog(LOG_ERR, '[wgipv6gw-render] hook failed: ' . $e->getMessage());
