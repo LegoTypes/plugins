@@ -7,11 +7,13 @@
  *
  * Health mirror library. The decisions are pure functions of a snapshot:
  *
- *   config.enabled    bool, the plugin's enable switch
+ *   config.enabled    bool, plugin enabled AND the health_mirror switch
  *   config.gateways   name => [uuid, ipprotocol, interface, disabled, force_down,
  *                              losshigh, losslow, time_period]
  *   config.underlays  IPv4 tunnel gateway name => WAN gateway name
  *   config.pairs      IPv4 tunnel gateway name => its IPv6 gateway name
+ *   config.held       gateway names held down by pass 1
+ *   config.held_raw   sorted gateway UUIDs as stored in the model
  *   live.status       name => gateway_status.php status, null when unavailable
  *   live.loss         name => dpinger loss percent, null without data
  *   live.sock_age     name => dpinger socket age in seconds, null when absent
@@ -304,7 +306,7 @@ function wgipv6_held_uuids(array $heldNames, array $gateways) {
 
 /**
  * Serialize the held set into the plugin model when it differs from config.
- * Call only inside wgipv6_locked_commit(), with $gateways from a collection
+ * Call only inside wgipv6_locked_commit(), with $config from a collection
  * made under that lock.
  *
  * @param array $heldNames name => true

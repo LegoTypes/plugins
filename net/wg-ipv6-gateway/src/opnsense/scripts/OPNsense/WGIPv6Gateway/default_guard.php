@@ -25,7 +25,8 @@
  * native WAN default it merely failed to recognise.
  *
  * Runs from wgipv6gw.sh reconcile: the plugin's "monitor" hook (end of every
- * routing reconfigure) and the once-a-minute cron.
+ * routing reconfigure), the once-a-minute cron, and the config-save syshook
+ * (rc.syshook.d/config/50-wgipv6gateway).
  *
  * Usage: default_guard.php [--dry] [--selftest]
  */
