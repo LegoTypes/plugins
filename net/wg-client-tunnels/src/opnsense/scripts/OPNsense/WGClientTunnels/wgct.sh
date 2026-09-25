@@ -105,9 +105,9 @@ do_status() {
     gateways=$(parse_config)
 
     if [ -f "${STATE_DIR}/enabled" ]; then
-        echo "wgipv6gateway is running"
+        echo "wgclienttunnels is running"
     else
-        echo "wgipv6gateway is not running"
+        echo "wgclienttunnels is not running"
     fi
 
     printf '{"gateways":['

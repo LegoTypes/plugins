@@ -35,7 +35,7 @@ class ServiceController extends ApiMutableServiceControllerBase
 {
     protected static $internalServiceClass = '\OPNsense\WGClientTunnels\WGClientTunnels';
     protected static $internalServiceEnabled = 'enabled';
-    protected static $internalServiceName = 'wgipv6gateway';
+    protected static $internalServiceName = 'wgclienttunnels';
 
     /**
      * Reconfigure: re-assert the IPv6 routes of the managed tunnels.
@@ -45,7 +45,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed'];
         }
-        (new Backend())->configdRun('wgipv6gateway configure_routes');
+        (new Backend())->configdRun('wgclienttunnels configure_routes');
         return ['status' => 'ok'];
     }
 
@@ -65,7 +65,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         if (!$dry) {
             $this->throwReadOnly();
         }
-        return wgct_configd_json($dry ? 'wgipv6gateway ensure_sentinel_dry' : 'wgipv6gateway ensure_sentinel', [], 300);
+        return wgct_configd_json($dry ? 'wgclienttunnels ensure_sentinel_dry' : 'wgclienttunnels ensure_sentinel', [], 300);
     }
 
     /**
@@ -76,7 +76,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         $result = parent::statusAction();
 
         $backend = new Backend();
-        $response = $backend->configdRun('wgipv6gateway status');
+        $response = $backend->configdRun('wgclienttunnels status');
         // The status script outputs a "is running" line followed by JSON;
         // extract the JSON portion.
         if (preg_match('/(\{.*\})/s', $response, $matches)) {

@@ -129,7 +129,7 @@
         }
 
         function runApply(uuid, name) {
-            ajaxCall('/api/wgipv6gateway/tunnels/apply/' + uuid, {}, function (r, status) {
+            ajaxCall('/api/wgclienttunnels/tunnels/apply/' + uuid, {}, function (r, status) {
                 showResult(titleText("{{ lang._('Apply') }} " + plain(name)), r, status, uuid, name);
             });
         }
@@ -197,7 +197,7 @@
         /* ---- dialogs ---- */
 
         function loadOptions(done) {
-            ajaxGet('/api/wgipv6gateway/tunnels/options', {}, function (data, status) {
+            ajaxGet('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
                 if (!data || status !== 'success' || data.status !== 'ok') {
                     showResult("{{ lang._('Client tunnels') }}", null, status);
                     return;
@@ -318,7 +318,7 @@
             }
             $('#wgct-measure').prop('disabled', true);
             why.text("{{ lang._('Measuring the path; this takes up to half a minute...') }}");
-            ajaxCall('/api/wgipv6gateway/tunnels/measure_mtu', {wan: wan, endpoint: p.endpoint_ip}, function (r, status) {
+            ajaxCall('/api/wgclienttunnels/tunnels/measure_mtu', {wan: wan, endpoint: p.endpoint_ip}, function (r, status) {
                 $('#wgct-measure').prop('disabled', false);
                 if (status === 'success' && r && r.ok) {
                     $('#create\\.mtu').val(r.mtu);
@@ -354,7 +354,7 @@
             var run = function () {
                 $('#btn_dialogCreate_save').prop('disabled', true);
                 $('#btn_dialogCreate_save_progress').addClass('fa fa-spinner fa-pulse');
-                ajaxCall('/api/wgipv6gateway/tunnels/create', data, function (r, status) {
+                ajaxCall('/api/wgclienttunnels/tunnels/create', data, function (r, status) {
                     $('#btn_dialogCreate_save').prop('disabled', false);
                     $('#btn_dialogCreate_save_progress').removeClass('fa fa-spinner fa-pulse');
                     if (status === 'success' && r && r.result === 'saved') {
@@ -403,7 +403,7 @@
                 $('#btn_dialogRebind_save').off('click').on('click', function () {
                     $('#btn_dialogRebind_save').prop('disabled', true);
                     $('#btn_dialogRebind_save_progress').addClass('fa fa-spinner fa-pulse');
-                    ajaxCall('/api/wgipv6gateway/tunnels/rebind/' + t.uuid, getFormData('frm_dialogRebind'), function (r, status) {
+                    ajaxCall('/api/wgclienttunnels/tunnels/rebind/' + t.uuid, getFormData('frm_dialogRebind'), function (r, status) {
                         $('#btn_dialogRebind_save').prop('disabled', false);
                         $('#btn_dialogRebind_save_progress').removeClass('fa fa-spinner fa-pulse');
                         /* saved === true even with an apply error still means the route write happened:
@@ -443,7 +443,7 @@
                 .attr('title', "{{ lang._('Remove') }}")
                 .append($('<i class="fa fa-trash fa-fw"/>'))
                 .on('click', function () {
-                    confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name || t.uuid)), '/api/wgipv6gateway/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
+                    confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name || t.uuid)), '/api/wgclienttunnels/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
                 }));
             return cell;
         }
@@ -511,7 +511,7 @@
                         $('<td/>').append($('<button type="button" class="btn btn-default btn-xs"/>')
                             .append($('<i class="fa fa-plus fa-fw"/>'), ' ', $('<span/>').text("{{ lang._('Adopt') }}"))
                             .on('click', function () {
-                                confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgipv6gateway/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
+                                confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgclienttunnels/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
                             }))
                     ));
                 });
@@ -522,19 +522,19 @@
         }
 
         function refresh() {
-            ajaxGet('/api/wgipv6gateway/tunnels/search', {}, function (data, status) { render(status === 'success' ? data : null); });
+            ajaxGet('/api/wgclienttunnels/tunnels/search', {}, function (data, status) { render(status === 'success' ? data : null); });
         }
 
         /* ---- wiring ---- */
 
-        mapDataToFormUI({'frm_general': '/api/wgipv6gateway/settings/get'}).done(function () {
+        mapDataToFormUI({'frm_general': '/api/wgclienttunnels/settings/get'}).done(function () {
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
         });
         $('#reconfigureAct').SimpleActionButton({
             onPreAction: function () {
                 var dfObj = new $.Deferred();
-                saveFormToEndpoint('/api/wgipv6gateway/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
+                saveFormToEndpoint('/api/wgclienttunnels/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
                 return dfObj;
             },
             onAction: function () { refresh(); }
@@ -575,7 +575,7 @@
         $('#dialogCreate').on('hidden.bs.modal', function () { $('#create\\.config').val(''); });
         $('#btn-create').on('click', openCreate);
         $('#btn-sentinel').on('click', function () {
-            confirmAction("{{ lang._('Ensure sentinel') }}", '/api/wgipv6gateway/service/sentinel', "{{ lang._('Apply') }}");
+            confirmAction("{{ lang._('Ensure sentinel') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
         });
         $('#btn-refresh').on('click', refresh);
         refresh();
@@ -637,7 +637,7 @@
         <div class="col-md-12">
             <br/>
             <button class="btn btn-primary" id="reconfigureAct"
-                    data-endpoint="/api/wgipv6gateway/service/reconfigure"
+                    data-endpoint="/api/wgclienttunnels/service/reconfigure"
                     data-label="{{ lang._('Apply') }}"
                     data-error-title="{{ lang._('Error applying the WireGuard client tunnel settings') }}"
                     type="button"></button>

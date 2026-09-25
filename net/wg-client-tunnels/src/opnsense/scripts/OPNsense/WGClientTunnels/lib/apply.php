@@ -89,6 +89,32 @@ function wgct_rebind_apply_steps(string $uuid): array {
     ];
 }
 
+/*
+ * core's wg-service-control.php takes its argument as an instance only when
+ * it matches this -- a lower-case v4 uuid -- and reads anything else as a
+ * CARP vhid, for which start, stop, restart and configure act on every
+ * instance (wg-service-control.php:212).
+ */
+const WGCT_CORE_INSTANCE_UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/';
+const WGCT_WIREGUARD_INSTANCE_ACTIONS = ['wireguard start', 'wireguard stop', 'wireguard restart', 'wireguard configure'];
+
+/**
+ * Why a step must not be issued, or null when it may. Pure.
+ *
+ * @param string       $action a configd action
+ * @param list<string> $params its parameters
+ * @return string|null the failure result to record instead of running it
+ */
+function wgct_step_refusal(string $action, array $params): ?string {
+    if ($params === [] || !in_array($action, WGCT_WIREGUARD_INSTANCE_ACTIONS, true)) {
+        return null;
+    }
+    if (count($params) === 1 && preg_match(WGCT_CORE_INSTANCE_UUID, $params[0]) === 1) {
+        return null;
+    }
+    return "refused: {$action} takes one lower-case v4 instance uuid; core reads anything else as a CARP vhid and acts on every instance";
+}
+
 /**
  * Does an action's apply retire the apply-pending record of its instance
  * (ruling 20)? Only Create's complete step list, every step OK -- a Rebind,
@@ -311,16 +337,22 @@ function wgct_failed_steps(array $apply): array {
 
 /**
  * @param list<array{0: string, 1: list<string>}> $steps configd actions and their parameters
- * @return list<array{action: string, result: string}>
+ * @return list<array{action: string, result: string}> a refused step (wgct_step_refusal()) is never issued
  */
 function wgct_run_steps(array $steps): array {
     $backend = new Backend();
     $results = [];
     foreach ($steps as [$action, $params]) {
+        $name = trim($action . ' ' . implode(' ', $params));
+        $refusal = wgct_step_refusal($action, $params);
+        if ($refusal !== null) {
+            $results[] = ['action' => $name, 'result' => $refusal];
+            continue;
+        }
         $out = $params === []
             ? $backend->configdRun($action, false, 300)
             : $backend->configdpRun($action, $params, false, 300);
-        $results[] = ['action' => trim($action . ' ' . implode(' ', $params)), 'result' => wgct_step_summary((string)$out)];
+        $results[] = ['action' => $name, 'result' => wgct_step_summary((string)$out)];
     }
     return $results;
 }
@@ -402,14 +434,14 @@ function wgct_replay_after_hold(array $ours, ?array $before): array {
  */
 function wgct_after_apply(array $ours, ?array $before): array {
     $replayed = wgct_replay_after_hold($ours, $before);
-    $out = (new Backend())->configdRun('wgipv6gateway reconcile', false, 300);
+    $out = (new Backend())->configdRun('wgclienttunnels reconcile', false, 300);
     return ['replayed' => $replayed, 'reconcile' => wgct_step_summary((string)$out)];
 }
 
 /**
  * A config write that holds the gateway lock but applies nothing itself: the
  * API's in-process Create (spec 4.6 steps 1-5), whose apply then runs as the
- * configd action `wgipv6gateway apply`, which takes the lock on its own -- so
+ * configd action `wgclienttunnels apply`, which takes the lock on its own -- so
  * the lock is released before this returns, never held across that call.
  * Lock order stays gateway lock, then Config::lock() (inside $commit). Any
  * gateway alarm dropped during the hold is replayed after release, as every
@@ -535,7 +567,7 @@ function wgct_routing_action(callable $commit, bool $dry): array {
 function wgct_config_action(callable $commit, bool $dry): array {
     $result = $commit();
     if (!$dry && $result['ok'] && $result['saved']) {
-        $out = (new Backend())->configdRun('wgipv6gateway reconcile', false, 300);
+        $out = (new Backend())->configdRun('wgclienttunnels reconcile', false, 300);
         $result['after'] = ['replayed' => [], 'reconcile' => wgct_step_summary((string)$out)];
     }
     return $result;
@@ -543,7 +575,7 @@ function wgct_config_action(callable $commit, bool $dry): array {
 
 /**
  * The tunnel apply on its own: the API's Create saved in-process and runs this
- * as the keyless configd action `wgipv6gateway apply <uuid>` (spec 6.1); the
+ * as the keyless configd action `wgclienttunnels apply <uuid>` (spec 6.1); the
  * Apply button of an `apply-pending` tunnel runs it again. It runs Create's
  * complete step list, and only a complete apply (every step OK) clears the
  * pending marker.
@@ -659,6 +691,23 @@ function wgct_apply_selftest(): int {
         ]);
     wgct_check($t, 'apply: Rebind routes the new endpoint, then restarts the instance so it handshakes on that route',
         wgct_rebind_apply_steps($u1) === [['interface routes configure', []], ['wireguard restart', [$u1]]]);
+
+    /* core reads anything but a lower-case v4 uuid as a CARP vhid and acts on every instance;
+     * $v4 carries hex letters, so its upper-case form really differs */
+    $v4 = 'a0000000-0000-4000-8000-00000000000b';
+    wgct_check($t, 'apply: a WireGuard restart of a lower-case v4 instance uuid is issued',
+        wgct_step_refusal('wireguard restart', [$u1]) === null && wgct_step_refusal('wireguard restart', [$v4]) === null);
+    wgct_check($t, 'apply: an upper-case, v1, bad-variant or non-uuid id, or two parameters, is refused and counts as a failed step',
+        wgct_step_refusal('wireguard restart', [strtoupper($v4)]) !== null
+        && wgct_step_refusal('wireguard restart', ['00000000-0000-1000-8000-000000000001']) !== null
+        && wgct_step_refusal('wireguard restart', ['00000000-0000-4000-7000-000000000001']) !== null
+        && wgct_step_refusal('wireguard restart', ['1']) !== null
+        && wgct_step_refusal('wireguard restart', [$u1, $u1]) !== null
+        && wgct_step_refusal('wireguard stop', ['vhid1']) !== null
+        && wgct_failed_steps([['action' => 'x', 'result' => (string)wgct_step_refusal('wireguard restart', ['1'])]]) === ['x']);
+    wgct_check($t, 'apply: steps without parameters, and other actions, are never refused',
+        wgct_step_refusal('wireguard configure', []) === null && wgct_step_refusal('interface routes configure', []) === null
+        && wgct_step_refusal('wgclienttunnels replay_alarm', ['a,b']) === null);
 
     /* apply-pending: only Create's complete apply clears it; a saved Remove forgets it */
     $sentinelSteps = [['interface loopback configure', []], ['interface routes configure', []]];

@@ -1,9 +1,9 @@
 <acl>
-    <page-vpn-wgipv6gateway>
+    <page-vpn-wgclienttunnels>
         <name>VPN: WireGuard Client Tunnels</name>
         <patterns>
-            <pattern>ui/wgipv6gateway/*</pattern>
-            <pattern>api/wgipv6gateway/*</pattern>
+            <pattern>ui/wgclienttunnels/*</pattern>
+            <pattern>api/wgclienttunnels/*</pattern>
         </patterns>
-    </page-vpn-wgipv6gateway>
+    </page-vpn-wgclienttunnels>
 </acl>
