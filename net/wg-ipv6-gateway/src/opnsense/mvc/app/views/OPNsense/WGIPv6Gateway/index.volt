@@ -1,3 +1,9 @@
+{#
+ # Copyright (C) 2026 cayossarian (Bill Flood)
+ # All rights reserved.
+ # BSD 2-Clause License
+ #}
+
 <script>
     $(document).ready(function () {
         var links = {
@@ -12,16 +18,22 @@
             return $('<a/>').attr('href', href).text(text);
         }
 
-        function gwCell(name, status, held) {
+        function gwCell(name, status, statusText, held) {
             var cell = $('<td/>');
             if (name === null) {
                 return cell.text('—');
             }
             cell.append(link(name, links.gateways));
-            if (status) {
-                cell.append(' ', $('<span class="label"/>')
-                    .addClass(status === 'none' ? 'label-success' : (status === 'force_down' ? 'label-warning' : 'label-danger'))
-                    .text(status === 'none' ? "{{ lang._('up') }}" : status));
+            if (statusText) {
+                var cls;
+                if (status === 'none') {
+                    cls = 'label-success';
+                } else if (status === 'loss' || status === 'delay' || status === 'delay+loss' || status === 'force_down') {
+                    cls = 'label-warning';
+                } else {
+                    cls = 'label-danger';
+                }
+                cell.append(' ', $('<span class="label"/>').addClass(cls).text(statusText));
             }
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
@@ -47,7 +59,10 @@
             var banners = [];
             var tbody = $('<tbody/>');
             if (!data || data.status !== 'ok') {
-                banners.push($('<div class="alert alert-danger"/>').text("{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}"));
+                var errMsg = data && data.errorMessage
+                    ? data.errorMessage
+                    : "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
+                banners.push($('<div class="alert alert-danger"/>').text(errMsg));
             } else {
                 $.each(data.global, function (i, f) {
                     banners.push($('<div class="alert alert-warning"/>').text(f.code + ': ' + f.detail + ' — ' + f.fix));
@@ -58,21 +73,22 @@
                 $.each(data.tunnels, function (i, t) {
                     var name = $('<td/>').append(link(t.name || t.uuid, links.instance));
                     if (t.device) {
-                        name.append($('<br/>'), $('<small class="text-muted"/>').text(t.device + (t.interface ? ' / ' + t.interface : '')));
+                        var ifaceLabel = t.interface_descr || t.interface;
+                        name.append($('<br/>'), $('<small class="text-muted"/>').text(t.device + (ifaceLabel ? ' / ' + ifaceLabel : '')));
                     }
                     if (!t.enabled) {
                         name.append(' ', $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"));
                     }
                     var nat = [];
-                    if (t.nat.inet.length) nat.push('v4: ' + t.nat.inet.join(', '));
-                    if (t.nat.inet6.length) nat.push('v6: ' + t.nat.inet6.join(', '));
+                    if (t.nat_display.inet.length) nat.push('v4: ' + t.nat_display.inet.join(', '));
+                    if (t.nat_display.inet6.length) nat.push('v6: ' + t.nat_display.inet6.join(', '));
                     tbody.append($('<tr/>').append(
                         name,
                         $('<td/>').text(t.endpoint || '—'),
                         $('<td/>').append(t.bound_wan ? link(t.bound_wan, links.routes) : $('<span/>').text('—')),
                         $('<td/>').text(t.mtu),
-                        gwCell(t.gw4, t.gw4_status, t.held),
-                        gwCell(t.gw6, t.gw6_status, false),
+                        gwCell(t.gw4, t.gw4_status, t.gw4_status_text, t.held),
+                        gwCell(t.gw6, t.gw6_status, t.gw6_status_text, false),
                         $('<td/>').append(nat.length ? link(nat.join('; '), links.nat) : $('<span/>').text('—')),
                         $('<td/>').append(t.groups.length ? link(t.groups.join(', '), links.groups) : $('<span/>').text('—')),
                         findingBadges(t.findings)
