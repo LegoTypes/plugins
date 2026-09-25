@@ -26,7 +26,7 @@
  *
  * Runs from wgct.sh reconcile: the plugin's "monitor" hook (end of every
  * routing reconfigure), the once-a-minute cron, and the config-save syshook
- * (rc.syshook.d/config/50-wgipv6gateway).
+ * (rc.syshook.d/config/50-wgclienttunnels).
  *
  * The plugin/enable and default_guard switches gate only the route delete:
  * both families are classified either way, so wg_ipv6_default_check.sh (which
@@ -40,7 +40,7 @@
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 
-const GUARD_TAG = 'wgipv6gw-guard';
+const GUARD_TAG = 'wgct-guard';
 
 /**
  * Canonical form of an address for comparison: scope id dropped, IPv6

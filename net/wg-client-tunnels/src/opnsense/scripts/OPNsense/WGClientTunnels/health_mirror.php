@@ -49,13 +49,13 @@
  * (config, live status, held tunnels) as JSON and writes nothing; --plan-from=FILE
  * decides from a snapshot saved that way and prints what --dry would.
  *
- * Runs from /etc/cron.d/wgipv6gateway four times a minute (offsets 0/15/30/45s).
+ * Runs from /etc/cron.d/wgclienttunnels four times a minute (offsets 0/15/30/45s).
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 require_once __DIR__ . '/lib/mirror.php';
 
-$logTag = 'wgipv6gw-health';
+$logTag = 'wgct-health';
 
 // Self-test: validate the decision logic in isolation, no config access.
 if (in_array('--selftest', $argv ?? [], true)) {
@@ -112,7 +112,7 @@ if ($snapshotOut) {
  * and leave it dead -- at which point every gateway reads a false "down".
  * If another run holds the lock, skip this tick; the next one catches up.
  */
-$selfLock = fopen('/tmp/wgipv6gw_health.lock', 'ce');
+$selfLock = fopen('/tmp/wgct_health.lock', 'ce');
 if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
