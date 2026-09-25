@@ -6,10 +6,9 @@ tunnel gets the same provider-assigned IPv6 address, and a WireGuard
 IPv6 gateway has no health monitoring of its own.
 
 Features:
-- Gives each WireGuard IPv6 gateway its own address and next hop, tied to
-  its IPv4 tunnel gateway, and keeps the interface address and host route
-  in place: at boot, on gateway and WAN address events, and every minute
-  as a safety net
+- Gives each managed WireGuard tunnel's IPv6 gateway its host route and
+  keeps its tunnel address in place: at boot, on gateway and WAN address
+  events, and every minute as a safety net
 - Health mirror (every 15 s):
   - binds each tunnel to the WAN its endpoint route uses and holds the
     tunnel down while that WAN is down, so a tunnel never migrates to the
@@ -29,6 +28,17 @@ Features:
 
 Plugin Changelog
 ================
+
+2.0
+
+* Tunnels are derived from core configuration on every use; the plugin
+  keeps only which WireGuard instances it manages (the per-gateway rows
+  are migrated away)
+* Read-only Tunnels tab with live gateway status, the mirror's held
+  marker, links to the owning core pages, and findings
+* The health mirror's held set lives in the plugin configuration
+* Switches for the health mirror, IPv6 routes and default-route guard
+* Reconcile on every configuration change, not only each minute
 
 1.1
 
