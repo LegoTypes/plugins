@@ -46,14 +46,12 @@
         <id>edit.nat4</id>
         <label>IPv4 NAT sources</label>
         <type>select_multiple</type>
-        <style>tokenize</style>
-        <help>Tick an interface or add an alias to add one outbound NAT rule for it (destination any, translated to the tunnel's address). Untick it or remove the alias to delete every rule on this interface with that source. Every other rule, and every other field of a kept rule, stays as it is.</help>
+        <help>Select an interface or alias to add one outbound NAT rule for it (destination any, translated to the tunnel's address). Deselect it to delete every rule on this interface with that source. Every other rule, and every other field of a kept rule, stays as it is.</help>
     </field>
     <field>
         <id>edit.nat6</id>
         <label>IPv6 NAT sources</label>
         <type>select_multiple</type>
-        <style>tokenize</style>
         <help>The same, for IPv6.</help>
     </field>
 </form>
