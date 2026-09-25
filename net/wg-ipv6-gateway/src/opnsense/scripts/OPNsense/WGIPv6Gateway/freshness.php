@@ -58,7 +58,7 @@ try {
          * because this can run inside configd's config_changed action; a
          * run that cannot get the lock leaves the work to the run holding
          * it. --dry only reads, so it never waits. */
-        $lock = wgipv6_freshness_lock(
+        $lock = wgipv6_poll_lock(
             WGIPV6_FRESHNESS_LOCK_FILE,
             WGIPV6_FRESHNESS_LOCK_TIMEOUT_MS,
             WGIPV6_FRESHNESS_LOCK_POLL_MS
