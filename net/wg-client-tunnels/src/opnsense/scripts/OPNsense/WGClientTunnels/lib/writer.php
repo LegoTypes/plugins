@@ -13,7 +13,7 @@
  * write, and the CLI to the reconcile). The
  * apply is not done here: each result names its configd steps for
  * wgct_routing_action() (apply.php) or, for the API's Create, for the
- * keyless configd action `wgipv6gateway apply`.
+ * keyless configd action `wgclienttunnels apply`.
  */
 
 use OPNsense\Core\Config;

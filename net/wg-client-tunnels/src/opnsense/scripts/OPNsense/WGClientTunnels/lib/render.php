@@ -160,7 +160,7 @@ function wgct_validate_rendered(mixed $data): ?array {
 }
 
 /**
- * The only reader of rendered.json: every caller (freshness.php, tunnels.php,
+ * The only reader of rendered.json: every caller (freshness.php, lib/view.php,
  * the Tunnels API, site tooling) goes through here and so through
  * wgct_validate_rendered().
  *

@@ -35,12 +35,12 @@ function wgclienttunnels_services()
         $services[] = [
             'description' => gettext('WireGuard Client Tunnels'),
             'configd' => [
-                'start' => ['wgipv6gateway start'],
-                'stop' => ['wgipv6gateway stop'],
-                'restart' => ['wgipv6gateway restart'],
+                'start' => ['wgclienttunnels start'],
+                'stop' => ['wgclienttunnels stop'],
+                'restart' => ['wgclienttunnels restart'],
             ],
             'nocheck' => true,
-            'name' => 'wgipv6gateway',
+            'name' => 'wgclienttunnels',
         ];
     }
 
@@ -81,7 +81,7 @@ function wgclienttunnels_configure_do($verbose = false)
     }
 
     if ($verbose) {
-        echo 'Configuring WireGuard IPv6 gateway routes...';
+        echo 'Configuring WireGuard client tunnel IPv6 routes...';
         flush();
     }
 
@@ -149,7 +149,7 @@ function wgclienttunnels_xmlrpc_sync()
     $result[] = [
         'description' => gettext('WireGuard Client Tunnels'),
         'section' => 'OPNsense.WGClientTunnels',
-        'id' => 'wgipv6gateway',
+        'id' => 'wgclienttunnels',
     ];
     return $result;
 }

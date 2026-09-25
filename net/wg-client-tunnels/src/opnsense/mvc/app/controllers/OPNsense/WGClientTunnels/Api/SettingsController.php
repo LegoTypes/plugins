@@ -32,6 +32,6 @@ use OPNsense\Base\ApiMutableModelControllerBase;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
-    protected static $internalModelName = 'wgipv6gateway';
+    protected static $internalModelName = 'wgclienttunnels';
     protected static $internalModelClass = '\OPNsense\WGClientTunnels\WGClientTunnels';
 }

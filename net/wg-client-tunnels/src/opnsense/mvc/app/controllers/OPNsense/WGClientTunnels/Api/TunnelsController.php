@@ -15,7 +15,7 @@ use OPNsense\Core\Backend;
  * The Tunnels tab (spec 6, 7). search and options are views derived from core
  * on every request. Create is the one write done in-process, because only it
  * may see the private key (spec 6.1); it then runs the keyless configd action
- * `wgipv6gateway apply`. Every other action runs in its own process through
+ * `wgclienttunnels apply`. Every other action runs in its own process through
  * configd, with uuids, gateway names and addresses as its only parameters.
  */
 class TunnelsController extends ApiControllerBase
@@ -150,7 +150,7 @@ class TunnelsController extends ApiControllerBase
          * call (ruling 20); 'ok' below reflects only whether this apply succeeded, so a timeout or a
          * failed step is never reported as success -- the uuid and the apply-pending finding are what
          * let the GUI offer Apply again */
-        $apply = wgct_configd_json('wgipv6gateway apply', [$result['uuid']], 300);
+        $apply = wgct_configd_json('wgclienttunnels apply', [$result['uuid']], 300);
         $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
         return [
             'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
@@ -170,7 +170,7 @@ class TunnelsController extends ApiControllerBase
         if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 endpoint first']];
         }
-        return wgct_configd_json('wgipv6gateway measure_mtu', [$wan, $endpoint], 120);
+        return wgct_configd_json('wgclienttunnels measure_mtu', [$wan, $endpoint], 120);
     }
 
     public function removeAction(string $uuid = ''): array
@@ -187,10 +187,10 @@ class TunnelsController extends ApiControllerBase
             return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         if ($dry) {
-            return wgct_configd_json('wgipv6gateway remove_dry', [$uuid], 120);
+            return wgct_configd_json('wgclienttunnels remove_dry', [$uuid], 120);
         }
         $this->throwReadOnly();
-        return wgct_configd_json('wgipv6gateway remove', [$uuid], 300);
+        return wgct_configd_json('wgclienttunnels remove', [$uuid], 300);
     }
 
     public function applyAction(string $uuid = ''): array
@@ -203,7 +203,7 @@ class TunnelsController extends ApiControllerBase
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not a tunnel uuid']];
         }
-        return wgct_configd_json('wgipv6gateway apply', [$uuid], 300);
+        return wgct_configd_json('wgclienttunnels apply', [$uuid], 300);
     }
 
     public function rebindAction(string $uuid = ''): array
@@ -221,7 +221,7 @@ class TunnelsController extends ApiControllerBase
             || ($stale !== '' && preg_match(self::UUID, $stale) !== 1)) {
             return ['ok' => false, 'errors' => ['choose a WAN (and, optionally, a stale route to delete)']];
         }
-        return wgct_configd_json('wgipv6gateway rebind', [$uuid, $wan, $stale], 300);
+        return wgct_configd_json('wgclienttunnels rebind', [$uuid, $wan, $stale], 300);
     }
 
     public function adoptAction(string $uuid = ''): array
@@ -238,10 +238,10 @@ class TunnelsController extends ApiControllerBase
             return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         if ($dry) {
-            return wgct_configd_json('wgipv6gateway adopt_dry', [$uuid], 120);
+            return wgct_configd_json('wgclienttunnels adopt_dry', [$uuid], 120);
         }
         $this->throwReadOnly();
-        return wgct_configd_json('wgipv6gateway adopt', [$uuid], 120);
+        return wgct_configd_json('wgclienttunnels adopt', [$uuid], 120);
     }
 
     /**

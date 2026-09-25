@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The command line (spec 6.4), shared by tunnel.php and its alias tunnels.php.
+ * The command line of tunnel.php (spec 6.4).
  * --json prints one JSON object and returns 0 whatever happened: configd's
  * script_output turns a non-zero exit into a bare "Execute error", so
  * failures travel inside the JSON. create reads its request as JSON on stdin;
@@ -61,7 +61,7 @@ function wgct_cli_main(array $args): int {
             case 'status':
                 return wgct_cli_list($json, $cmd === 'status');
             case 'reconcile':
-                $out = (string)(new \OPNsense\Core\Backend())->configdRun('wgipv6gateway reconcile', false, 300);
+                $out = (string)(new \OPNsense\Core\Backend())->configdRun('wgclienttunnels reconcile', false, 300);
                 return wgct_cli_emit(wgct_result(['ok' => true, 'after' => ['replayed' => [], 'reconcile' => wgct_step_summary($out)]]), $json);
             case 'create':
                 /* a JSON boundary: json_decode yields mixed; wgct_create_request() type-checks every value */
