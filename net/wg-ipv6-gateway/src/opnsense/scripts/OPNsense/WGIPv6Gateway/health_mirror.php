@@ -38,7 +38,9 @@
  *
  * --dry reports every decision against live config and live gateway status
  * without writing or reconfiguring anything. --selftest exercises the decision
- * logic without touching config.
+ * logic without touching config. --snapshot prints the decision input
+ * (config, live status, held tunnels) as JSON and writes nothing; --plan-from=FILE
+ * decides from a snapshot saved that way and prints what --dry would.
  *
  * Runs from /etc/cron.d/wgipv6gateway four times a minute (offsets 0/15/30/45s).
  */
