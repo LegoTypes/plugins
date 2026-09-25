@@ -45,6 +45,64 @@ const WGIPV6_TUNNEL_APPLY_STEPS = [
 ];
 
 /**
+ * Run a configd action and decode its JSON boundary once, for every API
+ * caller (both controllers). A reply that does not decode to an array --
+ * Backend::configdRun()/configdpRun() return '' on a timeout, a dropped
+ * socket or a stripped 'Execute error' (ruling 14) -- used to be reported as
+ * "ok: false, errors: ['backend: ']", which reads as nothing happened even
+ * though the action may still be running on the box (controller review,
+ * 2026-09-25); it is now a clear message naming the timeout used and telling
+ * the caller to reload and check the log instead. `errors`, when the action
+ * supplied one, is flattened to a plain list (array_values()): the GUI
+ * (Task 8) reads one shape regardless of whether the underlying
+ * wgipv6_result() keyed it by request field or apply step.
+ *
+ * @param string       $action
+ * @param list<string> $params  uuids, gateway names and addresses only (configd shows argv in ps)
+ * @param int          $timeout
+ * @return array the action's decoded JSON result, or a failure of the same shape
+ */
+function wgipv6_configd_json(string $action, array $params, int $timeout): array {
+    $backend = new Backend();
+    $raw = (string)($params === []
+        ? $backend->configdRun($action, false, $timeout)
+        : $backend->configdpRun($action, $params, false, $timeout));
+    $data = json_decode($raw, true);
+    if (!is_array($data)) {
+        return ['ok' => false, 'errors' => [
+            "no reply from the backend within {$timeout} s (timeout or configd error); "
+            . 'the action may still be running — reload the list and check the system log',
+        ]];
+    }
+    if (isset($data['errors']) && is_array($data['errors'])) {
+        $data['errors'] = array_values($data['errors']);
+    }
+    return $data;
+}
+
+/**
+ * The API's {dry: ...} flag. ajaxCall posts JSON, so a bool or int can arrive
+ * where a form-encoded post only ever carried '0'/'1' strings: absent, '',
+ * '0', 0 (int) and false all mean "run for real"; '1', 1 (int) and true all
+ * mean "preview only"; anything else -- a stray float, a string like 'yes',
+ * an array -- is refused rather than silently defaulting to either side, so a
+ * malformed value can never fall through into a real Remove/Adopt/Sentinel
+ * (controller review, 2026-09-25).
+ *
+ * @param mixed $value the raw {dry: ...} POST value -- a JSON boundary, hence mixed
+ * @return bool|null true for dry, false for real, null when the caller must refuse
+ */
+function wgipv6_dry_flag(mixed $value): ?bool {
+    if ($value === null || $value === '' || $value === '0' || $value === 0 || $value === false) {
+        return false;
+    }
+    if ($value === '1' || $value === 1 || $value === true) {
+        return true;
+    }
+    return null;
+}
+
+/**
  * @return \SplFileObject the gateway lock, held until LOCK_UN or the object is released
  * @throws \RuntimeException when it is still held elsewhere after WGIPV6_GATEWAY_LOCK_WAIT_MS
  */
@@ -419,5 +477,12 @@ function wgipv6_apply_selftest(): int {
         wgipv6_pending_from_json([$u1 => 1700000000, 'not-a-uuid' => 1, '00000000-0000-4000-8000-000000000002' => 'soon']) === [$u1 => 1700000000]);
     wgipv6_check($t, 'apply: a malformed pending record reads as nothing pending',
         wgipv6_pending_from_json('garbage') === [] && wgipv6_pending_from_json(null) === []);
+    wgipv6_check($t, 'apply: dry flag -- absent, empty, "0", 0 and false all mean real',
+        wgipv6_dry_flag(null) === false && wgipv6_dry_flag('') === false && wgipv6_dry_flag('0') === false
+        && wgipv6_dry_flag(0) === false && wgipv6_dry_flag(false) === false);
+    wgipv6_check($t, 'apply: dry flag -- "1", 1 and true all mean dry',
+        wgipv6_dry_flag('1') === true && wgipv6_dry_flag(1) === true && wgipv6_dry_flag(true) === true);
+    wgipv6_check($t, 'apply: dry flag -- anything else (a stray float, string, array) is refused, not defaulted',
+        wgipv6_dry_flag('yes') === null && wgipv6_dry_flag(2) === null && wgipv6_dry_flag(1.0) === null && wgipv6_dry_flag([]) === null);
     return wgipv6_tally_report('apply', $t);
 }
