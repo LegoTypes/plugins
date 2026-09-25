@@ -136,11 +136,14 @@
 </script>
 
 <ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#tunnels">{{ lang._('Tunnels') }}</a></li>
-    <li><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
+    <li><a data-toggle="tab" href="#tunnels">{{ lang._('Tunnels') }}</a></li>
 </ul>
 <div class="tab-content content-box">
-    <div id="tunnels" class="tab-pane fade in active" style="padding: 1em;">
+    <div id="settings" class="tab-pane fade in active">
+        {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+    </div>
+    <div id="tunnels" class="tab-pane fade" style="padding: 1em;">
         <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, the /32 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Hover a finding for what it means and where it is fixed.') }}</p>
         <div id="tunnel-banners"></div>
         <button class="btn btn-default" id="btn-refresh"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
@@ -161,9 +164,6 @@
             <tbody></tbody>
         </table>
     </div>
-    <div id="settings" class="tab-pane fade">
-        {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
-    </div>
 </div>
 <section class="page-content-main">
     <div class="content-box">
@@ -172,7 +172,7 @@
             <button class="btn btn-primary" id="reconfigureAct"
                     data-endpoint="/api/wgipv6gateway/service/reconfigure"
                     data-label="{{ lang._('Apply') }}"
-                    data-error-title="{{ lang._('Error reconfiguring the WireGuard IPv6 gateway') }}"
+                    data-error-title="{{ lang._('Error applying the WireGuard client tunnel settings') }}"
                     type="button"></button>
             <br/><br/>
         </div>
