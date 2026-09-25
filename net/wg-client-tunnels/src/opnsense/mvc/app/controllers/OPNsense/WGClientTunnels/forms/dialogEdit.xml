@@ -1,0 +1,59 @@
+<form>
+    <field>
+        <id>edit.name</id>
+        <label>Tunnel</label>
+        <type>text</type>
+        <help>Fixed: the name, instance number, device, interface and gateway names never change, so gateway groups and rules that name the tunnel keep working.</help>
+    </field>
+    <field>
+        <id>edit.config</id>
+        <label>Replacement config</label>
+        <type>textbox</type>
+        <height>8</height>
+        <help>Optional: a new wg-quick file for this tunnel (another server, or new keys): paste it, or use "Load file" (read by your browser; nothing is uploaded). It replaces the instance key pair, the peer's public and preshared keys, the endpoint and the tunnel addresses; the old endpoint's route is deleted, with its kernel route, and one to the new endpoint written via the bound WAN. Leave it empty to keep them. The private key is never shown again.</help>
+    </field>
+    <field>
+        <id>edit.wan</id>
+        <label>Bound WAN</label>
+        <type>dropdown</type>
+        <help>Moves the tunnel to another WAN: its endpoint route changes gateway and the tunnel restarts, so it handshakes via that WAN. An unbound tunnel is bound with Rebind.</help>
+    </field>
+    <field>
+        <id>edit.monitor</id>
+        <label>Monitor IP</label>
+        <type>text</type>
+        <help>An IPv4 address pinged through the tunnel. Nothing else may use it: no other gateway's monitor or address, no DNS server or forwarder, no endpoint.</help>
+    </field>
+    <field>
+        <id>edit.mtu</id>
+        <label>MTU</label>
+        <type>text</type>
+        <help>The instance MTU, 1280 to 1420. Measure probes from the chosen WAN to the endpoint (the replacement config's, when one is pasted). A change restarts the tunnel; the MSS clamp follows. An MTU set on the interface itself still wins (finding mtu-override).</help>
+    </field>
+    <field>
+        <id>edit.ipv6</id>
+        <label>IPv6</label>
+        <type>checkbox</type>
+        <help>Unticking removes the IPv6 gateway (refused while a group or rule uses it), the IPv6 tunnel address, ::/0 from the peer and the IPv6 outbound NAT. Ticking needs a replacement config with an IPv6 Address, since the provider assigns it with the key; the new IPv6 gateway starts forced down and the health mirror releases it.</help>
+    </field>
+    <field>
+        <id>edit.unique</id>
+        <label>Unique addressing</label>
+        <type>checkbox</type>
+        <help>With a replacement config: give the tunnel fd00::N:1/128 instead of the config's IPv6 address, as Create does. The provider must accept and translate the substituted source address.</help>
+    </field>
+    <field>
+        <id>edit.nat4</id>
+        <label>IPv4 NAT sources</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <help>Tick an interface or add an alias to add one outbound NAT rule for it (destination any, translated to the tunnel's address). Untick it or remove the alias to delete every rule on this interface with that source. Every other rule, and every other field of a kept rule, stays as it is.</help>
+    </field>
+    <field>
+        <id>edit.nat6</id>
+        <label>IPv6 NAT sources</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <help>The same, for IPv6.</help>
+    </field>
+</form>

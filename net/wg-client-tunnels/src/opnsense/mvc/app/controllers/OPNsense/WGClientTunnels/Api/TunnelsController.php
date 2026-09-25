@@ -12,12 +12,12 @@ use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
 
 /**
- * The Tunnels tab (spec 6, 7). search, search_grid and options are views
- * derived from core on every request. Create is the one write done in-process,
- * because only it may see the private key (spec 6.1); it then runs the keyless
- * configd action `wgclienttunnels apply`. Every other action runs in its own
- * process through configd, with uuids, gateway names and addresses as its only
- * parameters.
+ * The Tunnels tab (spec 6, 7). search, search_grid, options and edit_form are
+ * views derived from core on every request. Create and Edit are the writes
+ * done in-process, because only they may see a private key (spec 6.1, 6.5);
+ * each then runs the keyless configd action `wgclienttunnels apply_mode`.
+ * Every other action runs in its own process through configd, with uuids,
+ * gateway names and addresses as its only parameters.
  */
 class TunnelsController extends ApiControllerBase
 {
@@ -55,6 +55,34 @@ class TunnelsController extends ApiControllerBase
 
     public function optionsAction(): array
     {
+        return ['status' => 'ok'] + $this->choices();
+    }
+
+    /**
+     * The Edit dialog: the tunnel's current values (wgct_edit_prefill()) and the choices.
+     */
+    public function editFormAction(string $uuid = ''): array
+    {
+        require_once self::LIB . '/writer.php';
+        if (preg_match(self::UUID, $uuid) !== 1) {
+            return ['status' => 'failed', 'errors' => ['not a tunnel uuid']];
+        }
+        $prefill = wgct_edit_prefill(wgct_action_snapshot(), $uuid);
+        if ($prefill['errors'] !== []) {
+            return ['status' => 'failed', 'errors' => $prefill['errors']];
+        }
+        return ['status' => 'ok', 'form' => $prefill['form']] + $this->choices();
+    }
+
+    /**
+     * Create's and Edit's choices: the WANs that can bind a tunnel, the template
+     * tunnels, the NAT sources (kind interface or alias), the IPv6 addresses on
+     * instances, the fd00::N:1 convention and the stale routes.
+     *
+     * @return array<string, list<array<string, string>>|list<string>|bool>
+     */
+    private function choices(): array
+    {
         require_once self::LIB . '/actions.php';
         require_once self::LIB . '/view.php';
         $view = wgct_tunnel_view();
@@ -77,12 +105,12 @@ class TunnelsController extends ApiControllerBase
         foreach ($core['interfaces'] as $key => $if) {
             if (wgct_is_nat_interface_key((string)$key) && $if['enable'] && !isset($wgDevices[$if['if']])
                 && strncmp($if['if'], 'lo', 2) !== 0) {
-                $sources[] = ['value' => (string)$key, 'label' => ($if['descr'] !== '' ? $if['descr'] : strtoupper((string)$key)) . ' net'];
+                $sources[] = ['value' => (string)$key, 'label' => ($if['descr'] !== '' ? $if['descr'] : strtoupper((string)$key)) . ' net', 'kind' => 'interface'];
             }
         }
         foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
             if (in_array((string)$alias->type, self::NAT_ALIAS_TYPES, true)) {
-                $sources[] = ['value' => (string)$alias->name, 'label' => (string)$alias->name . ' (alias)'];
+                $sources[] = ['value' => (string)$alias->name, 'label' => (string)$alias->name . ' (alias)', 'kind' => 'alias'];
             }
         }
         $stale = [];
@@ -90,7 +118,7 @@ class TunnelsController extends ApiControllerBase
             $stale[] = ['value' => (string)$uuid, 'label' => "{$b['ip']}/32 via {$b['gateway']}"];
         }
         return [
-            'status' => 'ok', 'wans' => $wans, 'templates' => $templates, 'nat_sources' => $sources,
+            'wans' => $wans, 'templates' => $templates, 'nat_sources' => $sources,
             'instance_ipv6' => array_keys(wgct_instance_ipv6($core)),
             'unique_convention' => wgct_unique_convention(['tunnels' => $view['tunnels'], 'global' => []]),
             'stale_routes' => $stale,
@@ -116,7 +144,7 @@ class TunnelsController extends ApiControllerBase
             $prep = wgct_create_prepare($raw, true);
             $secrets = array_values($prep['secret']);
             if ($prep['errors'] !== []) {
-                return $this->formFailure($prep['errors'], $prep['notes']);
+                return $this->formFailure($prep['errors'], $prep['notes'], 'create', WGCT_CREATE_FIELDS);
             }
             /* spec 4.6: gateway lock (bounded, ruling 22), then Config::lock() inside the commit; the lock is
              * released before the configd apply below, which takes it itself (holding it across would deadlock) */
@@ -134,17 +162,94 @@ class TunnelsController extends ApiControllerBase
         }
         unset($prep, $raw, $secrets);
         if (!$result['ok']) {
-            return $this->formFailure($result['errors'], $result['changes']);
+            return $this->formFailure($result['errors'], $result['changes'], 'create', WGCT_CREATE_FIELDS);
         }
         /* the tunnel is saved and marked apply-pending by wgct_create_commit() itself, before this
          * call (ruling 20); 'ok' below reflects only whether this apply succeeded, so a timeout or a
          * failed step is never reported as success -- the uuid and the apply-pending finding are what
          * let the GUI offer Apply again */
-        $apply = wgct_configd_json('wgclienttunnels apply', [$result['uuid']], 300);
+        $apply = wgct_configd_json('wgclienttunnels apply_mode', [$result['uuid'], 'first'], 300);
         $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
         return [
             'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
             'saved' => true, 'uuid' => $result['uuid'], 'changes' => $result['changes'],
+            'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $applyErrors,
+        ];
+    }
+
+    /**
+     * Edit (spec 6.5): {edit: {...}, dry: 1} previews; without dry it saves the
+     * differences in-process (the only step that sees a key) and hands the
+     * apply to `apply_mode <uuid> <mode>`. The gateway lock is held for the save
+     * only when the edit changes routing (spec 4.6), and released before configd.
+     */
+    public function editAction(string $uuid = ''): array
+    {
+        if (!$this->request->isPost()) {
+            return ['result' => 'failed'];
+        }
+        require_once self::LIB . '/writer.php';
+        if (preg_match(self::UUID, $uuid) !== 1) {
+            return ['result' => 'failed', 'errors' => ['not a tunnel uuid']];
+        }
+        $dry = wgct_dry_flag($this->request->getPost('dry'));
+        if ($dry === null) {
+            return ['result' => 'failed', 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+        }
+        if (!$dry) {
+            $this->throwReadOnly();
+        }
+        /* a form boundary: edit.* arrives as an array of strings; wgct_edit_request() checks every value */
+        $raw = $this->request->getPost('edit');
+        if (!is_array($raw)) {
+            return ['result' => 'failed', 'errors' => ['the edit form was empty']];
+        }
+        $secrets = [];
+        $saved = false;
+        try {
+            $prep = wgct_edit_prepare($raw, $uuid);
+            $secrets = array_values($prep['secret']);
+            if ($prep['errors'] !== []) {
+                return $this->formFailure($prep['errors'], $prep['notes'], 'edit', WGCT_EDIT_FIELDS);
+            }
+            if ($dry) {
+                $result = wgct_edit_commit($prep, true, false);
+            } else {
+                $routing = wgct_apply_mode_locks(wgct_edit_mode_unlocked($prep));
+                $commit = function () use ($prep, $routing, &$saved): array {
+                    $r = wgct_edit_commit($prep, false, $routing);
+                    $saved = $r['saved'];
+                    if ($r['saved']) {
+                        /* core's kernel-route hand-off for a deleted endpoint route, before the apply's routes configure */
+                        wgct_write_route_todos($r['route_todos']);
+                    }
+                    return $r;
+                };
+                $result = $routing ? wgct_gateway_locked_commit($commit) : $commit();
+            }
+        } catch (\Throwable $e) {
+            syslog(LOG_ERR, '[wgct-action] edit failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
+            return ['result' => 'failed', 'saved' => $saved, 'errors' => [
+                'Edit failed; the system log has the reason (never the key). ' . wgct_failure_footer('edit', $uuid),
+            ]];
+        }
+        unset($prep, $raw, $secrets);
+        if (!$result['ok']) {
+            return $this->formFailure($result['errors'], $result['changes'], 'edit', WGCT_EDIT_FIELDS);
+        }
+        if ($dry || !$result['saved']) {
+            return [
+                'result' => $dry ? 'preview' : 'unchanged', 'ok' => true, 'saved' => false, 'dry' => $dry,
+                'changes' => $result['changes'], 'errors' => [],
+            ];
+        }
+        /* saved, and marked apply-pending with its mode by wgct_edit_commit() until an apply of at least
+         * that mode completes (S5 review I2); 'ok' reflects only whether this apply succeeded */
+        $apply = wgct_configd_json('wgclienttunnels apply_mode', [$uuid, $result['apply_mode']], 300);
+        $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
+        return [
+            'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
+            'saved' => true, 'uuid' => $uuid, 'changes' => $result['changes'],
             'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $applyErrors,
         ];
     }
@@ -235,17 +340,19 @@ class TunnelsController extends ApiControllerBase
     }
 
     /**
-     * @param array        $errors  Create's errors, keyed by request field or 'general'
+     * @param array        $errors  keyed by request field or 'general'
      * @param list<string> $changes
+     * @param string       $form    the form id prefix: create or edit
+     * @param list<string> $fields  the form's request fields (WGCT_CREATE_FIELDS, WGCT_EDIT_FIELDS)
      * @return array the form failure: field messages for handleFormValidation(), the rest as a list
      */
-    private function formFailure(array $errors, array $changes): array
+    private function formFailure(array $errors, array $changes, string $form, array $fields): array
     {
         $validations = [];
         $general = [];
         foreach ($errors as $field => $message) {
-            if (is_string($field) && in_array($field, WGCT_CREATE_FIELDS, true)) {
-                $validations['create.' . $field] = $message;
+            if (is_string($field) && in_array($field, $fields, true)) {
+                $validations[$form . '.' . $field] = $message;
             } else {
                 $general[] = $message;
             }
