@@ -18,7 +18,7 @@ require_once __DIR__ . '/apply.php';
 require_once __DIR__ . '/selftest.php';
 
 const WGIPV6_CLI_USAGE = <<<'TXT'
-Usage: tunnel.php [--json] [--dry] COMMAND
+Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, remove, rebind, adopt, ensure-sentinel)
   list                                managed tunnels, and WireGuard instances the plugin does not manage
   status                              findings only
   reconcile                           run the reconcile now
@@ -28,9 +28,12 @@ Usage: tunnel.php [--json] [--dry] COMMAND
   adopt UUID                          manage an existing WireGuard instance
   ensure-sentinel                     create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel
   measure-mtu WAN ENDPOINT            measure the tunnel MTU for WAN -> ENDPOINT
-  apply UUID                          run the tunnel apply again (the API's step after Create; clears apply-pending)
+  apply UUID                          run Create's tunnel apply again (the API's step after Create; clears apply-pending)
        tunnel.php --selftest
 TXT;
+/* the write actions, whose --dry validates and writes nothing; any other command refuses --dry */
+const WGIPV6_CLI_DRY_COMMANDS = ['create', 'remove', 'rebind', 'adopt', 'ensure-sentinel'];
+const WGIPV6_CLI_OTHER_COMMANDS = ['list', 'status', 'reconcile', 'measure-mtu', 'apply'];
 
 /**
  * @param list<string> $args argv without the script name
@@ -45,6 +48,13 @@ function wgipv6_cli_main(array $args): int {
     $pos = array_values(array_filter($args, fn (string $a): bool => strncmp($a, '--', 2) !== 0));
     $cmd = $pos[0] ?? '';
     $secrets = [];
+    /* the tunnel a failure concerns, once known: the apply argument, or the uuid a Create saved */
+    $uuid = '';
+    if ($dry && in_array($cmd, WGIPV6_CLI_OTHER_COMMANDS, true)) {
+        return wgipv6_cli_emit(wgipv6_result(['dry' => true, 'errors' => [
+            'general' => "--dry applies to the write actions only (" . implode(', ', WGIPV6_CLI_DRY_COMMANDS) . "); {$cmd} has no dry run",
+        ]]), $json);
+    }
     try {
         switch ($cmd) {
             case 'list':
@@ -65,7 +75,12 @@ function wgipv6_cli_main(array $args): int {
                 if ($prep['errors'] !== []) {
                     return wgipv6_cli_emit(wgipv6_result(['errors' => $prep['errors'], 'changes' => $prep['notes'], 'dry' => $dry]), $json);
                 }
-                return wgipv6_cli_emit(wgipv6_routing_action(fn (): array => wgipv6_create_commit($prep, $dry), $dry), $json);
+                $commit = function () use ($prep, $dry, &$uuid): array {
+                    $created = wgipv6_create_commit($prep, $dry);
+                    $uuid = $created['saved'] ? $created['uuid'] : '';
+                    return $created;
+                };
+                return wgipv6_cli_emit(wgipv6_routing_action($commit, $dry), $json);
             case 'remove':
                 $uuid = wgipv6_cli_uuid($pos[1] ?? '');
                 return wgipv6_cli_emit(wgipv6_routing_action(fn (): array => wgipv6_remove_commit($uuid, $dry), $dry), $json);
@@ -82,7 +97,8 @@ function wgipv6_cli_main(array $args): int {
             case 'measure-mtu':
                 return wgipv6_cli_emit_mtu(wgipv6_measure_mtu($pos[1] ?? '', $pos[2] ?? ''), $json);
             case 'apply':
-                return wgipv6_cli_emit(wgipv6_apply_only(wgipv6_cli_uuid($pos[1] ?? '')), $json);
+                $uuid = wgipv6_cli_uuid($pos[1] ?? '');
+                return wgipv6_cli_emit(wgipv6_apply_only($uuid), $json);
             default:
                 fwrite(STDERR, WGIPV6_CLI_USAGE . "\n");
                 return 2;
@@ -93,35 +109,43 @@ function wgipv6_cli_main(array $args): int {
         /*
          * wgipv6_cli_uuid() is the only thing that throws InvalidArgumentException,
          * and it runs before any writer is called: that failure can never
-         * follow a save, so the "apply again" footer would be misleading
+         * follow a save, so any "after the save" footer would be misleading
          * there (controller review, 2026-09-25). Everything else reaches
          * here from inside or after an action function, which may have
-         * already saved.
+         * already saved. A dry run saves nothing either.
          */
-        $canFollowSave = !($e instanceof \InvalidArgumentException);
-        return wgipv6_cli_emit(wgipv6_result(['dry' => $dry, 'errors' => ['general' => wgipv6_cli_failure_message($cmd, $msg, $canFollowSave)]]), $json);
+        $canFollowSave = !($e instanceof \InvalidArgumentException) && !$dry;
+        return wgipv6_cli_emit(wgipv6_result(['dry' => $dry, 'errors' => ['general' => wgipv6_cli_failure_message($cmd, $msg, $canFollowSave, $uuid)]]), $json);
     }
 }
 
 /**
  * The text for a caught command failure. A pre-write input error (an
- * invalid uuid; $canFollowSave false) can never have saved anything, so it
- * gets no "apply again" footer; anything that may have run after an action
- * function started -- and so may have saved before failing -- does. Pure:
- * $msg is text the caller has already redacted.
+ * invalid uuid) or a dry run ($canFollowSave false) can never have saved
+ * anything, so it gets no footer; anything that may have run after an action
+ * function started -- and so may have saved before failing -- gets its
+ * command's footer (wgipv6_failure_footer(): `tunnel.php apply` only for
+ * create and apply). Pure: $msg is text the caller has already redacted.
  *
  * @param string $cmd           the command that failed
  * @param string $msg           the redacted exception text
  * @param bool   $canFollowSave whether the failure could have happened after a save
+ * @param string $uuid          the tunnel's instance uuid when known, else ''
  * @return string
  */
-function wgipv6_cli_failure_message(string $cmd, string $msg, bool $canFollowSave): string {
+function wgipv6_cli_failure_message(string $cmd, string $msg, bool $canFollowSave, string $uuid): string {
     $text = "{$cmd} failed: {$msg}.";
-    if (!$canFollowSave) {
-        return $text;
-    }
-    return $text . ' If this happened after the save, the change is in config and only its apply is incomplete: '
-        . 'run `tunnel.php apply UUID` and check `tunnel.php status`.';
+    $footer = $canFollowSave ? wgipv6_failure_footer($cmd, $uuid) : '';
+    return $footer === '' ? $text : "{$text} {$footer}";
+}
+
+/**
+ * @return bool whether $cmd takes --dry (a write action); `apply` and
+ *              `reconcile` act for real and the read commands write nothing,
+ *              so --dry on any of them is refused, never silently ignored. Pure.
+ */
+function wgipv6_cli_takes_dry(string $cmd): bool {
+    return in_array($cmd, WGIPV6_CLI_DRY_COMMANDS, true);
 }
 
 /**
@@ -239,7 +263,7 @@ function wgipv6_cli_list(bool $json, bool $findingsOnly): int {
 
 /**
  * Self-tests for cli.php's own pure helpers: uuid validation and the
- * apply-again footer decision. No syslog, no files, no config, no processes.
+ * per-command failure footer. No syslog, no files, no config, no processes.
  *
  * @return int exit code, 0 when every case passes
  */
@@ -258,12 +282,29 @@ function wgipv6_cli_own_selftest(): int {
         }
         wgipv6_check($t, "cli: '{$bad}' is rejected as not a uuid", $rejected);
     }
-    wgipv6_check($t, 'cli: a pre-write input error (cannot follow a save) carries no apply-again footer',
-        wgipv6_cli_failure_message('remove', 'InvalidArgumentException: not a uuid: x', false)
+    wgipv6_check($t, 'cli: a pre-write input error (cannot follow a save) carries no footer',
+        wgipv6_cli_failure_message('remove', 'InvalidArgumentException: not a uuid: x', false, '')
         === 'remove failed: InvalidArgumentException: not a uuid: x.');
-    wgipv6_check($t, 'cli: a failure that may follow a save carries the apply-again footer',
-        str_contains(wgipv6_cli_failure_message('remove', 'RuntimeException: boom', true), 'run `tunnel.php apply UUID`')
-        && str_contains(wgipv6_cli_failure_message('remove', 'RuntimeException: boom', true), 'remove failed: RuntimeException: boom.'));
+    $create = wgipv6_cli_failure_message('create', 'RuntimeException: boom', true, $lower);
+    wgipv6_check($t, 'cli: a create failure that may follow a save names `tunnel.php apply <its uuid>`',
+        str_starts_with($create, 'create failed: RuntimeException: boom. ') && str_contains($create, "`tunnel.php apply {$lower}`"));
+    wgipv6_check($t, 'cli: an apply failure names `tunnel.php apply <uuid>` again',
+        str_contains(wgipv6_cli_failure_message('apply', 'RuntimeException: boom', true, $lower), "`tunnel.php apply {$lower}` again"));
+    $remove = wgipv6_cli_failure_message('remove', 'RuntimeException: boom', true, $lower);
+    wgipv6_check($t, 'cli: a remove failure that may follow a save points to status and the list, not to apply',
+        str_starts_with($remove, 'remove failed: RuntimeException: boom. ') && !str_contains($remove, 'tunnel.php apply')
+        && str_contains($remove, '`tunnel.php status`'));
+    wgipv6_check($t, 'cli: rebind, adopt and ensure-sentinel failures never suggest apply',
+        !str_contains(wgipv6_cli_failure_message('rebind', 'x', true, $lower), 'tunnel.php apply')
+        && !str_contains(wgipv6_cli_failure_message('adopt', 'x', true, $lower), 'tunnel.php apply')
+        && !str_contains(wgipv6_cli_failure_message('ensure-sentinel', 'x', true, ''), 'tunnel.php apply'));
+    wgipv6_check($t, 'cli: --dry is taken by create, remove, rebind, adopt and ensure-sentinel',
+        array_filter(['create', 'remove', 'rebind', 'adopt', 'ensure-sentinel'], fn (string $c): bool => !wgipv6_cli_takes_dry($c)) === []);
+    wgipv6_check($t, 'cli: --dry is refused, not ignored, by apply, reconcile, list, status and measure-mtu',
+        array_filter(WGIPV6_CLI_OTHER_COMMANDS, 'wgipv6_cli_takes_dry') === [] && count(WGIPV6_CLI_OTHER_COMMANDS) === 5);
+    wgipv6_check($t, 'cli: a list or measure-mtu failure carries no footer',
+        wgipv6_cli_failure_message('list', 'x', true, '') === 'list failed: x.'
+        && wgipv6_cli_failure_message('measure-mtu', 'x', true, '') === 'measure-mtu failed: x.');
     return wgipv6_tally_report('cli', $t);
 }
 

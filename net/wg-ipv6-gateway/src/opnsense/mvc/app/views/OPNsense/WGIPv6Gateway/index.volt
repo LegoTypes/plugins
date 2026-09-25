@@ -153,7 +153,7 @@
                 /* the config write happened even though the apply step after it did not finish -- never let
                  * that read as a lost change (review finding 1). The wording follows what the dialog actually
                  * offers: only Create/Apply's own retry uses the generic apply endpoint (ruling 21); Rebind's
-                 * own apply step ("interface routes configure", ruling 12) is not the same pipeline, so its
+                 * own apply ("interface routes configure", then "wireguard restart") is not the same pipeline, so its
                  * failure gets a plainer message instead of a misleading "Apply again". */
                 body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
                     ? "{{ lang._('Saved; the apply did not complete. Apply again, or use the Apply button in the tunnel row.') }}"

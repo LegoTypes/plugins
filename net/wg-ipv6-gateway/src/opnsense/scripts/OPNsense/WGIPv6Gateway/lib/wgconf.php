@@ -170,12 +170,33 @@ function wgipv6_parse_wgquick(#[\SensitiveParameter] string $text): array {
 }
 
 /**
+ * A yes/no request value (ipv6, unique). Fail closed: absent/null means "the
+ * default", true/'1'/1 yes, false/'0'/0 no; anything else -- '', "false",
+ * "yes", 2, an array -- is invalid, never read as either side. Pure.
+ *
+ * @param mixed $v the raw value -- a form/JSON boundary, hence mixed
+ * @return array{0: bool, 1: ?bool} [valid, value]; value null for the default or when invalid
+ */
+function wgipv6_request_flag(mixed $v): array {
+    if ($v === null) {
+        return [true, null];
+    }
+    if ($v === true || $v === '1' || $v === 1) {
+        return [true, true];
+    }
+    if ($v === false || $v === '0' || $v === 0) {
+        return [true, false];
+    }
+    return [false, null];
+}
+
+/**
  * The typed Create request, from the API form (strings) or the CLI's JSON
  * (strings, bools, ints, lists). $raw is a form/JSON boundary: its values are
  * whatever the POST or json_decode produced, so each one is type-checked here
  * rather than trusted. Pure.
  *
- * @param array $raw         keys of WGIPV6_CREATE_FIELDS. ipv6/unique: bool or '0'/'1'
+ * @param array $raw         keys of WGIPV6_CREATE_FIELDS. ipv6/unique: see wgipv6_request_flag()
  *                           (absent = the planner's default: ipv6 on exactly when the
  *                           config has an IPv6 address, unique per ruling 3);
  *                           mtu: int or digits ('' or absent = measure);
@@ -189,15 +210,13 @@ function wgipv6_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequi
         $v = $raw[$key] ?? '';
         return is_string($v) ? trim($v) : '';
     };
-    $flag = function (string $key) use ($raw): ?bool {
-        $v = $raw[$key] ?? null;
-        if ($v === true || $v === '1' || $v === 1) {
-            return true;
+    /* fail closed: a value that is neither absent/null nor a clear yes/no is a field error, never a default */
+    $flag = function (string $key) use ($raw, &$errors): ?bool {
+        [$valid, $value] = wgipv6_request_flag($raw[$key] ?? null);
+        if (!$valid) {
+            $errors[$key] = 'true or false (1 or 0), or leave it out for the default';
         }
-        if ($v === false || $v === '0' || $v === 0 || $v === '') {
-            return false;
-        }
-        return null;
+        return $value;
     };
     $list = function (string $key) use ($raw): array {
         $v = $raw[$key] ?? [];
@@ -238,6 +257,8 @@ function wgipv6_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequi
     } elseif (!($mtuRaw === null || (is_string($mtuRaw) && trim($mtuRaw) === ''))) {
         $errors['mtu'] = 'a whole number';
     }
+    $ipv6 = $flag('ipv6');
+    $unique = $flag('unique');
     if ($mtu !== null && ($mtu < WGIPV6_TUNNEL_MTU_MIN || $mtu > WGIPV6_TUNNEL_MTU_MAX)) {
         $errors['mtu'] = sprintf('%d to %d', WGIPV6_TUNNEL_MTU_MIN, WGIPV6_TUNNEL_MTU_MAX);
     } elseif ($mtu === null && $mtuRequired && !isset($errors['mtu'])) {
@@ -247,7 +268,7 @@ function wgipv6_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequi
         'errors' => $errors,
         'req' => [
             'name' => $name, 'wan' => $wan, 'monitor' => $monitor,
-            'ipv6' => $flag('ipv6'), 'unique' => $flag('unique'),
+            'ipv6' => $ipv6, 'unique' => $unique,
             'mtu' => $mtu, 'template' => $str('template'),
             'nat' => ['inet' => $list('nat4'), 'inet6' => $list('nat6')],
         ],
@@ -378,6 +399,18 @@ function wgipv6_wgconf_selftest(): int {
 
     $r = wgipv6_create_request($json, true);
     wgipv6_check($t, 'request: API requires the MTU', ($r['errors']['mtu'] ?? '') === 'measure or enter the MTU');
+
+    $r = wgipv6_create_request($json + ['ipv6' => true, 'unique' => 0], false);
+    wgipv6_check($t, 'request: JSON bool and int flags are read as given',
+        $r['errors'] === [] && $r['req']['ipv6'] === true && $r['req']['unique'] === false);
+    $r = wgipv6_create_request($json + ['ipv6' => null, 'unique' => null], false);
+    wgipv6_check($t, 'request: explicit JSON null flags mean the default, like absent ones',
+        $r['errors'] === [] && $r['req']['ipv6'] === null && $r['req']['unique'] === null);
+    foreach ([['"false"', 'false'], ['"true"', 'true'], ['""', ''], ['"yes"', 'yes'], ['2', 2], ['1.0', 1.0], ['[]', []]] as [$label, $bad]) {
+        $r = wgipv6_create_request($json + ['ipv6' => $bad, 'unique' => $bad], false);
+        wgipv6_check($t, "request: a malformed flag ({$label}) is refused on both fields, never defaulted",
+            array_keys($r['errors']) === ['ipv6', 'unique'] && $r['req']['ipv6'] === null && $r['req']['unique'] === null);
+    }
 
     $cases = [
         ['name of 28 characters', ['name' => str_repeat('a', 28)], 'name'],
