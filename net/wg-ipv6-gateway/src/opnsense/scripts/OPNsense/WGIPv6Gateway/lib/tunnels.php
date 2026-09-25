@@ -23,6 +23,7 @@ const WGIPV6_DEFAULT_MTU = 1420;
 const WGIPV6_FINDINGS = [
     'instance-missing' => [true, 'the managed WireGuard instance was deleted; recreating it, or removing the tunnel with the tunnel removal script, clears this'],
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
+    'interface-disabled' => [true, "Interfaces > the tunnel's interface: enable it"],
     'not-single-peer' => [true, 'VPN > WireGuard > Instances: exactly one peer'],
     'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 endpoint address'],
     'ambiguous-gateway' => [true, 'System > Gateways: one gateway per family on the tunnel interface'],
@@ -290,6 +291,12 @@ function wgipv6_derive_one(array $core, $uuid, array $ctx) {
     $t['interface'] = $opt;
     $if = $core['interfaces'][$opt];
     $t['interface_descr'] = $if['descr'];
+    /* core maps only enabled interfaces for the filter (filter.lib.inc), so a
+     * rule on a disabled one is rendered commented out: its pins could never
+     * reach pf and freshness would request reloads for them forever */
+    if (!$if['enable']) {
+        $t['findings'][] = wgipv6_finding('interface-disabled', "{$opt} ({$t['device']}) is disabled");
+    }
 
     /* MTU: the interface value wins when set (core applies it after WireGuard starts) */
     $instMtu = $inst['mtu'] !== '' ? (int)$inst['mtu'] : WGIPV6_DEFAULT_MTU;
@@ -676,6 +683,8 @@ function wgipv6_tunnels_selftest() {
             function ($c) { $c['gateways']['WAN_A']['disabled'] = true; return $c; }, ['i-a'], ['wan-unavailable'], true],
         ['device not assigned => not-assigned',
             function ($c) { unset($c['interfaces']['opt11']); return $c; }, ['i-a'], ['not-assigned'], false],
+        ['tunnel interface disabled => interface-disabled, not enforceable',
+            function ($c) { $c['interfaces']['opt11']['enable'] = false; return $c; }, ['i-a'], ['interface-disabled'], false],
         ['two IPv4 gateways on the interface => ambiguous-gateway',
             function ($c) use ($gw) { $c['gateways']['tun_a_2'] = $gw(['interface' => 'opt11']); return $c; }, ['i-a'], ['ambiguous-gateway'], false],
         ['IPv6 gateway without IPv6 address => ipv6-incomplete',

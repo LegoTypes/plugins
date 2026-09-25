@@ -112,7 +112,7 @@ if ($snapshotOut) {
  * and leave it dead -- at which point every gateway reads a false "down".
  * If another run holds the lock, skip this tick; the next one catches up.
  */
-$selfLock = fopen('/tmp/wgipv6gw_health.lock', 'c');
+$selfLock = fopen('/tmp/wgipv6gw_health.lock', 'ce');
 if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
     exit(0);
 }
@@ -178,7 +178,7 @@ if (empty($plan['changes'])) {
  * If the gateway lock itself cannot be taken, leave the change for the next
  * tick rather than save a force_down we would not apply.
  */
-$gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
+$gwLock = fopen('/tmp/filter_reload_gateway.lock', 'ce');
 if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
     if ($gwLock !== false) {
         fclose($gwLock);
