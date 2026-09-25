@@ -1,6 +1,6 @@
 <model>
     <mount>//OPNsense/WGIPv6Gateway</mount>
-    <version>2.0.0</version>
+    <version>2.1.0</version>
     <description>WireGuard IPv6 Gateway companion settings</description>
     <items>
         <enabled type="BooleanField">
@@ -19,6 +19,18 @@
             <Default>0</Default>
             <Required>Y</Required>
         </default_guard>
+        <wan_pins type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </wan_pins>
+        <inner_source type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </inner_source>
+        <mss_clamp type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </mss_clamp>
         <!-- WireGuard instance UUIDs the plugin manages; written by the
              migration, the tunnel scripts and (from S3) Create/Adopt/Remove -->
         <managed type="CSVListField">

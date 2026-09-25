@@ -92,6 +92,22 @@ function wgipv6gateway_configure_do($verbose = false)
     }
 }
 
+/**
+ * Rendered enforcement: WAN pins, inner-source blocks and the MSS anchor,
+ * derived from the managed tunnels at every filter reload (boot included).
+ * lib/render.php catches every error, so a plugin fault never aborts core's
+ * filter reload; it is reported as the render-failed finding instead.
+ */
+function wgipv6gateway_firewall($fw)
+{
+    try {
+        require_once '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/render.php';
+        wgipv6_render_firewall($fw);
+    } catch (\Throwable $e) {
+        syslog(LOG_ERR, '[wgipv6gw-render] hook failed: ' . $e->getMessage());
+    }
+}
+
 function wgipv6gateway_xmlrpc_sync()
 {
     $result = [];
