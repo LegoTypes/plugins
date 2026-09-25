@@ -415,7 +415,10 @@ function wgct_update_apply_pending(callable $change): void {
  * Record "saved, but its <mode> apply has not completed" (wgct_pending_mark()).
  */
 function wgct_mark_apply_pending(string $uuid, string $mode): void {
-    wgct_apply_mode_steps($mode, $uuid);   // an unknown mode throws before anything is written
+    if (!in_array($mode, WGCT_APPLY_MODES, true)) {
+        /* never InvalidArgumentException: this runs after a save, and the CLI reads that one as a pre-write input error */
+        throw new \LogicException('not an apply mode: ' . substr($mode, 0, 20));
+    }
     wgct_update_apply_pending(fn (array $all): array => wgct_pending_mark($all, $uuid, $mode, time()));
 }
 

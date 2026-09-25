@@ -18,21 +18,24 @@ require_once __DIR__ . '/apply.php';
 require_once __DIR__ . '/selftest.php';
 
 const WGCT_CLI_USAGE = <<<'TXT'
-Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, remove, rebind, adopt, ensure-sentinel)
+Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, edit, remove, rebind, adopt, ensure-sentinel)
   list                                managed tunnels, and WireGuard instances the plugin does not manage
   status                              findings only
   reconcile                           run the reconcile now
   create                              create a tunnel from a JSON request on stdin (see the README)
+  edit                                edit a managed tunnel from a JSON request on stdin: uuid and only what changes (see the README)
   remove UUID                         remove a managed tunnel and everything it owns
   rebind UUID WAN [STALE_ROUTE_UUID]  bind an unbound tunnel to WAN, optionally deleting a stale route
   adopt UUID                          manage an existing WireGuard instance
   ensure-sentinel                     create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel
   measure-mtu WAN ENDPOINT            measure the tunnel MTU for WAN -> ENDPOINT
-  apply UUID                          run Create's tunnel apply again (the API's step after Create; clears apply-pending)
+  apply UUID [MODE]                   run a tunnel's apply again; without MODE, the apply its saved change still
+                                      needs (apply-pending), else tunnel (Create's apply, then wireguard restart);
+                                      MODE: filter, routes, first (Create's apply alone) or tunnel
        tunnel.php --selftest
 TXT;
 /* the write actions, whose --dry validates and writes nothing; any other command refuses --dry */
-const WGCT_CLI_DRY_COMMANDS = ['create', 'remove', 'rebind', 'adopt', 'ensure-sentinel'];
+const WGCT_CLI_DRY_COMMANDS = ['create', 'edit', 'remove', 'rebind', 'adopt', 'ensure-sentinel'];
 const WGCT_CLI_OTHER_COMMANDS = ['list', 'status', 'reconcile', 'measure-mtu', 'apply'];
 
 /**
@@ -48,7 +51,7 @@ function wgct_cli_main(array $args): int {
     $pos = array_values(array_filter($args, fn (string $a): bool => strncmp($a, '--', 2) !== 0));
     $cmd = $pos[0] ?? '';
     $secrets = [];
-    /* the tunnel a failure concerns, once known: the apply argument, or the uuid a Create saved */
+    /* the tunnel a failure concerns, once known: the apply or edit argument, or the uuid a Create saved */
     $uuid = '';
     if ($dry && in_array($cmd, WGCT_CLI_OTHER_COMMANDS, true)) {
         return wgct_cli_emit(wgct_result(['dry' => true, 'errors' => [
@@ -81,6 +84,20 @@ function wgct_cli_main(array $args): int {
                     return $created;
                 };
                 return wgct_cli_emit(wgct_routing_action($commit, $dry), $json);
+            case 'edit':
+                /* a JSON boundary: json_decode yields mixed; wgct_edit_request() type-checks every value */
+                $raw = json_decode((string)stream_get_contents(STDIN), true);
+                if (!is_array($raw)) {
+                    return wgct_cli_emit(wgct_result(['errors' => ['config' => 'stdin is not a JSON object'], 'dry' => $dry]), $json);
+                }
+                $uuid = wgct_cli_uuid(is_string($raw['uuid'] ?? null) ? $raw['uuid'] : '');
+                $prep = wgct_edit_prepare($raw, $uuid);
+                unset($raw);
+                $secrets = array_values($prep['secret']);
+                if ($prep['errors'] !== []) {
+                    return wgct_cli_emit(wgct_result(['errors' => $prep['errors'], 'dry' => $dry, 'uuid' => $uuid]), $json);
+                }
+                return wgct_cli_emit(wgct_edit_action($prep, $dry), $json);
             case 'remove':
                 $uuid = wgct_cli_uuid($pos[1] ?? '');
                 return wgct_cli_emit(wgct_routing_action(fn (): array => wgct_remove_commit($uuid, $dry), $dry), $json);
@@ -98,7 +115,7 @@ function wgct_cli_main(array $args): int {
                 return wgct_cli_emit_mtu(wgct_measure_mtu($pos[1] ?? '', $pos[2] ?? ''), $json);
             case 'apply':
                 $uuid = wgct_cli_uuid($pos[1] ?? '');
-                return wgct_cli_emit(wgct_apply_only($uuid), $json);
+                return wgct_cli_emit(wgct_apply_only($uuid, $pos[2] ?? null), $json);
             default:
                 fwrite(STDERR, WGCT_CLI_USAGE . "\n");
                 return 2;
@@ -107,8 +124,9 @@ function wgct_cli_main(array $args): int {
         $msg = wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets);
         syslog(LOG_ERR, '[' . WGCT_ACTION_LOG_TAG . "] {$cmd} failed: {$msg}");
         /*
-         * wgct_cli_uuid() is the only thing that throws InvalidArgumentException,
-         * and it runs before any writer is called: that failure can never
+         * wgct_cli_uuid() and wgct_apply_mode_steps() (an unknown apply mode)
+         * are the only things that throw InvalidArgumentException, and both
+         * run before any writer or step is called: that failure can never
          * follow a save, so any "after the save" footer would be misleading
          * there (controller review, 2026-09-25). Everything else reaches
          * here from inside or after an action function, which may have
@@ -298,8 +316,8 @@ function wgct_cli_own_selftest(): int {
         !str_contains(wgct_cli_failure_message('rebind', 'x', true, $lower), 'tunnel.php apply')
         && !str_contains(wgct_cli_failure_message('adopt', 'x', true, $lower), 'tunnel.php apply')
         && !str_contains(wgct_cli_failure_message('ensure-sentinel', 'x', true, ''), 'tunnel.php apply'));
-    wgct_check($t, 'cli: --dry is taken by create, remove, rebind, adopt and ensure-sentinel',
-        array_filter(['create', 'remove', 'rebind', 'adopt', 'ensure-sentinel'], fn (string $c): bool => !wgct_cli_takes_dry($c)) === []);
+    wgct_check($t, 'cli: --dry is taken by create, edit, remove, rebind, adopt and ensure-sentinel',
+        array_filter(['create', 'edit', 'remove', 'rebind', 'adopt', 'ensure-sentinel'], fn (string $c): bool => !wgct_cli_takes_dry($c)) === []);
     wgct_check($t, 'cli: --dry is refused, not ignored, by apply, reconcile, list, status and measure-mtu',
         array_filter(WGCT_CLI_OTHER_COMMANDS, 'wgct_cli_takes_dry') === [] && count(WGCT_CLI_OTHER_COMMANDS) === 5);
     wgct_check($t, 'cli: a list or measure-mtu failure carries no footer',

@@ -7,8 +7,8 @@
  * BSD 2-Clause License
  *
  * WireGuard client tunnels from the command line (spec 2026-09-24 section
- * 6.4): list|status|reconcile|create|remove|rebind|adopt|ensure-sentinel|
- * measure-mtu|apply [--dry] [--json], and --selftest. See lib/cli.php. The
+ * 6.4): list|status|reconcile|create|edit|remove|rebind|adopt|ensure-sentinel|
+ * measure-mtu|apply [MODE] [--dry] [--json], and --selftest. See lib/cli.php. The
  * legacy includes are for Remove's interface_reset().
  */
 

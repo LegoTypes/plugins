@@ -562,13 +562,13 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
                 $e['monitor'] = "{$monitor} is already " . implode(', ', array_unique($uses)) . '; a tunnel needs a monitor IP nothing else uses';
             } else {
                 $plan['gateways']['update'][$t['gw4']] = ['monitor' => $monitor];
+                $need['routes'] = true;
+                $c[] = "gateway {$t['gw4']}: monitor " . ($t['monitor'] !== '' ? $t['monitor'] : '(none)') . " -> {$monitor}";
                 if ($t['monitor'] !== '') {
                     /* dpinger adds the new monitor's host route but never deletes the old one */
                     $plan['kernel_routes'][$core['gateways'][$t['gw4']]['uuid']] = $t['monitor'] . '/32';
                     $c[] = "kernel host route {$t['monitor']}/32 (the old monitor): deleted";
                 }
-                $need['routes'] = true;
-                $c[] = "gateway {$t['gw4']}: monitor " . ($t['monitor'] !== '' ? $t['monitor'] : '(none)') . " -> {$monitor}";
             }
         }
     }
