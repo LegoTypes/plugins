@@ -21,7 +21,7 @@ const WGIPV6_DEFAULT_MTU = 1420;
 
 /* finding code => [blocking, where it is fixed] (spec section 3.4) */
 const WGIPV6_FINDINGS = [
-    'instance-missing' => [true, 'the managed WireGuard instance no longer exists (plugin settings)'],
+    'instance-missing' => [true, 'the managed WireGuard instance was deleted; recreating it, or removing the tunnel with the tunnel removal script, clears this'],
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
     'not-single-peer' => [true, 'VPN > WireGuard > Instances: exactly one peer'],
     'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 endpoint address'],
@@ -31,10 +31,10 @@ const WGIPV6_FINDINGS = [
     'wan-unavailable' => [false, 'System > Gateways / Interfaces: enable the bound WAN'],
     'ipv6-incomplete' => [false, 'Instances and System > Gateways: IPv6 tunnel address and IPv6 gateway together'],
     'mtu-override' => [false, 'Interfaces > wgN: clear MTU or match the instance MTU'],
-    'legacy-mss' => [false, 'Interfaces > wgN: MSS (the plugin clamps it itself from S2)'],
+    'legacy-mss' => [false, "Interfaces > the tunnel's interface: an MSS value is set by hand"],
     'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface'],
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
-    'sentinel-missing' => [false, 'run setup_default_sentinel.php (ensure-sentinel from S3)'],
+    'sentinel-missing' => [false, 'System > Gateways: the NO_DEFAULT4 and NO_DEFAULT6 gateways are missing (setup_default_sentinel.php creates them)'],
 ];
 
 /**
@@ -104,6 +104,7 @@ function wgipv6_core_snapshot() {
             'enable' => isset($if->enable) && (string)$if->enable !== '0',
             'mtu' => (string)$if->mtu,
             'mss' => (string)$if->mss,
+            'descr' => (string)$if->descr,
         ];
     }
     foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $uuid => $r) {
@@ -227,7 +228,7 @@ function wgipv6_derive(array $core, array $managed) {
 function wgipv6_derive_one(array $core, $uuid, array $ctx) {
     $t = [
         'uuid' => $uuid, 'name' => '', 'enabled' => false, 'device' => '', 'interface' => null,
-        'endpoint' => '', 'bound_wan' => null, 'mtu' => WGIPV6_DEFAULT_MTU, 'mss' => '',
+        'interface_descr' => '', 'endpoint' => '', 'bound_wan' => null, 'mtu' => WGIPV6_DEFAULT_MTU, 'mss' => '',
         'gw4' => null, 'monitor' => '', 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
         'nat' => ['inet' => [], 'inet6' => []], 'groups' => [], 'findings' => [], 'enforceable' => false,
     ];
@@ -275,6 +276,7 @@ function wgipv6_derive_one(array $core, $uuid, array $ctx) {
     }
     $t['interface'] = $opt;
     $if = $core['interfaces'][$opt];
+    $t['interface_descr'] = $if['descr'];
 
     /* MTU: the interface value wins when set (core applies it after WireGuard starts) */
     $instMtu = $inst['mtu'] !== '' ? (int)$inst['mtu'] : WGIPV6_DEFAULT_MTU;
@@ -474,9 +476,9 @@ function wgipv6_tunnels_selftest() {
             ],
             'peers' => ['p-a' => ['name' => 'tun_a', 'serveraddress' => '198.51.100.10', 'serverport' => '51820']],
             'interfaces' => [
-                'wan' => ['if' => 'igc1', 'enable' => true, 'mtu' => '', 'mss' => ''],
-                'opt1' => ['if' => 'igc2', 'enable' => true, 'mtu' => '', 'mss' => ''],
-                'opt11' => ['if' => 'wg1', 'enable' => true, 'mtu' => '', 'mss' => ''],
+                'wan' => ['if' => 'igc1', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''],
+                'opt1' => ['if' => 'igc2', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''],
+                'opt11' => ['if' => 'wg1', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''],
             ],
             'routes' => ['r-a' => ['network' => '198.51.100.10/32', 'gateway' => 'WAN_A', 'enabled' => true]],
             'gateways' => [
