@@ -8,7 +8,7 @@
  * The Tunnels view (spec 7), shared by `tunnel.php list|status` and the API:
  * managed tunnels derived from core with their clamps and findings (the
  * render-failed finding included), and the WireGuard instances the plugin
- * does not manage, for Adopt. A tunnel whose Create saved but whose apply
+ * does not manage, for Adopt. A tunnel whose Create or Edit saved but whose apply
  * has not completed carries the apply-pending finding (ruling 20). Reads
  * config; writes nothing. The pure helpers below it turn the view into the
  * API's tunnel records and the Tunnels grid's flat rows.
