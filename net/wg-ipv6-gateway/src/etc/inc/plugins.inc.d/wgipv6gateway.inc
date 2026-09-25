@@ -105,12 +105,19 @@ function wgipv6gateway_configure_do($verbose = false)
  * briefly or permanently missing, and any filter reload (a gateway alarm,
  * boot) must not die because of it. is_readable() turns that into an
  * ordinary logged skip instead.
+ *
+ * Both failure branches drop the rendered record: nothing was rendered, so a
+ * filter reload now leaves pf without the pins and anchor, and a record
+ * still describing them would read as current. With it gone, the next
+ * reconcile sees "no rendered record" and asks for a reload, and the Tunnels
+ * tab shows render-failed.
  */
 function wgipv6gateway_firewall($fw)
 {
     $lib = '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/render.php';
     if (!is_readable($lib) || !is_readable(dirname($lib) . '/tunnels.php')) {
         syslog(LOG_ERR, '[wgipv6gw-render] plugin library missing; rules not rendered');
+        wgipv6gateway_forget_render();
         return;
     }
     try {
@@ -118,6 +125,21 @@ function wgipv6gateway_firewall($fw)
         wgipv6_render_firewall($fw);
     } catch (\Throwable $e) {
         syslog(LOG_ERR, '[wgipv6gw-render] hook failed: ' . $e->getMessage());
+        wgipv6gateway_forget_render();
+    }
+}
+
+/**
+ * Remove the rendered record. The path is a literal copy of render.php's
+ * WGIPV6_RENDERED_FILE because render.php, which defines that constant, may
+ * be the very file that is missing or failed to load. The record may not
+ * exist; a failed unlink is ignored (the next successful render rewrites it).
+ */
+function wgipv6gateway_forget_render(): void
+{
+    $rendered = '/var/run/wgipv6gateway/rendered.json';
+    if (is_file($rendered)) {
+        unlink($rendered);
     }
 }
 

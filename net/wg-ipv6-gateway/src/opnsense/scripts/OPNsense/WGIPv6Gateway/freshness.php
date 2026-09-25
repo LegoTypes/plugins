@@ -9,19 +9,23 @@
  * Keep the rendered enforcement current between filter reloads (spec 4.4,
  * 4.7). No event fires when a WireGuard instance or peer is saved, so the
  * reconcile (config syshook, monitor/newwanip hooks, minute cron) compares
- * what the hook last rendered with what is wanted now and acts on
- * wgipv6_freshness_plan()'s decision:
- *   - MSS lines differ (or the last render failed only at the anchor) ->
- *     reload the anchor directly (pfctl -a), no filter reload needed;
+ * what the hook last rendered -- and what pf actually holds -- with what is
+ * wanted now and acts on wgipv6_freshness_plan()'s decision:
+ *   - MSS lines differ, the live anchor's rule count differs from the
+ *     render, or the last render failed only at the anchor -> reload the
+ *     anchor directly (pfctl -a), no filter reload needed;
  *   - pins differ, there is no rendered record, the render otherwise failed,
- *     or the main ruleset failed to load since the last render -> ask
- *     configd for a filter reload, DETACHED: this may run inside configd's
- *     own config_changed action, and a synchronous configctl there could
- *     re-enter configd. The hook re-renders during that reload.
+ *     the main ruleset failed to load since the last render, or pf is missing
+ *     labels the rendered pins produce -> ask configd for a filter reload,
+ *     DETACHED: this may run inside configd's own config_changed action, and
+ *     a synchronous configctl there could re-enter configd. The hook
+ *     re-renders during that reload.
  * Repeated reload requests for the same wanted pins are rate-limited with
- * exponential back-off, and a persistently failing anchor load logs at most
- * once per distinct failure, so a render that keeps failing does not flood
- * configd or syslog every reconcile tick.
+ * exponential back-off, and a persistently failing anchor load, pf
+ * observation or run logs at most once per distinct failure, so a render
+ * that keeps failing does not flood configd or syslog every reconcile tick.
+ * Runs are serialized on WGIPV6_FRESHNESS_LOCK_FILE, so a stale run can never
+ * act after a newer one.
  * Writes no config. Usage: freshness.php [--dry]
  *
  * Never lets a \Throwable reach PHP's own error log / the GUI crash
@@ -43,8 +47,27 @@ require_once $wgipv6Lib;
  * before it restores the old ruleset (see filter.inc, ~line 399). */
 const WGIPV6_RULES_DEBUG_ERROR = '/tmp/rules.debug.error';
 
+$dry = in_array('--dry', $argv ?? [], true);
+
 try {
-    $dry = in_array('--dry', $argv ?? [], true);
+    if (!$dry) {
+        /* Held for the whole derive -> observe -> plan -> act sequence and
+         * released when the process exits: two overlapping reconciles must
+         * not interleave, or a run that derived before another one wrote
+         * rendered.json could load its older MSS lines afterwards. Bounded,
+         * because this can run inside configd's config_changed action; a
+         * run that cannot get the lock leaves the work to the run holding
+         * it. --dry only reads, so it never waits. */
+        $lock = wgipv6_freshness_lock(
+            WGIPV6_FRESHNESS_LOCK_FILE,
+            WGIPV6_FRESHNESS_LOCK_TIMEOUT_MS,
+            WGIPV6_FRESHNESS_LOCK_POLL_MS
+        );
+        if ($lock === null) {
+            syslog(LOG_NOTICE, '[wgipv6gw-render] freshness: another run holds the lock; skipped');
+            exit(0);
+        }
+    }
 
     $wanted = wgipv6_wanted_render();
     $rendered = wgipv6_read_rendered();
@@ -63,20 +86,52 @@ try {
         }
     }
 
+    /* What pf holds right now, not just what rendered.json says was
+     * rendered: a filter reload while the hook could not render leaves pf
+     * without the pins and anchor while the record still describes them.
+     * stdout only (exec() never captures stderr); $live stays null when
+     * either pfctl call fails, and the plan then rests on the record alone. */
+    $live = null;
+    $observeError = null;
+    $anchorLines = [];
+    exec('/sbin/pfctl -a ' . escapeshellarg(WGIPV6_MSS_ANCHOR) . ' -sr', $anchorLines, $anchorRc);
+    if ($anchorRc !== 0) {
+        $observeError = 'pfctl -a ' . WGIPV6_MSS_ANCHOR . ' -sr failed (exit ' . $anchorRc . ')';
+    } else {
+        $ruleLines = [];
+        exec('/sbin/pfctl -sr', $ruleLines, $rulesRc);
+        if ($rulesRc !== 0) {
+            $observeError = 'pfctl -sr failed (exit ' . $rulesRc . ')';
+        } else {
+            $live = wgipv6_live_observation(
+                $anchorLines,
+                $ruleLines,
+                $rendered !== null ? $rendered['pins'] : ['wan' => [], 'inner' => []]
+            );
+        }
+    }
+
     /* Already normalised: a corrupt/malformed freshness.json reads back as
      * ['reload' => null, 'anchor_fail_hash' => null], not a TypeError. */
     $fileState = wgipv6_read_freshness_state();
     $reloadState = $fileState['reload'];
     $anchorFailHash = $fileState['anchor_fail_hash'];
 
-    $plan = wgipv6_freshness_plan($wanted, $rendered, $errorMtime, $reloadState, time());
+    $plan = wgipv6_freshness_plan($wanted, $rendered, $errorMtime, $reloadState, time(), $live);
 
     if ($dry) {
         printf(
-            "reload: %s\nanchor: %s\nreason: %s\n",
+            "reload: %s\nanchor: %s\nreason: %s\nlive: %s\n",
             $plan['reload'] ? 'yes' : 'no',
             $plan['anchor'] ? 'yes' : 'no',
-            $plan['reason']
+            $plan['reason'],
+            $live !== null
+                ? sprintf(
+                    '%d MSS anchor rule(s), %d rendered pin label(s) missing from pf',
+                    $live['anchor_count'],
+                    $live['missing_labels']
+                )
+                : 'not observed (' . $observeError . ')'
         );
         exit(0);
     }
@@ -158,7 +213,25 @@ try {
     } else {
         wgipv6_write_freshness_state(['reload' => $newReloadState, 'anchor_fail_hash' => $newAnchorFailHash]);
     }
+
+    /* A run that could not read pf still acted on the record, but reports
+     * that (once per distinct failure); a clean run reports a recovery once. */
+    wgipv6_report_freshness_outcome(
+        $observeError !== null
+            ? 'freshness: live pf state not observed (' . $observeError . '); decided from the rendered record alone'
+            : null
+    );
 } catch (\Throwable $e) {
-    syslog(LOG_ERR, '[wgipv6gw-render] freshness failed: ' . $e->getMessage());
+    $message = 'freshness failed: ' . $e->getMessage();
+    if ($dry) {
+        /* --dry writes nothing, the failure record included */
+        fwrite(STDERR, $message . "\n");
+        exit(1);
+    }
+    try {
+        wgipv6_report_freshness_outcome($message);
+    } catch (\Throwable $reportError) {
+        syslog(LOG_ERR, '[wgipv6gw-render] ' . $message);
+    }
     exit(1);
 }
