@@ -135,24 +135,19 @@ function wgipv6_failed_steps(array $apply): array {
     $out = [];
     foreach ($apply as $step) {
         /*
-         * Backend::configdRun()/configdpRun() return '' on a timeout, a
-         * disconnected or unreachable socket, connect failure, AND for any
-         * reply that begins with 'Execute error' -- script_output.py's
-         * marker for a non-zero exit, which Backend strips before it ever
-         * reaches here. wgipv6_step_summary() turns that '' into
-         * '(no output)', so that string is always a failure in this apply:
-         * every step in WGIPV6_TUNNEL_APPLY_STEPS and every writer's
-         * 'steps' list answers 'OK' or JSON on success.
+         * Success-only: wgipv6_step_summary() already maps a JSON reply to
+         * 'OK', and every step in WGIPV6_TUNNEL_APPLY_STEPS and every
+         * writer's 'steps' list answers exactly 'OK' on success -- so a step
+         * failed iff its summarized result is anything else. A fixed list of
+         * failure prefixes missed cases: inline.py's template.reload (the
+         * first apply step) can reply 'ERR', which the case-sensitive
+         * 'Error' prefix never matched, and script.py can surface an
+         * arbitrary str(e) that matches no prefix at all; Backend also
+         * returns '' (summarized as '(no output)') on a timeout, a dropped
+         * socket, or an 'Execute error' reply it strips before returning.
          */
-        if ($step['result'] === '(no output)') {
+        if ($step['result'] !== 'OK') {
             $out[] = $step['action'];
-            continue;
-        }
-        foreach (['Error', 'Action not'] as $prefix) {
-            if (strncmp($step['result'], $prefix, strlen($prefix)) === 0) {
-                $out[] = $step['action'];
-                break;
-            }
         }
     }
     return $out;
@@ -258,6 +253,7 @@ function wgipv6_routing_action(callable $commit, bool $dry): array {
     $lock = wgipv6_gateway_lock();
     $result = wgipv6_result();
     $ours = [];
+    $pending = null;
     try {
         try {
             $result = $commit();
@@ -276,18 +272,33 @@ function wgipv6_routing_action(callable $commit, bool $dry): array {
         } finally {
             $lock->flock(LOCK_UN);
         }
-    } finally {
-        /*
-         * Always replay, even when the commit refused to save or something
-         * above threw after the lock was taken: routes.alarm (flock -n)
-         * silently drops any alarm raised while we held it, for our own
-         * gateways (ruling 13, only once the commit actually saved) and for
-         * any other gateway whose status changed meanwhile regardless. A
-         * throwable here propagates after this finally, so the caller still
-         * sees the original failure.
-         */
-        $result['after'] = wgipv6_after_apply($ours, $before);
+    } catch (\Throwable $e) {
+        $pending = $e;
     }
+    /*
+     * Always replay, once the lock is released, whether the commit refused
+     * to save, something above threw, or everything succeeded: routes.alarm
+     * (flock -n) silently drops any alarm raised while we held it, for our
+     * own gateways (ruling 13, only once the commit actually saved) and for
+     * any other gateway whose status changed meanwhile regardless.
+     *
+     * When $pending is set we are already unwinding a real failure, so a
+     * second failure out of wgipv6_after_apply() here must not silently
+     * replace it as the exception the caller sees: it is caught, logged
+     * (never with key material -- nothing replayed here carries one), and
+     * the original exception is what gets rethrown. With nothing pending,
+     * an after_apply failure is the only error there is, so it propagates
+     * exactly as it would from a direct call.
+     */
+    if ($pending !== null) {
+        try {
+            wgipv6_after_apply($ours, $before);
+        } catch (\Throwable $afterError) {
+            logMsg(WGIPV6_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage());
+        }
+        throw $pending;
+    }
+    $result['after'] = wgipv6_after_apply($ours, $before);
     if (!$result['ok'] || !$result['saved']) {
         return $result;
     }
@@ -335,16 +346,26 @@ function wgipv6_apply_only(string $uuid): array {
     $before = wgipv6_gateway_status();
     $lock = wgipv6_gateway_lock();
     $apply = [];
+    $pending = null;
     try {
         try {
             $apply = wgipv6_run_steps(WGIPV6_TUNNEL_APPLY_STEPS);
         } finally {
             $lock->flock(LOCK_UN);
         }
-    } finally {
-        /* Always replay: see wgipv6_routing_action()'s finally. */
-        $after = wgipv6_after_apply($gatewayNames, $before);
+    } catch (\Throwable $e) {
+        $pending = $e;
     }
+    /* Always replay, once the lock is released; see wgipv6_routing_action(). */
+    if ($pending !== null) {
+        try {
+            wgipv6_after_apply($gatewayNames, $before);
+        } catch (\Throwable $afterError) {
+            logMsg(WGIPV6_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage());
+        }
+        throw $pending;
+    }
+    $after = wgipv6_after_apply($gatewayNames, $before);
     $result = wgipv6_result([
         'ok' => true, 'saved' => true, 'uuid' => $uuid, 'gateways' => $gatewayNames, 'steps' => WGIPV6_TUNNEL_APPLY_STEPS,
         'apply' => $apply, 'after' => $after,
@@ -371,15 +392,16 @@ function wgipv6_apply_selftest(): int {
     wgipv6_check($t, 'apply: JSON output (assign-opts) => OK', wgipv6_step_summary('{"igc0": "igc0"}') === 'OK');
     wgipv6_check($t, 'apply: first line only', wgipv6_step_summary("Error (1)\nmore") === 'Error (1)');
     wgipv6_check($t, 'apply: long output cut at 120', strlen(wgipv6_step_summary(str_repeat('a', 200))) === 120);
-    wgipv6_check($t, 'apply: failed steps are named; an empty reply ((no output)) is a failure too',
+    wgipv6_check($t, 'apply: only an exact OK passes; (no output), ERR, an Error prefix and an arbitrary message all fail',
         wgipv6_failed_steps([
-            ['action' => 'a', 'result' => 'OK'], ['action' => 'b', 'result' => 'Error (1)'],
-            ['action' => 'c', 'result' => '(no output)'], ['action' => 'd', 'result' => 'Action not allowed or missing'],
-        ]) === ['b', 'c', 'd']);
-    wgipv6_check($t, "apply: a step_summary'd empty configd reply fails; OK and JSON-summarized replies pass",
-        wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary('')]]) === ['x']
-        && wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary("OK\n")]]) === []
-        && wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary('{"igc0": "igc0"}')]]) === []);
+            ['action' => 'a', 'result' => 'OK'], ['action' => 'b', 'result' => '(no output)'],
+            ['action' => 'c', 'result' => 'ERR'], ['action' => 'd', 'result' => 'Error (1)'],
+            ['action' => 'e', 'result' => 'unexpected widget failure'],
+        ]) === ['b', 'c', 'd', 'e']);
+    wgipv6_check($t, "apply: step_summary()'d replies feed the same rule -- OK and JSON pass, an empty reply fails",
+        wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary("OK\n")]]) === []
+        && wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary('{"igc0": "igc0"}')]]) === []
+        && wgipv6_failed_steps([['action' => 'x', 'result' => wgipv6_step_summary('')]]) === ['x']);
     $forceDown = ['WAN_A' => false, 'tun_c' => false, 'tun_c-ipv6' => true, 'tun_a' => false];
     wgipv6_check($t, 'apply: replay covers our gateways plus any whose status changed during the hold',
         wgipv6_replay_set(['tun_c', 'tun_c-ipv6'], ['WAN_A' => 'none', 'tun_a' => 'none'], ['WAN_A' => 'down', 'tun_a' => 'none'], $forceDown)
