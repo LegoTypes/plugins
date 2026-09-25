@@ -28,13 +28,29 @@ class M3_0_0 extends BaseModelMigration
     private const LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/migration.php';
 
     /**
+     * A missing file would make require_once a fatal E_COMPILE_ERROR, which no
+     * catch sees: it would abort run_migrations.php, and every model after
+     * this one, at boot or on a config restore. Throw instead, so the callers
+     * turn it into the \Exception core logs and moves past.
+     *
+     * @throws \RuntimeException when the library is not readable
+     */
+    private static function requireLib(): void
+    {
+        if (!is_readable(self::LIB)) {
+            throw new \RuntimeException('missing ' . self::LIB);
+        }
+        require_once self::LIB;
+    }
+
+    /**
      * @param \OPNsense\WGClientTunnels\WGClientTunnels $model
      */
     public function run($model)
     {
         try {
             parent::run($model);
-            require_once self::LIB;
+            self::requireLib();
             $plan = wgct_legacy_settings(wgct_read_legacy_node(Config::getInstance()->object()));
             if ($plan['error'] !== null) {
                 throw new \RuntimeException($plan['error']);
@@ -63,7 +79,7 @@ class M3_0_0 extends BaseModelMigration
     public function post($model)
     {
         try {
-            require_once self::LIB;
+            self::requireLib();
             if (wgct_remove_legacy_node(Config::getInstance()->object())) {
                 syslog(LOG_NOTICE, '[wgct-migrate] 3.0.0: removed the ' . WGCT_LEGACY_NODE . ' section');
             }
