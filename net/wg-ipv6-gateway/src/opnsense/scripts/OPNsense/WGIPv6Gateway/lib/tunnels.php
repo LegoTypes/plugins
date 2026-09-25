@@ -31,6 +31,7 @@ const WGIPV6_FINDINGS = [
     'wan-unavailable' => [false, 'System > Gateways / Interfaces: enable the bound WAN'],
     'ipv6-incomplete' => [false, 'Instances and System > Gateways: IPv6 tunnel address and IPv6 gateway together'],
     'mtu-override' => [false, 'Interfaces > wgN: clear MTU or match the instance MTU'],
+    'mtu-too-small' => [false, "VPN > WireGuard > Instances (or Interfaces > the tunnel's interface): the MTU is too small to clamp TCP MSS; set it to at least 1280"],
     'legacy-mss' => [false, "Interfaces > the tunnel's interface: an MSS value is set by hand"],
     'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface'],
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
@@ -235,7 +236,7 @@ function wgipv6_derive(array $core, array $managed) {
 function wgipv6_derive_one(array $core, $uuid, array $ctx) {
     $t = [
         'uuid' => $uuid, 'name' => '', 'enabled' => false, 'device' => '', 'interface' => null,
-        'interface_descr' => '', 'endpoint' => '', 'bound_wan' => null, 'wan_interface' => null,
+        'interface_descr' => '', 'endpoint' => '', 'endpoint_ip' => null, 'bound_wan' => null, 'wan_interface' => null,
         'mtu' => WGIPV6_DEFAULT_MTU, 'mss' => '',
         'gw4' => null, 'monitor' => '', 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
         'nat' => ['inet' => [], 'inet6' => []], 'groups' => [], 'findings' => [], 'enforceable' => false,
@@ -256,7 +257,9 @@ function wgipv6_derive_one(array $core, $uuid, array $ctx) {
         $peer = $core['peers'][$inst['peers'][0]] ?? null;
         $ip = $peer !== null ? $peer['serveraddress'] : '';
         $t['endpoint'] = $ip . ($peer !== null && $peer['serverport'] !== '' ? ':' . $peer['serverport'] : '');
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        $isValidV4 = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+        $t['endpoint_ip'] = $isValidV4 ? $ip : null;
+        if (!$isValidV4) {
             $t['findings'][] = wgipv6_finding('endpoint-unsupported', $ip === '' ? 'no endpoint' : "{$ip} is not an IPv4 address");
         } elseif (!isset($ctx['binding_routes'][$ip])) {
             $t['findings'][] = wgipv6_finding('unbound', "no enabled /32 route to {$ip} via a WAN gateway");
@@ -267,8 +270,9 @@ function wgipv6_derive_one(array $core, $uuid, array $ctx) {
             $wan = $ctx['binding_routes'][$ip];
             $t['bound_wan'] = $wan;
             $wanGw = $core['gateways'][$wan] ?? null;
-            $t['wan_interface'] = $wanGw !== null ? $wanGw['interface'] : null;
             $wanIf = $wanGw !== null ? ($core['interfaces'][$wanGw['interface']] ?? null) : null;
+            /* fail closed: only pin to an interface we can actually resolve and that is up */
+            $t['wan_interface'] = ($wanGw !== null && $wanIf !== null && $wanIf['enable']) ? $wanGw['interface'] : null;
             if ($wanGw === null) {
                 $t['findings'][] = wgipv6_finding('wan-unavailable', "the route names unknown gateway {$wan}");
             } elseif ($wanGw['disabled'] || $wanIf === null || !$wanIf['enable']) {
@@ -329,6 +333,13 @@ function wgipv6_derive_one(array $core, $uuid, array $ctx) {
             'ipv6-incomplete',
             $t['gw6'] !== null ? "{$t['gw6']} but no IPv6 tunnel address" : "{$t['ipv6_address']} but no IPv6 gateway"
         );
+    }
+
+    /* MSS clamping needs at least the IPv4 minimum, and the IPv6 minimum when there is an IPv6 address (R8) */
+    if ($t['mtu'] < 576) {
+        $t['findings'][] = wgipv6_finding('mtu-too-small', "mtu {$t['mtu']} is below the IPv4 minimum 576");
+    } elseif ($t['mtu'] < 1280 && $t['ipv6_address'] !== null) {
+        $t['findings'][] = wgipv6_finding('mtu-too-small', "mtu {$t['mtu']} is below the IPv6 minimum 1280");
     }
 
     /* outbound NAT on the interface */
@@ -466,7 +477,10 @@ function wgipv6_migration_plan(array $core, array $rows, array $heldNames) {
 
 /**
  * What the WAN pins (R1) and inner-source blocks (R7) cover. Pure; canonical
- * order so two sets compare with ===.
+ * order so two sets compare with ===. A bound tunnel whose WAN cannot be
+ * resolved to an enabled interface (wan_interface null) still gets a WAN
+ * entry, with wan_if '' -- fail closed, so the handshake is blocked on every
+ * interface rather than left unpinned.
  *
  * @param array $derived     wgipv6_derive()
  * @param bool  $wanPins     the wan_pins switch
@@ -483,10 +497,11 @@ function wgipv6_pin_set(array $derived, $wanPins, $innerSource) {
         if ($innerSource) {
             $inner[] = $t['interface'];
         }
-        if ($wanPins && $t['wan_interface'] !== null) {
-            $ip = explode(':', $t['endpoint'])[0];
+        if ($wanPins) {
+            $ip = $t['endpoint_ip'];
             $family = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 'inet6' : 'inet';
-            $wan[$t['wan_interface'] . '|' . $family][] = $ip;
+            $wanIf = $t['wan_interface'] ?? '';
+            $wan[$wanIf . '|' . $family][] = $ip;
         }
     }
     ksort($wan);
@@ -503,7 +518,10 @@ function wgipv6_pin_set(array $derived, $wanPins, $innerSource) {
 }
 
 /**
- * registerFilterRule() confs for a pin set, in a stable order.
+ * registerFilterRule() confs for a pin set, in a stable order. Labels are
+ * md5 hashes: core's live log (scripts/filter/read_log.py) only resolves a
+ * rule id back to its description when the label is at least 32 hex
+ * characters, and a hash stays stable across endpoint changes.
  *
  * @param array $pinSet wgipv6_pin_set()
  * @return array list of rule confs
@@ -511,11 +529,21 @@ function wgipv6_pin_set(array $derived, $wanPins, $innerSource) {
 function wgipv6_pin_rules(array $pinSet) {
     $rules = [];
     foreach ($pinSet['wan'] as $w) {
+        if ($w['wan_if'] === '') {
+            /* the bound WAN could not be resolved: block the handshake everywhere instead of leaving it unpinned */
+            $rules[] = [
+                'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
+                'ipprotocol' => $w['family'], 'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
+                'label' => md5('wgipv6gw-pin-wan-anywhere-' . $w['family']),
+                'descr' => "WireGuard IPv6 Gateway: this tunnel's bound WAN is unavailable, so its handshakes leave by no interface",
+            ];
+            continue;
+        }
         $rules[] = [
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
             'interface' => $w['wan_if'], 'interfacenot' => true, 'ipprotocol' => $w['family'],
             'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
-            'label' => substr('wgipv6gw-pin-wan-' . $w['wan_if'] . '-' . $w['family'], 0, 63),
+            'label' => md5('wgipv6gw-pin-wan-' . $w['wan_if'] . '-' . $w['family']),
             'descr' => 'WireGuard IPv6 Gateway: tunnels bound to this WAN never leave by another interface',
         ];
     }
@@ -523,7 +551,7 @@ function wgipv6_pin_rules(array $pinSet) {
         $rules[] = [
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
             'interface' => $opt, 'ipprotocol' => 'inet46', 'from' => '(self)', 'from_not' => true,
-            'label' => substr('wgipv6gw-pin-inner-' . $opt, 0, 63),
+            'label' => md5('wgipv6gw-pin-inner-' . $opt),
             'descr' => 'WireGuard IPv6 Gateway: only firewall-sourced (NATed) traffic may enter the tunnel',
         ];
     }
@@ -532,7 +560,10 @@ function wgipv6_pin_rules(array $pinSet) {
 
 /**
  * The MSS anchor's contents (R8): both directions, because the segment size a
- * LAN host uses is set by the SYN-ACK arriving inbound on the tunnel.
+ * LAN host uses is set by the SYN-ACK arriving inbound on the tunnel. A
+ * max-mss below the family's minimum would make pfctl reject the whole
+ * anchor, so a tunnel too small to clamp safely (mtu-too-small) is skipped
+ * for that family instead.
  *
  * @param array $derived  wgipv6_derive()
  * @param bool  $mssClamp the mss_clamp switch
@@ -547,8 +578,10 @@ function wgipv6_mss_lines(array $derived, $mssClamp) {
         if (!$t['enforceable'] || $t['device'] === '') {
             continue;
         }
-        $lines[] = sprintf('match on %s inet proto tcp all scrub (max-mss %d)', $t['device'], $t['mtu'] - 40);
-        if ($t['ipv6_address'] !== null) {
+        if ($t['mtu'] >= 576) {
+            $lines[] = sprintf('match on %s inet proto tcp all scrub (max-mss %d)', $t['device'], $t['mtu'] - 40);
+        }
+        if ($t['ipv6_address'] !== null && $t['mtu'] >= 1280) {
             $lines[] = sprintf('match on %s inet6 proto tcp all scrub (max-mss %d)', $t['device'], $t['mtu'] - 60);
         }
     }
@@ -673,10 +706,11 @@ function wgipv6_tunnels_selftest() {
     $c = $base();
     $c['routes']['r-a']['gateway'] = 'NOPE';
     $t = wgipv6_derive($c, ['i-a'])['tunnels'][0];
-    $ok = $codes($t) === ['wan-unavailable'] && $t['enforceable'] === true && $t['bound_wan'] === 'NOPE';
+    $ok = $codes($t) === ['wan-unavailable'] && $t['enforceable'] === true && $t['bound_wan'] === 'NOPE'
+        && $t['wan_interface'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] derive: unknown gateway name on the route => wan-unavailable, bound_wan is the route's gateway\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] derive: unknown gateway name on the route => wan-unavailable, bound_wan is the route's gateway, wan_interface fails closed\n", $ok ? 'PASS' : 'FAIL');
 
     /* interface MTU equal to the instance MTU => no override finding, mtu is the instance's */
     $c = $base();
@@ -715,7 +749,8 @@ function wgipv6_tunnels_selftest() {
     /* record fields on the healthy tunnel */
     $t = wgipv6_derive($base(), ['i-a'])['tunnels'][0];
     $ok = $t['device'] === 'wg1' && $t['interface'] === 'opt11' && $t['bound_wan'] === 'WAN_A'
-        && $t['endpoint'] === '198.51.100.10:51820' && $t['mtu'] === 1376 && $t['gw4'] === 'tun_a'
+        && $t['wan_interface'] === 'opt1' && $t['endpoint'] === '198.51.100.10:51820'
+        && $t['endpoint_ip'] === '198.51.100.10' && $t['mtu'] === 1376 && $t['gw4'] === 'tun_a'
         && $t['gw6'] === 'tun_a-ipv6' && $t['ipv6_address'] === 'fd00::1:1/128'
         && $t['ipv6_next_hop'] === 'fd00::1:2' && $t['nat'] === ['inet' => ['opt3'], 'inet6' => ['opt3']]
         && $t['groups'] === ['grp_a'] && $t['monitor'] === '203.0.113.9';
@@ -804,12 +839,16 @@ function wgipv6_tunnels_selftest() {
     $rules = wgipv6_pin_rules($ps);
     $wanRule = $rules[0];
     $innerRule = $rules[1];
+    $labelRe = '/^[0-9a-f]{32}$/';
     $ok = count($rules) === 2
-        && $wanRule['type'] === 'block' && $wanRule['direction'] === 'out' && $wanRule['quick'] === true
+        && $wanRule['type'] === 'block' && $wanRule['direction'] === 'out' && $wanRule['quick'] === true && $wanRule['log'] === true
         && $wanRule['interface'] === 'opt1' && $wanRule['interfacenot'] === true && $wanRule['ipprotocol'] === 'inet'
-        && $wanRule['protocol'] === 'udp' && $wanRule['to'] === '198.51.100.10' && strlen($wanRule['label']) <= 63
+        && $wanRule['protocol'] === 'udp' && $wanRule['to'] === '198.51.100.10'
+        && preg_match($labelRe, $wanRule['label']) === 1 && $wanRule['label'] === md5('wgipv6gw-pin-wan-opt1-inet')
+        && $innerRule['type'] === 'block' && $innerRule['direction'] === 'out' && $innerRule['quick'] === true && $innerRule['log'] === true
         && $innerRule['interface'] === 'opt11' && $innerRule['ipprotocol'] === 'inet46'
-        && $innerRule['from'] === '(self)' && $innerRule['from_not'] === true && strlen($innerRule['label']) <= 63;
+        && $innerRule['from'] === '(self)' && $innerRule['from_not'] === true
+        && preg_match($labelRe, $innerRule['label']) === 1 && $innerRule['label'] === md5('wgipv6gw-pin-inner-opt11');
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: filter rule confs for the WAN pin and the inner-source block\n", $ok ? 'PASS' : 'FAIL');
 
@@ -827,6 +866,97 @@ function wgipv6_tunnels_selftest() {
         && wgipv6_mss_lines($d, false) === [];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: IPv4-only tunnel => one line; clamp off => none\n", $ok ? 'PASS' : 'FAIL');
+
+    /* a disabled WAN gateway (but its interface still up) is not "unresolvable": wan_interface stays set */
+    $c = $base();
+    $c['gateways']['WAN_A']['disabled'] = true;
+    $ok = wgipv6_derive($c, ['i-a'])['tunnels'][0]['wan_interface'] === 'opt1';
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: WAN gateway disabled but its interface is up => wan_interface still resolvable\n", $ok ? 'PASS' : 'FAIL');
+
+    /* fail closed: unknown gateway on the bound route => interface-less WAN pin */
+    $c = $base();
+    $c['routes']['r-a']['gateway'] = 'NOPE';
+    $dUnknown = wgipv6_derive($c, ['i-a']);
+    $ok = $dUnknown['tunnels'][0]['wan_interface'] === null;
+    $psUnknown = wgipv6_pin_set($dUnknown, true, true);
+    $ok = $ok && $psUnknown === ['wan' => [['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
+    $rulesUnknown = wgipv6_pin_rules($psUnknown);
+    $wanRuleUnknown = $rulesUnknown[0];
+    $ok = $ok && count($rulesUnknown) === 2
+        && !array_key_exists('interface', $wanRuleUnknown) && !array_key_exists('interfacenot', $wanRuleUnknown)
+        && $wanRuleUnknown['type'] === 'block' && $wanRuleUnknown['direction'] === 'out' && $wanRuleUnknown['quick'] === true
+        && $wanRuleUnknown['log'] === true && $wanRuleUnknown['ipprotocol'] === 'inet' && $wanRuleUnknown['protocol'] === 'udp'
+        && $wanRuleUnknown['to'] === '198.51.100.10' && $wanRuleUnknown['label'] === md5('wgipv6gw-pin-wan-anywhere-inet');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: unknown gateway on the bound route => interface-less WAN pin, fail closed\n", $ok ? 'PASS' : 'FAIL');
+
+    /* fail closed: bound WAN interface disabled => interface-less WAN pin */
+    $c = $base();
+    $c['interfaces']['opt1']['enable'] = false;
+    $dDisabled = wgipv6_derive($c, ['i-a']);
+    $ok = $dDisabled['tunnels'][0]['wan_interface'] === null && $dDisabled['tunnels'][0]['enforceable'] === true;
+    $psDisabled = wgipv6_pin_set($dDisabled, true, true);
+    $ok = $ok && $psDisabled === ['wan' => [['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: bound WAN interface disabled => interface-less WAN pin, fail closed\n", $ok ? 'PASS' : 'FAIL');
+
+    /* two enforceable tunnels bound to the same WAN, distinct endpoints => merged and sorted */
+    $c = $base();
+    $c['instances']['i-b'] = ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420',
+                              'tunneladdress' => ['10.3.0.2/32'], 'peers' => ['p-b']];
+    $c['peers']['p-b'] = ['name' => 'tun_b', 'serveraddress' => '198.51.100.30', 'serverport' => '51821'];
+    $c['interfaces']['opt12'] = ['if' => 'wg2', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
+    $c['routes']['r-b'] = ['network' => '198.51.100.30/32', 'gateway' => 'WAN_A', 'enabled' => true];
+    $ps2 = wgipv6_pin_set(wgipv6_derive($c, ['i-a', 'i-b']), true, true);
+    $ok = $ps2 === ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10', '198.51.100.30']]],
+                    'inner' => ['opt11', 'opt12']];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: two tunnels on the same WAN => endpoints merged and sorted, inner opts sorted\n", $ok ? 'PASS' : 'FAIL');
+
+    /* two enforceable tunnels sharing the same endpoint => the endpoint is de-duplicated */
+    $c = $base();
+    $c['instances']['i-b'] = ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420',
+                              'tunneladdress' => ['10.3.0.2/32'], 'peers' => ['p-b']];
+    $c['peers']['p-b'] = ['name' => 'tun_b', 'serveraddress' => '198.51.100.10', 'serverport' => '51821'];
+    $c['interfaces']['opt12'] = ['if' => 'wg2', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
+    $ps3 = wgipv6_pin_set(wgipv6_derive($c, ['i-a', 'i-b']), true, true);
+    $ok = $ps3 === ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]],
+                    'inner' => ['opt11', 'opt12']];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: two tunnels sharing an endpoint => the endpoint is de-duplicated\n", $ok ? 'PASS' : 'FAIL');
+
+    /* an interface MTU override feeds the MSS lines too */
+    $c = $base();
+    $c['interfaces']['opt11']['mtu'] = '1300';
+    $ok = wgipv6_mss_lines(wgipv6_derive($c, ['i-a']), true) === [
+        'match on wg1 inet proto tcp all scrub (max-mss 1260)',
+        'match on wg1 inet6 proto tcp all scrub (max-mss 1240)',
+    ];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: mtu-override MTU feeds the MSS lines\n", $ok ? 'PASS' : 'FAIL');
+
+    /* MTU below the IPv4 minimum => no MSS lines at all, mtu-too-small raised */
+    $c = $base();
+    $c['instances']['i-a']['mtu'] = '500';
+    $d5 = wgipv6_derive($c, ['i-a']);
+    $t5 = $d5['tunnels'][0];
+    $codes5 = array_map(function ($f) { return $f['code']; }, $t5['findings']);
+    $ok = in_array('mtu-too-small', $codes5, true) && $t5['enforceable'] === true
+        && wgipv6_mss_lines($d5, true) === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: MTU below the IPv4 minimum => no MSS lines, mtu-too-small raised\n", $ok ? 'PASS' : 'FAIL');
+
+    /* MTU below the IPv6 minimum but above the IPv4 one, with an IPv6 address => only the IPv4 line, mtu-too-small raised */
+    $c = $base();
+    $c['instances']['i-a']['mtu'] = '1000';
+    $d6 = wgipv6_derive($c, ['i-a']);
+    $t6 = $d6['tunnels'][0];
+    $codes6 = array_map(function ($f) { return $f['code']; }, $t6['findings']);
+    $ok = in_array('mtu-too-small', $codes6, true)
+        && wgipv6_mss_lines($d6, true) === ['match on wg1 inet proto tcp all scrub (max-mss 960)'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: MTU below the IPv6 minimum, IPv6 address present => only the IPv4 MSS line, mtu-too-small raised\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
