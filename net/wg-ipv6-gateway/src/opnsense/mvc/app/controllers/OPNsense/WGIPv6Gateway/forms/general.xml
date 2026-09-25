@@ -7,7 +7,7 @@
         <id>wgipv6gateway.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
-        <help>Manage the WireGuard tunnels listed on the Tunnels tab. Turning this off stops every behaviour below.</help>
+        <help>Manage the WireGuard tunnels listed on the Tunnels tab. Turning this off stops every behaviour below. Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
         <id>wgipv6gateway.health_mirror</id>
@@ -31,13 +31,13 @@
         <id>wgipv6gateway.wan_pins</id>
         <label>WAN pins</label>
         <type>checkbox</type>
-        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to.</help>
+        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
         <id>wgipv6gateway.inner_source</id>
         <label>Only NATed traffic into tunnels</label>
         <type>checkbox</type>
-        <help>Block any packet that would enter a tunnel without having been translated to the tunnel's own address.</help>
+        <help>Block any packet that would enter a tunnel from an address that is not one of the firewall's own (i.e. traffic that was not translated by outbound NAT). Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
         <id>wgipv6gateway.mss_clamp</id>
