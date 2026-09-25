@@ -40,11 +40,27 @@
         </grid_view>
     </field>
     <field>
+        <id>tunnel.gw4_status_text</id>
+        <label>IPv4 status</label>
+        <grid_view>
+            <formatter>status4</formatter>
+            <width>90</width>
+        </grid_view>
+    </field>
+    <field>
         <id>tunnel.gw6</id>
         <label>IPv6 gateway</label>
         <grid_view>
             <formatter>gw6</formatter>
             <min-width>120</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.gw6_status_text</id>
+        <label>IPv6 status</label>
+        <grid_view>
+            <formatter>status6</formatter>
+            <width>90</width>
         </grid_view>
     </field>
     <field>

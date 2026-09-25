@@ -126,6 +126,31 @@ const WGCT_GRID_SEARCH_FIELDS = [
 ];
 
 /**
+ * The status icon's classes for a gateway, the same mapping core's gateway
+ * page uses (Routing/Api/SettingsController.php searchGatewayAction): a plug
+ * that is red when the status holds "down" (force_down included), orange for
+ * loss or delay, green for "none", grey when there is no status. Pure.
+ *
+ * @param string $status the gateway's raw status ('' when it has none)
+ * @return string the icon's classes
+ */
+function wgct_gateway_label_class(string $status): string {
+    if ($status === '' || $status === 'unknown') {
+        return 'fa fa-plug text-default';
+    }
+    if (str_contains($status, 'down')) {
+        return 'fa fa-plug text-danger';
+    }
+    if (str_contains($status, 'loss') || str_contains($status, 'delay')) {
+        return 'fa fa-plug text-warning';
+    }
+    if (str_contains($status, 'none')) {
+        return 'fa fa-plug text-success';
+    }
+    return 'fa fa-plug text-default';
+}
+
+/**
  * One flat row of the Tunnels grid: every column a scalar the grid can sort
  * and search on ('' where the record has null), the findings for the badges,
  * and the flags that decide the row's Rebind and Apply commands. Pure.
@@ -162,10 +187,12 @@ function wgct_grid_row(array $t): array {
         'gw4' => $t['gw4'] ?? '',
         'gw4_status' => $t['gw4_status'] ?? '',
         'gw4_status_text' => $t['gw4_status_text'] ?? '',
+        'gw4_label_class' => $t['gw4'] === null ? '' : wgct_gateway_label_class($t['gw4_status'] ?? ''),
         'held' => $t['held'],
         'gw6' => $t['gw6'] ?? '',
         'gw6_status' => $t['gw6_status'] ?? '',
         'gw6_status_text' => $t['gw6_status_text'] ?? '',
+        'gw6_label_class' => $t['gw6'] === null ? '' : wgct_gateway_label_class($t['gw6_status'] ?? ''),
         'nat_text' => implode('; ', $nat),
         'groups_text' => implode(', ', $t['groups']),
         'findings' => $t['findings'],
@@ -245,6 +272,17 @@ function wgct_view_selftest(): int {
     wgct_check($t, 'view: the unbound and apply-pending findings set the Rebind and Apply flags, and only they',
         $b['unbound'] === true && $b['apply_pending'] === true && $a['unbound'] === false && $a['apply_pending'] === false
         && $b['findings_text'] === 'unbound apply-pending');
+    wgct_check($t, 'view: status icons follow core gateway page colours (down/force_down red, loss/delay orange, none green, else grey)',
+        wgct_gateway_label_class('none') === 'fa fa-plug text-success'
+        && wgct_gateway_label_class('down') === 'fa fa-plug text-danger'
+        && wgct_gateway_label_class('force_down') === 'fa fa-plug text-danger'
+        && wgct_gateway_label_class('loss') === 'fa fa-plug text-warning'
+        && wgct_gateway_label_class('delay+loss') === 'fa fa-plug text-warning'
+        && wgct_gateway_label_class('') === 'fa fa-plug text-default'
+        && wgct_gateway_label_class('unknown') === 'fa fa-plug text-default');
+    wgct_check($t, 'view: a grid row carries each gateway\'s icon class, and none for a missing gateway',
+        $a['gw4_label_class'] === 'fa fa-plug text-success' && $a['gw6_label_class'] === 'fa fa-plug text-default'
+        && $b['gw4_label_class'] === '' && $b['gw6_label_class'] === '');
     wgct_check($t, 'view: every searched field is a grid row field',
         array_diff(WGCT_GRID_SEARCH_FIELDS, array_keys($a)) === []);
     return wgct_tally_report('view', $t);
