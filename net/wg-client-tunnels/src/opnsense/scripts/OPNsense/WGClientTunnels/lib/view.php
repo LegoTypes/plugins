@@ -31,7 +31,9 @@ function wgct_tunnel_view(): array {
     foreach ($derived['tunnels'] as $t) {
         $t['clamp'] = wgct_clamp_for($t, $mssClamp);
         if (isset($pending[$t['uuid']])) {
-            $t['findings'][] = wgct_finding('apply-pending', 'saved at ' . date('Y-m-d H:i', $pending[$t['uuid']]) . '; its apply has not completed');
+            $record = $pending[$t['uuid']];
+            $t['findings'][] = wgct_finding('apply-pending', 'saved at ' . date('Y-m-d H:i', $record['at'])
+                . "; its {$record['mode']} apply has not completed");
         }
         $tunnels[] = $t;
     }
