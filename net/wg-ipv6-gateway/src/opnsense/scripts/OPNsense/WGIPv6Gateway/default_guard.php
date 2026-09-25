@@ -115,6 +115,14 @@ if (in_array('--selftest', $argv ?? [], true)) {
 }
 
 $dry = in_array('--dry', $argv ?? [], true);
+$mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
+if ((string)$mdl->enabled !== '1' || (string)$mdl->default_guard !== '1') {
+    if ($dry) {
+        echo "default-route guard is off in the plugin settings\n";
+    }
+    exit(0);
+}
+
 $gateways = array_values((new OPNsense\Routing\Gateways())->getGateways());
 
 foreach (['inet', 'inet6'] as $family) {

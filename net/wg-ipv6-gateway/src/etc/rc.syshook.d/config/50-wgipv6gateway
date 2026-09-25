@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian (Bill Flood)
+# All rights reserved.
+# BSD 2-Clause License
+#
+# Config-change hook: core runs every script in rc.syshook.d/config/ after a
+# config save (Config::save -> syslog config-event -> configd
+# system.event.config_changed -> rc.syshook config). Re-assert the managed
+# tunnels' IPv6 addresses and next-hop routes, and the default-route guard,
+# as soon as a save changes a tunnel's parts rather than at the next cron
+# minute. Idempotent and silent unless it repairs something, so the plugin's
+# own saves do not loop. Writes no config.
+
+/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/wgipv6gw.sh reconcile
+exit 0
