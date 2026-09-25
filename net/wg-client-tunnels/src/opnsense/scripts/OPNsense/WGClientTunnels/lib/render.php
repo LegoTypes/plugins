@@ -23,16 +23,16 @@
 if (!is_readable(__DIR__ . '/tunnels.php')) {
     /* thrown during file inclusion, not a compile error: the hook's
      * require_once + try/catch around it can and does catch this. */
-    throw new \RuntimeException('[wgipv6gw-render] tunnels.php library missing');
+    throw new \RuntimeException('[wgct-render] tunnels.php library missing');
 }
 require_once __DIR__ . '/tunnels.php';
 
-const WGCT_RENDERED_FILE = '/var/run/wgipv6gateway/rendered.json';
+const WGCT_RENDERED_FILE = '/var/run/wgclienttunnels/rendered.json';
 
 /* freshness.php's own small state: the last filter-reload request it made,
  * so repeated staleness (e.g. a render that keeps failing) does not flood
  * configd with reload requests every reconcile tick. */
-const WGCT_FRESHNESS_STATE_FILE = '/var/run/wgipv6gateway/freshness.json';
+const WGCT_FRESHNESS_STATE_FILE = '/var/run/wgclienttunnels/freshness.json';
 const WGCT_RELOAD_SUPPRESS_SECONDS = 300;
 const WGCT_RELOAD_MAX_WINDOW_SECONDS = 3600;
 
@@ -40,13 +40,13 @@ const WGCT_RELOAD_MAX_WINDOW_SECONDS = 3600;
  * newwanip hooks can overlap): one run's derive -> observe -> plan -> act
  * must not interleave with another's. A run waits for the lock at most
  * WGCT_FRESHNESS_LOCK_TIMEOUT_MS, polling every WGCT_FRESHNESS_LOCK_POLL_MS. */
-const WGCT_FRESHNESS_LOCK_FILE = '/var/run/wgipv6gateway/freshness.lock';
+const WGCT_FRESHNESS_LOCK_FILE = '/var/run/wgclienttunnels/freshness.lock';
 const WGCT_FRESHNESS_LOCK_TIMEOUT_MS = 30000;
 const WGCT_FRESHNESS_LOCK_POLL_MS = 200;
 
 /* The hash of the failure freshness.php last reported, so a failure that
  * repeats every reconcile tick is logged once, and its recovery once. */
-const WGCT_FRESHNESS_ERROR_FILE = '/var/run/wgipv6gateway/freshness.err';
+const WGCT_FRESHNESS_ERROR_FILE = '/var/run/wgclienttunnels/freshness.err';
 
 /**
  * @return array ['enabled' => bool, 'pins' => wgct_pin_set(), 'mss' => list<string>]
@@ -88,7 +88,7 @@ function wgct_load_mss_anchor(array $lines, bool $quiet = false): bool {
     fclose($pipes[2]);
     $rc = proc_close($proc);
     if ($rc !== 0 && !$quiet) {
-        syslog(LOG_ERR, '[wgipv6gw-render] loading anchor ' . WGCT_MSS_ANCHOR . ' failed: ' . trim((string)$err));
+        syslog(LOG_ERR, '[wgct-render] loading anchor ' . WGCT_MSS_ANCHOR . ' failed: ' . trim((string)$err));
     }
     return $rc === 0;
 }
@@ -185,16 +185,16 @@ function wgct_write_file_atomic(string $path, string $data): bool {
     @mkdir($dir, 0755, true);
     $tmp = tempnam($dir, pathinfo($path, PATHINFO_FILENAME));
     if ($tmp === false) {
-        syslog(LOG_ERR, '[wgipv6gw-render] could not create a temp file in ' . $dir);
+        syslog(LOG_ERR, '[wgct-render] could not create a temp file in ' . $dir);
         return false;
     }
     if (file_put_contents($tmp, $data) === false) {
-        syslog(LOG_ERR, '[wgipv6gw-render] could not write ' . $tmp);
+        syslog(LOG_ERR, '[wgct-render] could not write ' . $tmp);
         @unlink($tmp);
         return false;
     }
     if (!rename($tmp, $path)) {
-        syslog(LOG_ERR, '[wgipv6gw-render] could not rename ' . $tmp . ' to ' . $path);
+        syslog(LOG_ERR, '[wgct-render] could not rename ' . $tmp . ' to ' . $path);
         @unlink($tmp);
         return false;
     }
@@ -211,7 +211,7 @@ function wgct_write_file_atomic(string $path, string $data): bool {
 function wgct_write_rendered(array $r): bool {
     $json = json_encode($r);
     if ($json === false) {
-        syslog(LOG_ERR, '[wgipv6gw-render] could not encode the rendered record: ' . json_last_error_msg());
+        syslog(LOG_ERR, '[wgct-render] could not encode the rendered record: ' . json_last_error_msg());
         return false;
     }
     return wgct_write_file_atomic(WGCT_RENDERED_FILE, $json);
@@ -244,7 +244,7 @@ function wgct_pins_nonempty(array $pins): bool {
  * them). Pure, so it is directly testable; freshness.php runs the two
  * commands and hands the result to wgct_freshness_plan() as $live.
  *
- * @param array $anchorLines `pfctl -a wgipv6gateway_mss -sr` lines; blank lines are not rules
+ * @param array $anchorLines `pfctl -a wgclienttunnels_mss -sr` lines; blank lines are not rules
  * @param array $ruleLines   `pfctl -sr` lines; pf prints each rule's label as label "<32 hex>"
  * @param array $pins        the rendered record's 'pins'
  * @return array ['anchor_count' => int, 'missing_labels' => int] -- the
@@ -344,7 +344,7 @@ function wgct_write_freshness_state(?array $s): bool {
     }
     $json = json_encode($s);
     if ($json === false) {
-        syslog(LOG_ERR, '[wgipv6gw-render] could not encode the freshness state: ' . json_last_error_msg());
+        syslog(LOG_ERR, '[wgct-render] could not encode the freshness state: ' . json_last_error_msg());
         return false;
     }
     return wgct_write_file_atomic(WGCT_FRESHNESS_STATE_FILE, $json);
@@ -418,10 +418,10 @@ function wgct_report_freshness_outcome(?string $error): void {
     $prior = wgct_read_freshness_error_hash();
     $plan = wgct_failure_log_plan($prior, $error !== null ? md5($error) : null);
     if ($plan['log_error']) {
-        syslog(LOG_ERR, '[wgipv6gw-render] ' . $error);
+        syslog(LOG_ERR, '[wgct-render] ' . $error);
     }
     if ($plan['log_recovery']) {
-        syslog(LOG_NOTICE, '[wgipv6gw-render] freshness recovered');
+        syslog(LOG_NOTICE, '[wgct-render] freshness recovered');
     }
     if ($plan['fail_hash'] !== $prior) {
         wgct_write_freshness_error_hash($plan['fail_hash']);
@@ -698,13 +698,13 @@ function wgct_render_firewall(
     } catch (\Throwable $e) {
         $rendered = ['at' => time(), 'failed' => true, 'error' => $e->getMessage(), 'enabled' => false,
                      'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
-        syslog(LOG_ERR, '[wgipv6gw-render] rules not rendered: ' . $e->getMessage());
+        syslog(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
     }
     if ($apply) {
         try {
             $writer($rendered);
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, '[wgipv6gw-render] could not write ' . WGCT_RENDERED_FILE . ': ' . $e->getMessage());
+            syslog(LOG_ERR, '[wgct-render] could not write ' . WGCT_RENDERED_FILE . ': ' . $e->getMessage());
         }
     }
 }

@@ -116,7 +116,7 @@ function wgclienttunnels_firewall($fw)
 {
     $lib = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/render.php';
     if (!is_readable($lib) || !is_readable(dirname($lib) . '/tunnels.php')) {
-        syslog(LOG_ERR, '[wgipv6gw-render] plugin library missing; rules not rendered');
+        syslog(LOG_ERR, '[wgct-render] plugin library missing; rules not rendered');
         wgclienttunnels_forget_render();
         return;
     }
@@ -124,7 +124,7 @@ function wgclienttunnels_firewall($fw)
         require_once $lib;
         wgct_render_firewall($fw);
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, '[wgipv6gw-render] hook failed: ' . $e->getMessage());
+        syslog(LOG_ERR, '[wgct-render] hook failed: ' . $e->getMessage());
         wgclienttunnels_forget_render();
     }
 }
@@ -137,7 +137,7 @@ function wgclienttunnels_firewall($fw)
  */
 function wgclienttunnels_forget_render(): void
 {
-    $rendered = '/var/run/wgipv6gateway/rendered.json';
+    $rendered = '/var/run/wgclienttunnels/rendered.json';
     if (is_file($rendered)) {
         unlink($rendered);
     }
