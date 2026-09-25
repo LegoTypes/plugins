@@ -358,8 +358,12 @@ function wgipv6_collect_config() {
 
 /**
  * Everything the decisions read from the running system. Runs
- * gateway_status.php, which reads config under a shared lock, so this must
- * never be called while holding Config::lock().
+ * gateway_status.php as a subprocess. Config::lock() only holds a shared lock
+ * after its reload, so a plain reader would still succeed while this process
+ * holds it -- the hazard is starting or waiting on anything that may itself
+ * write config: it would wait for exclusive access while this process waits
+ * for it to finish. So this must never be called while holding
+ * Config::lock(); simplest is to call it only outside lock()/unlock().
  *
  * @return array see the file header
  */
@@ -535,8 +539,12 @@ function wgipv6_apply_changes($mdl, array $changes) {
 /**
  * The only way the mirror writes config. Config::lock() re-reads config.xml, so
  * $mutate builds its models from what is on disk now, never from a snapshot
- * loaded before a concurrent GUI save. Never start or wait on anything that
- * reads config inside $mutate: readers take a shared lock and would deadlock.
+ * loaded before a concurrent GUI save. lock() only holds a shared lock after
+ * that reload, so a plain reader would still succeed inside $mutate -- the
+ * real hazard is a writer (a configd action, another script's lock()/save(),
+ * plugins_configure): it would wait for exclusive access while this process
+ * waits for it to finish. Never start or wait on anything that may write
+ * config inside $mutate; simplest is to start or wait on nothing at all.
  *
  * @param callable $mutate builds models, changes and serializes them; returns an
  *                         array whose 'save' key says whether to save
