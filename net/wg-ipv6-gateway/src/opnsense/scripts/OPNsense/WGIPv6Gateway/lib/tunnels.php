@@ -204,39 +204,21 @@ function wgipv6_derive(array $core, array $managed) {
             $ctx['opt_by_device'][$if['if']] = $opt;
         }
     }
-    $wgDevices = [];
-    foreach ($core['instances'] as $inst) {
-        $wgDevices['wg' . $inst['instance']] = true;
-    }
     foreach ($core['gateways'] as $name => $g) {
         $ctx['gw_by_if'][$g['interface']][$g['ipprotocol']][] = $name;
         if ($g['monitor'] !== '') {
             $ctx['monitor_users'][$g['monitor']][] = $name;
         }
     }
-    /* enabled /32 routes whose gateway is not on a WireGuard device: the only kind that binds a tunnel */
-    foreach ($core['routes'] as $r) {
-        if (!$r['enabled'] || substr($r['network'], -3) !== '/32') {
-            continue;
-        }
-        if (filter_var(substr($r['network'], 0, -3), FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-            continue;
-        }
-        $g = $core['gateways'][$r['gateway']] ?? null;
-        $dev = $g !== null ? ($core['interfaces'][$g['interface']]['if'] ?? '') : '';
-        if (!isset($wgDevices[$dev])) {
-            $ctx['binding_routes'][substr($r['network'], 0, -3)] = $r['gateway'];
-        }
+    foreach (wgipv6_binding_routes($core) as $b) {
+        $ctx['binding_routes'][$b['ip']] = $b['gateway'];
     }
-    $endpoints = [];
-    foreach ($core['peers'] as $p) {
-        $endpoints[$p['serveraddress']] = true;
+    /* one entry per IP, the last route's gateway winning: byte-identical to the old IP-keyed loop */
+    $stale = [];
+    foreach (wgipv6_stale_candidates($core) as $b) {
+        $stale[$b['ip']] = "{$b['ip']}/32 via {$b['gateway']}";
     }
-    foreach ($ctx['binding_routes'] as $ip => $gwName) {
-        if (!isset($endpoints[$ip])) {
-            $ctx['stale_routes'][] = "{$ip}/32 via {$gwName}";
-        }
-    }
+    $ctx['stale_routes'] = array_values($stale);
 
     $tunnels = [];
     foreach ($managed as $uuid) {
@@ -247,6 +229,52 @@ function wgipv6_derive(array $core, array $managed) {
         $global[] = wgipv6_finding('sentinel-missing', 'NO_DEFAULT4 and NO_DEFAULT6 keep tunnels out of the default-gateway election');
     }
     return ['tunnels' => $tunnels, 'global' => $global];
+}
+
+/**
+ * The routes that can bind a tunnel (spec 2.2): enabled /32 IPv4 routes whose
+ * gateway is not on a WireGuard device. Pure. Derivation and Rebind both use
+ * this, so they cannot disagree on what a binding is.
+ *
+ * @param array $core wgipv6_core_snapshot()
+ * @return array<string, array{ip: string, gateway: string}> route uuid => binding
+ */
+function wgipv6_binding_routes(array $core): array {
+    $wgDevices = [];
+    foreach ($core['instances'] as $inst) {
+        $wgDevices['wg' . $inst['instance']] = true;
+    }
+    $out = [];
+    foreach ($core['routes'] as $uuid => $r) {
+        if (!$r['enabled'] || substr($r['network'], -3) !== '/32') {
+            continue;
+        }
+        $ip = substr($r['network'], 0, -3);
+        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+            continue;
+        }
+        $g = $core['gateways'][$r['gateway']] ?? null;
+        $dev = $g !== null ? ($core['interfaces'][$g['interface']]['if'] ?? '') : '';
+        if (!isset($wgDevices[$dev])) {
+            $out[(string)$uuid] = ['ip' => $ip, 'gateway' => $r['gateway']];
+        }
+    }
+    return $out;
+}
+
+/**
+ * stale-route candidates (spec 3.4): binding routes to an address that is no
+ * peer's endpoint. Pure.
+ *
+ * @param array $core wgipv6_core_snapshot()
+ * @return array<string, array{ip: string, gateway: string}>
+ */
+function wgipv6_stale_candidates(array $core): array {
+    $endpoints = [];
+    foreach ($core['peers'] as $p) {
+        $endpoints[$p['serveraddress']] = true;
+    }
+    return array_filter(wgipv6_binding_routes($core), fn (array $b): bool => !isset($endpoints[$b['ip']]));
 }
 
 /**
