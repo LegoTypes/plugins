@@ -80,6 +80,29 @@ function wgipv6_split_csv($value) {
 }
 
 /**
+ * Every element at $path below $root, in document order. Pure. A missing step
+ * yields an empty list (SimpleXML iterates a missing child zero times), so
+ * optional sections -- legacy <filter>, <nat><outbound> -- need no isset().
+ *
+ * @param \SimpleXMLElement $root the config root, or any element
+ * @param string            ...$path child element names
+ * @return list<\SimpleXMLElement>
+ */
+function wgipv6_xml_list(\SimpleXMLElement $root, string ...$path): array {
+    $nodes = [$root];
+    foreach ($path as $step) {
+        $next = [];
+        foreach ($nodes as $node) {
+            foreach ($node->{$step} as $child) {
+                $next[] = $child;
+            }
+        }
+        $nodes = $next;
+    }
+    return $nodes;
+}
+
+/**
  * Everything the derivation reads from core config, through models.
  *
  * @return array see wgipv6_derive()
