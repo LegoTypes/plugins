@@ -38,14 +38,10 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected static $internalServiceName = 'wgipv6gateway';
 
     /**
-     * Reconfigure: ensure IPv6 gateway objects exist, then apply routes.
+     * Reconfigure: re-assert the IPv6 routes of the managed tunnels.
      */
     public function reconfigureAction()
     {
-        // Create any missing IPv6 gateway objects in Routing model
-        $settingsCtrl = new SettingsController();
-        $settingsCtrl->ensureGatewayObjectsAction();
-
         // Apply route configuration via configd
         $backend = new Backend();
         $response = $backend->configdRun('wgipv6gateway configure_routes');

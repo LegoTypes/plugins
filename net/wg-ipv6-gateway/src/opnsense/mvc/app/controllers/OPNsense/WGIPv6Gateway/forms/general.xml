@@ -7,8 +7,24 @@
         <id>wgipv6gateway.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
-        <help><![CDATA[Enable WireGuard IPv6 gateway management. When enabled, the plugin
-        creates IPv6 interface routes on WireGuard tunnels and mirrors IPv6
-        gateway health from the corresponding IPv4 gateway.]]></help>
+        <help>Manage the WireGuard tunnels listed on the Tunnels tab. Turning this off stops every behaviour below.</help>
+    </field>
+    <field>
+        <id>wgipv6gateway.health_mirror</id>
+        <label>Health mirror</label>
+        <type>checkbox</type>
+        <help>Hold each tunnel down while the WAN it is bound to is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy.</help>
+    </field>
+    <field>
+        <id>wgipv6gateway.ipv6_routes</id>
+        <label>IPv6 addresses and routes</label>
+        <type>checkbox</type>
+        <help>Keep each tunnel's IPv6 address and the host route to its IPv6 next hop in place (core does not add IPv6 far-gateway routes).</help>
+    </field>
+    <field>
+        <id>wgipv6gateway.default_guard</id>
+        <label>Default-route guard</label>
+        <type>checkbox</type>
+        <help>Remove a default route through a tunnel or any other non-default gateway, for both address families.</help>
     </field>
 </form>
