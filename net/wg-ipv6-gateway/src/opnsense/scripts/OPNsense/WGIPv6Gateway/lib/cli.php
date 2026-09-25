@@ -15,6 +15,7 @@
 require_once __DIR__ . '/view.php';
 require_once __DIR__ . '/writer.php';
 require_once __DIR__ . '/apply.php';
+require_once __DIR__ . '/selftest.php';
 
 const WGIPV6_CLI_USAGE = <<<'TXT'
 Usage: tunnel.php [--json] [--dry] COMMAND
@@ -89,10 +90,38 @@ function wgipv6_cli_main(array $args): int {
     } catch (\Throwable $e) {
         $msg = wgipv6_redact(get_class($e) . ': ' . $e->getMessage(), $secrets);
         syslog(LOG_ERR, '[' . WGIPV6_ACTION_LOG_TAG . "] {$cmd} failed: {$msg}");
-        return wgipv6_cli_emit(wgipv6_result(['dry' => $dry, 'errors' => ['general' => "{$cmd} failed: {$msg}. "
-            . 'If this happened after the save, the change is in config and only its apply is incomplete: '
-            . 'run `tunnel.php apply UUID` and check `tunnel.php status`.']]), $json);
+        /*
+         * wgipv6_cli_uuid() is the only thing that throws InvalidArgumentException,
+         * and it runs before any writer is called: that failure can never
+         * follow a save, so the "apply again" footer would be misleading
+         * there (controller review, 2026-09-25). Everything else reaches
+         * here from inside or after an action function, which may have
+         * already saved.
+         */
+        $canFollowSave = !($e instanceof \InvalidArgumentException);
+        return wgipv6_cli_emit(wgipv6_result(['dry' => $dry, 'errors' => ['general' => wgipv6_cli_failure_message($cmd, $msg, $canFollowSave)]]), $json);
     }
+}
+
+/**
+ * The text for a caught command failure. A pre-write input error (an
+ * invalid uuid; $canFollowSave false) can never have saved anything, so it
+ * gets no "apply again" footer; anything that may have run after an action
+ * function started -- and so may have saved before failing -- does. Pure:
+ * $msg is text the caller has already redacted.
+ *
+ * @param string $cmd           the command that failed
+ * @param string $msg           the redacted exception text
+ * @param bool   $canFollowSave whether the failure could have happened after a save
+ * @return string
+ */
+function wgipv6_cli_failure_message(string $cmd, string $msg, bool $canFollowSave): string {
+    $text = "{$cmd} failed: {$msg}.";
+    if (!$canFollowSave) {
+        return $text;
+    }
+    return $text . ' If this happened after the save, the change is in config and only its apply is incomplete: '
+        . 'run `tunnel.php apply UUID` and check `tunnel.php status`.';
 }
 
 /**
@@ -209,6 +238,36 @@ function wgipv6_cli_list(bool $json, bool $findingsOnly): int {
 }
 
 /**
+ * Self-tests for cli.php's own pure helpers: uuid validation and the
+ * apply-again footer decision. No syslog, no files, no config, no processes.
+ *
+ * @return int exit code, 0 when every case passes
+ */
+function wgipv6_cli_own_selftest(): int {
+    $t = ['fail' => 0, 'total' => 0];
+    $lower = '00000000-0000-4000-8000-000000000001';
+    $upper = strtoupper($lower);
+    wgipv6_check($t, 'cli: a lower-case uuid is accepted as itself', wgipv6_cli_uuid($lower) === $lower);
+    wgipv6_check($t, 'cli: an upper-case uuid is accepted as itself', wgipv6_cli_uuid($upper) === $upper);
+    foreach (['not-a-uuid', ''] as $bad) {
+        $rejected = false;
+        try {
+            wgipv6_cli_uuid($bad);
+        } catch (\InvalidArgumentException) {
+            $rejected = true;
+        }
+        wgipv6_check($t, "cli: '{$bad}' is rejected as not a uuid", $rejected);
+    }
+    wgipv6_check($t, 'cli: a pre-write input error (cannot follow a save) carries no apply-again footer',
+        wgipv6_cli_failure_message('remove', 'InvalidArgumentException: not a uuid: x', false)
+        === 'remove failed: InvalidArgumentException: not a uuid: x.');
+    wgipv6_check($t, 'cli: a failure that may follow a save carries the apply-again footer',
+        str_contains(wgipv6_cli_failure_message('remove', 'RuntimeException: boom', true), 'run `tunnel.php apply UUID`')
+        && str_contains(wgipv6_cli_failure_message('remove', 'RuntimeException: boom', true), 'remove failed: RuntimeException: boom.'));
+    return wgipv6_tally_report('cli', $t);
+}
+
+/**
  * Every self-test suite of the plugin. Pure.
  *
  * @return int 0 when every suite passes
@@ -216,8 +275,8 @@ function wgipv6_cli_list(bool $json, bool $findingsOnly): int {
 function wgipv6_cli_selftest(): int {
     require_once __DIR__ . '/render.php';
     $codes = [
-        wgipv6_tunnels_selftest(), wgipv6_render_selftest(), wgipv6_wgconf_selftest(), wgipv6_refs_selftest(),
-        wgipv6_actions_selftest(), wgipv6_mtu_selftest(), wgipv6_apply_selftest(),
+        wgipv6_cli_own_selftest(), wgipv6_tunnels_selftest(), wgipv6_render_selftest(), wgipv6_wgconf_selftest(),
+        wgipv6_refs_selftest(), wgipv6_actions_selftest(), wgipv6_mtu_selftest(), wgipv6_apply_selftest(),
     ];
     return max($codes) === 0 ? 0 : 1;
 }
