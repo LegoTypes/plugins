@@ -163,12 +163,17 @@ if (empty($plan['changes'])) {
  *   1. /tmp/filter_reload_gateway.lock -- applying force_down is a full
  *      routing reconfigure, which restarts every dpinger; overlapping
  *      reconfigures leave dpinger dead. Same lock routes.alarm uses.
- *   2. Live readings, collected again: the wait for the lock can be long.
+ *   2. Live readings, collected again: the wait for the lock can be long, and
+ *      gateway_status.php reads config, so it must never run inside the
+ *      config lock taken in step 3.
  *   3. Config::lock(), which re-reads config.xml; the decisions are planned
  *      again from fresh models, including the held set, so a GUI save made
  *      while this run waited is kept. The force_down values and the held set
  *      are saved together, once.
  *   4. Unlock, then apply and replay the alarm the reconfigure drops.
+ *
+ * If the gateway lock itself cannot be taken, leave the change for the next
+ * tick rather than save a force_down we would not apply.
  */
 $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
 if ($gwLock === false || !flock($gwLock, LOCK_EX)) {

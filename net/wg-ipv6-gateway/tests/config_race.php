@@ -7,36 +7,43 @@
  * BSD 2-Clause License
  *
  * Race test for wgipv6_locked_commit(). Run on the firewall as root, with the
- * plugin deployed. It changes the description of the first two WG IPv6
- * Gateway rows (read only by the plugin's status page) and restores them.
+ * plugin deployed. It changes the `descr` field of the two core sentinel
+ * gateways NO_DEFAULT4 and NO_DEFAULT6 (OPNsense\Routing\Gateways model,
+ * gateway_item entries found by name) and restores them. `descr` is cosmetic
+ * and read by no logic, so this is safe to run against the live config.
  *
  *   php config_race.php                 run the test
  *   php config_race.php --set=IDX:TEXT  (child) locked write of one row
+ *                                        (IDX 0 = NO_DEFAULT4, 1 = NO_DEFAULT6)
  *   php config_race.php --read          (child) print the descriptions as JSON
  *
  * Exit 0: all checks passed. Exit 1: a check failed. Exit 2: the test itself
- * could not run (a child process failed) -- originals are restored in every
- * case the restore itself can run.
+ * could not run (a child process failed, or either sentinel gateway is
+ * missing) -- originals are restored in every case the restore itself can run.
  */
 
 require '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/mirror.php';
 
 use OPNsense\Core\Config;
-use OPNsense\WGIPv6Gateway\WGIPv6Gateway;
+use OPNsense\Routing\Gateways;
 
-function race_rows(WGIPv6Gateway $mdl) {
-    $rows = [];
-    foreach ($mdl->gateways->gateway->iterateItems() as $row) {
-        $rows[] = $row;
+const RACE_NAMES = ['NO_DEFAULT4', 'NO_DEFAULT6'];
+
+function race_find(Gateways $mdl, $name) {
+    foreach ($mdl->gateway_item->iterateItems() as $item) {
+        if ((string)$item->name === $name) {
+            return $item;
+        }
     }
-    return $rows;
+    return null;
 }
 
 function race_set_locked($idx, $text) {
     wgipv6_locked_commit(function () use ($idx, $text) {
-        $mdl = new WGIPv6Gateway();
-        race_rows($mdl)[$idx]->description = $text;
+        $mdl = new Gateways();
+        $node = race_find($mdl, RACE_NAMES[$idx]);
+        $node->descr = $text;
         $mdl->serializeToConfig();
         return ['save' => true];
     });
@@ -58,9 +65,13 @@ function race_read() {
 
 $opt = getopt('', ['set:', 'read']);
 if (isset($opt['read'])) {
-    echo json_encode(array_map(function ($r) {
-        return (string)$r->description;
-    }, race_rows(new WGIPv6Gateway())));
+    $mdl = new Gateways();
+    $out = [];
+    foreach (RACE_NAMES as $name) {
+        $node = race_find($mdl, $name);
+        $out[] = $node !== null ? (string)$node->descr : null;
+    }
+    echo json_encode($out);
     exit(0);
 }
 if (isset($opt['set'])) {
@@ -70,8 +81,8 @@ if (isset($opt['set'])) {
 }
 
 $orig = race_read();
-if (!is_array($orig) || count($orig) < 2) {
-    fwrite(STDERR, "needs two WG IPv6 Gateway rows\n");
+if (!is_array($orig) || count($orig) < 2 || $orig[0] === null || $orig[1] === null) {
+    fwrite(STDERR, "needs both core gateways NO_DEFAULT4 and NO_DEFAULT6\n");
     exit(2);
 }
 $fail = 0;
@@ -80,9 +91,9 @@ try {
     /* Control: the old pattern -- load, a concurrent write lands, save the
      * snapshot -- loses the concurrent write. If it does not, this test
      * cannot tell the fix from no fix. */
-    $stale = new WGIPv6Gateway();
+    $stale = new Gateways();
     race_child(['--set=0:race-A']);
-    race_rows($stale)[1]->description = 'race-B';
+    race_find($stale, 'NO_DEFAULT6')->descr = 'race-B';
     $stale->serializeToConfig();
     Config::getInstance()->save();
     $now = race_read();
