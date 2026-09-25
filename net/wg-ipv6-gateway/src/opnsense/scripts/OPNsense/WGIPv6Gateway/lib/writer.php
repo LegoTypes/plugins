@@ -273,7 +273,7 @@ function wgipv6_write_create(array $plan, #[\SensitiveParameter] array $secret):
  * Create's config write (spec 4.6 steps 2-5).
  *
  * @param array $prep wgipv6_create_prepare() without errors
- * @return array wgipv6_result(): steps WGIPV6_TUNNEL_APPLY_STEPS, gateways the new tunnel's.
+ * @return array wgipv6_result(): steps WGIPV6_CREATE_APPLY_STEPS, gateways the new tunnel's.
  *               A saved Create is marked apply-pending until an apply completes (ruling 20).
  */
 function wgipv6_create_commit(#[\SensitiveParameter] array $prep, bool $dry): array {
@@ -289,7 +289,7 @@ function wgipv6_create_commit(#[\SensitiveParameter] array $prep, bool $dry): ar
         }
         return ['save' => !$dry, 'result' => wgipv6_result([
             'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $changes, 'uuid' => $written['uuid'],
-            'gateways' => array_column($plan['gateways'], 'name'), 'steps' => WGIPV6_TUNNEL_APPLY_STEPS,
+            'gateways' => array_column($plan['gateways'], 'name'), 'steps' => WGIPV6_CREATE_APPLY_STEPS,
         ])];
     }, 'create ' . $prep['req']['name']);
     if ($result['saved']) {
@@ -300,8 +300,9 @@ function wgipv6_create_commit(#[\SensitiveParameter] array $prep, bool $dry): ar
 
 /**
  * Rebind's config write (spec 6.2). The stale route's kernel route goes by
- * core's todo hand-off; the apply is `interface routes configure`, which
- * ends with its own filter reload.
+ * core's todo hand-off; the apply is wgipv6_rebind_apply_steps():
+ * `interface routes configure` (which ends with its own filter reload), then
+ * `wireguard restart` so the tunnel handshakes again on the new route.
  *
  * @return array wgipv6_result()
  */
@@ -333,7 +334,7 @@ function wgipv6_rebind_commit(string $uuid, string $wan, string $staleUuid, bool
         }
         return ['save' => !$dry, 'result' => wgipv6_result([
             'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $plan['changes'], 'uuid' => $uuid,
-            'gateways' => $plan['gateways'], 'steps' => [['interface routes configure', []]],
+            'gateways' => $plan['gateways'], 'steps' => wgipv6_rebind_apply_steps($uuid),
             'route_todos' => $plan['delete'] !== null ? [$plan['delete']['uuid'] => $plan['delete']['network']] : [],
         ])];
     }, 'rebind ' . $uuid . ' to ' . $wan);
@@ -424,7 +425,7 @@ function wgipv6_remove_commit(string $uuid, bool $dry): array {
         }
         return ['save' => !$dry, 'result' => wgipv6_result([
             'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $plan['changes'], 'uuid' => $uuid,
-            'steps' => WGIPV6_TUNNEL_APPLY_STEPS, 'route_todos' => $plan['routes'], 'reset_interface' => $plan['opt'],
+            'steps' => WGIPV6_REMOVE_APPLY_STEPS, 'route_todos' => $plan['routes'], 'reset_interface' => $plan['opt'],
         ])];
     }, 'remove ' . $uuid);
 }
