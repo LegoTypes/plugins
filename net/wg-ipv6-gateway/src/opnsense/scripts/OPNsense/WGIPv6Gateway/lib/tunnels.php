@@ -21,22 +21,22 @@ const WGIPV6_DEFAULT_MTU = 1420;
 
 /* finding code => [blocking, where it is fixed] (spec section 3.4) */
 const WGIPV6_FINDINGS = [
-    'instance-missing' => [true, 'the managed WireGuard instance was deleted; recreating it, or removing the tunnel with the tunnel removal script, clears this'],
+    'instance-missing' => [true, 'the managed WireGuard instance was deleted; Remove on the Tunnels tab (tunnel.php remove) drops it from the managed list'],
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
     'interface-disabled' => [true, "Interfaces > the tunnel's interface: enable it"],
     'not-single-peer' => [true, 'VPN > WireGuard > Instances: exactly one peer'],
     'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 endpoint address'],
     'ambiguous-gateway' => [true, 'System > Gateways: one gateway per family on the tunnel interface'],
-    'unbound' => [false, 'System > Routes: a /32 route to the endpoint via its WAN gateway'],
-    'stale-route' => [false, 'System > Routes: re-point or remove the old endpoint route'],
+    'unbound' => [false, 'Rebind on the Tunnels tab (tunnel.php rebind), or System > Routes: a /32 route to the endpoint via its WAN gateway'],
+    'stale-route' => [false, 'Rebind on the Tunnels tab offers to delete it with its kernel route; or re-point or remove it on System > Routes'],
     'wan-unavailable' => [false, 'System > Gateways / Interfaces: enable the bound WAN'],
     'ipv6-incomplete' => [false, 'Instances and System > Gateways: IPv6 tunnel address and IPv6 gateway together'],
     'mtu-override' => [false, 'Interfaces > wgN: clear MTU or match the instance MTU'],
     'mtu-too-small' => [false, "VPN > WireGuard > Instances (or Interfaces > the tunnel's interface): the MTU is too small to clamp TCP MSS; set it to at least 1280"],
     'legacy-mss' => [false, "Interfaces > the tunnel's interface: an MSS value is set by hand"],
-    'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface'],
+    'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface (Create adds them from a template tunnel or the NAT sources)'],
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
-    'sentinel-missing' => [false, 'System > Gateways: the NO_DEFAULT4 and NO_DEFAULT6 gateways are missing (setup_default_sentinel.php creates them)'],
+    'sentinel-missing' => [false, 'Settings > Ensure sentinel (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways'],
     'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
     'apply-pending' => [false, 'Apply on the Tunnels tab (tunnel.php apply UUID) runs the tunnel apply again: Create saved this tunnel but its apply did not complete'],
 ];
