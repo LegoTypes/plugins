@@ -31,16 +31,14 @@ require_once __DIR__ . '/selftest.php';
 const WGCT_GATEWAY_LOCK_FILE = '/tmp/filter_reload_gateway.lock';
 /* as long as the replay action's `flock -w 120` waits (ruling 22) */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
-const WGCT_ACTION_LOG_TAG = 'wgipv6gw-action';
+const WGCT_ACTION_LOG_TAG = 'wgct-action';
 /*
  * Instances whose Create saved but whose apply has not completed (ruling 20).
  * Kept in /var/db, not /var/run, so it survives a reboot: boot runs only
  * `wireguard configure`, never `template reload`, so a tunnel whose apply
  * never ran still has no wgN.conf after a reboot and still needs Apply.
  */
-const WGCT_APPLY_PENDING_FILE = '/var/db/wgipv6gateway/apply_pending.json';
-/* where 2.2 kept it before; read as a fallback until the next write, which removes it */
-const WGCT_APPLY_PENDING_LEGACY_FILE = '/var/run/wgipv6gateway/apply_pending.json';
+const WGCT_APPLY_PENDING_FILE = '/var/db/wgclienttunnels/apply_pending.json';
 /*
  * Create's apply (spec 6.1, amended): what core's WireGuard, assignment and
  * routes applies do, with the routes applied once BEFORE the device exists.
@@ -234,32 +232,15 @@ function wgct_read_pending_file(string $path): array {
 }
 
 /**
- * The record in /var/db, plus any entry only the pre-/var/db location still
- * holds (read as a fallback until the next write removes that file).
- *
  * @return array<string, int> instance uuid => unix time its apply was requested
  */
 function wgct_read_apply_pending(): array {
-    return wgct_pending_merge(
-        wgct_read_pending_file(WGCT_APPLY_PENDING_FILE),
-        wgct_read_pending_file(WGCT_APPLY_PENDING_LEGACY_FILE)
-    );
-}
-
-/**
- * @param array<string, int> $current the /var/db record
- * @param array<string, int> $legacy  the /var/run record of an earlier 2.2
- * @return array<string, int> $current, plus the legacy entries it lacks (the current one wins). Pure.
- */
-function wgct_pending_merge(array $current, array $legacy): array {
-    return $current + $legacy;
+    return wgct_read_pending_file(WGCT_APPLY_PENDING_FILE);
 }
 
 /**
  * Mark or clear "Create saved this instance but its apply has not completed".
  * Serialized on a close-on-exec lock beside the file; written atomically.
- * The write carries over the legacy /var/run record's entries (through
- * wgct_read_apply_pending()) and then removes that file.
  */
 function wgct_set_apply_pending(string $uuid, bool $pending): void {
     $dir = dirname(WGCT_APPLY_PENDING_FILE);
@@ -270,7 +251,7 @@ function wgct_set_apply_pending(string $uuid, bool $pending): void {
     $lock->flock(LOCK_EX);
     try {
         $all = wgct_read_apply_pending();
-        if (!$pending && !isset($all[$uuid]) && !is_file(WGCT_APPLY_PENDING_LEGACY_FILE)) {
+        if (!$pending && !isset($all[$uuid])) {
             return;   // nothing recorded for it: nothing to write
         }
         if ($pending) {
@@ -280,9 +261,6 @@ function wgct_set_apply_pending(string $uuid, bool $pending): void {
         }
         if (!wgct_write_file_atomic(WGCT_APPLY_PENDING_FILE, (string)json_encode($all))) {
             throw new \RuntimeException('could not write ' . WGCT_APPLY_PENDING_FILE);
-        }
-        if (is_file(WGCT_APPLY_PENDING_LEGACY_FILE) && !unlink(WGCT_APPLY_PENDING_LEGACY_FILE)) {
-            throw new \RuntimeException('could not remove ' . WGCT_APPLY_PENDING_LEGACY_FILE);
         }
     } finally {
         $lock->flock(LOCK_UN);
@@ -694,12 +672,8 @@ function wgct_apply_selftest(): int {
         && wgct_pending_clears(array_slice(WGCT_CREATE_APPLY_STEPS, 1), []) === false);
     wgct_check($t, 'apply: a saved Remove forgets the record even when its apply failed (the instance is gone from config)',
         wgct_pending_clears(WGCT_REMOVE_APPLY_STEPS, ['filter reload']) === true);
-    wgct_check($t, 'apply: the pending record lives in /var/db (survives a reboot), the legacy one in /var/run',
-        str_starts_with(WGCT_APPLY_PENDING_FILE, '/var/db/wgipv6gateway/') && str_starts_with(WGCT_APPLY_PENDING_LEGACY_FILE, '/var/run/'));
-    $u2 = '00000000-0000-4000-8000-000000000002';
-    wgct_check($t, 'apply: the legacy record fills in only what the current one lacks',
-        wgct_pending_merge([$u1 => 20], [$u1 => 10, $u2 => 11]) === [$u1 => 20, $u2 => 11]
-        && wgct_pending_merge([], []) === []);
+    wgct_check($t, 'apply: the pending record lives in /var/db/wgclienttunnels (survives a reboot)',
+        WGCT_APPLY_PENDING_FILE === '/var/db/wgclienttunnels/apply_pending.json');
 
     /* the failure footer, per command */
     $createFooter = wgct_failure_footer('create', $u1);

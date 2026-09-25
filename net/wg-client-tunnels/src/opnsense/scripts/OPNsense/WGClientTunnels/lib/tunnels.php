@@ -45,7 +45,7 @@ const WGCT_FINDINGS = [
 const WGCT_PIN_PRIORITY = 100000;
 
 /* the pf anchor name for the MSS clamp lines */
-const WGCT_MSS_ANCHOR = 'wgipv6gateway_mss';
+const WGCT_MSS_ANCHOR = 'wgclienttunnels_mss';
 
 /**
  * @param string $code   key of WGCT_FINDINGS
@@ -530,8 +530,8 @@ function wgct_pin_rules(array $pinSet) {
             $rules[] = [
                 'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
                 'ipprotocol' => $w['family'], 'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
-                'label' => md5('wgipv6gw-pin-wan-anywhere-' . $w['family']),
-                'descr' => "WireGuard IPv6 Gateway: this tunnel's bound WAN is unavailable, so its handshakes leave by no interface",
+                'label' => md5('wgct-pin-wan-anywhere-' . $w['family']),
+                'descr' => "WireGuard Client Tunnels: this tunnel's bound WAN is unavailable, so its handshakes leave by no interface",
             ];
             continue;
         }
@@ -539,16 +539,16 @@ function wgct_pin_rules(array $pinSet) {
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
             'interface' => $w['wan_if'], 'interfacenot' => true, 'ipprotocol' => $w['family'],
             'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
-            'label' => md5('wgipv6gw-pin-wan-' . $w['wan_if'] . '-' . $w['family']),
-            'descr' => 'WireGuard IPv6 Gateway: tunnels bound to this WAN never leave by another interface',
+            'label' => md5('wgct-pin-wan-' . $w['wan_if'] . '-' . $w['family']),
+            'descr' => 'WireGuard Client Tunnels: tunnels bound to this WAN never leave by another interface',
         ];
     }
     foreach ($pinSet['inner'] as $opt) {
         $rules[] = [
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
             'interface' => $opt, 'ipprotocol' => 'inet46', 'from' => '(self)', 'from_not' => true,
-            'label' => md5('wgipv6gw-pin-inner-' . $opt),
-            'descr' => 'WireGuard IPv6 Gateway: only firewall-sourced (NATed) traffic may enter the tunnel',
+            'label' => md5('wgct-pin-inner-' . $opt),
+            'descr' => 'WireGuard Client Tunnels: only firewall-sourced (NATed) traffic may enter the tunnel',
         ];
     }
     return $rules;
@@ -841,11 +841,11 @@ function wgct_tunnels_selftest() {
         && $wanRule['type'] === 'block' && $wanRule['direction'] === 'out' && $wanRule['quick'] === true && $wanRule['log'] === true
         && $wanRule['interface'] === 'opt1' && $wanRule['interfacenot'] === true && $wanRule['ipprotocol'] === 'inet'
         && $wanRule['protocol'] === 'udp' && $wanRule['to'] === '198.51.100.10'
-        && preg_match($labelRe, $wanRule['label']) === 1 && $wanRule['label'] === md5('wgipv6gw-pin-wan-opt1-inet')
+        && preg_match($labelRe, $wanRule['label']) === 1 && $wanRule['label'] === md5('wgct-pin-wan-opt1-inet')
         && $innerRule['type'] === 'block' && $innerRule['direction'] === 'out' && $innerRule['quick'] === true && $innerRule['log'] === true
         && $innerRule['interface'] === 'opt11' && $innerRule['ipprotocol'] === 'inet46'
         && $innerRule['from'] === '(self)' && $innerRule['from_not'] === true
-        && preg_match($labelRe, $innerRule['label']) === 1 && $innerRule['label'] === md5('wgipv6gw-pin-inner-opt11');
+        && preg_match($labelRe, $innerRule['label']) === 1 && $innerRule['label'] === md5('wgct-pin-inner-opt11');
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: filter rule confs for the WAN pin and the inner-source block\n", $ok ? 'PASS' : 'FAIL');
 
@@ -884,7 +884,7 @@ function wgct_tunnels_selftest() {
         && !array_key_exists('interface', $wanRuleUnknown) && !array_key_exists('interfacenot', $wanRuleUnknown)
         && $wanRuleUnknown['type'] === 'block' && $wanRuleUnknown['direction'] === 'out' && $wanRuleUnknown['quick'] === true
         && $wanRuleUnknown['log'] === true && $wanRuleUnknown['ipprotocol'] === 'inet' && $wanRuleUnknown['protocol'] === 'udp'
-        && $wanRuleUnknown['to'] === '198.51.100.10' && $wanRuleUnknown['label'] === md5('wgipv6gw-pin-wan-anywhere-inet');
+        && $wanRuleUnknown['to'] === '198.51.100.10' && $wanRuleUnknown['label'] === md5('wgct-pin-wan-anywhere-inet');
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: unknown gateway on the bound route => interface-less WAN pin, fail closed\n", $ok ? 'PASS' : 'FAIL');
 

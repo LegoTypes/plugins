@@ -37,7 +37,7 @@
 $wgctLib = __DIR__ . '/lib/render.php';
 $wgctTunnelsLib = __DIR__ . '/lib/tunnels.php';
 if (!is_readable($wgctLib) || !is_readable($wgctTunnelsLib)) {
-    syslog(LOG_ERR, '[wgipv6gw-render] freshness: plugin library missing');
+    syslog(LOG_ERR, '[wgct-render] freshness: plugin library missing');
     exit(1);
 }
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
@@ -64,7 +64,7 @@ try {
             WGCT_FRESHNESS_LOCK_POLL_MS
         );
         if ($lock === null) {
-            syslog(LOG_NOTICE, '[wgipv6gw-render] freshness: another run holds the lock; skipped');
+            syslog(LOG_NOTICE, '[wgct-render] freshness: another run holds the lock; skipped');
             exit(0);
         }
     }
@@ -144,7 +144,7 @@ try {
         $wasNotified = (bool)($reloadState['notified'] ?? false);
         $nowNotified = (bool)($plan['state']['notified'] ?? false);
         if (!$wasNotified && $nowNotified) {
-            syslog(LOG_NOTICE, '[wgipv6gw-render] ' . $plan['reason']);
+            syslog(LOG_NOTICE, '[wgct-render] ' . $plan['reason']);
         }
     }
 
@@ -158,10 +158,10 @@ try {
         $logPlan = wgct_anchor_log_plan($anchorFailHash, $success, $wanted['mss']);
         $newAnchorFailHash = $logPlan['fail_hash'];
         if ($logPlan['log_error']) {
-            syslog(LOG_ERR, '[wgipv6gw-render] MSS anchor load failed (see syslog)');
+            syslog(LOG_ERR, '[wgct-render] MSS anchor load failed (see syslog)');
         }
         if ($logPlan['log_recovery']) {
-            syslog(LOG_NOTICE, '[wgipv6gw-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
+            syslog(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
         if ($success && $rendered !== null) {
             /* Re-read just before writing and compare the whole record, not
@@ -188,7 +188,7 @@ try {
         $logPlan = wgct_anchor_log_plan($anchorFailHash, true, $wanted['mss']);
         $newAnchorFailHash = $logPlan['fail_hash'];
         if ($logPlan['log_recovery']) {
-            syslog(LOG_NOTICE, '[wgipv6gw-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
+            syslog(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
     }
 
@@ -197,12 +197,12 @@ try {
         exec('/usr/sbin/daemon -f /usr/local/sbin/configctl filter reload', $out, $rc);
         if ($rc === 0) {
             $newReloadState = $plan['state'];
-            syslog(LOG_NOTICE, '[wgipv6gw-render] ' . $plan['reason'] . '; filter reload requested');
+            syslog(LOG_NOTICE, '[wgct-render] ' . $plan['reason'] . '; filter reload requested');
         } else {
             /* Do not record a request that never actually went out -- leave
              * the previous reload state untouched so the rate limit is
              * measured from the last request that actually succeeded. */
-            syslog(LOG_ERR, '[wgipv6gw-render] filter reload request failed (exit ' . $rc . ')');
+            syslog(LOG_ERR, '[wgct-render] filter reload request failed (exit ' . $rc . ')');
         }
     } else {
         $newReloadState = $plan['state'];
@@ -231,7 +231,7 @@ try {
     try {
         wgct_report_freshness_outcome($message);
     } catch (\Throwable $reportError) {
-        syslog(LOG_ERR, '[wgipv6gw-render] ' . $message);
+        syslog(LOG_ERR, '[wgct-render] ' . $message);
     }
     exit(1);
 }

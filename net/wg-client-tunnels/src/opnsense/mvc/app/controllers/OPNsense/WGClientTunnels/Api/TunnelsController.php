@@ -136,7 +136,7 @@ class TunnelsController extends ApiControllerBase
                 return $created;
             });
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, '[wgipv6gw-action] create failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
+            syslog(LOG_ERR, '[wgct-action] create failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
             return ['result' => 'failed', 'uuid' => $uuid, 'errors' => [
                 'Create failed; the system log has the reason (never the key). ' . wgct_failure_footer('create', $uuid)
                 . ' A saved tunnel shows the apply-pending finding and an Apply button once the list is reloaded.',

@@ -3,20 +3,25 @@
 # Copyright (C) 2026 cayossarian (Bill Flood)
 # All rights reserved.
 #
-# WireGuard IPv6 Gateway - route management and health mirroring
+# WireGuard client tunnels: the managed tunnels' IPv6 addresses and next-hop
+# routes, and the reconcile.
 #
-# This script manages IPv6 routing through WireGuard tunnels:
-# 1. Adds IPv6 addresses to WG interfaces
-# 2. Creates interface host routes for IPv6 gateways
-# 3. Mirrors IPv6 gateway health from corresponding IPv4 gateways
+#   start | restart | configure_routes
+#       add each managed tunnel's IPv6 address to its device and the host
+#       route to its IPv6 next hop
+#   reconcile
+#       the same, silent unless it repairs something; then default_guard.php
+#       and freshness.php
+#   stop     remove what start added
+#   status   the service line the dashboard reads, then per-tunnel JSON
 #
-# Configuration is read from the OPNsense MVC models via gateway_config.php.
+# The route set comes from gateway_config.php, derived from core config.
 
 CONFIG_HELPER="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/gateway_config.php"
 GUARD="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/default_guard.php"
 FRESHNESS="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/freshness.php"
-LOGGER_TAG="wgipv6gw"
-STATE_DIR="/var/run/wgipv6gateway"
+LOGGER_TAG="wgct"
+STATE_DIR="/var/run/wgclienttunnels"
 
 log_msg() {
     logger -t "${LOGGER_TAG}" "$1"
