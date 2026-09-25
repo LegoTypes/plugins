@@ -1,14 +1,24 @@
-WireGuard IPv6 Gateway Companion Plugin
+WireGuard Client Tunnels Plugin
 
-Makes IPv6 gateways and gateway groups usable over WireGuard VPN tunnels
-(ProtonVPN and similar), which OPNsense cannot do on its own: every
-tunnel gets the same provider-assigned IPv6 address, and a WireGuard
-IPv6 gateway has no health monitoring of its own.
+Creates, binds, monitors and removes WireGuard VPN client tunnels (ProtonVPN
+and similar) from one page. The core WireGuard, interface, gateway, route and
+NAT pages stay the source of truth: every tunnel is derived from core
+configuration on each use, and the plugin stores only which instances it
+manages, which gateways it holds down, and its switches.
 
 Features:
-- Gives each managed WireGuard tunnel's IPv6 gateway its host route and
-  keeps its tunnel address in place: at boot, on gateway and WAN address
-  events, and every minute as a safety net
+- Create a tunnel from a pasted wg-quick config -- WireGuard instance and
+  peer, interface, IPv4 and IPv6 gateways, endpoint route to the chosen WAN
+  and outbound NAT, in one save -- with the MTU measured from that WAN
+- Remove a tunnel and everything it owns (refused while anything references
+  it), Rebind an unbound tunnel to a WAN, Adopt an existing WireGuard
+  instance, and Ensure sentinel (the NO_DEFAULT4/NO_DEFAULT6 gateways), each
+  with a dry-run preview, from the Tunnels tab or tunnel.php
+- Tunnels tab: every managed tunnel with its derived parts, live gateway
+  status, links to the core page that owns each part, and findings
+- Gives each managed tunnel's IPv6 gateway its host route and keeps its
+  tunnel address in place: at boot, on gateway and WAN address events, on
+  every configuration change, and every minute as a safety net
 - Health mirror (every 15 s):
   - binds each tunnel to the WAN its endpoint route uses and holds the
     tunnel down while that WAN is down, so a tunnel never migrates to the
@@ -35,6 +45,20 @@ Features:
 
 Plugin Changelog
 ================
+
+3.0
+
+* Renamed from os-wg-ipv6-gateway: package os-wg-client-tunnels, namespace
+  OPNsense\WGClientTunnels, configd, pages and API under wgclienttunnels;
+  model 3.0.0 copies the 2.x settings and removes the old section (a 1.x
+  section must first be migrated by os-wg-ipv6-gateway 2.x)
+* Runtime under /var/run/wgclienttunnels and /var/db/wgclienttunnels, pf
+  anchor wgclienttunnels_mss, rules described "WireGuard Client Tunnels:",
+  syslog tags wgct-*
+* tunnels.php is gone; tunnel.php list replaces it
+* A WireGuard start, stop, restart or configure step is issued only for an
+  instance uuid core recognises; core reads anything else as a CARP vhid
+* WireGuard is part of core: the os-wireguard dependency is dropped
 
 2.2
 
