@@ -32,7 +32,7 @@ class TunnelsController extends ApiControllerBase
             if ($rendered === null || $rendered['failed']) {
                 $global[] = wgipv6_finding(
                     'render-failed',
-                    $rendered === null ? 'no render recorded since boot or deploy' : $rendered['error']
+                    $rendered === null ? 'no render recorded since boot or deploy, or the last filter reload could not run the plugin' : $rendered['error']
                 );
             }
         }
