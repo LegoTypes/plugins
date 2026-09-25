@@ -14,6 +14,7 @@
 
 CONFIG_HELPER="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/gateway_config.php"
 GUARD="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/default_guard.php"
+FRESHNESS="/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/freshness.php"
 LOGGER_TAG="wgipv6gw"
 STATE_DIR="/var/run/wgipv6gateway"
 
@@ -170,6 +171,8 @@ case "$1" in
         do_configure_routes quiet
         # Then make sure no tunnel carries a default route (see default_guard.php).
         /usr/local/bin/php "${GUARD}"
+        # Then keep the rendered pins and MSS anchor current (freshness.php).
+        /usr/local/bin/php "${FRESHNESS}"
         ;;
     status)
         do_status
