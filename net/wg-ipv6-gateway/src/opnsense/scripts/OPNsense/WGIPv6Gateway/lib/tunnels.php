@@ -590,6 +590,28 @@ function wgipv6_mss_lines(array $derived, $mssClamp) {
 }
 
 /**
+ * The MSS clamp values shown in the GUI/CLI for one tunnel, mirroring
+ * wgipv6_mss_lines()'s limits exactly: v4 only when the MTU is at least 576,
+ * v6 only when the tunnel has an IPv6 address and the MTU is at least 1280.
+ * Null altogether -- not an array of two nulls -- when the clamp switch is
+ * off or the tunnel is not enforceable, since nothing would be rendered for
+ * it either way.
+ *
+ * @param array $t        derived tunnel record
+ * @param bool  $mssClamp the mss_clamp switch
+ * @return array|null ['v4' => int|null, 'v6' => int|null], or null
+ */
+function wgipv6_clamp_for(array $t, bool $mssClamp): ?array {
+    if (!$mssClamp || !$t['enforceable']) {
+        return null;
+    }
+    return [
+        'v4' => $t['mtu'] >= 576 ? $t['mtu'] - 40 : null,
+        'v6' => ($t['ipv6_address'] !== null && $t['mtu'] >= 1280) ? $t['mtu'] - 60 : null,
+    ];
+}
+
+/**
  * Self-tests for the derivation. No config, no processes.
  *
  * @return int exit code, 0 when every case passes
@@ -957,6 +979,38 @@ function wgipv6_tunnels_selftest() {
         && wgipv6_mss_lines($d6, true) === ['match on wg1 inet proto tcp all scrub (max-mss 960)'];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: MTU below the IPv6 minimum, IPv6 address present => only the IPv4 MSS line, mtu-too-small raised\n", $ok ? 'PASS' : 'FAIL');
+
+    /* wgipv6_clamp_for: the per-tunnel clamp shown in the GUI/CLI, mirroring wgipv6_mss_lines() */
+    $ok = wgipv6_clamp_for($d['tunnels'][0], true) === ['v4' => 1336, 'v6' => 1316];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: healthy tunnel, clamp on => v4 and v6 clamps\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgipv6_clamp_for($d['tunnels'][0], false) === null;
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: healthy tunnel, clamp off => null\n", $ok ? 'PASS' : 'FAIL');
+
+    $cDisabled = $base();
+    $cDisabled['instances']['i-a']['enabled'] = false;
+    $tDisabled = wgipv6_derive($cDisabled, ['i-a'])['tunnels'][0];
+    $ok = wgipv6_clamp_for($tDisabled, true) === null;
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: not enforceable, clamp on => null\n", $ok ? 'PASS' : 'FAIL');
+
+    $cV4Only = $base();
+    $cV4Only['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    unset($cV4Only['gateways']['tun_a-ipv6']);
+    $tV4Only = wgipv6_derive($cV4Only, ['i-a'])['tunnels'][0];
+    $ok = wgipv6_clamp_for($tV4Only, true) === ['v4' => 1336, 'v6' => null];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: IPv4-only tunnel, clamp on => v4 clamp, v6 omitted\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgipv6_clamp_for($t5, true) === ['v4' => null, 'v6' => null];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: MTU below the IPv4 minimum => clamp present but both families null\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgipv6_clamp_for($t6, true) === ['v4' => 960, 'v6' => null];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] clamp_for: MTU below the IPv6 minimum, IPv6 address present => v4 clamp only\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

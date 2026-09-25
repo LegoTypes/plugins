@@ -88,11 +88,20 @@
                     var nat = [];
                     if (t.nat_display.inet.length) nat.push('v4: ' + t.nat_display.inet.join(', '));
                     if (t.nat_display.inet6.length) nat.push('v6: ' + t.nat_display.inet6.join(', '));
+                    var mtuCell = $('<td class="wgct-nowrap"/>').text(t.mtu);
+                    if (t.clamp) {
+                        var clampParts = [];
+                        if (t.clamp.v4 !== null) clampParts.push('v4 ' + t.clamp.v4);
+                        if (t.clamp.v6 !== null) clampParts.push('v6 ' + t.clamp.v6);
+                        if (clampParts.length) {
+                            mtuCell.append($('<br/>'), $('<small class="text-muted"/>').text('MSS ' + clampParts.join(' / ')));
+                        }
+                    }
                     tbody.append($('<tr/>').append(
                         name,
                         $('<td class="wgct-nowrap"/>').text(t.endpoint || '—'),
                         $('<td/>').append(t.bound_wan ? link(t.bound_wan, links.routes) : $('<span/>').text('—')),
-                        $('<td/>').text(t.mtu),
+                        mtuCell,
                         gwCell(t.gw4, t.gw4_status, t.gw4_status_text, t.held),
                         gwCell(t.gw6, t.gw6_status, t.gw6_status_text, false),
                         $('<td/>').append(nat.length ? link(nat.join('; '), links.nat) : $('<span/>').text('—')),
