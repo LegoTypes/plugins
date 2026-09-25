@@ -33,10 +33,12 @@ const WGCT_GATEWAY_LOCK_FILE = '/tmp/filter_reload_gateway.lock';
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
 const WGCT_ACTION_LOG_TAG = 'wgct-action';
 /*
- * Instances whose Create saved but whose apply has not completed (ruling 20).
- * Kept in /var/db, not /var/run, so it survives a reboot: boot runs only
- * `wireguard configure`, never `template reload`, so a tunnel whose apply
- * never ran still has no wgN.conf after a reboot and still needs Apply.
+ * Instances whose Create or Edit saved but whose apply has not completed
+ * (ruling 20; S5 review I2), each with the apply mode it still needs. Kept in
+ * /var/db, not /var/run, so it survives a reboot: boot runs only `wireguard
+ * configure`, never `template reload`, so a tunnel whose apply never ran still
+ * has no current wgN.conf after a reboot, and nothing else re-applies a saved
+ * NAT or monitor change; either way it still needs Apply.
  */
 const WGCT_APPLY_PENDING_FILE = '/var/db/wgclienttunnels/apply_pending.json';
 /*
@@ -46,7 +48,7 @@ const WGCT_APPLY_PENDING_FILE = '/var/db/wgclienttunnels/apply_pending.json';
  * rules keep that state alive and keepalive 25 refreshes it forever: a first
  * handshake sent before the endpoint /32 is in place leaves by the default
  * route's WAN and stays there. The complete list is also what clears
- * apply-pending (wgct_pending_clears()).
+ * apply-pending (wgct_pending_outcome()).
  */
 const WGCT_CREATE_APPLY_STEPS = [
     ['template reload', ['OPNsense/Wireguard']],   // writes wgN.conf; `wireguard configure` alone never does
@@ -90,6 +92,61 @@ function wgct_rebind_apply_steps(string $uuid): array {
 }
 
 /*
+ * The apply modes of `tunnel.php apply UUID [MODE]` and the configd action
+ * apply_mode (S5 ruling 1), weakest first: each mode's steps do what every
+ * weaker mode's do (`interface routes configure` ends with a filter reload,
+ * and the tunnel applies run both), which is what lets a stronger apply
+ * settle a weaker pending record (wgct_pending_settle()).
+ */
+const WGCT_APPLY_MODES = ['filter', 'routes', 'first', 'tunnel'];
+
+/**
+ * The configd steps of an apply mode. Pure.
+ * - filter: an Edit of the NAT sources alone;
+ * - routes: an Edit of the monitor (with or without NAT: facts 1);
+ * - first: Create's steps, the API's apply right after its Create;
+ * - tunnel: Create's steps, then `wireguard restart`: the re-run of Create's
+ *   apply and an Edit of the tunnel itself. A re-run may find a device that
+ *   already handshook by the wrong WAN (the step list carries on past a
+ *   failed step), and an Edit moves the path, so both end with the restart
+ *   (S5 ruling 2).
+ *
+ * @param string $mode one of WGCT_APPLY_MODES
+ * @param string $uuid the WireGuard instance
+ * @return list<array{0: string, 1: list<string>}>
+ * @throws \InvalidArgumentException for anything else, before anything runs
+ */
+function wgct_apply_mode_steps(string $mode, string $uuid): array {
+    return match ($mode) {
+        'first' => WGCT_CREATE_APPLY_STEPS,
+        'tunnel' => array_merge(WGCT_CREATE_APPLY_STEPS, [['wireguard restart', [$uuid]]]),
+        'routes' => [['interface routes configure', []]],
+        'filter' => [['filter reload', []]],
+        default => throw new \InvalidArgumentException(
+            'not an apply mode: ' . substr($mode, 0, 20) . ' (' . implode(', ', WGCT_APPLY_MODES) . ')'
+        ),
+    };
+}
+
+/**
+ * @return bool whether the mode's apply changes routing and so holds the
+ *              gateway lock (spec 4.6 step 1); filter and none do not. Pure.
+ */
+function wgct_apply_mode_locks(string $mode): bool {
+    return in_array($mode, ['first', 'tunnel', 'routes'], true);
+}
+
+/**
+ * The mode the Apply button (`tunnel.php apply UUID` without a mode) runs for
+ * a pending record: the recorded one, except that Create's first apply is
+ * re-run as the tunnel apply, restart included (S5 ruling 2); with nothing
+ * recorded, the tunnel apply. Pure.
+ */
+function wgct_rerun_mode(?string $recorded): string {
+    return $recorded === null || $recorded === 'first' ? 'tunnel' : $recorded;
+}
+
+/*
  * core's wg-service-control.php takes its argument as an instance only when
  * it matches this -- a lower-case v4 uuid -- and reads anything else as a
  * CARP vhid, for which start, stop, restart and configure act on every
@@ -116,22 +173,75 @@ function wgct_step_refusal(string $action, array $params): ?string {
 }
 
 /**
- * Does an action's apply retire the apply-pending record of its instance
- * (ruling 20)? Only Create's complete step list, every step OK -- a Rebind,
- * a Sentinel repair or a failed apply never does, since none of them runs
- * `template reload` and `wireguard configure` for the tunnel. A saved Remove
- * forgets the record whatever its apply did: the instance is no longer in
- * config, so the record could never be shown or cleared again. Pure.
+ * What an action's apply means for the apply-pending record of its instance
+ * (ruling 20; S5 review I2). A complete apply mode -- its exact step list,
+ * every step OK -- is that mode, which settles a record of the same or a
+ * weaker mode (wgct_pending_settle()). A Rebind, a Sentinel repair or a
+ * failed apply is null and settles nothing. A saved Remove is 'forget'
+ * whatever its apply did: the instance is no longer in config, so the record
+ * could never be shown or cleared again. Pure.
  *
  * @param list<array{0: string, 1: list<string>}> $steps  the action's configd steps
  * @param list<string>                            $failed wgct_failed_steps() of its apply
- * @return bool
+ * @return string|null 'forget', one of WGCT_APPLY_MODES, or null
  */
-function wgct_pending_clears(array $steps, array $failed): bool {
+function wgct_pending_outcome(array $steps, array $failed): ?string {
     if ($steps === WGCT_REMOVE_APPLY_STEPS) {
-        return true;
+        return 'forget';
     }
-    return $steps === WGCT_CREATE_APPLY_STEPS && $failed === [];
+    if ($failed !== []) {
+        return null;
+    }
+    if ($steps === WGCT_CREATE_APPLY_STEPS) {
+        return 'first';
+    }
+    $n = count(WGCT_CREATE_APPLY_STEPS);
+    if (count($steps) === $n + 1 && array_slice($steps, 0, $n) === WGCT_CREATE_APPLY_STEPS
+        && $steps[$n][0] === 'wireguard restart') {
+        return 'tunnel';
+    }
+    foreach (['routes', 'filter'] as $mode) {
+        if ($steps === wgct_apply_mode_steps($mode, '')) {
+            return $mode;
+        }
+    }
+    return null;
+}
+
+/**
+ * Record that an instance's saved change still needs a mode's apply: the
+ * stronger of that mode and one already recorded is kept, with the new time.
+ * Pure.
+ *
+ * @param array<string, array{at: int, mode: string}> $all wgct_read_apply_pending()
+ * @return array<string, array{at: int, mode: string}>
+ */
+function wgct_pending_mark(array $all, string $uuid, string $mode, int $at): array {
+    $recorded = $all[$uuid]['mode'] ?? null;
+    if ($recorded !== null && array_search($recorded, WGCT_APPLY_MODES, true) > array_search($mode, WGCT_APPLY_MODES, true)) {
+        $mode = $recorded;
+    }
+    $all[$uuid] = ['at' => $at, 'mode' => $mode];
+    return $all;
+}
+
+/**
+ * Apply an outcome (wgct_pending_outcome()) to the record: 'forget' drops it,
+ * a completed mode drops it when that mode is at least as strong as the one
+ * recorded. Pure.
+ *
+ * @param array<string, array{at: int, mode: string}> $all wgct_read_apply_pending()
+ * @return array<string, array{at: int, mode: string}>
+ */
+function wgct_pending_settle(array $all, string $uuid, string $outcome): array {
+    if (!isset($all[$uuid])) {
+        return $all;
+    }
+    if ($outcome === 'forget'
+        || array_search($outcome, WGCT_APPLY_MODES, true) >= array_search($all[$uuid]['mode'], WGCT_APPLY_MODES, true)) {
+        unset($all[$uuid]);
+    }
+    return $all;
 }
 
 /**
@@ -152,6 +262,8 @@ function wgct_failure_footer(string $cmd, string $uuid): string {
         'create' => 'If this happened after the save, the tunnel is in config and only its apply is incomplete: '
             . "run {$apply}{$which} and check `tunnel.php status`.",
         'apply' => "The tunnel's apply is incomplete: run {$apply} again and check `tunnel.php status`.",
+        'edit' => 'If this happened after the save, the change is in config and its apply may be incomplete: '
+            . "run {$apply}{$which} (it runs the apply the change still needs) and check `tunnel.php status`.",
         'remove', 'rebind', 'adopt', 'ensure-sentinel' => 'If this happened after the save, the change is in config '
             . 'and its apply may be incomplete: check `tunnel.php status` and `tunnel.php list` for what is left.',
         default => '',
@@ -233,24 +345,31 @@ function wgct_gateway_lock(): \SplFileObject {
 
 /**
  * @param mixed $data json_decode() of the pending file -- a JSON boundary, hence mixed
- * @return array<string, int> instance uuid => unix time its apply was requested;
- *                            anything malformed reads as nothing pending
+ * @return array<string, array{at: int, mode: string}> instance uuid => when its
+ *         apply was requested and the mode it needs; a bare time (a 3.0 record,
+ *         always Create's) reads as mode first; anything malformed reads as
+ *         nothing pending
  */
 function wgct_pending_from_json(mixed $data): array {
     $out = [];
     if (!is_array($data)) {
         return $out;
     }
-    foreach ($data as $uuid => $at) {
-        if (is_string($uuid) && preg_match('/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/', $uuid) === 1 && is_int($at)) {
-            $out[$uuid] = $at;
+    foreach ($data as $uuid => $record) {
+        if (!is_string($uuid) || preg_match('/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/', $uuid) !== 1) {
+            continue;
+        }
+        if (is_int($record)) {
+            $out[$uuid] = ['at' => $record, 'mode' => 'first'];
+        } elseif (is_array($record) && is_int($record['at'] ?? null) && in_array($record['mode'] ?? null, WGCT_APPLY_MODES, true)) {
+            $out[$uuid] = ['at' => $record['at'], 'mode' => (string)$record['mode']];
         }
     }
     return $out;
 }
 
 /**
- * @return array<string, int> wgct_pending_from_json() of the file, [] when there is none
+ * @return array<string, array{at: int, mode: string}> wgct_pending_from_json() of the file, [] when there is none
  */
 function wgct_read_pending_file(string $path): array {
     $raw = is_file($path) ? file_get_contents($path) : false;
@@ -258,17 +377,20 @@ function wgct_read_pending_file(string $path): array {
 }
 
 /**
- * @return array<string, int> instance uuid => unix time its apply was requested
+ * @return array<string, array{at: int, mode: string}> instance uuid => when its apply was requested, and the mode it needs
  */
 function wgct_read_apply_pending(): array {
     return wgct_read_pending_file(WGCT_APPLY_PENDING_FILE);
 }
 
 /**
- * Mark or clear "Create saved this instance but its apply has not completed".
- * Serialized on a close-on-exec lock beside the file; written atomically.
+ * Change the pending record read-modify-write, serialized on a close-on-exec
+ * lock beside the file (so a mark and a settle never lose each other); written
+ * atomically, and only when the change changed something.
+ *
+ * @param callable(array<string, array{at: int, mode: string}>): array<string, array{at: int, mode: string}> $change
  */
-function wgct_set_apply_pending(string $uuid, bool $pending): void {
+function wgct_update_apply_pending(callable $change): void {
     $dir = dirname(WGCT_APPLY_PENDING_FILE);
     if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
         throw new \RuntimeException("could not create {$dir}");
@@ -277,20 +399,31 @@ function wgct_set_apply_pending(string $uuid, bool $pending): void {
     $lock->flock(LOCK_EX);
     try {
         $all = wgct_read_apply_pending();
-        if (!$pending && !isset($all[$uuid])) {
-            return;   // nothing recorded for it: nothing to write
+        $after = $change($all);
+        if ($after === $all) {
+            return;
         }
-        if ($pending) {
-            $all[$uuid] = time();
-        } else {
-            unset($all[$uuid]);
-        }
-        if (!wgct_write_file_atomic(WGCT_APPLY_PENDING_FILE, (string)json_encode($all))) {
+        if (!wgct_write_file_atomic(WGCT_APPLY_PENDING_FILE, (string)json_encode($after))) {
             throw new \RuntimeException('could not write ' . WGCT_APPLY_PENDING_FILE);
         }
     } finally {
         $lock->flock(LOCK_UN);
     }
+}
+
+/**
+ * Record "saved, but its <mode> apply has not completed" (wgct_pending_mark()).
+ */
+function wgct_mark_apply_pending(string $uuid, string $mode): void {
+    wgct_apply_mode_steps($mode, $uuid);   // an unknown mode throws before anything is written
+    wgct_update_apply_pending(fn (array $all): array => wgct_pending_mark($all, $uuid, $mode, time()));
+}
+
+/**
+ * Settle the record with an apply's outcome (wgct_pending_outcome(), wgct_pending_settle()).
+ */
+function wgct_settle_apply_pending(string $uuid, string $outcome): void {
+    wgct_update_apply_pending(fn (array $all): array => wgct_pending_settle($all, $uuid, $outcome));
 }
 
 /**
@@ -551,8 +684,9 @@ function wgct_routing_action(callable $commit, bool $dry): array {
         $result['errors']['apply'] = 'saved, but these apply steps failed: ' . implode(', ', $failed)
             . '; the reconcile repairs what it can and the findings show the rest';
     }
-    if ($result['uuid'] !== '' && wgct_pending_clears($result['steps'], $failed)) {
-        wgct_set_apply_pending($result['uuid'], false);
+    $outcome = wgct_pending_outcome($result['steps'], $failed);
+    if ($result['uuid'] !== '' && $outcome !== null) {
+        wgct_settle_apply_pending($result['uuid'], $outcome);
     }
     return $result;
 }
@@ -574,30 +708,70 @@ function wgct_config_action(callable $commit, bool $dry): array {
 }
 
 /**
- * The tunnel apply on its own: the API's Create saved in-process and runs this
- * as the keyless configd action `wgclienttunnels apply <uuid>` (spec 6.1); the
- * Apply button of an `apply-pending` tunnel runs it again. It runs Create's
- * complete step list, and only a complete apply (every step OK) clears the
- * pending marker.
+ * A write whose apply is a filter reload alone (an Edit of the NAT sources):
+ * no gateway lock (spec 4.6 step 1), then the reconcile. Anything but a filter
+ * reload in its steps is a bug upstream: it is not run, and the change stays
+ * apply-pending.
  *
- * @param string $uuid the WireGuard instance; its gateways (for the replay) are derived here
- * @return array wgct_result()
+ * @param callable(): array $commit a writer, returning wgct_result()
+ * @return array wgct_result() with 'apply' and 'after' filled once saved
  */
-function wgct_apply_only(string $uuid): array {
+function wgct_filter_action(callable $commit): array {
+    $result = $commit();
+    if (!$result['ok'] || !$result['saved']) {
+        return $result;
+    }
+    foreach ($result['steps'] as [$action]) {
+        if ($action !== 'filter reload') {
+            throw new \LogicException("a filter-only action may not run {$action} without the gateway lock");
+        }
+    }
+    $result['apply'] = wgct_run_steps($result['steps']);
+    $result['after'] = wgct_after_apply([], null);
+    $failed = wgct_failed_steps($result['apply']);
+    if ($failed !== []) {
+        $result['errors']['apply'] = 'saved, but these apply steps failed: ' . implode(', ', $failed)
+            . '; the reconcile repairs what it can and the findings show the rest';
+    }
+    $outcome = wgct_pending_outcome($result['steps'], $failed);
+    if ($result['uuid'] !== '' && $outcome !== null) {
+        wgct_settle_apply_pending($result['uuid'], $outcome);
+    }
+    return $result;
+}
+
+/**
+ * An apply on its own, as the keyless configd actions `wgclienttunnels apply
+ * <uuid>` and `apply_mode <uuid> <mode>` run it: the API's in-process Create
+ * (first) and Edit (its plan's mode) hand off here, and the Apply button of an
+ * apply-pending tunnel runs it again -- without a mode, the mode its record
+ * still needs (wgct_rerun_mode()). The modes are wgct_apply_mode_steps()'s;
+ * filter takes no gateway lock. Only a complete run of at least the recorded
+ * mode settles apply-pending.
+ *
+ * @param string      $uuid the WireGuard instance; its gateways (for the replay) are derived here
+ * @param string|null $mode one of WGCT_APPLY_MODES, or null for the recorded one
+ * @return array wgct_result()
+ * @throws \InvalidArgumentException for an unknown mode, before anything runs
+ */
+function wgct_apply_only(string $uuid, ?string $mode = null): array {
+    $mode ??= wgct_rerun_mode(wgct_read_apply_pending()[$uuid]['mode'] ?? null);
+    $steps = wgct_apply_mode_steps($mode, $uuid);
     $t = wgct_derive(wgct_core_snapshot(), [$uuid])['tunnels'][0];
     if (in_array('instance-missing', array_column($t['findings'], 'code'), true)) {
-        return wgct_result(['errors' => ['no WireGuard instance with this uuid'], 'uuid' => $uuid]);
+        return wgct_result(['errors' => ['no WireGuard instance with this uuid'], 'uuid' => $uuid, 'apply_mode' => $mode]);
     }
-    $gatewayNames = array_values(array_filter([$t['gw4'], $t['gw6']], fn (?string $g): bool => $g !== null));
-    $before = wgct_gateway_status();
-    $lock = wgct_gateway_lock();
+    $locks = wgct_apply_mode_locks($mode);
+    $gatewayNames = $locks ? array_values(array_filter([$t['gw4'], $t['gw6']], fn (?string $g): bool => $g !== null)) : [];
+    $before = $locks ? wgct_gateway_status() : null;
+    $lock = $locks ? wgct_gateway_lock() : null;
     $apply = [];
     $pending = null;
     try {
         try {
-            $apply = wgct_run_steps(WGCT_CREATE_APPLY_STEPS);
+            $apply = wgct_run_steps($steps);
         } finally {
-            $lock->flock(LOCK_UN);
+            $lock?->flock(LOCK_UN);
         }
     } catch (\Throwable $e) {
         $pending = $e;
@@ -613,16 +787,17 @@ function wgct_apply_only(string $uuid): array {
     }
     $after = wgct_after_apply($gatewayNames, $before);
     $result = wgct_result([
-        'ok' => true, 'saved' => true, 'uuid' => $uuid, 'gateways' => $gatewayNames, 'steps' => WGCT_CREATE_APPLY_STEPS,
-        'apply' => $apply, 'after' => $after,
+        'ok' => true, 'saved' => true, 'uuid' => $uuid, 'gateways' => $gatewayNames, 'steps' => $steps,
+        'apply' => $apply, 'after' => $after, 'apply_mode' => $mode,
     ]);
     $failed = wgct_failed_steps($apply);
     if ($failed !== []) {
         $result['errors']['apply'] = 'these apply steps failed: ' . implode(', ', $failed)
             . '; the reconcile repairs what it can and the findings show the rest';
     }
-    if (wgct_pending_clears(WGCT_CREATE_APPLY_STEPS, $failed)) {
-        wgct_set_apply_pending($uuid, false);
+    $outcome = wgct_pending_outcome($steps, $failed);
+    if ($outcome !== null) {
+        wgct_settle_apply_pending($uuid, $outcome);
     }
     return $result;
 }
@@ -662,8 +837,9 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'apply: a refused/failed commit leaves ours empty, but a gateway that changed meanwhile is still replayed',
         wgct_replay_set([], ['WAN_A' => 'none'], ['WAN_A' => 'down'], $forceDown) === ['WAN_A' => false]);
     $u1 = '00000000-0000-4000-8000-000000000001';
-    wgct_check($t, 'apply: the pending record keeps only uuid => integer time entries',
-        wgct_pending_from_json([$u1 => 1700000000, 'not-a-uuid' => 1, '00000000-0000-4000-8000-000000000002' => 'soon']) === [$u1 => 1700000000]);
+    wgct_check($t, 'apply: the pending record keeps only uuid entries with a time (and a mode, once written by 3.1)',
+        wgct_pending_from_json([$u1 => 1700000000, 'not-a-uuid' => 1, '00000000-0000-4000-8000-000000000002' => 'soon'])
+            === [$u1 => ['at' => 1700000000, 'mode' => 'first']]);
     wgct_check($t, 'apply: a malformed pending record reads as nothing pending',
         wgct_pending_from_json('garbage') === [] && wgct_pending_from_json(null) === []);
     wgct_check($t, 'apply: dry flag -- absent, empty, "0", 0 and false all mean real',
@@ -709,18 +885,61 @@ function wgct_apply_selftest(): int {
         wgct_step_refusal('wireguard configure', []) === null && wgct_step_refusal('interface routes configure', []) === null
         && wgct_step_refusal('wgclienttunnels replay_alarm', ['a,b']) === null);
 
-    /* apply-pending: only Create's complete apply clears it; a saved Remove forgets it */
+    /* apply modes (S5, rulings 1 and 2): tunnel is the re-run and Edit's full apply */
+    wgct_check($t, 'apply: modes -- first is Create\'s steps, tunnel adds wireguard restart <uuid>, routes and filter are one step each',
+        wgct_apply_mode_steps('first', $u1) === WGCT_CREATE_APPLY_STEPS
+        && wgct_apply_mode_steps('tunnel', $u1) === array_merge(WGCT_CREATE_APPLY_STEPS, [['wireguard restart', [$u1]]])
+        && wgct_apply_mode_steps('routes', $u1) === [['interface routes configure', []]]
+        && wgct_apply_mode_steps('filter', $u1) === [['filter reload', []]]);
+    $refusedMode = false;
+    try {
+        wgct_apply_mode_steps('none', $u1);
+    } catch (\InvalidArgumentException) {
+        $refusedMode = true;
+    }
+    wgct_check($t, 'apply: only filter runs without the gateway lock; none and an unknown mode have no steps',
+        wgct_apply_mode_locks('first') && wgct_apply_mode_locks('tunnel') && wgct_apply_mode_locks('routes')
+        && !wgct_apply_mode_locks('filter') && !wgct_apply_mode_locks('none') && $refusedMode);
+
+    /* apply-pending (S5 review I2): each complete mode is its outcome; a saved Remove forgets the record */
     $sentinelSteps = [['interface loopback configure', []], ['interface routes configure', []]];
-    wgct_check($t, 'apply: pending cleared by Create\'s complete step list with every step OK',
-        wgct_pending_clears(WGCT_CREATE_APPLY_STEPS, []) === true);
-    wgct_check($t, 'apply: pending kept when a step of Create\'s apply failed',
-        wgct_pending_clears(WGCT_CREATE_APPLY_STEPS, ['wireguard configure']) === false);
-    wgct_check($t, 'apply: pending kept by a successful Rebind, a Sentinel apply and a partial list',
-        wgct_pending_clears(wgct_rebind_apply_steps($u1), []) === false
-        && wgct_pending_clears($sentinelSteps, []) === false
-        && wgct_pending_clears(array_slice(WGCT_CREATE_APPLY_STEPS, 1), []) === false);
+    wgct_check($t, 'apply: pending outcome -- each mode\'s complete step list with every step OK is that mode',
+        wgct_pending_outcome(WGCT_CREATE_APPLY_STEPS, []) === 'first'
+        && wgct_pending_outcome(wgct_apply_mode_steps('tunnel', $u1), []) === 'tunnel'
+        && wgct_pending_outcome(wgct_apply_mode_steps('routes', $u1), []) === 'routes'
+        && wgct_pending_outcome(wgct_apply_mode_steps('filter', $u1), []) === 'filter');
+    wgct_check($t, 'apply: pending outcome -- none for a failed step, a Rebind, a Sentinel apply or a partial list',
+        wgct_pending_outcome(WGCT_CREATE_APPLY_STEPS, ['wireguard configure']) === null
+        && wgct_pending_outcome(wgct_apply_mode_steps('tunnel', $u1), ['wireguard restart ' . $u1]) === null
+        && wgct_pending_outcome(wgct_apply_mode_steps('filter', $u1), ['filter reload']) === null
+        && wgct_pending_outcome(wgct_rebind_apply_steps($u1), []) === null
+        && wgct_pending_outcome($sentinelSteps, []) === null
+        && wgct_pending_outcome(array_slice(WGCT_CREATE_APPLY_STEPS, 1), []) === null);
     wgct_check($t, 'apply: a saved Remove forgets the record even when its apply failed (the instance is gone from config)',
-        wgct_pending_clears(WGCT_REMOVE_APPLY_STEPS, ['filter reload']) === true);
+        wgct_pending_outcome(WGCT_REMOVE_APPLY_STEPS, ['filter reload']) === 'forget');
+    $rec = wgct_pending_mark([], $u1, 'filter', 100);
+    wgct_check($t, 'apply: pending mark -- the stronger of the recorded and the new mode is kept, with the new time',
+        $rec === [$u1 => ['at' => 100, 'mode' => 'filter']]
+        && wgct_pending_mark($rec, $u1, 'tunnel', 200) === [$u1 => ['at' => 200, 'mode' => 'tunnel']]
+        && wgct_pending_mark(wgct_pending_mark($rec, $u1, 'tunnel', 200), $u1, 'routes', 300) === [$u1 => ['at' => 300, 'mode' => 'tunnel']]);
+    $routes = wgct_pending_mark([], $u1, 'routes', 100);
+    wgct_check($t, 'apply: pending settle -- a complete mode at least as strong as the record clears it; a weaker one keeps it',
+        wgct_pending_settle($routes, $u1, 'filter') === $routes
+        && wgct_pending_settle($routes, $u1, 'routes') === []
+        && wgct_pending_settle($routes, $u1, 'tunnel') === []
+        && wgct_pending_settle(wgct_pending_mark([], $u1, 'tunnel', 1), $u1, 'first') !== []
+        && wgct_pending_settle(wgct_pending_mark([], $u1, 'first', 1), $u1, 'first') === []
+        && wgct_pending_settle(wgct_pending_mark([], $u1, 'tunnel', 1), $u1, 'forget') === []
+        && wgct_pending_settle([], $u1, 'tunnel') === []);
+    wgct_check($t, 'apply: the Apply button re-runs the recorded mode; Create\'s first apply and no record re-run as the tunnel apply',
+        wgct_rerun_mode('filter') === 'filter' && wgct_rerun_mode('routes') === 'routes'
+        && wgct_rerun_mode('first') === 'tunnel' && wgct_rerun_mode('tunnel') === 'tunnel' && wgct_rerun_mode(null) === 'tunnel');
+    wgct_check($t, 'apply: pending file -- a 3.0 bare time reads as Create\'s (first); a malformed mode or uuid reads as nothing',
+        wgct_pending_from_json([$u1 => 7]) === [$u1 => ['at' => 7, 'mode' => 'first']]
+        && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'routes']]) === [$u1 => ['at' => 7, 'mode' => 'routes']]
+        && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'none']]) === []
+        && wgct_pending_from_json([$u1 => ['at' => '7', 'mode' => 'filter']]) === []
+        && wgct_pending_from_json(['x' => 7]) === [] && wgct_pending_from_json('x') === []);
     wgct_check($t, 'apply: the pending record lives in /var/db/wgclienttunnels (survives a reboot)',
         WGCT_APPLY_PENDING_FILE === '/var/db/wgclienttunnels/apply_pending.json');
 
@@ -733,6 +952,9 @@ function wgct_apply_selftest(): int {
         && str_contains(wgct_failure_footer('create', ''), 'tunnel.php list'));
     wgct_check($t, 'apply: apply footer names `tunnel.php apply <uuid>` again',
         str_contains(wgct_failure_footer('apply', $u1), "`tunnel.php apply {$u1}` again"));
+    wgct_check($t, 'apply: edit footer names `tunnel.php apply <uuid>` and status',
+        str_contains(wgct_failure_footer('edit', $u1), "`tunnel.php apply {$u1}`")
+        && str_contains(wgct_failure_footer('edit', $u1), '`tunnel.php status`'));
     $others = array_map(fn (string $c): string => wgct_failure_footer($c, $u1), ['remove', 'rebind', 'adopt', 'ensure-sentinel']);
     wgct_check($t, 'apply: remove, rebind, adopt and ensure-sentinel footers point to status and the list, never to apply',
         array_filter($others, fn (string $f): bool => str_contains($f, 'tunnel.php apply') || !str_contains($f, '`tunnel.php status`')
