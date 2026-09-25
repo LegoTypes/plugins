@@ -22,6 +22,20 @@ class TunnelsController extends ApiControllerBase
         $mdl = new \OPNsense\WGIPv6Gateway\WGIPv6Gateway();
         $core = wgipv6_core_snapshot();
         $derived = wgipv6_derive($core, wgipv6_split_csv((string)$mdl->managed));
+        $mssClamp = (string)$mdl->mss_clamp === '1';
+
+        $global = $derived['global'];
+        $renderLib = '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/render.php';
+        if ((string)$mdl->enabled === '1' && is_readable($renderLib)) {
+            require_once $renderLib;
+            $rendered = wgipv6_read_rendered();
+            if ($rendered === null || $rendered['failed']) {
+                $global[] = wgipv6_finding(
+                    'render-failed',
+                    $rendered === null ? 'no render recorded since boot or deploy' : $rendered['error']
+                );
+            }
+        }
 
         $status = [];
         $statusText = [];
@@ -51,8 +65,9 @@ class TunnelsController extends ApiControllerBase
                 'inet' => array_map($natName, $t['nat']['inet']),
                 'inet6' => array_map($natName, $t['nat']['inet6']),
             ];
+            $t['clamp'] = wgipv6_clamp_for($t, $mssClamp);
         }
         unset($t);
-        return ['status' => 'ok', 'tunnels' => $derived['tunnels'], 'global' => $derived['global']];
+        return ['status' => 'ok', 'tunnels' => $derived['tunnels'], 'global' => $global];
     }
 }
