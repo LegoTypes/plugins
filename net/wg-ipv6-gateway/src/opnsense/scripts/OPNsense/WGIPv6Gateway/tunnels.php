@@ -13,6 +13,9 @@
  */
 
 require_once __DIR__ . '/lib/tunnels.php';
+/* the class autoloader only: the render self-test's stand-in firewall
+ * subclasses core's \OPNsense\Firewall\Plugin; nothing here reads config */
+require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 
 if (in_array('--selftest', $argv ?? [], true)) {
     require_once __DIR__ . '/lib/render.php';
@@ -20,8 +23,6 @@ if (in_array('--selftest', $argv ?? [], true)) {
     $renderRc = wgipv6_render_selftest();
     exit($tunnelsRc !== 0 || $renderRc !== 0 ? 1 : 0);
 }
-
-require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 
 $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
 $mssClamp = (string)$mdl->mss_clamp === '1';
@@ -38,7 +39,7 @@ if ((string)$mdl->enabled === '1' && is_readable($renderLib)) {
     if ($rendered === null || $rendered['failed']) {
         $derived['global'][] = wgipv6_finding(
             'render-failed',
-            $rendered === null ? 'no render recorded since boot or deploy' : $rendered['error']
+            $rendered === null ? 'no render recorded since boot or deploy, or the last filter reload could not run the plugin' : $rendered['error']
         );
     }
 }
