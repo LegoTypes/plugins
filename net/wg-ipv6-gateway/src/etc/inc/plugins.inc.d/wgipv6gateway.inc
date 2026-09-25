@@ -33,7 +33,7 @@ function wgipv6gateway_services()
     $mdl = new \OPNsense\WGIPv6Gateway\WGIPv6Gateway();
     if ((string)$mdl->enabled === '1') {
         $services[] = [
-            'description' => gettext('WireGuard IPv6 Gateway'),
+            'description' => gettext('WireGuard Client Tunnels'),
             'configd' => [
                 'start' => ['wgipv6gateway start'],
                 'stop' => ['wgipv6gateway stop'],
@@ -147,7 +147,7 @@ function wgipv6gateway_xmlrpc_sync()
 {
     $result = [];
     $result[] = [
-        'description' => gettext('WireGuard IPv6 Gateway'),
+        'description' => gettext('WireGuard Client Tunnels'),
         'section' => 'OPNsense.WGIPv6Gateway',
         'id' => 'wgipv6gateway',
     ];
