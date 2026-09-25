@@ -25,6 +25,13 @@
  * Keeping tunnel gateways out of the default-gateway election is NOT this
  * script's job: the sentinel gateways and default_guard.php do that.
  *
+ * Tunnels come from the plugin's managed list, not a fixed naming convention:
+ * lib/tunnels.php derives each one (WireGuard instance, peer, interface
+ * assignment, WAN binding, gateways) from core config every time it is
+ * needed. The held set -- which IPv4 tunnels this pass 1 is holding down --
+ * lives in the plugin model's `held` field as gateway UUIDs, and is saved in
+ * the same Config::lock()/save() write as the force_down values it explains.
+ *
  * Settle guard: a dpinger that has just started reports 0% loss because it has
  * no samples yet, not because the path is healthy. Every routing reconfigure
  * restarts all dpingers -- including the reconfigure this script itself triggers
@@ -87,10 +94,11 @@ if ($planFrom !== null) {
 
 /* --snapshot: print the decision input as JSON, write nothing. */
 if ($snapshotOut) {
+    $snapConfig = wgipv6_collect_config();
     echo json_encode([
-        'config' => wgipv6_collect_config(),
+        'config' => $snapConfig,
         'live' => wgipv6_collect_live(),
-        'held' => array_keys(wgipv6_load_held()),
+        'held' => $snapConfig['held'],
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), "\n";
     exit(0);
 }
@@ -113,7 +121,7 @@ $config = wgipv6_collect_config();
 if (!$config['enabled']) {
     exit(0);
 }
-$held = wgipv6_load_held();
+$held = array_fill_keys($config['held'], true);
 $plan = wgipv6_plan($config, wgipv6_collect_live(), $held, $settleOverride);
 
 if ($dryRun) {
@@ -127,8 +135,23 @@ if (empty($plan['changes'])) {
     foreach ($plan['log'] as $msg) {
         logMsg($logTag, $msg);
     }
-    if ($plan['held_changed']) {
-        wgipv6_save_held($plan['held']);
+    if (wgipv6_held_uuids($plan['held'], $config['gateways']) !== $config['held_raw']) {
+        /*
+         * Held-set only (a tunnel that no longer exists, or a stale entry):
+         * a config write with no routing change, so no gateway lock. Re-plan
+         * under the config lock; if config changed meanwhile and the re-plan
+         * now wants a force_down change, save nothing -- that needs the
+         * gateway lock and an apply, which the next tick does.
+         */
+        $live = wgipv6_collect_live();
+        wgipv6_locked_commit(function () use ($live, $settleOverride) {
+            $now = wgipv6_collect_config();
+            $replan = wgipv6_plan($now, $live, array_fill_keys($now['held'], true), $settleOverride);
+            if (!empty($replan['changes'])) {
+                return ['save' => false];
+            }
+            return ['save' => wgipv6_commit_held($replan['held'], $now)];
+        });
     }
     exit(0);
 }
@@ -140,16 +163,12 @@ if (empty($plan['changes'])) {
  *   1. /tmp/filter_reload_gateway.lock -- applying force_down is a full
  *      routing reconfigure, which restarts every dpinger; overlapping
  *      reconfigures leave dpinger dead. Same lock routes.alarm uses.
- *   2. Live readings, collected again: the wait for the lock can be long,
- *      and gateway_status.php reads config under a shared lock, so it must
- *      run before step 3, never inside it.
+ *   2. Live readings, collected again: the wait for the lock can be long.
  *   3. Config::lock(), which re-reads config.xml; the decisions are planned
- *      again from fresh models, so a GUI save made while this run waited is
- *      kept, not overwritten with the snapshot this run started from.
- *   4. Save, unlock, then apply and replay the alarm the reconfigure drops.
- *
- * If the lock cannot be taken, leave the change for the next tick rather than
- * saving a force_down we would not apply.
+ *      again from fresh models, including the held set, so a GUI save made
+ *      while this run waited is kept. The force_down values and the held set
+ *      are saved together, once.
+ *   4. Unlock, then apply and replay the alarm the reconfigure drops.
  */
 $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'c');
 if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
@@ -159,21 +178,22 @@ if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
     exit(0);
 }
 $live = wgipv6_collect_live();
-$commit = wgipv6_locked_commit(function () use ($live, $held, $settleOverride) {
-    $plan = wgipv6_plan(wgipv6_collect_config(), $live, $held, $settleOverride);
+$commit = wgipv6_locked_commit(function () use ($live, $settleOverride) {
+    $now = wgipv6_collect_config();
+    $plan = wgipv6_plan($now, $live, array_fill_keys($now['held'], true), $settleOverride);
+    $save = false;
     if (!empty($plan['changes'])) {
         $routingMdl = new OPNsense\Routing\Gateways();
         wgipv6_apply_changes($routingMdl, $plan['changes']);
         $routingMdl->serializeToConfig();
+        $save = true;
     }
-    return ['save' => !empty($plan['changes']), 'plan' => $plan];
+    $save = wgipv6_commit_held($plan['held'], $now) || $save;
+    return ['save' => $save, 'plan' => $plan];
 });
 $plan = $commit['plan'];
 foreach ($plan['log'] as $msg) {
     logMsg($logTag, $msg);
-}
-if ($plan['held_changed']) {
-    wgipv6_save_held($plan['held']);
 }
 if (!empty($plan['changes'])) {
     (new OPNsense\Core\Backend())->configdRun('interface routes configure');

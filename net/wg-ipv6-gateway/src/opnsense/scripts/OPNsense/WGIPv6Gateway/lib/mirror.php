@@ -22,11 +22,10 @@
 
 use OPNsense\Core\Config;
 
+require_once __DIR__ . '/tunnels.php';
+
 /* Used only when a gateway has no time_period configured. */
 const SETTLE_FALLBACK_SECONDS = 60;
-
-/* IPv4 tunnel gateways whose force_down pass 1 set, and so may release. */
-const UNDERLAY_HELD_FILE = '/var/db/wgipv6gateway/underlay_held.json';
 
 function logMsg($tag, $msg) {
     syslog(LOG_NOTICE, "[$tag] $msg");
@@ -148,23 +147,6 @@ function wgipv6_gateway_status() {
 }
 
 /**
- * Tunnels this script holds down, persisted so ownership survives reboots.
- *
- * @return array name => true
- */
-function wgipv6_load_held() {
-    $data = @json_decode((string)@file_get_contents(UNDERLAY_HELD_FILE), true);
-    return is_array($data) ? array_fill_keys(array_filter($data, 'is_string'), true) : [];
-}
-
-function wgipv6_save_held(array $held) {
-    @mkdir(dirname(UNDERLAY_HELD_FILE), 0700, true);
-    $tmp = UNDERLAY_HELD_FILE . '.tmp';
-    file_put_contents($tmp, json_encode(array_keys($held)));
-    rename($tmp, UNDERLAY_HELD_FILE);
-}
-
-/**
  * Replay the gateway alarm OPNsense dropped for our own force_down changes.
  *
  * The reconfigure below restarts dpinger and SIGHUPs gateway_watcher, which
@@ -271,89 +253,73 @@ function wgipv6_settled(array $row, $age, $override) {
 }
 
 /**
- * The WAN each tunnel gateway is bound to, keyed by IPv4 tunnel gateway name.
- * The binding is declared once: the /32 static route to the tunnel peer's
- * endpoint names the WAN gateway. Tunnels with no such route are absent.
+ * Everything the decisions read from config, derived from core (spec 4.1).
+ * Builds fresh models, so called after Config::lock() it reflects config.xml
+ * as it is now.
  *
- * @param array  $gateways name => row, from wgipv6_collect_config()
- * @param object $root     Config::getInstance()->object()
- * @return array name => WAN gateway name
- */
-function wgipv6_tunnel_underlays(array $gateways, $root) {
-    $routeByNet = [];
-    foreach ((new OPNsense\Routes\Route())->route->iterateItems() as $route) {
-        if ((string)$route->enabled === '1') {
-            $routeByNet[(string)$route->network] = (string)$route->gateway;
-        }
-    }
-    $endpointByUuid = [];
-    foreach ((new OPNsense\Wireguard\Client())->clients->client->iterateItems() as $uuid => $peer) {
-        $endpointByUuid[$uuid] = (string)$peer->serveraddress;
-    }
-    $wanByDevice = [];
-    foreach ((new OPNsense\Wireguard\Server())->servers->server->iterateItems() as $server) {
-        foreach (array_filter(explode(',', (string)$server->peers)) as $peerUuid) {
-            $net = ($endpointByUuid[$peerUuid] ?? '') . '/32';
-            if (isset($routeByNet[$net])) {
-                $wanByDevice['wg' . (string)$server->instance] = $routeByNet[$net];
-            }
-        }
-    }
-    $result = [];
-    foreach ($gateways as $name => $row) {
-        if ($row['ipprotocol'] !== 'inet') {
-            continue;
-        }
-        $if = $row['interface'];
-        $device = isset($root->interfaces->$if) ? (string)$root->interfaces->$if->if : '';
-        if (isset($wanByDevice[$device])) {
-            $result[$name] = $wanByDevice[$device];
-        }
-    }
-    return $result;
-}
-
-/**
- * Everything the decisions read from config. Builds fresh models, so called
- * after Config::lock() it reflects config.xml as it is now.
- *
- * @return array see the file header
+ * @return array ['enabled', 'gateways', 'underlays', 'pairs',
+ *                'held' => names, 'held_raw' => sorted uuids from config]
  */
 function wgipv6_collect_config() {
-    $root = Config::getInstance()->object();
     $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
-    $gateways = [];
+    $core = wgipv6_core_snapshot();
+    $inputs = wgipv6_mirror_inputs(wgipv6_derive($core, wgipv6_split_csv((string)$mdl->managed)));
     $nameByUuid = [];
-    foreach ((new OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $uuid => $gw) {
-        $name = (string)$gw->name;
-        $nameByUuid[$uuid] = $name;
-        $gateways[$name] = [
-            'uuid' => $uuid,
-            'ipprotocol' => (string)$gw->ipprotocol,
-            'interface' => (string)$gw->interface,
-            'disabled' => (string)$gw->disabled === '1',
-            'force_down' => (string)$gw->force_down === '1',
-            'losshigh' => (string)$gw->losshigh,
-            'losslow' => (string)$gw->losslow,
-            'time_period' => (string)$gw->time_period,
-        ];
+    foreach ($core['gateways'] as $name => $g) {
+        $nameByUuid[$g['uuid']] = $name;
     }
-    $pairs = [];
-    foreach ($mdl->gateways->gateway->iterateItems() as $item) {
-        if ((string)$item->enabled !== '1') {
-            continue;
-        }
-        $ipv4Name = $nameByUuid[(string)$item->ipv4_gateway] ?? null;
-        if ($ipv4Name !== null) {
-            $pairs[$ipv4Name] = $ipv4Name . '-ipv6';
+    $heldRaw = wgipv6_split_csv((string)$mdl->held);
+    sort($heldRaw);
+    $held = [];
+    foreach ($heldRaw as $uuid) {
+        if (isset($nameByUuid[$uuid])) {
+            $held[] = $nameByUuid[$uuid];
         }
     }
     return [
-        'enabled' => (string)$mdl->enabled === '1',
-        'gateways' => $gateways,
-        'underlays' => wgipv6_tunnel_underlays($gateways, $root),
-        'pairs' => $pairs,
+        'enabled' => (string)$mdl->enabled === '1' && (string)$mdl->health_mirror === '1',
+        'gateways' => $core['gateways'],
+        'underlays' => $inputs['underlays'],
+        'pairs' => $inputs['pairs'],
+        'held' => $held,
+        'held_raw' => $heldRaw,
     ];
+}
+
+/**
+ * @param array $heldNames name => true (the planner's held set)
+ * @param array $gateways  name => row with 'uuid'
+ * @return array sorted gateway uuids; names with no gateway drop out
+ */
+function wgipv6_held_uuids(array $heldNames, array $gateways) {
+    $uuids = [];
+    foreach (array_keys($heldNames) as $name) {
+        if (isset($gateways[$name])) {
+            $uuids[] = $gateways[$name]['uuid'];
+        }
+    }
+    sort($uuids);
+    return $uuids;
+}
+
+/**
+ * Serialize the held set into the plugin model when it differs from config.
+ * Call only inside wgipv6_locked_commit(), with $gateways from a collection
+ * made under that lock.
+ *
+ * @param array $heldNames name => true
+ * @param array $config    wgipv6_collect_config() made under the lock
+ * @return bool whether the model was serialized (the caller must save)
+ */
+function wgipv6_commit_held(array $heldNames, array $config) {
+    $uuids = wgipv6_held_uuids($heldNames, $config['gateways']);
+    if ($uuids === $config['held_raw']) {
+        return false;
+    }
+    $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
+    $mdl->held = implode(',', $uuids);
+    $mdl->serializeToConfig();
+    return true;
 }
 
 /**
@@ -712,6 +678,14 @@ function wgipv6_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] plan: status unavailable is logged and reported\n", $ok ? 'PASS' : 'FAIL');
+
+    $gws = ['tun_a' => ['uuid' => 'bbb'], 'tun_b' => ['uuid' => 'aaa']];
+    $ok = wgipv6_held_uuids(['tun_a' => true, 'tun_b' => true], $gws) === ['aaa', 'bbb']
+        && wgipv6_held_uuids(['gone' => true], $gws) === []
+        && wgipv6_held_uuids([], $gws) === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] held: names map to sorted uuids, unknown names drop\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
