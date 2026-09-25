@@ -516,15 +516,16 @@ function wgipv6_apply_changes($mdl, array $changes) {
  *
  * @param callable $mutate builds models, changes and serializes them; returns an
  *                         array whose 'save' key says whether to save
+ * @param string|null $description the config-history text of the save (null: core's default)
  * @return array whatever $mutate returned
  */
-function wgipv6_locked_commit(callable $mutate) {
+function wgipv6_locked_commit(callable $mutate, ?string $description = null) {
     $cfg = Config::getInstance();
     $cfg->lock();
     try {
         $result = $mutate();
         if (!empty($result['save'])) {
-            $cfg->save();
+            $cfg->save($description !== null ? ['description' => $description] : null);
         }
         return $result;
     } finally {
