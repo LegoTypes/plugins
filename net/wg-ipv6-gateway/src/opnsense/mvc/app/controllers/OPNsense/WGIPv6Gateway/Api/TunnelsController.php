@@ -129,18 +129,25 @@ class TunnelsController extends ApiControllerBase
             $result = wgipv6_create_commit($prep, false);
         } catch (\Throwable $e) {
             syslog(LOG_ERR, '[wgipv6gw-action] create failed: ' . wgipv6_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
-            return ['result' => 'failed', 'errors' => ['Create failed; the system log has the reason (never the key).']];
+            return ['result' => 'failed', 'errors' => [
+                'Create failed; the system log has the reason (never the key). If this happened after '
+                . 'the save, the change is in config and only its apply is incomplete: reload the list and use Apply.',
+            ]];
         }
         unset($prep, $raw, $secrets);
         if (!$result['ok']) {
             return $this->formFailure($result['errors'], $result['changes']);
         }
-        /* the tunnel is saved and marked apply-pending; a timeout or dead request here leaves the
-         * finding and the Apply button (ruling 20) */
-        $apply = $this->configd('wgipv6gateway apply', [$result['uuid']], 300);
+        /* the tunnel is saved and marked apply-pending by wgipv6_create_commit() itself, before this
+         * call (ruling 20); 'ok' below reflects only whether this apply succeeded, so a timeout or a
+         * failed step is never reported as success -- the uuid and the apply-pending finding are what
+         * let the GUI offer Apply again */
+        $apply = wgipv6_configd_json('wgipv6gateway apply', [$result['uuid']], 300);
+        $applyErrors = is_array($apply['errors'] ?? null) ? $apply['errors'] : [];
         return [
-            'result' => 'saved', 'ok' => true, 'saved' => true, 'uuid' => $result['uuid'], 'changes' => $result['changes'],
-            'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $apply['errors'] ?? [],
+            'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
+            'saved' => true, 'uuid' => $result['uuid'], 'changes' => $result['changes'],
+            'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $applyErrors,
         ];
     }
 
@@ -149,12 +156,13 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        require_once self::LIB . '/apply.php';
         $wan = $this->postString('wan');
         $endpoint = $this->postString('endpoint');
         if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 endpoint first']];
         }
-        return $this->configd('wgipv6gateway measure_mtu', [$wan, $endpoint], 120);
+        return wgipv6_configd_json('wgipv6gateway measure_mtu', [$wan, $endpoint], 120);
     }
 
     public function removeAction(string $uuid = ''): array
@@ -162,14 +170,19 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not a tunnel uuid']];
         }
-        if ($this->postString('dry') === '1') {
-            return $this->configd('wgipv6gateway remove_dry', [$uuid], 120);
+        $dry = wgipv6_dry_flag($this->request->getPost('dry'));
+        if ($dry === null) {
+            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+        }
+        if ($dry) {
+            return wgipv6_configd_json('wgipv6gateway remove_dry', [$uuid], 120);
         }
         $this->throwReadOnly();
-        return $this->configd('wgipv6gateway remove', [$uuid], 300);
+        return wgipv6_configd_json('wgipv6gateway remove', [$uuid], 300);
     }
 
     public function applyAction(string $uuid = ''): array
@@ -178,10 +191,11 @@ class TunnelsController extends ApiControllerBase
             return ['result' => 'failed'];
         }
         $this->throwReadOnly();
+        require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not a tunnel uuid']];
         }
-        return $this->configd('wgipv6gateway apply', [$uuid], 300);
+        return wgipv6_configd_json('wgipv6gateway apply', [$uuid], 300);
     }
 
     public function rebindAction(string $uuid = ''): array
@@ -190,6 +204,7 @@ class TunnelsController extends ApiControllerBase
             return ['result' => 'failed'];
         }
         $this->throwReadOnly();
+        require_once self::LIB . '/apply.php';
         /* a form boundary: rebind.* as strings */
         $form = $this->request->getPost('rebind');
         $wan = is_array($form) && is_string($form['wan'] ?? null) ? $form['wan'] : '';
@@ -198,7 +213,7 @@ class TunnelsController extends ApiControllerBase
             || ($stale !== '' && preg_match(self::UUID, $stale) !== 1)) {
             return ['ok' => false, 'errors' => ['choose a WAN (and, optionally, a stale route to delete)']];
         }
-        return $this->configd('wgipv6gateway rebind', [$uuid, $wan, $stale], 300);
+        return wgipv6_configd_json('wgipv6gateway rebind', [$uuid, $wan, $stale], 300);
     }
 
     public function adoptAction(string $uuid = ''): array
@@ -206,14 +221,19 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not an instance uuid']];
         }
-        if ($this->postString('dry') === '1') {
-            return $this->configd('wgipv6gateway adopt_dry', [$uuid], 120);
+        $dry = wgipv6_dry_flag($this->request->getPost('dry'));
+        if ($dry === null) {
+            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+        }
+        if ($dry) {
+            return wgipv6_configd_json('wgipv6gateway adopt_dry', [$uuid], 120);
         }
         $this->throwReadOnly();
-        return $this->configd('wgipv6gateway adopt', [$uuid], 120);
+        return wgipv6_configd_json('wgipv6gateway adopt', [$uuid], 120);
     }
 
     /**
@@ -233,18 +253,6 @@ class TunnelsController extends ApiControllerBase
             }
         }
         return ['result' => 'failed', 'validations' => $validations, 'errors' => $general, 'changes' => $changes];
-    }
-
-    /**
-     * @param list<string> $params uuids, gateway names and addresses only (configd shows argv in ps)
-     * @return array the action's JSON result, or a failure of the same shape
-     */
-    private function configd(string $action, array $params, int $timeout): array
-    {
-        $raw = (string)(new Backend())->configdpRun($action, $params, false, $timeout);
-        /* configd output: a JSON boundary */
-        $data = json_decode($raw, true);
-        return is_array($data) ? $data : ['ok' => false, 'errors' => ['backend: ' . substr(trim($raw), 0, 200)]];
     }
 
     /**

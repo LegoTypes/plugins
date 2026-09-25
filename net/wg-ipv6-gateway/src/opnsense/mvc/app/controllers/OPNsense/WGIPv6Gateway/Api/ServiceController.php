@@ -57,14 +57,15 @@ class ServiceController extends ApiMutableServiceControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
-        $dry = $this->request->getPost('dry') === '1';
+        require_once '/usr/local/opnsense/scripts/OPNsense/WGIPv6Gateway/lib/apply.php';
+        $dry = wgipv6_dry_flag($this->request->getPost('dry'));
+        if ($dry === null) {
+            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+        }
         if (!$dry) {
             $this->throwReadOnly();
         }
-        $raw = (string)(new Backend())->configdRun($dry ? 'wgipv6gateway ensure_sentinel_dry' : 'wgipv6gateway ensure_sentinel', false, 300);
-        /* configd output: a JSON boundary */
-        $data = json_decode($raw, true);
-        return is_array($data) ? $data : ['ok' => false, 'errors' => ['backend: ' . substr(trim($raw), 0, 200)]];
+        return wgipv6_configd_json($dry ? 'wgipv6gateway ensure_sentinel_dry' : 'wgipv6gateway ensure_sentinel', [], 300);
     }
 
     /**
