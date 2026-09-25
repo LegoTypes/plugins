@@ -471,78 +471,6 @@ function wgct_mirror_inputs(array $derived) {
     return ['underlays' => $underlays, 'pairs' => $pairs];
 }
 
-/* where the health mirror kept its held set before model 2.0.0 */
-const WGCT_LEGACY_HELD_FILE = '/var/db/wgipv6gateway/underlay_held.json';
-
-/**
- * Model 1.x -> 2.0.0: which instances to manage and which gateways are held,
- * from the old per-gateway rows. Pure. Core wins where a row disagrees.
- *
- * @param array $core      wgct_core_snapshot()
- * @param array $rows      old rows: ['enabled' => bool, 'ipv4_gateway' => uuid,
- *                         'ipv6_gw_address' => string, 'ipv6_address' => string]
- * @param array $heldNames IPv4 tunnel gateway names from the legacy held file
- * @return array ['managed' => uuid[], 'held' => uuid[], 'notes' => string[]]
- */
-function wgct_migration_plan(array $core, array $rows, array $heldNames) {
-    $nameByUuid = [];
-    foreach ($core['gateways'] as $name => $g) {
-        $nameByUuid[$g['uuid']] = $name;
-    }
-    $instanceByDevice = [];
-    foreach ($core['instances'] as $uuid => $inst) {
-        $instanceByDevice['wg' . $inst['instance']] = $uuid;
-    }
-    $managed = [];
-    $notes = [];
-    $adopted = [];      // row index => gw4 name
-    foreach ($rows as $i => $row) {
-        $gw4 = $nameByUuid[$row['ipv4_gateway']] ?? null;
-        if (!$row['enabled']) {
-            $notes[] = 'row for ' . ($gw4 ?? $row['ipv4_gateway']) . ' was disabled; not adopted';
-            continue;
-        }
-        if ($gw4 === null) {
-            $notes[] = "row points at missing gateway {$row['ipv4_gateway']}; not adopted";
-            continue;
-        }
-        $opt = $core['gateways'][$gw4]['interface'];
-        $uuid = $instanceByDevice[$core['interfaces'][$opt]['if'] ?? ''] ?? null;
-        if ($uuid === null) {
-            $notes[] = "{$gw4} is not on a WireGuard instance's interface; not adopted";
-            continue;
-        }
-        if (!in_array($uuid, $managed, true)) {
-            $managed[] = $uuid;
-        }
-        $adopted[$i] = $gw4;
-    }
-    $byGw4 = [];
-    foreach (wgct_derive($core, $managed)['tunnels'] as $t) {
-        if ($t['gw4'] !== null) {
-            $byGw4[$t['gw4']] = $t;
-        }
-    }
-    foreach ($adopted as $i => $gw4) {
-        $t = $byGw4[$gw4] ?? null;
-        foreach (['ipv6_gw_address' => 'ipv6_next_hop', 'ipv6_address' => 'ipv6_address'] as $rowKey => $tKey) {
-            $want = $t !== null ? (string)$t[$tKey] : '';
-            if ($rows[$i][$rowKey] !== '' && $rows[$i][$rowKey] !== $want) {
-                $notes[] = "{$gw4}: row {$rowKey} {$rows[$i][$rowKey]} differs from core '{$want}' (core wins)";
-            }
-        }
-    }
-    $held = [];
-    foreach ($heldNames as $name) {
-        if (isset($core['gateways'][$name])) {
-            $held[] = $core['gateways'][$name]['uuid'];
-        } else {
-            $notes[] = "held gateway {$name} no longer exists; dropped";
-        }
-    }
-    return ['managed' => $managed, 'held' => $held, 'notes' => $notes];
-}
-
 /**
  * What the WAN pins (R1) and inner-source blocks (R7) cover. Pure; canonical
  * order so two sets compare with ===. A bound tunnel whose WAN cannot be
@@ -883,29 +811,6 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] mirror inputs: disabled instance => ignored\n", $ok ? 'PASS' : 'FAIL');
-
-    /* migration plan: old rows -> managed instances, held names -> gateway uuids */
-    $c = $base();
-    $c['gateways']['tun_a']['uuid'] = 'g-tun-a';
-    $rows = [
-        ['enabled' => true, 'ipv4_gateway' => 'g-tun-a', 'ipv6_gw_address' => 'fd00::1:2', 'ipv6_address' => 'fd00::1:1/128'],
-        ['enabled' => false, 'ipv4_gateway' => 'g-tun-a', 'ipv6_gw_address' => '', 'ipv6_address' => ''],
-        ['enabled' => true, 'ipv4_gateway' => 'g-missing', 'ipv6_gw_address' => '', 'ipv6_address' => ''],
-    ];
-    $mp = wgct_migration_plan($c, $rows, ['tun_a', 'gone_gw']);
-    $ok = $mp['managed'] === ['i-a'] && $mp['held'] === ['g-tun-a'] && count($mp['notes']) === 3;
-    $fail += $ok ? 0 : 1;
-    $total++;
-    printf("[%s] migration: adopt enabled row, note disabled row, missing gateway and vanished held name\n", $ok ? 'PASS' : 'FAIL');
-    if (!$ok) {
-        printf("       %s\n", json_encode($mp));
-    }
-    $rows = [['enabled' => true, 'ipv4_gateway' => 'g-tun-a', 'ipv6_gw_address' => 'fd00::9:2', 'ipv6_address' => 'fd00::1:1/128']];
-    $mp = wgct_migration_plan($c, $rows, []);
-    $ok = $mp['managed'] === ['i-a'] && count($mp['notes']) === 1 && strpos($mp['notes'][0], 'core wins') !== false;
-    $fail += $ok ? 0 : 1;
-    $total++;
-    printf("[%s] migration: row disagreeing with core is adopted, noted, core wins\n", $ok ? 'PASS' : 'FAIL');
 
     /* renderers */
     $d = wgct_derive($base(), ['i-a']);
