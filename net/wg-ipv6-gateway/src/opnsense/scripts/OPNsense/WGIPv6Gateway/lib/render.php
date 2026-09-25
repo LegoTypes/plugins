@@ -156,10 +156,46 @@ function wgipv6_error_file_stale($mtime, $renderedAt) {
     return $mtime >= $renderedAt;
 }
 
+/**
+ * Pure normaliser for whatever json_decode() hands back for freshness.json
+ * (including garbage: a hand-edited or truncated file, or one from a future
+ * version of this plugin). wgipv6_freshness_plan()'s $state parameter is
+ * type-hinted ?array; handing it anything else (a string, an int, ...) is a
+ * TypeError that the try/catch in freshness.php would catch and log every
+ * tick, but since freshness.php would exit before ever rewriting the file,
+ * a corrupt freshness.json would wedge the reconcile forever. Normalising on
+ * read means a corrupt/malformed field is simply treated as absent, and the
+ * very next successful run overwrites the file with something well-formed.
+ *
+ * @param mixed $raw whatever json_decode(..., true) returned
+ * @return array ['reload' => array|null, 'anchor_fail_hash' => string|null]
+ *               'reload', if present, always has 'window' clamped to
+ *               [WGIPV6_RELOAD_SUPPRESS_SECONDS, WGIPV6_RELOAD_MAX_WINDOW_SECONDS].
+ */
+function wgipv6_normalize_freshness_state($raw) {
+    $reload = null;
+    $anchorFailHash = null;
+    if (is_array($raw)) {
+        if (isset($raw['reload']) && is_array($raw['reload'])) {
+            $reload = $raw['reload'];
+            $window = (int)($reload['window'] ?? WGIPV6_RELOAD_SUPPRESS_SECONDS);
+            $reload['window'] = max(WGIPV6_RELOAD_SUPPRESS_SECONDS, min($window, WGIPV6_RELOAD_MAX_WINDOW_SECONDS));
+        }
+        if (isset($raw['anchor_fail_hash']) && is_string($raw['anchor_fail_hash'])) {
+            $anchorFailHash = $raw['anchor_fail_hash'];
+        }
+    }
+    return ['reload' => $reload, 'anchor_fail_hash' => $anchorFailHash];
+}
+
+/**
+ * @return array ['reload' => array|null, 'anchor_fail_hash' => string|null],
+ *               already normalised -- see wgipv6_normalize_freshness_state().
+ */
 function wgipv6_read_freshness_state() {
     $raw = @file_get_contents(WGIPV6_FRESHNESS_STATE_FILE);
     $data = $raw !== false ? json_decode($raw, true) : null;
-    return is_array($data) ? $data : null;
+    return wgipv6_normalize_freshness_state($data);
 }
 
 /**
@@ -210,8 +246,10 @@ function wgipv6_write_freshness_state($s) {
  *
  * Priority, most urgent first:
  *   1. no rendered record at all -> reload, but only if there is anything to
- *      render: a disabled/empty plugin with no record yet has nothing to
- *      enforce and must not spin on this forever
+ *      render (non-empty pins, or MSS lines wanted even with no pins -- e.g.
+ *      the clamp switch on with no WAN-pin tunnels): a disabled/empty plugin
+ *      with no record yet has nothing to enforce and must not spin on this
+ *      forever
  *   2. rendered pins differ from wanted -> reload (this includes going from
  *      pins to none, e.g. the plugin was just disabled: the stale pins still
  *      need removing)
@@ -260,7 +298,7 @@ function wgipv6_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime
         && strpos((string)($rendered['error'] ?? ''), 'MSS anchor load failed') === 0;
 
     if ($rendered === null) {
-        $needReload = wgipv6_pins_nonempty($wanted['pins']);
+        $needReload = wgipv6_pins_nonempty($wanted['pins']) || !empty($wanted['mss']);
         $reason = $needReload ? 'no rendered record' : 'nothing rendered yet';
     } elseif ($rendered['pins'] !== $wanted['pins']) {
         $needReload = true;
@@ -598,6 +636,13 @@ function wgipv6_render_selftest() {
     $total++;
     printf("[%s] freshness_plan: no rendered record, wanted disabled/empty => nothing\n", $ok ? 'PASS' : 'FAIL');
 
+    $wantedMssOnly = ['enabled' => true, 'pins' => $emptyPins, 'mss' => $mss];
+    $p = wgipv6_freshness_plan($wantedMssOnly, null, null, null, 1000);
+    $ok = $p['reload'] === true && $p['anchor'] === false && $p['state'] !== null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: no rendered record, wanted has no pins but wants MSS => reload\n", $ok ? 'PASS' : 'FAIL');
+
     $r = $current;
     $r['pins'] = $otherPins;
     $p = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
@@ -789,6 +834,60 @@ function wgipv6_render_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] anchor_log_plan: success with no prior failure => quiet\n", $ok ? 'PASS' : 'FAIL');
+
+    /* freshness.php's "plan is current" branch clears a stale anchor_fail_hash
+     * by calling wgipv6_anchor_log_plan(..., true, ...) -- the exact same
+     * pure call an actual anchor-retry success makes. This composes the
+     * already-tested "current" signal (reload=false, anchor=false,
+     * state=null) with the already-tested recovery behaviour to prove the
+     * two pieces line up the way freshness.php relies on. */
+    $p = wgipv6_freshness_plan($wanted, $current, null, null, 1000);
+    $isCurrent = $p['reload'] === false && $p['anchor'] === false && $p['state'] === null;
+    $lp = wgipv6_anchor_log_plan($mssHash, true, $wanted['mss']);
+    $ok = $isCurrent && $lp['log_recovery'] === true && $lp['fail_hash'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan + anchor_log_plan: plan current with a pending anchor failure => recovery, hash cleared\n", $ok ? 'PASS' : 'FAIL');
+
+    /* wgipv6_normalize_freshness_state: pure, so a corrupt freshness.json
+     * (hand-edited, truncated, or from an incompatible future version) never
+     * reaches wgipv6_freshness_plan()'s ?array-typed $state as anything but
+     * a well-formed array or null -- no TypeError, no forever-wedged reconcile. */
+    $ok = wgipv6_normalize_freshness_state(null) === ['reload' => null, 'anchor_fail_hash' => null];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: not decodable (null) => reload null, hash null\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgipv6_normalize_freshness_state('garbage') === ['reload' => null, 'anchor_fail_hash' => null];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: root not an array (a string) => reload null, hash null\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgipv6_normalize_freshness_state(['reload' => 'garbage', 'anchor_fail_hash' => null])
+        === ['reload' => null, 'anchor_fail_hash' => null];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: 'reload' not an array => treated as absent\n", $ok ? 'PASS' : 'FAIL');
+
+    $huge = ['requested_at' => 100, 'pins_hash' => 'x', 'notified' => false, 'window' => 999999999];
+    $r = wgipv6_normalize_freshness_state(['reload' => $huge, 'anchor_fail_hash' => 'abc']);
+    $ok = $r['reload']['window'] === WGIPV6_RELOAD_MAX_WINDOW_SECONDS && $r['anchor_fail_hash'] === 'abc';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: window far above the cap => clamped down\n", $ok ? 'PASS' : 'FAIL');
+
+    $negative = ['requested_at' => 100, 'pins_hash' => 'x', 'notified' => false, 'window' => -5];
+    $r = wgipv6_normalize_freshness_state(['reload' => $negative, 'anchor_fail_hash' => 123]);
+    $ok = $r['reload']['window'] === WGIPV6_RELOAD_SUPPRESS_SECONDS && $r['anchor_fail_hash'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: window below the base, non-string hash => clamped up, hash dropped\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = wgipv6_normalize_freshness_state(['reload' => null, 'anchor_fail_hash' => 'xyz']);
+    $ok = $r === ['reload' => null, 'anchor_fail_hash' => 'xyz'];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] normalize_freshness_state: no reload state but a pending anchor failure => both preserved correctly\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
