@@ -26,8 +26,23 @@
         var failedText = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
         var options = null;
 
+        /* core HTML-escapes every API reply string (Mvc/Response.php, htmlspecialchars ENT_NOQUOTES), so a
+         * server string with '>' or '&' (a peer name, a finding detail, a sentinel description) arrives as
+         * '...&gt;...'. Decode it once here; the result only ever reaches .text()/.attr('title'), which never
+         * interpret it as HTML, so decoding cannot introduce markup (review finding 2). */
+        function plain(s) {
+            return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
+        }
+
+        /* a dialog title that may include a server-supplied name: a text node, never an HTML string --
+         * BootstrapDialog renders a string title as HTML, which would re-encode plain()'s output (review
+         * finding 5). Callers pass the already-decoded text. */
+        function titleText(text) {
+            return $('<span/>').text(text);
+        }
+
         function link(text, href) {
-            return $('<a/>').addClass('wgct-link').attr('href', href).text(text);
+            return $('<a/>').addClass('wgct-link').attr('href', href).text(plain(text));
         }
 
         function gwCell(name, status, statusText, held) {
@@ -45,7 +60,7 @@
                 } else {
                     cls = 'label-danger';
                 }
-                cell.append(' ', $('<span class="label"/>').addClass(cls).text(statusText));
+                cell.append(' ', $('<span class="label"/>').addClass(cls).text(plain(statusText)));
             }
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
@@ -61,8 +76,8 @@
             $.each(findings, function (i, f) {
                 cell.append($('<span class="label" style="display:inline-block; margin:1px;"/>')
                     .addClass(f.blocking ? 'label-danger' : 'label-warning')
-                    .attr('title', f.detail + ' — ' + f.fix)
-                    .text(f.code), ' ');
+                    .attr('title', plain(f.detail) + ' — ' + plain(f.fix))
+                    .text(plain(f.code)), ' ');
             });
             return cell;
         }
@@ -71,15 +86,19 @@
 
         /* status is jQuery's: 'success' only for a completed request whose reply parsed as JSON. An error
          * page, a timeout or a login redirect reaches the callback as a jqXHR without any of our keys,
-         * and must never read as "Nothing to change" (review I4). */
+         * and must never read as "Nothing to change" (review I4). Every action's result shares the same
+         * {ok, saved, errors, ...} shape (actions.php wgipv6_result()); ok:false with no error lines (an
+         * apply step failed with only 'apply' detail, nothing in 'errors') must still read as a failure,
+         * never as success or "Nothing to change" (review finding 1). */
         function errorList(r, status) {
             if (!r || (status !== undefined && status !== 'success')
                 || !('ok' in r || 'result' in r || 'status' in r || 'errors' in r)) {
-                return [r && r.errorMessage ? r.errorMessage : failedText];
+                return [r && r.errorMessage ? plain(r.errorMessage) : failedText];
             }
             var out = [];
-            $.each(r.errors || [], function (k, m) { out.push(m); });
-            if (r.result === 'failed' && out.length === 0 && $.isEmptyObject(r.validations || {})) {
+            $.each(r.errors || [], function (k, m) { out.push(plain(m)); });
+            if (out.length === 0 && (r.ok === false
+                || (r.result === 'failed' && $.isEmptyObject(r.validations || {})))) {
                 out.push(failedText);
             }
             return out;
@@ -87,11 +106,11 @@
 
         function resultLines(r) {
             var lines = [];
-            $.each((r && r.changes) || [], function (i, c) { lines.push(c); });
-            $.each((r && r.apply) || [], function (i, s) { lines.push('configctl ' + s.action + ': ' + s.result); });
+            $.each((r && r.changes) || [], function (i, c) { lines.push(plain(c)); });
+            $.each((r && r.apply) || [], function (i, s) { lines.push('configctl ' + plain(s.action) + ': ' + plain(s.result)); });
             if (r && r.after && r.after.reconcile) {
-                lines.push("{{ lang._('alarm replayed for') }}: " + (r.after.replayed.length ? r.after.replayed.join(', ') : '—'));
-                lines.push("{{ lang._('reconcile') }}: " + r.after.reconcile);
+                lines.push("{{ lang._('alarm replayed for') }}: " + (r.after.replayed.length ? $.map(r.after.replayed, plain).join(', ') : '—'));
+                lines.push("{{ lang._('reconcile') }}: " + plain(r.after.reconcile));
             }
             return lines;
         }
@@ -111,26 +130,40 @@
 
         function runApply(uuid, name) {
             ajaxCall('/api/wgipv6gateway/tunnels/apply/' + uuid, {}, function (r, status) {
-                showResult("{{ lang._('Apply') }} " + name, r, status, uuid);
+                showResult(titleText("{{ lang._('Apply') }} " + plain(name)), r, status, uuid, name);
             });
         }
 
-        /* applyUuid: a tunnel that is saved (Create, or an earlier Apply); when its apply did not complete,
-         * the dialog offers "Apply again" (ruling 20) -- the finding apply-pending stays until one completes */
-        function showResult(title, r, status, applyUuid) {
+        /* applyUuid/applyName: the uuid and name of a tunnel that is saved (Create, or an earlier Apply); when
+         * its apply did not complete, the dialog offers "Apply again" (ruling 20) -- the finding apply-pending
+         * stays until one completes. applyName is the tunnel's own name, never the dialog title (review
+         * finding 4: a title like "Rebind NAME" must not become the next dialog's "Apply Rebind NAME"). */
+        function showResult(title, r, status, applyUuid, applyName) {
             var failed = errorList(r, status).length > 0;
             var buttons = [{label: "{{ lang._('Close') }}", action: function (d) { d.close(); }}];
             if (failed && applyUuid) {
                 buttons.unshift({
                     label: "{{ lang._('Apply again') }}",
                     cssClass: 'btn-primary',
-                    action: function (d) { d.close(); runApply(applyUuid, title); }
+                    action: function (d) { d.close(); runApply(applyUuid, applyName); }
                 });
+            }
+            var body = resultBody(r, status);
+            if (r && r.saved === true && r.ok === false) {
+                /* the config write happened even though the apply step after it did not finish -- never let
+                 * that read as a lost change (review finding 1). The wording follows what the dialog actually
+                 * offers: only Create/Apply's own retry uses the generic apply endpoint (ruling 21); Rebind's
+                 * own apply step ("interface routes configure", ruling 12) is not the same pipeline, so its
+                 * failure gets a plainer message instead of a misleading "Apply again". */
+                body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
+                    ? "{{ lang._('Saved; the apply did not complete. Apply again, or use the Apply button in the tunnel row.') }}"
+                    : "{{ lang._('Saved; the follow-up step above did not complete. Reload the list and check the system log.') }}"
+                ));
             }
             BootstrapDialog.show({
                 type: failed ? BootstrapDialog.TYPE_DANGER : BootstrapDialog.TYPE_INFO,
                 title: title,
-                message: resultBody(r, status),
+                message: body,
                 buttons: buttons,
                 onhidden: function () { refresh(); }
             });
@@ -177,7 +210,7 @@
         function fillSelect(selector, items, selected) {
             var select = $(selector).empty();
             $.each(items, function (i, it) {
-                select.append($('<option/>').val(it.value).text(it.label).prop('selected', selected.indexOf(it.value) !== -1));
+                select.append($('<option/>').val(it.value).text(plain(it.label)).prop('selected', selected.indexOf(it.value) !== -1));
             });
             select.selectpicker('refresh');
         }
@@ -234,6 +267,13 @@
             return $.map(groups, function (g) { return (parseInt(g, 16) || 0).toString(16); }).join(':');
         }
 
+        /* the last parsed IPv6 address list (sorted, comma-joined); ipv6Defaults only recomputes the
+         * checkbox defaults when this actually changes, so an explicit uncheck/check survives further
+         * edits elsewhere in the pasted config (review finding 7). Reset to null whenever the dialog opens
+         * on a blank config, so the next paste always recomputes regardless of a coincidental match with a
+         * previous session's list. */
+        var lastV6 = null;
+
         /* rulings 3 and 4: IPv6 only when the config has an address; unique addressing on by default when that
          * address is already on a WireGuard instance or the managed tunnels use fd00::N:1. A missed match only
          * leaves the box unchecked, and the planner then refuses the duplicate explicitly. */
@@ -242,6 +282,11 @@
                 return;
             }
             var p = wgPublic($('#create\\.config').val());
+            var key = p.v6.slice().sort().join(',');
+            if (key === lastV6) {
+                return;
+            }
+            lastV6 = key;
             var hasV6 = p.v6.length > 0;
             $('#create\\.ipv6').prop('disabled', !hasV6).prop('checked', hasV6);
             var known = $.map(options.instance_ipv6, expand6);
@@ -277,7 +322,7 @@
                 $('#wgct-measure').prop('disabled', false);
                 if (status === 'success' && r && r.ok) {
                     $('#create\\.mtu').val(r.mtu);
-                    why.text(r.why);
+                    why.text(plain(r.why));
                 } else {
                     why.text(errorList(r, status).join('; '));
                 }
@@ -286,6 +331,7 @@
 
         function openCreate() {
             loadOptions(function () {
+                lastV6 = null;
                 $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.mtu').val('');
                 $('#create\\.ipv6').prop('checked', false).prop('disabled', true);
                 $('#create\\.unique').prop('checked', false);
@@ -304,6 +350,7 @@
 
         function submitCreate() {
             var data = getFormData('frm_dialogCreate');
+            var c = data.create;
             var run = function () {
                 $('#btn_dialogCreate_save').prop('disabled', true);
                 $('#btn_dialogCreate_save_progress').addClass('fa fa-spinner fa-pulse');
@@ -312,7 +359,8 @@
                     $('#btn_dialogCreate_save_progress').removeClass('fa fa-spinner fa-pulse');
                     if (status === 'success' && r && r.result === 'saved') {
                         $('#dialogCreate').modal('hide');
-                        showResult("{{ lang._('Create tunnel') }}", r, status, r.uuid);
+                        /* applyName is the submitted name, never the dialog title (review finding 4) */
+                        showResult("{{ lang._('Create tunnel') }}", r, status, r.uuid, c.name);
                         return;
                     }
                     handleFormValidation('frm_dialogCreate', (status === 'success' && r && r.validations) || {});
@@ -324,7 +372,6 @@
                     }
                 });
             };
-            var c = data.create;
             var missing = [];
             if (c.template === '' && c.nat4 === '') {
                 missing.push('IPv4');
@@ -354,14 +401,21 @@
                 fillSelect('#rebind\\.stale', [{value: '', label: "{{ lang._('(keep every route)') }}"}].concat(options.stale_routes), ['']);
                 $('#wgct-rebind-errors').empty();
                 $('#btn_dialogRebind_save').off('click').on('click', function () {
+                    $('#btn_dialogRebind_save').prop('disabled', true);
+                    $('#btn_dialogRebind_save_progress').addClass('fa fa-spinner fa-pulse');
                     ajaxCall('/api/wgipv6gateway/tunnels/rebind/' + t.uuid, getFormData('frm_dialogRebind'), function (r, status) {
-                        if (errorList(r, status).length) {
-                            var box = $('#wgct-rebind-errors').empty();
-                            $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
+                        $('#btn_dialogRebind_save').prop('disabled', false);
+                        $('#btn_dialogRebind_save_progress').removeClass('fa fa-spinner fa-pulse');
+                        /* saved === true even with an apply error still means the route write happened:
+                         * close and show it (changes plus the apply error), never leave it stuck behind the
+                         * form (review finding 3) */
+                        if (status === 'success' && r && r.saved === true) {
+                            $('#dialogRebind').modal('hide');
+                            showResult(titleText("{{ lang._('Rebind') }} " + plain(t.name)), r, status);
                             return;
                         }
-                        $('#dialogRebind').modal('hide');
-                        showResult("{{ lang._('Rebind') }} " + t.name, r, status);
+                        var box = $('#wgct-rebind-errors').empty();
+                        $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
                     });
                 });
                 $('#dialogRebind').modal('show');
@@ -389,7 +443,7 @@
                 .attr('title', "{{ lang._('Remove') }}")
                 .append($('<i class="fa fa-trash fa-fw"/>'))
                 .on('click', function () {
-                    confirmAction("{{ lang._('Remove') }} " + (t.name || t.uuid), '/api/wgipv6gateway/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
+                    confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name || t.uuid)), '/api/wgipv6gateway/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
                 }));
             return cell;
         }
@@ -399,10 +453,10 @@
             var tbody = $('<tbody/>');
             var ubody = $('<tbody/>');
             if (!data || data.status !== 'ok') {
-                banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? data.errorMessage : failedText));
+                banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? plain(data.errorMessage) : failedText));
             } else {
                 $.each(data.global, function (i, f) {
-                    banners.push($('<div class="alert alert-warning"/>').text(f.code + ': ' + f.detail + ' — ' + f.fix));
+                    banners.push($('<div class="alert alert-warning"/>').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
                 });
                 if (!data.tunnels.length) {
                     tbody.append($('<tr/>').append($('<td colspan="10"/>').text("{{ lang._('No managed tunnels.') }}")));
@@ -449,7 +503,7 @@
                 $.each(data.unmanaged, function (i, u) {
                     ubody.append($('<tr/>').append(
                         $('<td/>').append(link(u.name, links.instance)),
-                        $('<td/>').text(u.device),
+                        $('<td/>').text(plain(u.device)),
                         $('<td/>').append(u.endpoint ? link(u.endpoint, links.peers) : $('<span/>').text('—')),
                         $('<td/>').append(u.enabled
                             ? $('<span/>').text("{{ lang._('yes') }}")
@@ -457,7 +511,7 @@
                         $('<td/>').append($('<button type="button" class="btn btn-default btn-xs"/>')
                             .append($('<i class="fa fa-plus fa-fw"/>'), ' ', $('<span/>').text("{{ lang._('Adopt') }}"))
                             .on('click', function () {
-                                confirmAction("{{ lang._('Adopt') }} " + u.name, '/api/wgipv6gateway/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
+                                confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgipv6gateway/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
                             }))
                     ));
                 });
@@ -487,6 +541,11 @@
         });
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
+        /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
+         * autofill, ever sees it (review finding 6) */
+        $('#create\\.config').attr({
+            spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'
+        });
         $('#create\\.mtu').after($('#wgct-measure-wrap').detach().show());
         $('#create\\.config').after($('#wgct-file-wrap').detach().show());
         $('#wgct-measure').on('click', measure);
