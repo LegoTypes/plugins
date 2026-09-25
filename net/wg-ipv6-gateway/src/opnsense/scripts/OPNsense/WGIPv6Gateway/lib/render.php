@@ -351,9 +351,10 @@ function wgipv6_write_freshness_state(?array $s): bool {
 }
 
 /**
- * Serialize freshness.php runs: take an exclusive flock on $path, polling
- * LOCK_EX|LOCK_NB every $pollMs for up to $timeoutMs rather than blocking
- * without bound (freshness can run inside configd's config_changed action).
+ * Poll for an exclusive flock on $path: retry LOCK_EX|LOCK_NB every $pollMs
+ * for up to $timeoutMs rather than blocking without bound. Shared by
+ * freshness.php (which can run inside configd's config_changed action) and
+ * the gateway lock in lib/apply.php (which waits at most 120 s, ruling 22).
  * The lock is held for as long as the returned object is referenced; the
  * process exiting releases it.
  *
@@ -361,13 +362,14 @@ function wgipv6_write_freshness_state(?array $s): bool {
  * @param int    $timeoutMs
  * @param int    $pollMs
  * @return \SplFileObject|null the open, locked file, or null when another
- *                             run still held the lock at the timeout
+ *                             holder still held the lock at the timeout
  * @throws \RuntimeException when the lock file cannot be opened
  */
-function wgipv6_freshness_lock(string $path, int $timeoutMs, int $pollMs): ?\SplFileObject {
+function wgipv6_poll_lock(string $path, int $timeoutMs, int $pollMs): ?\SplFileObject {
     @mkdir(dirname($path), 0755, true);
-    /* 'e' = close-on-exec: freshness exec()s the detached filter reload, and
-     * an inherited descriptor would keep this lock held for the whole reload */
+    /* 'e' = close-on-exec: a caller that exec()s or leaves a detached child
+     * running (freshness's filter reload; anything the gateway-locked apply
+     * starts) must not have that child inherit the lock */
     $file = new \SplFileObject($path, 'ce');
     $waited = 0;
     while (!$file->flock(LOCK_EX | LOCK_NB)) {
