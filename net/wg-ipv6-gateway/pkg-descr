@@ -24,10 +24,26 @@ Features:
   tunnel or other non-default gateway, for IPv4 and IPv6, working
   together with address-less sentinel gateways that keep tunnels out of
   the default-gateway election
+- Firewall enforcement rendered from each tunnel's core configuration:
+  - pins each tunnel's endpoint to the WAN it is bound to, and blocks
+    it everywhere when that WAN is unusable
+  - blocks traffic leaving a tunnel from any source but the firewall
+    itself, so only NAT-ed traffic enters it
+  - clamps TCP MSS in both directions from each tunnel's MTU, so an
+    MTU change on the WireGuard page takes effect without other edits
 - Leaves disabled gateways and an operator's manual force-down alone
 
 Plugin Changelog
 ================
+
+2.1
+
+* Rendered WAN pins, inner-source blocks and a TCP MSS clamp (both
+  directions) derived from core, each with its own switch
+* The configuration reconcile requests a filter reload when the
+  rendered rules or the MSS anchor fall out of date, with back-off
+* A render-failed finding; the Tunnels tab also shows each tunnel's
+  clamp
 
 2.0
 
