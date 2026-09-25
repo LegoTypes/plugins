@@ -58,21 +58,21 @@
                 return dash()[0];
             }
             var cell = $('<div/>').append(link(name, links.gateways));
-            if (statusText) {
-                var cls;
-                if (status === 'none') {
-                    cls = 'label-success';
-                } else if (status === 'loss' || status === 'delay' || status === 'delay+loss' || status === 'force_down') {
-                    cls = 'label-warning';
-                } else {
-                    cls = 'label-danger';
-                }
-                cell.append(' ', $('<span class="label"/>').addClass(cls).text(plain(statusText)));
-            }
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
             }
             return cell[0];
+        }
+
+        /* a gateway's status as core's gateway page shows it: a coloured plug with the status as its tooltip.
+         * labelClass comes from wgct_gateway_label_class() (a fixed set of classes); anything else is ignored */
+        function statusNode(labelClass, statusText) {
+            if (!/^fa fa-plug text-(success|warning|danger|default)$/.test(labelClass || '')) {
+                return dash()[0];
+            }
+            return $('<i class="bootgrid-tooltip" data-toggle="tooltip"/>')
+                .addClass(labelClass)
+                .attr('title', plain(statusText || "{{ lang._('Pending') }}"))[0];
         }
 
         function linkOrDash(text, href) {
@@ -104,6 +104,8 @@
             },
             gw4: function (column, t) { return gwNode(t.gw4, t.gw4_status, t.gw4_status_text, t.held); },
             gw6: function (column, t) { return gwNode(t.gw6, t.gw6_status, t.gw6_status_text, false); },
+            status4: function (column, t) { return statusNode(t.gw4_label_class, t.gw4_status_text); },
+            status6: function (column, t) { return statusNode(t.gw6_label_class, t.gw6_status_text); },
             nat: function (column, t) { return linkOrDash(t.nat_text, links.nat); },
             groups: function (column, t) { return linkOrDash(t.groups_text, links.groups); },
             /* bootgrid-tooltip: the grid gives each badge core's tooltip, which shows the title as text */
