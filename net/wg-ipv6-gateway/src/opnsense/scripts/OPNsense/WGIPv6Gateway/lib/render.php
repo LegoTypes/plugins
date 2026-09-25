@@ -29,6 +29,12 @@ require_once __DIR__ . '/tunnels.php';
 
 const WGIPV6_RENDERED_FILE = '/var/run/wgipv6gateway/rendered.json';
 
+/* freshness.php's own small state: the last filter-reload request it made,
+ * so repeated staleness (e.g. a render that keeps failing) does not flood
+ * configd with reload requests every reconcile tick. */
+const WGIPV6_FRESHNESS_STATE_FILE = '/var/run/wgipv6gateway/freshness.json';
+const WGIPV6_RELOAD_SUPPRESS_SECONDS = 300;
+
 function wgipv6_wanted_render() {
     $mdl = new \OPNsense\WGIPv6Gateway\WGIPv6Gateway();
     $enabled = (string)$mdl->enabled === '1';
@@ -101,6 +107,162 @@ function wgipv6_write_rendered(array $r) {
         return false;
     }
     return true;
+}
+
+/**
+ * Deterministic fingerprint of a wanted pin set, so freshness.php can tell
+ * "still waiting on the reload I already asked for" apart from "the wanted
+ * pins moved again while I was waiting".
+ *
+ * @param array $pins wgipv6_wanted_render()['pins']
+ * @return string
+ */
+function wgipv6_pins_hash(array $pins) {
+    return md5(json_encode($pins));
+}
+
+function wgipv6_read_freshness_state() {
+    $raw = @file_get_contents(WGIPV6_FRESHNESS_STATE_FILE);
+    $data = $raw !== false ? json_decode($raw, true) : null;
+    return is_array($data) ? $data : null;
+}
+
+/**
+ * Atomic write via a same-directory temp file, like wgipv6_write_rendered().
+ * $s === null means there is nothing left worth remembering (current, or an
+ * anchor-only retry that never touched the rate limit) -- the state file is
+ * removed instead of written.
+ *
+ * @param array|null $s
+ * @return bool
+ */
+function wgipv6_write_freshness_state($s) {
+    if ($s === null) {
+        @unlink(WGIPV6_FRESHNESS_STATE_FILE);
+        return true;
+    }
+    $dir = dirname(WGIPV6_FRESHNESS_STATE_FILE);
+    @mkdir($dir, 0755, true);
+    $json = json_encode($s);
+    if ($json === false) {
+        syslog(LOG_ERR, '[wgipv6gw-render] could not encode the freshness state: ' . json_last_error_msg());
+        return false;
+    }
+    $tmp = tempnam($dir, 'freshness');
+    if ($tmp === false) {
+        syslog(LOG_ERR, '[wgipv6gw-render] could not create a temp file in ' . $dir);
+        return false;
+    }
+    if (file_put_contents($tmp, $json) === false) {
+        syslog(LOG_ERR, '[wgipv6gw-render] could not write ' . $tmp);
+        @unlink($tmp);
+        return false;
+    }
+    if (!rename($tmp, WGIPV6_FRESHNESS_STATE_FILE)) {
+        syslog(LOG_ERR, '[wgipv6gw-render] could not rename ' . $tmp . ' to ' . WGIPV6_FRESHNESS_STATE_FILE);
+        @unlink($tmp);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * The freshness decision (spec 4.4, 4.7; controller ruling 2026-09-24), pure
+ * over its inputs so it is directly testable -- freshness.php only does I/O
+ * around it: read rendered.json, stat /tmp/rules.debug.error, read
+ * freshness.json, call this, then act on the plan and persist $plan['state'].
+ *
+ * Priority, most urgent first:
+ *   1. no rendered record at all -> reload
+ *   2. rendered pins differ from wanted -> reload
+ *   3. /tmp/rules.debug.error is newer than the render (main ruleset load
+ *      failed and the old ruleset was restored; the rendered pins may never
+ *      have reached pf) -> reload
+ *   4. the render is marked failed for any other reason than the MSS anchor
+ *      load specifically -> reload; an anchor-only failure retries just the
+ *      anchor instead
+ *   5. otherwise, MSS lines differ -> reload the anchor directly
+ *   6. otherwise -> nothing to do
+ * A filter reload re-renders both the pins and the anchor, so cases 1-4 never
+ * also need a separate anchor step.
+ *
+ * Reload requests are rate-limited: repeating the same wanted pins within
+ * WGIPV6_RELOAD_SUPPRESS_SECONDS of the last request is suppressed rather
+ * than asking configd again; a change to the wanted pins, or the window
+ * elapsing, allows a fresh request. $plan['state'] is what freshness.php
+ * should now persist to WGIPV6_FRESHNESS_STATE_FILE (null deletes it); the
+ * caller can tell a first suppression from a repeat by comparing
+ * $state['notified'] (input) against $plan['state']['notified'] (output) --
+ * false-to-true is the moment to log.
+ *
+ * @param array      $wanted     wgipv6_wanted_render()'s ['enabled','pins','mss']
+ * @param array|null $rendered   wgipv6_read_rendered()'s record, or null
+ * @param int|null   $errorMtime mtime of /tmp/rules.debug.error, or null
+ *                                unless the caller has already established
+ *                                the file exists, is non-empty, and is newer
+ *                                than $rendered['at']
+ * @param array|null $state      the last freshness.json record, or null
+ * @param int        $now        current time
+ * @return array ['reload' => bool, 'anchor' => bool, 'reason' => string, 'state' => array|null]
+ */
+function wgipv6_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime, ?array $state, int $now) {
+    $anchorOnlyError = $rendered !== null && $rendered['failed']
+        && strpos((string)($rendered['error'] ?? ''), 'MSS anchor load failed') === 0;
+
+    if ($rendered === null) {
+        $needReload = true;
+        $reason = 'no rendered record';
+    } elseif ($rendered['pins'] !== $wanted['pins']) {
+        $needReload = true;
+        $reason = 'pins changed';
+    } elseif ($errorMtime !== null) {
+        $needReload = true;
+        $reason = 'main ruleset load failed since the last render';
+    } elseif ($rendered['failed'] && !$anchorOnlyError) {
+        $needReload = true;
+        $reason = 'previous render failed';
+    } else {
+        $needReload = false;
+        $reason = '';
+    }
+
+    if ($needReload) {
+        $hash = wgipv6_pins_hash($wanted['pins']);
+        $sameRequest = $state !== null && ($state['pins_hash'] ?? null) === $hash;
+        $withinWindow = $state !== null
+            && ($now - (int)($state['requested_at'] ?? 0)) < WGIPV6_RELOAD_SUPPRESS_SECONDS;
+        if ($sameRequest && $withinWindow) {
+            return [
+                'reload' => false,
+                'anchor' => false,
+                'reason' => $reason . '; filter reload suppressed (rate-limited)',
+                'state' => [
+                    'requested_at' => $state['requested_at'],
+                    'pins_hash' => $hash,
+                    'notified' => true,
+                ],
+            ];
+        }
+        return [
+            'reload' => true,
+            'anchor' => false,
+            'reason' => $reason,
+            'state' => ['requested_at' => $now, 'pins_hash' => $hash, 'notified' => false],
+        ];
+    }
+
+    if ($anchorOnlyError) {
+        return [
+            'reload' => false,
+            'anchor' => true,
+            'reason' => 'anchor-only failure; retrying the MSS anchor load',
+            'state' => null,
+        ];
+    }
+    if ($rendered['mss'] !== $wanted['mss']) {
+        return ['reload' => false, 'anchor' => true, 'reason' => 'MSS lines changed', 'state' => null];
+    }
+    return ['reload' => false, 'anchor' => false, 'reason' => 'current', 'state' => null];
 }
 
 /**
@@ -323,6 +485,100 @@ function wgipv6_render_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] in_filter_reload: no frames => false\n", $ok ? 'PASS' : 'FAIL');
+
+    /* wgipv6_freshness_plan: pure over its five arguments, no I/O */
+    $wanted = ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
+    $otherPins = ['wan' => [['wan_if' => 'opt2', 'family' => 'inet', 'endpoints' => ['198.51.100.20']]], 'inner' => []];
+    $thirdPins = ['wan' => [['wan_if' => 'opt3', 'family' => 'inet', 'endpoints' => ['198.51.100.30']]], 'inner' => []];
+    $otherMss = ['match on wg2 inet proto tcp all scrub (max-mss 1200)'];
+    $current = ['at' => 1000, 'failed' => false, 'error' => '', 'enabled' => true, 'pins' => $pins, 'mss' => $mss];
+
+    $p = wgipv6_freshness_plan($wanted, null, null, null, 1000);
+    $ok = $p['reload'] === true && $p['anchor'] === false && $p['state'] !== null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: no rendered record => reload\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = $current;
+    $r['pins'] = $otherPins;
+    $p = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
+    $ok = $p['reload'] === true && $p['anchor'] === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: pins differ => reload\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = $current;
+    $r['mss'] = $otherMss;
+    $p = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
+    $ok = $p['reload'] === false && $p['anchor'] === true && $p['state'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: mss only differs => anchor retry\n", $ok ? 'PASS' : 'FAIL');
+
+    $p = wgipv6_freshness_plan($wanted, $current, 1500, null, 1600);
+    $ok = $p['reload'] === true && $p['anchor'] === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: rules.debug.error newer than the render => reload\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = $current;
+    $r['failed'] = true;
+    $r['error'] = 'MSS anchor load failed (see syslog)';
+    $p = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
+    $ok = $p['reload'] === false && $p['anchor'] === true && $p['state'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: anchor-only failure (pins match) => anchor retry, no reload\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = $current;
+    $r['failed'] = true;
+    $r['error'] = 'boom, something else broke';
+    $p = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
+    $ok = $p['reload'] === true && $p['anchor'] === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: failed for a non-anchor reason => reload, not just the anchor\n", $ok ? 'PASS' : 'FAIL');
+
+    $r = $current;
+    $r['pins'] = $otherPins;
+    $p1 = wgipv6_freshness_plan($wanted, $r, null, null, 1000);
+    $ok = $p1['reload'] === true && $p1['state']['notified'] === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: first reload request => state recorded, not yet notified\n", $ok ? 'PASS' : 'FAIL');
+
+    $p2 = wgipv6_freshness_plan($wanted, $r, null, $p1['state'], 1010);
+    $ok = $p2['reload'] === false && $p2['anchor'] === false
+        && $p1['state']['notified'] === false && $p2['state']['notified'] === true
+        && $p2['state']['requested_at'] === $p1['state']['requested_at'];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: repeat within the window, same pins => suppressed, first-time notify\n", $ok ? 'PASS' : 'FAIL');
+
+    $p3 = wgipv6_freshness_plan($wanted, $r, null, $p2['state'], 1020);
+    $ok = $p3['reload'] === false && $p3['state']['notified'] === true;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: further repeat, already notified => suppressed quietly (no new notify transition)\n", $ok ? 'PASS' : 'FAIL');
+
+    $p4 = wgipv6_freshness_plan($wanted, $r, null, $p1['state'], 1000 + WGIPV6_RELOAD_SUPPRESS_SECONDS);
+    $ok = $p4['reload'] === true;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: repeat after the window elapses => reload allowed again\n", $ok ? 'PASS' : 'FAIL');
+
+    $wanted2 = ['enabled' => true, 'pins' => $thirdPins, 'mss' => $mss];
+    $p5 = wgipv6_freshness_plan($wanted2, $r, null, $p1['state'], 1010);
+    $ok = $p5['reload'] === true;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: repeat within the window but the wanted pins changed => reload allowed\n", $ok ? 'PASS' : 'FAIL');
+
+    $p = wgipv6_freshness_plan($wanted, $current, null, $p1['state'], 1010);
+    $ok = $p['reload'] === false && $p['anchor'] === false && $p['reason'] === 'current' && $p['state'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: pins and mss both current => nothing, stale state cleared\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
