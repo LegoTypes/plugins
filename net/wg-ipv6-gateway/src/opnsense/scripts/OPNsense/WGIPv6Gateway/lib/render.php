@@ -366,7 +366,9 @@ function wgipv6_write_freshness_state(?array $s): bool {
  */
 function wgipv6_freshness_lock(string $path, int $timeoutMs, int $pollMs): ?\SplFileObject {
     @mkdir(dirname($path), 0755, true);
-    $file = new \SplFileObject($path, 'c');
+    /* 'e' = close-on-exec: freshness exec()s the detached filter reload, and
+     * an inherited descriptor would keep this lock held for the whole reload */
+    $file = new \SplFileObject($path, 'ce');
     $waited = 0;
     while (!$file->flock(LOCK_EX | LOCK_NB)) {
         if ($waited >= $timeoutMs) {
