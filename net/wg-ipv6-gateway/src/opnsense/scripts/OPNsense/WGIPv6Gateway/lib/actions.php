@@ -80,18 +80,6 @@ function wgipv6_ip_in(string $ip, array $list): bool {
 }
 
 /**
- * @param array $core wgipv6_core_snapshot()
- * @return array<string, true> wgN device names of every WireGuard instance
- */
-function wgipv6_wg_devices(array $core): array {
-    $out = [];
-    foreach ($core['instances'] as $inst) {
-        $out['wg' . $inst['instance']] = true;
-    }
-    return $out;
-}
-
-/**
  * @param array  $core wgipv6_core_snapshot()
  * @param string $wan  a gateway name
  * @return string|null why it cannot carry a tunnel's endpoint route, or null
@@ -360,7 +348,8 @@ function wgipv6_plan_create(array $snap, array $req, array $conf): array {
     $unique = $ipv6 && ($req['unique'] ?? ($sharedBy !== null || $convention));
     $uniqueWhy = $req['unique'] !== null ? 'as requested'
         : ($sharedBy !== null ? "default: {$sharedBy[0]} is already on instance {$sharedBy[1]}"
-            : 'default: the managed tunnels use the fd00::N:1 convention');
+            : ($convention ? 'default: the managed tunnels use the fd00::N:1 convention'
+                : 'default: the config address is on no instance and the managed tunnels do not use fd00::N:1'));
     $v6addr = '';
     if ($ipv6 && !$unique && $v6conf !== []) {
         if (count($v6conf) !== 1) {
@@ -927,9 +916,10 @@ function wgipv6_actions_selftest(): int {
     $noConvention['core']['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32', '2001:db8:a::1/128'];
     $noConvention['core']['gateways']['tun_a-ipv6']['gateway'] = '2001:db8:a::2';
     $p = wgipv6_plan_create($noConvention, $req, $c);
-    wgipv6_check($t, 'create: no convention in use, config address on no instance => off, the config address is used, next hop still fd00::3:2',
+    wgipv6_check($t, 'create: no convention in use, config address on no instance => off, the config address is used, next hop still fd00::3:2, reason text says why',
         $p['errors'] === [] && $p['unique'] === false && $p['instance']['tunneladdress'] === '10.2.0.2/32,2001:db8::2:2/128'
-        && $p['gateways'][1]['fields']['gateway'] === 'fd00::3:2');
+        && $p['gateways'][1]['fields']['gateway'] === 'fd00::3:2'
+        && $has($p['changes'], 'the config address is on no instance and the managed tunnels do not use fd00::N:1'));
     $s = $noConvention;
     $s['core']['instances']['i-x']['tunneladdress'][] = '2001:DB8:0::2:2/128';
     $p = wgipv6_plan_create($s, $req, $c);
