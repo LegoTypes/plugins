@@ -36,6 +36,20 @@ Features:
 Plugin Changelog
 ================
 
+2.2
+
+* Create a tunnel from a pasted wg-quick config -- WireGuard instance and
+  peer, interface, IPv4 and IPv6 gateways, endpoint route and outbound NAT
+  -- with the MTU measured from the bound WAN
+* Remove, Rebind and Adopt from the Tunnels tab or tunnel.php, each with a
+  dry-run preview; Remove refuses while anything references the tunnel
+* Ensure sentinel builds the NO_DEFAULT4/NO_DEFAULT6 gateways
+* Every action saves once under the config lock, applies through configd
+  and replays gateway alarms dropped while it held the gateway lock
+* A Create whose apply did not complete shows the apply-pending finding
+  and an Apply button
+* tunnel.php command line; tunnels.php stays as its list alias
+
 2.1
 
 * Rendered WAN pins, inner-source blocks and a TCP MSS clamp (both
