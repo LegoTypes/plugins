@@ -499,47 +499,17 @@
         var editState = null;
         /* the last parsed IPv6 list of the replacement config (as lastV6 for Create) */
         var lastEditV6 = null;
-        /* wgct_is_nat_interface_key(): the NAT sources shown as checkboxes; everything else is a token */
-        var natInterfaceKey = /^(wan|lan|opt\d+)$/;
-
-        /* the interface NAT sources as checkboxes. A current source the choices lack (a disabled interface)
-         * is still shown, ticked, so an unchanged Save never deletes it (ruling 14). */
-        function natChecks(box, items, selected) {
-            var choices = [];
-            $.each(items, function (i, it) {
-                if (it.kind === 'interface') {
-                    choices.push(it);
-                }
-            });
+        /* a NAT source list as core's multi-select dropdown (as Create's): the interfaces and aliases on offer,
+         * plus any current source the choices lack (a disabled interface, an alias of another type), still
+         * selected, so an unchanged Save never deletes it (ruling 14) */
+        function natSelect(selector, items, selected) {
+            var choices = items.slice();
             $.each(selected, function (i, v) {
-                if (natInterfaceKey.test(v) && !choices.some(function (it) { return it.value === v; })) {
+                if (!choices.some(function (it) { return it.value === v; })) {
                     choices.push({value: v, label: v});
                 }
             });
-            box.empty();
-            $.each(choices, function (i, it) {
-                box.append($('<label style="display:block; font-weight:normal; margin:0;"/>').append(
-                    $('<input type="checkbox"/>').val(it.value).prop('checked', selected.indexOf(it.value) !== -1),
-                    ' ', $('<span/>').text(plain(it.label))));
-            });
-        }
-
-        /* the alias NAT sources as core's token list; a current alias the choices lack stays selected */
-        function natTokens(select, items, selected) {
-            select.empty();
-            var seen = [];
-            $.each(items, function (i, it) {
-                if (it.kind === 'alias') {
-                    seen.push(it.value);
-                    select.append($('<option/>').val(it.value).text(plain(it.label)).prop('selected', selected.indexOf(it.value) !== -1));
-                }
-            });
-            $.each(selected, function (i, v) {
-                if (!natInterfaceKey.test(v) && seen.indexOf(v) === -1) {
-                    select.append($('<option/>').val(v).text(plain(v)).prop('selected', true));
-                }
-            });
-            formatTokenizersUI();
+            fillSelect(selector, choices, selected);
         }
 
         function editRows() {
@@ -603,10 +573,8 @@
                 fillSelect('#edit\\.wan', wans, [f.wan]);
                 $('#edit\\.ipv6').prop('checked', f.ipv6 === true);
                 $('#edit\\.unique').prop('checked', f.unique === true);
-                natChecks($('#wgct-edit-nat4'), data.nat_sources, f.nat4);
-                natChecks($('#wgct-edit-nat6'), data.nat_sources, f.nat6);
-                natTokens($('#edit\\.nat4'), data.nat_sources, f.nat4);
-                natTokens($('#edit\\.nat6'), data.nat_sources, f.nat6);
+                natSelect('#edit\\.nat4', data.nat_sources, f.nat4);
+                natSelect('#edit\\.nat6', data.nat_sources, f.nat6);
                 var kept = $('#wgct-edit-kept').empty();
                 $.each(f.nat_kept, function (i, k) { kept.append($('<div/>').text(plain(k))); });
                 $('#wgct-edit-kept-wrap').toggle(f.nat_kept.length > 0);
@@ -619,24 +587,13 @@
             });
         }
 
-        /* the form, with each family's ticked interfaces and alias tokens as one comma list (edit.nat4/6) */
-        function editData() {
-            var data = getFormData('frm_dialogEdit');
-            $.each(['4', '6'], function (i, f) {
-                var list = $('#wgct-edit-nat' + f + ' input:checked').map(function () { return $(this).val(); }).get();
-                var tokens = data.edit['nat' + f];
-                list = list.concat(tokens ? String(tokens).split(',') : []);
-                data.edit['nat' + f] = $.grep(list, function (v) { return v !== ''; }).join(',');
-            });
-            return data;
-        }
-
         /* preview (dry=1) first: the confirmation lists exactly what changes and which apply runs */
         function submitEdit() {
             var st = editState;
             var url = '/api/wgclienttunnels/tunnels/edit/' + st.uuid;
             var title = titleText("{{ lang._('Edit') }} " + st.name);
-            var data = editData();
+            /* edit.nat4/6 arrive as core's comma lists of the selected sources */
+            var data = getFormData('frm_dialogEdit');
             var busy = function (on) {
                 $('#btn_dialogEdit_save').prop('disabled', on);
                 $('#btn_dialogEdit_save_progress').toggleClass('fa fa-spinner fa-pulse', on);
@@ -831,8 +788,6 @@
         $('#edit\\.name').prop('readonly', true);
         $('#edit\\.mtu').after($('#wgct-edit-measure-wrap').detach().show());
         $('#edit\\.config').after($('#wgct-edit-file-wrap').detach().show());
-        $('#edit\\.nat4').closest('td').prepend($('<div id="wgct-edit-nat4"/>'));
-        $('#edit\\.nat6').closest('td').prepend($('<div id="wgct-edit-nat6"/>'));
         $('#edit\\.nat4').closest('td').append($('#wgct-edit-kept-wrap').detach());
         fileLoader($('#wgct-edit-file-btn'), $('#wgct-edit-file'), $('#edit\\.config'));
         $('#wgct-edit-measure').on('click', editMeasure);
