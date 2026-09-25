@@ -4,43 +4,43 @@
         <label>General</label>
     </field>
     <field>
-        <id>wgipv6gateway.enabled</id>
+        <id>wgclienttunnels.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
         <help>Manage the WireGuard tunnels listed on the Tunnels tab. Turning this off stops every behaviour below. Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
-        <id>wgipv6gateway.health_mirror</id>
+        <id>wgclienttunnels.health_mirror</id>
         <label>Health mirror</label>
         <type>checkbox</type>
         <help>Hold each tunnel down while the WAN it is bound to is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy.</help>
     </field>
     <field>
-        <id>wgipv6gateway.ipv6_routes</id>
+        <id>wgclienttunnels.ipv6_routes</id>
         <label>IPv6 addresses and routes</label>
         <type>checkbox</type>
         <help>Keep each tunnel's IPv6 address and the host route to its IPv6 next hop in place (core does not add IPv6 far-gateway routes).</help>
     </field>
     <field>
-        <id>wgipv6gateway.default_guard</id>
+        <id>wgclienttunnels.default_guard</id>
         <label>Default-route guard</label>
         <type>checkbox</type>
         <help>Remove a default route through a tunnel or any other non-default gateway, for both address families.</help>
     </field>
     <field>
-        <id>wgipv6gateway.wan_pins</id>
+        <id>wgclienttunnels.wan_pins</id>
         <label>WAN pins</label>
         <type>checkbox</type>
         <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
-        <id>wgipv6gateway.inner_source</id>
+        <id>wgclienttunnels.inner_source</id>
         <label>Only NATed traffic into tunnels</label>
         <type>checkbox</type>
         <help>Block any packet that would enter a tunnel from an address that is not one of the firewall's own (i.e. traffic that was not translated by outbound NAT). Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
-        <id>wgipv6gateway.mss_clamp</id>
+        <id>wgclienttunnels.mss_clamp</id>
         <label>MSS clamp</label>
         <type>checkbox</type>
         <help>Clamp TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), both directions.</help>

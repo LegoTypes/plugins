@@ -198,7 +198,7 @@ function wgct_replay_alarm(array $expected, $logTag) {
      * the action from its own process, which holds neither.
      */
     $result = trim((new OPNsense\Core\Backend())->configdpRun(
-        'wgipv6gateway replay_alarm',
+        'wgclienttunnels replay_alarm',
         [implode(',', array_keys($expected))]
     ));
     if ($result !== 'OK') {
