@@ -576,7 +576,8 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     /* the endpoint route: a WAN move, or a swap to a new endpoint (rulings 12, 13) */
     $wanNow = $t['bound_wan'];
     $wanAfter = $req['wan'] ?? $wanNow;
-    if ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) {
+    /* a refused new endpoint plans no route work, and its refusal is the one reported on config */
+    if (($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) && !($endpointAfter !== $endpointNow && isset($e['config']))) {
         $wanError = $wanAfter === null ? "{$label} is unbound: choose the WAN the new endpoint is routed to" : wgct_wan_error($core, $wanAfter);
         if ($wanError !== null) {
             $e['wan'] = $wanError;
@@ -908,8 +909,10 @@ function wgct_edit_selftest(): int {
     $p = $plan(['uuid' => 'i-b'] + $none, $swapB(['endpoint_ip' => '198.51.100.40']), $s);
     wgct_check($t, 'edit: another instance\'s peer still uses the old endpoint => its route is kept',
         $p['errors'] === [] && $p['routes']['delete'] === [] && $has($p['changes'], 'KEEP static route 198.51.100.11/32'));
-    wgct_check($t, 'edit: a new endpoint another managed tunnel uses => refused on config',
-        isset($plan(['uuid' => 'i-b'] + $none, $swapB(['endpoint_ip' => '198.51.100.10']))['errors']['config']));
+    $p = $plan(['uuid' => 'i-b', 'wan' => 'WAN_B'] + $none, $swapB(['endpoint_ip' => '198.51.100.10']));
+    wgct_check($t, 'edit: a new endpoint another managed tunnel uses (routed via another WAN) => refused on config, naming that tunnel; no route planned',
+        str_contains($p['errors']['config'] ?? '', 'already the endpoint of tun_a')
+        && $p['routes'] === ['add' => [], 'update' => [], 'delete' => []]);
     $s = $snap;
     $s['core']['peers']['p-x']['serveraddress'] = '198.51.100.50';
     $p = $plan(['uuid' => 'i-b', 'wan' => 'WAN_A'] + $none, $swapB(['endpoint_ip' => '198.51.100.50']), $s);
