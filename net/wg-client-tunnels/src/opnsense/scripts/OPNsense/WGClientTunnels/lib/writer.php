@@ -13,7 +13,8 @@
  * write, and the CLI to the reconcile). The
  * apply is not done here: each result names its configd steps for
  * wgct_routing_action() (apply.php) or, for the API's Create, for the
- * keyless configd action `wgclienttunnels apply`.
+ * keyless configd action `wgclienttunnels apply`. Edit (wgct_edit_commit())
+ * re-plans under the lock and writes only the differences.
  */
 
 use OPNsense\Core\Config;
@@ -22,6 +23,7 @@ require_once __DIR__ . '/tunnels.php';
 require_once __DIR__ . '/wgconf.php';
 require_once __DIR__ . '/refs.php';
 require_once __DIR__ . '/actions.php';
+require_once __DIR__ . '/edit.php';
 require_once __DIR__ . '/mtu.php';
 require_once __DIR__ . '/apply.php';
 require_once __DIR__ . '/mirror.php';
@@ -67,8 +69,14 @@ function wgct_action_snapshot(): array {
     $root = Config::getInstance()->object();
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
     $ports = [];
+    $instancePubkeys = [];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $server) {
         $ports[(string)$uuid] = (string)$server->port;
+        $instancePubkeys[(string)$uuid] = (string)$server->pubkey;
+    }
+    $peerFields = [];
+    foreach ((new \OPNsense\Wireguard\Client())->clients->client->iterateItems() as $uuid => $client) {
+        $peerFields[(string)$uuid] = ['tunneladdress' => (string)$client->tunneladdress, 'pubkey' => (string)$client->pubkey];
     }
     $gatewayFields = [];
     foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $gw) {
@@ -109,6 +117,8 @@ function wgct_action_snapshot(): array {
         'aliases' => $aliases,
         'ifgroup_names' => $groups,
         'wireguard_enabled' => (string)$root->OPNsense->wireguard->general->enabled === '1',
+        'peer_fields' => $peerFields,
+        'instance_pubkeys' => $instancePubkeys,
     ];
 }
 
@@ -293,7 +303,7 @@ function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): arra
         ])];
     }, 'create ' . $prep['req']['name']);
     if ($result['saved']) {
-        wgct_set_apply_pending($result['uuid'], true);
+        wgct_mark_apply_pending($result['uuid'], 'first');
     }
     return $result;
 }
@@ -521,4 +531,245 @@ function wgct_sentinel_commit(bool $dry): array {
             'gateways' => $routing ? array_values(WGCT_SENTINELS) : [], 'steps' => $plan['steps'],
         ])];
     }, 'ensure sentinel');
+}
+
+/**
+ * Everything Edit does before it touches config: check the request, parse a
+ * replacement config and derive our public key. Holds no lock.
+ *
+ * @param array  $raw  the API form's edit.* or the CLI's JSON
+ * @param string $uuid the managed instance
+ * @return array{errors: array<string, string>, req: array, swap: ?array{public: array, own_pubkey: string}, secret: array{privkey: string, psk: string}, notes: list<string>}
+ */
+function wgct_edit_prepare(#[\SensitiveParameter] array $raw, string $uuid): array {
+    $in = wgct_edit_request($raw, $uuid);
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => []];
+    if (trim($in['text']) === '') {
+        return $prep;
+    }
+    $conf = wgct_parse_wgquick($in['text']);
+    if ($conf['errors'] !== []) {
+        $prep['errors']['config'] = implode('; ', $conf['errors']);
+    }
+    $prep['secret'] = $conf['secret'];
+    if ($prep['errors'] !== []) {
+        return $prep;
+    }
+    $pubkey = wgct_derive_pubkey($prep['secret']['privkey']);
+    if ($pubkey === null) {
+        $prep['errors']['config'] = 'wg pubkey rejected the private key';
+        return $prep;
+    }
+    $prep['swap'] = ['public' => $conf['public'], 'own_pubkey' => $pubkey];
+    return $prep;
+}
+
+/**
+ * The planner's view of a swap (ruling 11): the public parts, our public key,
+ * and whether the config's preshared key equals the stored one -- compared
+ * here, in-process, so the planner never holds a key.
+ *
+ * @param array $snap the action snapshot
+ * @param array $prep wgct_edit_prepare() without errors
+ * @return array|null null without a replacement config
+ */
+function wgct_edit_swap_state(array $snap, #[\SensitiveParameter] array $prep): ?array {
+    if ($prep['swap'] === null) {
+        return null;
+    }
+    $peers = $snap['core']['instances'][$prep['req']['uuid']]['peers'] ?? [];
+    $same = false;
+    if (count($peers) === 1) {
+        $node = (new \OPNsense\Wireguard\Client())->getNodeByReference('clients.client.' . $peers[0]);
+        $same = $node !== null && hash_equals((string)$node->psk, $prep['secret']['psk']);
+    }
+    return ['public' => $prep['swap']['public'], 'own_pubkey' => $prep['swap']['own_pubkey'], 'psk_same' => $same];
+}
+
+/**
+ * Write an Edit plan into the models. Call only inside Config::lock(). Core's
+ * order, as Create writes: peer, instance, gateways, routes, outbound NAT;
+ * each model validated and serialized, the relation caches reset after it.
+ * Only models the plan changes are built.
+ *
+ * @param array $plan   wgct_plan_edit() without errors, mode not none
+ * @param array $secret ['privkey', 'psk'], written only when the plan swaps keys
+ * @return list<string> validation errors; [] when everything is written
+ */
+function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): array {
+    if ($plan['peer'] !== [] || $plan['swap_keys']) {
+        $client = new \OPNsense\Wireguard\Client();
+        $node = $client->getNodeByReference('clients.client.' . $plan['peer_uuid']);
+        if ($node === null) {
+            return ["wireguard peer {$plan['peer_uuid']} vanished"];
+        }
+        $node->setNodes($plan['swap_keys'] ? $plan['peer'] + ['psk' => $secret['psk']] : $plan['peer']);
+        $errors = wgct_model_errors($client, 'wireguard peer');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $client->serializeToConfig();
+        wgct_reset_field_caches();
+    }
+    if ($plan['instance'] !== [] || $plan['swap_keys']) {
+        $server = new \OPNsense\Wireguard\Server();
+        $node = $server->getNodeByReference('servers.server.' . $plan['uuid']);
+        if ($node === null) {
+            return ["wireguard instance {$plan['uuid']} vanished"];
+        }
+        $node->setNodes($plan['swap_keys'] ? $plan['instance'] + ['privkey' => $secret['privkey']] : $plan['instance']);
+        $errors = wgct_model_errors($server, 'wireguard instance');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $server->serializeToConfig();
+        wgct_reset_field_caches();
+    }
+    $g = $plan['gateways'];
+    if ($g['update'] !== [] || $g['add'] !== [] || $g['delete'] !== []) {
+        $gateways = new \OPNsense\Routing\Gateways();
+        $updated = [];
+        foreach ($gateways->gateway_item->iterateItems() as $node) {
+            $name = (string)$node->name;
+            if (isset($g['update'][$name])) {
+                $node->setNodes($g['update'][$name]);
+                $updated[] = $name;
+            }
+        }
+        $missing = array_diff(array_map('strval', array_keys($g['update'])), $updated);
+        if ($missing !== []) {
+            return ['gateways: ' . implode(', ', $missing) . ' vanished'];
+        }
+        foreach ($g['add'] as $fields) {
+            $gateways->gateway_item->Add()->setNodes($fields);
+        }
+        foreach ($g['delete'] as $gwUuid) {
+            $gateways->gateway_item->del($gwUuid);
+        }
+        $errors = wgct_model_errors($gateways, 'gateways');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $gateways->serializeToConfig();
+        wgct_reset_field_caches();
+    }
+    $r = $plan['routes'];
+    if ($r['add'] !== [] || $r['update'] !== [] || $r['delete'] !== []) {
+        $routes = new \OPNsense\Routes\Route();
+        foreach ($r['update'] as $routeUuid => $fields) {
+            $node = $routes->getNodeByReference('route.' . $routeUuid);
+            if ($node === null) {
+                return ["static routes: route {$routeUuid} vanished"];
+            }
+            $node->setNodes($fields);
+        }
+        foreach ($r['add'] as $fields) {
+            $routes->route->Add()->setNodes($fields);
+        }
+        foreach (array_keys($r['delete']) as $routeUuid) {
+            $routes->route->del((string)$routeUuid);
+        }
+        $errors = wgct_model_errors($routes, 'static routes');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $routes->serializeToConfig();
+    }
+    if ($plan['nat']['add'] !== [] || $plan['nat']['delete'] !== []) {
+        $filter = new \OPNsense\Firewall\Filter();
+        foreach ($plan['nat']['add'] as $fields) {
+            $filter->snatrules->rule->Add()->setNodes(array_merge($fields, ['interface' => $plan['opt']]));
+        }
+        foreach ($plan['nat']['delete'] as $ruleUuid) {
+            $filter->snatrules->rule->del($ruleUuid);
+        }
+        $errors = wgct_model_errors($filter, 'outbound NAT');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $filter->serializeToConfig();
+        wgct_reset_field_caches();
+    }
+    return [];
+}
+
+/**
+ * Edit's config write (spec 6.5, 4.6 steps 2-5): re-plan on a snapshot taken
+ * under Config::lock(), write only the differences, save once. A plan that
+ * needs a routing apply is refused, nothing written, when the caller does not
+ * hold the gateway lock (it classified the edit before the lock and config
+ * changed meanwhile). Every saved Edit is marked apply-pending with its mode
+ * until an apply of at least that mode completes (S5 review I2).
+ *
+ * @param array $prep        wgct_edit_prepare() without errors
+ * @param bool  $dry         validate and preview only
+ * @param bool  $gatewayHeld whether the caller holds the gateway lock
+ * @return array wgct_result(): steps and apply_mode from the plan's mode; route_todos its deleted
+ *               routes and the old monitor's host route (S5 review I3)
+ */
+function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $gatewayHeld): array {
+    $uuid = $prep['req']['uuid'];
+    $result = wgct_action_commit(function () use ($prep, $dry, $gatewayHeld, $uuid): array {
+        $snap = wgct_action_snapshot();
+        $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
+        $fail = fn (array $errors): array => ['save' => false, 'result' => wgct_result([
+            'errors' => $errors, 'changes' => $plan['changes'], 'dry' => $dry, 'uuid' => $uuid,
+        ])];
+        if ($plan['errors'] !== []) {
+            return $fail($plan['errors']);
+        }
+        if ($plan['mode'] === 'none') {
+            return ['save' => false, 'result' => wgct_result(['ok' => true, 'dry' => $dry, 'uuid' => $uuid])];
+        }
+        if (!$dry && !$gatewayHeld && wgct_apply_mode_locks($plan['mode'])) {
+            return $fail(['general' => 'the configuration changed while the edit was prepared, and it now needs a routing apply; nothing was written, try again']);
+        }
+        $errors = wgct_write_edit($plan, $prep['secret']);
+        if ($errors !== []) {
+            return $fail(['general' => implode('; ', $errors)]);
+        }
+        return ['save' => !$dry, 'result' => wgct_result([
+            'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $plan['changes'], 'uuid' => $uuid,
+            'gateways' => $plan['replay'], 'steps' => wgct_apply_mode_steps($plan['mode'], $uuid),
+            'route_todos' => $plan['routes']['delete'] + $plan['kernel_routes'], 'apply_mode' => $plan['mode'],
+        ])];
+    }, 'edit ' . $uuid);
+    if ($result['saved']) {
+        wgct_mark_apply_pending($uuid, $result['apply_mode']);
+    }
+    return $result;
+}
+
+/**
+ * The edit's apply mode on the current config, read without any lock, to
+ * decide whether to take the gateway lock before wgct_edit_commit() (spec 4.6
+ * lock order). A refused plan reads as none; the locked re-plan then refuses
+ * it again, or refuses a routing change it does not hold the lock for.
+ *
+ * @param array $prep wgct_edit_prepare() without errors
+ * @return string none, filter, routes or tunnel
+ */
+function wgct_edit_mode_unlocked(#[\SensitiveParameter] array $prep): string {
+    $snap = wgct_action_snapshot();
+    $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
+    return $plan['errors'] === [] ? $plan['mode'] : 'none';
+}
+
+/**
+ * Edit from the command line: preview, or the whole pipeline with the lock
+ * its apply needs -- routes/tunnel through wgct_routing_action() (gateway
+ * lock, route todos, apply, replay, reconcile), filter/none through
+ * wgct_filter_action() (config lock only).
+ *
+ * @param array $prep wgct_edit_prepare() without errors
+ * @return array wgct_result()
+ */
+function wgct_edit_action(#[\SensitiveParameter] array $prep, bool $dry): array {
+    if ($dry) {
+        return wgct_edit_commit($prep, true, false);
+    }
+    if (wgct_apply_mode_locks(wgct_edit_mode_unlocked($prep))) {
+        return wgct_routing_action(fn (): array => wgct_edit_commit($prep, false, true), false);
+    }
+    return wgct_filter_action(fn (): array => wgct_edit_commit($prep, false, false));
 }

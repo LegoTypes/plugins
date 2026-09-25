@@ -38,7 +38,7 @@ const WGCT_FINDINGS = [
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
     'sentinel-missing' => [false, 'Settings > Ensure sentinel (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways'],
     'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
-    'apply-pending' => [false, 'Apply on the Tunnels tab (tunnel.php apply UUID) runs the tunnel apply again: Create saved this tunnel but its apply did not complete'],
+    'apply-pending' => [false, 'Apply on the Tunnels tab (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
 ];
 
 /* the priority reserved for the WAN pin and inner-source block rules */

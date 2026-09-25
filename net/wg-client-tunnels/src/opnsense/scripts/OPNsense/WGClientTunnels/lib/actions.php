@@ -41,17 +41,19 @@ const WGCT_SENTINEL_GW_DESCR = 'Sentinel: blocks non-native gateways from the de
 
 /**
  * The one result shape every action returns (CLI JSON, configd output, API).
- * Create's errors are keyed by request field (WGCT_CREATE_FIELDS or
- * 'general'); the other actions' are a list. After a save, a failed apply
- * step adds the key 'apply'.
+ * Create's and Edit's errors are keyed by request field (WGCT_CREATE_FIELDS,
+ * WGCT_EDIT_FIELDS or 'general'); the other actions' are a list. After a
+ * save, a failed apply step adds the key 'apply'. apply_mode is the mode an
+ * Edit's or an apply's steps came from (wgct_apply_mode_steps()), '' otherwise.
  *
  * @param array $over keys to set
- * @return array{ok: bool, saved: bool, dry: bool, errors: array, changes: list<string>, uuid: string, gateways: list<string>, steps: list<array{0: string, 1: list<string>}>, route_todos: array<string, string>, reset_interface: ?string, apply: list<array{action: string, result: string}>, after: array}
+ * @return array{ok: bool, saved: bool, dry: bool, errors: array, changes: list<string>, uuid: string, gateways: list<string>, steps: list<array{0: string, 1: list<string>}>, route_todos: array<string, string>, reset_interface: ?string, apply: list<array{action: string, result: string}>, after: array, apply_mode: string}
  */
 function wgct_result(array $over = []): array {
     return $over + [
         'ok' => false, 'saved' => false, 'dry' => false, 'errors' => [], 'changes' => [], 'uuid' => '',
         'gateways' => [], 'steps' => [], 'route_todos' => [], 'reset_interface' => null, 'apply' => [], 'after' => [],
+        'apply_mode' => '',
     ];
 }
 
