@@ -22,7 +22,7 @@ log_msg() {
 }
 
 # Parse gateway entries from the MVC model helper.
-# Output: enabled|wg_device|ipv6_address|ipv6_gw_addr|ipv4_gw_name|description
+# Output: enabled|wg_device|ipv6_address|ipv6_gw_addr|ipv4_gw_name|ipv6_gw_name
 parse_config() {
     /usr/local/bin/php "${CONFIG_HELPER}"
 }

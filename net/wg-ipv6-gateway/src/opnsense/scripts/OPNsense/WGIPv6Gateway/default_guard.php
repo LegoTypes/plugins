@@ -28,6 +28,13 @@
  * routing reconfigure), the once-a-minute cron, and the config-save syshook
  * (rc.syshook.d/config/50-wgipv6gateway).
  *
+ * The plugin/enable and default_guard switches gate only the route delete:
+ * both families are classified either way, so wg_ipv6_default_check.sh (which
+ * greps FORBIDDEN out of `--dry`) keeps alarming on a forbidden default even
+ * while the guard is switched off. With the guard off, --dry says so up
+ * front, and a forbidden default that would otherwise be removed is instead
+ * left in place and logged.
+ *
  * Usage: default_guard.php [--dry] [--selftest]
  */
 
@@ -117,11 +124,16 @@ if (in_array('--selftest', $argv ?? [], true)) {
 
 $dry = in_array('--dry', $argv ?? [], true);
 $mdl = new OPNsense\WGIPv6Gateway\WGIPv6Gateway();
-if ((string)$mdl->enabled !== '1' || (string)$mdl->default_guard !== '1') {
-    if ($dry) {
-        echo "default-route guard is off in the plugin settings\n";
-    }
-    exit(0);
+$guardOn = (string)$mdl->enabled === '1' && (string)$mdl->default_guard === '1';
+
+/*
+ * The switch never skips classification: it only decides whether a forbidden
+ * default gets removed. That way --dry (and the Monit check that greps
+ * FORBIDDEN out of it) keeps reporting the truth even while the guard itself
+ * is off.
+ */
+if ($dry && !$guardOn) {
+    echo "default-route guard is off in the plugin settings: forbidden defaults are reported, not removed\n";
 }
 
 $gateways = array_values((new OPNsense\Routing\Gateways())->getGateways());
@@ -145,15 +157,27 @@ foreach (['inet', 'inet6'] as $family) {
         );
         continue;
     }
-    if ($name !== null) {
-        exec(sprintf('/sbin/route -q -n delete -%s default', $family === 'inet6' ? 'inet6' : 'inet'));
+    if ($name === null) {
+        continue;
+    }
+    if (!$guardOn) {
         syslog(LOG_WARNING, sprintf(
-            '[%s] removed %s default route via %s on %s: %s is not a default gateway',
+            '[%s] %s default route via %s on %s: %s is not a default gateway, left in place because the guard is off',
             GUARD_TAG,
             $family,
             $route['gateway'],
             $route['interface'],
             $name
         ));
+        continue;
     }
+    exec(sprintf('/sbin/route -q -n delete -%s default', $family === 'inet6' ? 'inet6' : 'inet'));
+    syslog(LOG_WARNING, sprintf(
+        '[%s] removed %s default route via %s on %s: %s is not a default gateway',
+        GUARD_TAG,
+        $family,
+        $route['gateway'],
+        $route['interface'],
+        $name
+    ));
 }

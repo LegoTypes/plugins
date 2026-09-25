@@ -119,6 +119,9 @@ if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
 
 $config = wgipv6_collect_config();
 if (!$config['enabled']) {
+    if ($dryRun) {
+        echo "health mirror is off in the plugin settings\n";
+    }
     exit(0);
 }
 $held = array_fill_keys($config['held'], true);
