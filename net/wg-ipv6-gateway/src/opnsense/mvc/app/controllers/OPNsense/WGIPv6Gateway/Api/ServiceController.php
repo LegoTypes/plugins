@@ -40,12 +40,31 @@ class ServiceController extends ApiMutableServiceControllerBase
     /**
      * Reconfigure: re-assert the IPv6 routes of the managed tunnels.
      */
-    public function reconfigureAction()
+    public function reconfigureAction(): array
     {
-        // Apply route configuration via configd
-        $backend = new Backend();
-        $response = $backend->configdRun('wgipv6gateway configure_routes');
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        (new Backend())->configdRun('wgipv6gateway configure_routes');
         return ['status' => 'ok'];
+    }
+
+    /**
+     * Create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel (spec 4.3); {dry: '1'} previews.
+     */
+    public function sentinelAction(): array
+    {
+        if (!$this->request->isPost()) {
+            return ['result' => 'failed'];
+        }
+        $dry = $this->request->getPost('dry') === '1';
+        if (!$dry) {
+            $this->throwReadOnly();
+        }
+        $raw = (string)(new Backend())->configdRun($dry ? 'wgipv6gateway ensure_sentinel_dry' : 'wgipv6gateway ensure_sentinel', false, 300);
+        /* configd output: a JSON boundary */
+        $data = json_decode($raw, true);
+        return is_array($data) ? $data : ['ok' => false, 'errors' => ['backend: ' . substr(trim($raw), 0, 200)]];
     }
 
     /**
