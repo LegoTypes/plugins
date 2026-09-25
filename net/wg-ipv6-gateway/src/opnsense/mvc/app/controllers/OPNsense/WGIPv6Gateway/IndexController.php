@@ -33,8 +33,6 @@ class IndexController extends \OPNsense\Base\IndexController
     public function indexAction()
     {
         $this->view->generalForm = $this->getForm('general');
-        $this->view->formDialogGateway = $this->getForm('dialogGateway');
-        $this->view->formGridGateway = $this->getFormGrid('dialogGateway', 'gateway');
         $this->view->pick('OPNsense/WGIPv6Gateway/index');
     }
 }
