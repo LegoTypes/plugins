@@ -10,8 +10,10 @@
 #       add each managed tunnel's IPv6 address to its device and the host
 #       route to its IPv6 next hop
 #   reconcile
-#       the same, silent unless it repairs something; then default_guard.php
-#       and freshness.php
+#       first migrates a pre-3.0 section that config holds without one of
+#       this plugin's own (heal_legacy_section); then the same as start,
+#       silent unless it repairs something; then default_guard.php and
+#       freshness.php
 #   stop     remove what start added
 #   status   the service line the dashboard reads, then per-tunnel JSON
 #
@@ -20,11 +22,78 @@
 CONFIG_HELPER="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/gateway_config.php"
 GUARD="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/default_guard.php"
 FRESHNESS="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/freshness.php"
+MIGRATE="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/migrate.php"
+PHP="/usr/local/bin/php"
+CONFIG_XML="/conf/config.xml"
 LOGGER_TAG="wgct"
 STATE_DIR="/var/run/wgclienttunnels"
 
 log_msg() {
     logger -t "${LOGGER_TAG}" "$1"
+}
+
+# Log each non-empty line of $2 under the prefix $1.
+log_lines() {
+    printf '%s\n' "$2" | while IFS= read -r line; do
+        [ -z "${line}" ] || log_msg "$1${line}"
+    done
+}
+
+# Whether config holds os-wg-ipv6-gateway's pre-3.0 section (WGIPv6Gateway)
+# and no WGClientTunnels section. Reads config.xml only; an unreadable file
+# (grep status 2) never counts.
+legacy_section_only() {
+    grep -qs '<WGIPv6Gateway[[:space:]/>]' "${CONFIG_XML}" || return 1
+    grep -qs '<WGClientTunnels[[:space:]/>]' "${CONFIG_XML}"
+    [ $? -eq 1 ]
+}
+
+# Migrate a pre-3.0 section that config holds without one of this plugin's
+# own. A restore from System > Configuration > Backups runs the model
+# migrations, but a Config History revert only restores and saves, so a
+# revert to a pre-3.0 revision would leave this plugin on its defaults
+# (everything off: no pins, no MSS clamp, no mirror, no guard). migrate.php
+# --dry decides, reading config only; migrate.php then takes the config lock,
+# migrates and saves once. That save runs the config hook, and so this
+# reconcile, again, which then finds the WGClientTunnels section and does
+# nothing; a reconcile racing this one finds it under the config lock and
+# reports "already at". A refusal (a pre-2.0 section) or a failed migration
+# is logged once per distinct state in $STATE_DIR/legacy_section.logged, not
+# every minute; a failed state is not retried until the section, and with it
+# the dry run's report, changes, or a reboot or a redeploy retries it. The
+# reconcile goes on either way.
+heal_legacy_section() {
+    local mark="${STATE_DIR}/legacy_section.logged"
+    local dry dry_rc=0 out rc=0
+    if ! legacy_section_only; then
+        rm -f "${mark}"
+        return 0
+    fi
+    dry=$("${PHP}" "${MIGRATE}" --dry 2>&1) || dry_rc=$?
+    if [ "${dry_rc}" -ne 0 ]; then
+        if [ "$(cat "${mark}" 2>/dev/null)" != "refused ${dry}" ]; then
+            log_msg "[wgct-migrate] config holds the os-wg-ipv6-gateway section and no WGClientTunnels section, and migrate.php --dry refuses it (exit ${dry_rc}); the plugin stays on its defaults, everything off, until it is migrated:"
+            log_lines "[wgct-migrate]   " "${dry}"
+            mkdir -p "${STATE_DIR}"
+            printf '%s\n' "refused ${dry}" > "${mark}"
+        fi
+        return 0
+    fi
+    if [ "$(cat "${mark}" 2>/dev/null)" = "failed ${dry}" ]; then
+        return 0
+    fi
+    log_msg "[wgct-migrate] config holds the os-wg-ipv6-gateway section and no WGClientTunnels section (a Config History revert to a pre-3.0 revision?); migrating:"
+    log_lines "[wgct-migrate]   " "${dry}"
+    out=$("${PHP}" "${MIGRATE}" 2>&1) || rc=$?
+    log_lines "[wgct-migrate]   " "${out}"
+    if [ "${rc}" -eq 0 ] && ! legacy_section_only; then
+        rm -f "${mark}"
+        return 0
+    fi
+    log_msg "[wgct-migrate] the migration did not complete (migrate.php exit ${rc}); the plugin stays on its defaults, everything off; not retried until the section changes, a reboot or a redeploy"
+    mkdir -p "${STATE_DIR}"
+    printf '%s\n' "failed ${dry}" > "${mark}"
+    return 0
 }
 
 # Parse gateway entries from the MVC model helper.
@@ -173,6 +242,9 @@ case "$1" in
     reconcile)
         # Idempotent repair pass for event hooks and cron: adds only what is
         # missing and stays silent unless it actually had to fix something.
+        # First, a pre-3.0 section a Config History revert brought back is
+        # migrated, so everything below reads the migrated settings.
+        heal_legacy_section
         do_configure_routes quiet
         # Then make sure no tunnel carries a default route (see default_guard.php).
         /usr/local/bin/php "${GUARD}"

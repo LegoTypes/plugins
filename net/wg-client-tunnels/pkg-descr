@@ -52,6 +52,9 @@ Plugin Changelog
   OPNsense\WGClientTunnels, configd, pages and API under wgclienttunnels;
   model 3.0.0 copies the 2.x settings and removes the old section (a 1.x
   section must first be migrated by os-wg-ipv6-gateway 2.x)
+* The reconcile (every minute and on each config save) migrates an old
+  section that config holds without a new one, as a Config History revert
+  to a pre-3.0 revision leaves it; a refusal is logged once per state
 * Runtime under /var/run/wgclienttunnels and /var/db/wgclienttunnels, pf
   anchor wgclienttunnels_mss, rules described "WireGuard Client Tunnels:",
   syslog tags wgct-*

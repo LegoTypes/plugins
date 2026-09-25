@@ -9,7 +9,9 @@
  * Run this plugin's model migration under Config::lock(), so it reads and
  * saves in one locked window (core's run_migrations.php saves without the
  * lock). Model 3.0.0 copies the os-wg-ipv6-gateway 2.x settings and removes
- * that section (Migrations/M3_0_0.php, lib/migration.php).
+ * that section (Migrations/M3_0_0.php, lib/migration.php). The deploy runs
+ * it, and so does `wgct.sh reconcile` when config holds the old section and
+ * no section of this model (a Config History revert to a pre-3.0 revision).
  *
  * Usage: migrate.php [--dry]
  *   --dry  print what the migration takes from the old section -- switches as
