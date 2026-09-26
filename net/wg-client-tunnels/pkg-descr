@@ -78,6 +78,10 @@ Plugin Changelog
   switch (tunnel.php ensure-sentinel is unchanged) (3.1_1)
 * The settings show each switch's help in its own column, saying when it
   is normally enabled (3.1_1)
+* Fix: Firewall > Rules showed no rules at all while the pins rendered.
+  They now register at priority 99999, which core's Rules page files under
+  Automatically generated rules; the order pf evaluates them in is
+  unchanged (3.1_1)
 
 3.0
 
