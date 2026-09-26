@@ -7,42 +7,42 @@
         <id>wgclienttunnels.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
-        <help>Manage the WireGuard tunnels listed below. Turning this off stops every behaviour below. Turning this off removes security pins from the firewall.</help>
+        <help>Manage the tunnels listed below. Normally enabled. Off stops everything on this page and removes the tunnels' firewall pins and MSS clamp; the tunnels themselves keep running.</help>
     </field>
     <field>
         <id>wgclienttunnels.health_mirror</id>
         <label>Health mirror</label>
         <type>checkbox</type>
-        <help>Hold each tunnel down while the WAN it is bound to is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy.</help>
+        <help>Hold each tunnel down while its bound WAN is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy. Normally enabled.</help>
     </field>
     <field>
         <id>wgclienttunnels.ipv6_routes</id>
         <label>IPv6 addresses and routes</label>
         <type>checkbox</type>
-        <help>Keep each tunnel's IPv6 address and the host route to its IPv6 next hop in place (core does not add IPv6 far-gateway routes).</help>
+        <help>Keep each tunnel's IPv6 address and the host route to its IPv6 next hop in place (core adds no IPv6 far-gateway route). Normally enabled when any tunnel has IPv6.</help>
     </field>
     <field>
         <id>wgclienttunnels.default_guard</id>
         <label>Default-route guard</label>
         <type>checkbox</type>
-        <help>Default-route exclusion keeps every tunnel out of the default route, in two halves. The sentinel gateways NO_DEFAULT4 and NO_DEFAULT6 (address-less, priority 254, on a loopback) keep the tunnels out of core's default-gateway election; "Check default-route exclusion" creates or repairs them, showing what it would change first. This switch is the backstop: it removes a default route that still points through a tunnel or any other non-default gateway, for both address families.</help>
+        <help>Normally enabled if the router is using one or more WANs as route defaults. Removes a default route that points through a tunnel or any other non-default gateway, for both address families.</help>
     </field>
     <field>
         <id>wgclienttunnels.wan_pins</id>
         <label>WAN pins</label>
         <type>checkbox</type>
-        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Turning this off removes security pins from the firewall.</help>
+        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Normally enabled; off removes these firewall rules.</help>
     </field>
     <field>
         <id>wgclienttunnels.inner_source</id>
         <label>Only NATed traffic into tunnels</label>
         <type>checkbox</type>
-        <help>Block any packet that would enter a tunnel from an address that is not one of the firewall's own (i.e. traffic that was not translated by outbound NAT). Turning this off removes security pins from the firewall.</help>
+        <help>Block any packet entering a tunnel from an address that is not the firewall's own, i.e. traffic outbound NAT did not translate. Normally enabled; off removes these firewall rules.</help>
     </field>
     <field>
         <id>wgclienttunnels.mss_clamp</id>
         <label>MSS clamp</label>
         <type>checkbox</type>
-        <help>Clamp TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), both directions.</help>
+        <help>Clamp TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), both directions. Normally enabled; it matters on WANs with a smaller path MTU, such as mobile ones.</help>
     </field>
 </form>

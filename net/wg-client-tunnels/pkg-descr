@@ -76,6 +76,8 @@ Plugin Changelog
   the switches, above the tunnel list; the tabs are gone. Ensure sentinel
   is now Check default-route exclusion, beside the Default-route guard
   switch (tunnel.php ensure-sentinel is unchanged) (3.1_1)
+* The settings show each switch's help in its own column, saying when it
+  is normally enabled (3.1_1)
 
 3.0
 
