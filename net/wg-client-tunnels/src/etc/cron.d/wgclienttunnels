@@ -10,5 +10,5 @@
 # removes them without firing a hook, so a lost route self-heals within a minute
 # instead of sitting broken until someone notices the gateway is down. It also
 # runs default_guard.php, which removes any default route through a tunnel,
-# and first migrates a pre-3.0 section a Config History revert brought back.
+# and freshness.php, which keeps the rendered firewall rules current.
 * * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh reconcile

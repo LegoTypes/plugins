@@ -82,6 +82,8 @@ Plugin Changelog
   They now register at priority 99999, which core's Rules page files under
   Automatically generated rules; the order pf evaluates them in is
   unchanged (3.1_1)
+* Removed the migration from the 2.x plugin (os-wg-ipv6-gateway); a
+  configuration saved before 3.0 comes up with default settings (3.1_1)
 
 3.0
 

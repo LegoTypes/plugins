@@ -32,7 +32,7 @@
             <Required>Y</Required>
         </mss_clamp>
         <!-- WireGuard instance UUIDs the plugin manages; written by Create,
-             Adopt and Remove, and by the 3.0.0 migration from the 2.x plugin -->
+             Adopt and Remove -->
         <managed type="CSVListField">
             <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
             <MaskPerItem>Y</MaskPerItem>
