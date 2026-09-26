@@ -559,16 +559,17 @@
                 $('#edit\\.mtu'), $('#wgct-edit-mtu-why'), $('#wgct-edit-measure'));
         }
 
-        /* what Edit leaves to the core pages, each linked as deep as the page allows: a gateway opens its dialog,
-         * the rules page selects the interface, Source NAT and the peers grid filter on it */
+        /* Tunnel References: what Edit leaves to the core pages, each linked as deep as the page allows -- a
+         * gateway opens its dialog, the rules page selects the interface, Source NAT and the peers grid filter on
+         * it. A topic with nothing that references this tunnel still gets its row, linking the page by its menu path. */
         function coreLinks(f) {
-            var box = $('#wgct-edit-core').empty();
-            var line = function (label, nodes) {
-                var row = $('<div/>').append($('<span class="text-muted"/>').text(label + ': '));
-                $.each(nodes, function (i, n) {
-                    row.append(i > 0 ? ', ' : '', n);
+            var body = $('<tbody/>');
+            var row = function (title, nodes, pageName, pageHref) {
+                var cell = $('<td/>');
+                $.each(nodes.length > 0 ? nodes : [link(pageName, pageHref)], function (i, n) {
+                    cell.append($('<div/>').append(n));
                 });
-                box.append(row);
+                body.append($('<tr/>').append($('<th style="width: 35%;"/>').text(title), cell));
             };
             var gateways = [];
             $.each([[f.gw4, f.gw4_uuid], [f.gw6, f.gw6_uuid]], function (i, g) {
@@ -576,19 +577,16 @@
                     gateways.push(link(g[0], gatewayHref(g[1])));
                 }
             });
-            if (gateways.length > 0) {
-                line("{{ lang._('Gateways (thresholds, monitoring, kill states)') }}", gateways);
-            }
-            line("{{ lang._('Gateway groups') }}", f.groups.length > 0
-                ? $.map(f.groups, function (g) { return link(g, links.groups); })
-                : [link("{{ lang._('none: add the gateways to a group') }}", links.groups)]);
-            line("{{ lang._('Firewall rules') }}", [link(f.interface, links.rules + '#interface=' + hashValue(f.interface))]);
-            line("{{ lang._('Every outbound NAT rule') }}", [link(f.interface, links.nat + '#search=' + hashValue(f.interface))]);
-            if (f.peer_name) {
-                line("{{ lang._('Peer (keepalive, allowed IPs)') }}", [link(f.peer_name, links.peers + '&search=' + hashValue(f.peer_name))]);
-            }
-            line("{{ lang._('Interface settings (an MTU here overrides the instance MTU)') }}",
-                [link(f.interface, links.iface + hashValue(f.interface))]);
+            row("{{ lang._('Gateways') }}", gateways, "{{ lang._('System: Gateways: Configuration') }}", links.gateways);
+            row("{{ lang._('Gateway groups') }}", $.map(f.groups, function (g) { return link(g, links.groups); }),
+                "{{ lang._('System: Gateways: Group') }}", links.groups);
+            row("{{ lang._('Firewall rules') }}", [link(f.interface, links.rules + '#interface=' + hashValue(f.interface))]);
+            row("{{ lang._('Outbound NAT') }}", [link(f.interface, links.nat + '#search=' + hashValue(f.interface))]);
+            row("{{ lang._('Peer') }}", f.peer_name ? [link(f.peer_name, links.peers + '&search=' + hashValue(f.peer_name))] : [],
+                "{{ lang._('VPN: WireGuard: Peers') }}", links.peers);
+            row("{{ lang._('Interface') }}", [link(f.interface, links.iface + hashValue(f.interface))]);
+            $('#edit\\.references').empty().append(
+                $('<table class="table table-condensed" style="margin-bottom: 0;"/>').append(body));
         }
 
         function openEdit(t) {
@@ -827,7 +825,6 @@
         $('#frm_dialogEdit').prepend($('<div id="wgct-edit-errors"/>'));
         $('#edit\\.config').attr({spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'});
         $('#edit\\.name').prop('readonly', true);
-        $('#edit\\.name').after($('#wgct-edit-core-wrap').detach().show());
         $('#edit\\.mtu').after($('#wgct-edit-measure-wrap').detach().show());
         $('#edit\\.config').after($('#wgct-edit-file-wrap').detach().show());
         $('#edit\\.nat4').closest('td').append($('#wgct-edit-kept-wrap').detach());
@@ -914,10 +911,6 @@
     <br/><button type="button" class="btn btn-default btn-xs" id="wgct-edit-file-btn"><i class="fa fa-folder-open-o fa-fw"></i> {{ lang._('Load file') }}</button>
     <input type="file" id="wgct-edit-file" accept=".conf,text/plain" style="display: none;"/>
 </span>
-<div id="wgct-edit-core-wrap" style="display: none; margin-top: 0.5em;">
-    <small class="text-muted">{{ lang._('Edit changes only the fields below. The rest of this tunnel is set on the core pages:') }}</small>
-    <div id="wgct-edit-core" class="small"></div>
-</div>
 <div id="wgct-edit-kept-wrap" style="display: none; margin-top: 0.5em;">
     <small class="text-muted">{{ lang._('Other outbound NAT rules on this interface, kept exactly as they are (edit them on Firewall: NAT: Source NAT):') }}</small>
     <div id="wgct-edit-kept" class="text-muted small"></div>

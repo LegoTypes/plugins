@@ -6,6 +6,12 @@
         <help>Fixed: the name, instance number, device, interface and gateway names never change, so gateway groups and rules that name the tunnel keep working.</help>
     </field>
     <field>
+        <id>edit.references</id>
+        <label>Tunnel References</label>
+        <type>info</type>
+        <help>Where the rest of this tunnel is configured; Edit changes only the fields below. Gateways: thresholds, monitoring and kill states (each link opens that gateway). Gateway groups: membership and tiers. Firewall rules: opens on the tunnel interface. Outbound NAT: filtered to the tunnel interface, for the rules Edit does not list. Peer: keepalive and allowed IPs. Interface: its settings; an MTU set there overrides the instance MTU.</help>
+    </field>
+    <field>
         <id>edit.config</id>
         <label>Replacement config</label>
         <type>textbox</type>
