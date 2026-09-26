@@ -33,7 +33,7 @@ function wgclienttunnels_services()
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
     if ((string)$mdl->enabled === '1') {
         $services[] = [
-            'description' => gettext('WireGuard Client Tunnels'),
+            'description' => gettext('WireGuard Upstream Tunnels'),
             'configd' => [
                 'start' => ['wgclienttunnels start'],
                 'stop' => ['wgclienttunnels stop'],
@@ -81,7 +81,7 @@ function wgclienttunnels_configure_do($verbose = false)
     }
 
     if ($verbose) {
-        echo 'Configuring WireGuard client tunnel IPv6 routes...';
+        echo 'Configuring WireGuard upstream tunnel IPv6 routes...';
         flush();
     }
 
@@ -147,7 +147,7 @@ function wgclienttunnels_xmlrpc_sync()
 {
     $result = [];
     $result[] = [
-        'description' => gettext('WireGuard Client Tunnels'),
+        'description' => gettext('WireGuard Upstream Tunnels'),
         'section' => 'OPNsense.WGClientTunnels',
         'id' => 'wgclienttunnels',
     ];

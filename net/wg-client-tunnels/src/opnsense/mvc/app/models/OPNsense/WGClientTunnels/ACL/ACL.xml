@@ -1,6 +1,6 @@
 <acl>
     <page-vpn-wgclienttunnels>
-        <name>VPN: WireGuard Client Tunnels</name>
+        <name>VPN: WireGuard: Upstream tunnels</name>
         <patterns>
             <pattern>ui/wgclienttunnels/*</pattern>
             <pattern>api/wgclienttunnels/*</pattern>
