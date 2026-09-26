@@ -17,8 +17,9 @@ Features:
 - Remove a tunnel and everything it owns (refused while anything references
   it), Rebind an unbound tunnel to a WAN, Adopt an existing WireGuard
   instance, and Ensure sentinel (the NO_DEFAULT4/NO_DEFAULT6 gateways), each
-  with a dry-run preview, from the Tunnels tab or tunnel.php
-- Tunnels tab: a standard grid of every managed tunnel with its derived
+  with a dry-run preview, from the plugin's page or tunnel.php
+- One page: the settings pane above a standard grid of every managed tunnel
+  with its derived
   parts, live gateway status, links to the core page that owns each part,
   and findings; it reloads as soon as an action completes
 - Gives each managed tunnel's IPv6 gateway its host route and keeps its
@@ -70,6 +71,8 @@ Plugin Changelog
 * Shown as VPN > WireGuard > Upstream tunnels, and its firewall rules are
   described "WireGuard Upstream Tunnels:"; the package, pages' URLs and
   configd actions keep their wgclienttunnels names (3.1_1)
+* Settings and tunnels on one page: the settings pane (with Apply and
+  Ensure sentinel) above the tunnel list; the tabs are gone (3.1_1)
 
 3.0
 

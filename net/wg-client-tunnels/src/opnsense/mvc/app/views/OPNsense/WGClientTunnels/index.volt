@@ -851,55 +851,41 @@
     });
 </script>
 
-<ul class="nav nav-tabs" data-tabs="tabs" id="maintabs">
-    <li class="active"><a data-toggle="tab" href="#settings">{{ lang._('Settings') }}</a></li>
-    <li><a data-toggle="tab" href="#tunnels">{{ lang._('Tunnels') }}</a></li>
-</ul>
-<div class="tab-content content-box">
-    <div id="settings" class="tab-pane fade in active">
-        {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
-        <div style="padding: 0 1em 1em 1em;">
-            <button class="btn btn-default" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Ensure sentinel') }}</button>
-            <small class="text-muted">{{ lang._('Creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. Shows what it would change before changing it.') }}</small>
-        </div>
-    </div>
-    <div id="tunnels" class="tab-pane fade" style="padding: 1em;">
-        <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
-            <a href="/ui/interfaces/assignment">{{ lang._('Interfaces: Assignments') }}</a></p>
-        <div id="tunnel-banners"></div>
-        <button class="btn btn-primary" id="btn-create" type="button"><i class="fa fa-plus fa-fw"></i> {{ lang._('Create') }}</button>
-        <button class="btn btn-default" id="btn-refresh" type="button"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
-        <div style="margin-top: 1em;">
-            {{ partial('layout_partials/base_bootgrid_table', formGridTunnels + {'command_width': '140', 'hide_add': true, 'hide_delete': true}) }}
-        </div>
-        <h4>{{ lang._('WireGuard instances the plugin does not manage') }}</h4>
-        <table class="table table-striped table-condensed" id="unmanaged-table">
-            <thead>
-                <tr>
-                    <th>{{ lang._('Instance') }}</th>
-                    <th>{{ lang._('Device') }}</th>
-                    <th>{{ lang._('Endpoint') }}</th>
-                    <th>{{ lang._('Enabled') }}</th>
-                    <th></th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+<div class="content-box" id="settings">
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+    <div style="padding: 0 1em 1em 1em;">
+        <button class="btn btn-primary" id="reconfigureAct"
+                data-endpoint="/api/wgclienttunnels/service/reconfigure"
+                data-label="{{ lang._('Apply') }}"
+                data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
+                type="button"></button>
+        <button class="btn btn-default" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Ensure sentinel') }}</button>
+        <div><small class="text-muted">{{ lang._('Ensure sentinel creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing it.') }}</small></div>
     </div>
 </div>
-<section class="page-content-main">
-    <div class="content-box">
-        <div class="col-md-12">
-            <br/>
-            <button class="btn btn-primary" id="reconfigureAct"
-                    data-endpoint="/api/wgclienttunnels/service/reconfigure"
-                    data-label="{{ lang._('Apply') }}"
-                    data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
-                    type="button"></button>
-            <br/><br/>
-        </div>
+<div class="content-box" id="tunnels" style="padding: 1em; margin-top: 1em;">
+    <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
+        <a href="/ui/interfaces/assignment">{{ lang._('Interfaces: Assignments') }}</a></p>
+    <div id="tunnel-banners"></div>
+    <button class="btn btn-primary" id="btn-create" type="button"><i class="fa fa-plus fa-fw"></i> {{ lang._('Create') }}</button>
+    <button class="btn btn-default" id="btn-refresh" type="button"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
+    <div style="margin-top: 1em;">
+        {{ partial('layout_partials/base_bootgrid_table', formGridTunnels + {'command_width': '140', 'hide_add': true, 'hide_delete': true}) }}
     </div>
-</section>
+    <h4>{{ lang._('WireGuard instances the plugin does not manage') }}</h4>
+    <table class="table table-striped table-condensed" id="unmanaged-table">
+        <thead>
+            <tr>
+                <th>{{ lang._('Instance') }}</th>
+                <th>{{ lang._('Device') }}</th>
+                <th>{{ lang._('Endpoint') }}</th>
+                <th>{{ lang._('Enabled') }}</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
 
 <span id="wgct-measure-wrap" style="display: none;">
     <button type="button" class="btn btn-default btn-xs" id="wgct-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
