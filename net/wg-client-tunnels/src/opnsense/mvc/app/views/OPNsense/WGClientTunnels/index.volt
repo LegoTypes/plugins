@@ -20,8 +20,16 @@
             gateways: '/ui/routing/configuration',
             routes: '/ui/routes',
             nat: '/ui/firewall/source_nat',
-            groups: '/ui/routing/gateway_groups'
+            groups: '/ui/routing/gateway_groups',
+            rules: '/ui/firewall/filter_rule'
         };
+        /* core's deep links (opnsense_ui.js getUrlHash()): the page's grid opens or filters on the hash value */
+        function hashValue(value) {
+            return encodeURIComponent(plain(value));
+        }
+        function gatewayHref(uuid) {
+            return uuid ? links.gateways + '#edit=' + hashValue(uuid) : links.gateways;
+        }
         var failedText = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
         var options = null;
 
@@ -53,11 +61,11 @@
          * or gateway name, a finding text) is ever parsed as markup. Row values arrive entity-encoded like
          * every API reply and pass through plain() exactly once: inside link(), or right before .text() or
          * .attr(). */
-        function gwNode(name, status, statusText, held) {
+        function gwNode(name, uuid, held) {
             if (!name) {
                 return dash()[0];
             }
-            var cell = $('<div/>').append(link(name, links.gateways));
+            var cell = $('<div/>').append(link(name, gatewayHref(uuid)));
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
             }
@@ -102,8 +110,8 @@
                 }
                 return cell[0];
             },
-            gw4: function (column, t) { return gwNode(t.gw4, t.gw4_status, t.gw4_status_text, t.held); },
-            gw6: function (column, t) { return gwNode(t.gw6, t.gw6_status, t.gw6_status_text, false); },
+            gw4: function (column, t) { return gwNode(t.gw4, t.gw4_uuid, t.held); },
+            gw6: function (column, t) { return gwNode(t.gw6, t.gw6_uuid, false); },
             status4: function (column, t) { return statusNode(t.gw4_label_class, t.gw4_status_text); },
             status6: function (column, t) { return statusNode(t.gw6_label_class, t.gw6_status_text); },
             nat: function (column, t) { return linkOrDash(t.nat_text, links.nat); },
@@ -551,6 +559,38 @@
                 $('#edit\\.mtu'), $('#wgct-edit-mtu-why'), $('#wgct-edit-measure'));
         }
 
+        /* what Edit leaves to the core pages, each linked as deep as the page allows: a gateway opens its dialog,
+         * the rules page selects the interface, Source NAT and the peers grid filter on it */
+        function coreLinks(f) {
+            var box = $('#wgct-edit-core').empty();
+            var line = function (label, nodes) {
+                var row = $('<div/>').append($('<span class="text-muted"/>').text(label + ': '));
+                $.each(nodes, function (i, n) {
+                    row.append(i > 0 ? ', ' : '', n);
+                });
+                box.append(row);
+            };
+            var gateways = [];
+            $.each([[f.gw4, f.gw4_uuid], [f.gw6, f.gw6_uuid]], function (i, g) {
+                if (g[0]) {
+                    gateways.push(link(g[0], gatewayHref(g[1])));
+                }
+            });
+            if (gateways.length > 0) {
+                line("{{ lang._('Gateways (thresholds, monitoring, kill states)') }}", gateways);
+            }
+            line("{{ lang._('Gateway groups') }}", f.groups.length > 0
+                ? $.map(f.groups, function (g) { return link(g, links.groups); })
+                : [link("{{ lang._('none: add the gateways to a group') }}", links.groups)]);
+            line("{{ lang._('Firewall rules') }}", [link(f.interface, links.rules + '#interface=' + hashValue(f.interface))]);
+            line("{{ lang._('Every outbound NAT rule') }}", [link(f.interface, links.nat + '#search=' + hashValue(f.interface))]);
+            if (f.peer_name) {
+                line("{{ lang._('Peer (keepalive, allowed IPs)') }}", [link(f.peer_name, links.peers + '&search=' + hashValue(f.peer_name))]);
+            }
+            line("{{ lang._('Interface settings (an MTU here overrides the instance MTU)') }}",
+                [link(f.interface, links.iface + hashValue(f.interface))]);
+        }
+
         function openEdit(t) {
             /* POST like the lists: the prefill and the choices change with every action */
             ajaxCall('/api/wgclienttunnels/tunnels/edit_form/' + t.uuid, {}, function (data, status) {
@@ -578,6 +618,7 @@
                 var kept = $('#wgct-edit-kept').empty();
                 $.each(f.nat_kept, function (i, k) { kept.append($('<div/>').text(plain(k))); });
                 $('#wgct-edit-kept-wrap').toggle(f.nat_kept.length > 0);
+                coreLinks(f);
                 $('#wgct-edit-mtu-why').text(f.mtu_effective !== f.mtu
                     ? "{{ lang._('The interface MTU overrides this value (finding mtu-override):') }} " + f.mtu_effective : '');
                 $('#wgct-edit-errors').empty();
@@ -786,6 +827,7 @@
         $('#frm_dialogEdit').prepend($('<div id="wgct-edit-errors"/>'));
         $('#edit\\.config').attr({spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'});
         $('#edit\\.name').prop('readonly', true);
+        $('#edit\\.name').after($('#wgct-edit-core-wrap').detach().show());
         $('#edit\\.mtu').after($('#wgct-edit-measure-wrap').detach().show());
         $('#edit\\.config').after($('#wgct-edit-file-wrap').detach().show());
         $('#edit\\.nat4').closest('td').append($('#wgct-edit-kept-wrap').detach());
@@ -872,6 +914,10 @@
     <br/><button type="button" class="btn btn-default btn-xs" id="wgct-edit-file-btn"><i class="fa fa-folder-open-o fa-fw"></i> {{ lang._('Load file') }}</button>
     <input type="file" id="wgct-edit-file" accept=".conf,text/plain" style="display: none;"/>
 </span>
+<div id="wgct-edit-core-wrap" style="display: none; margin-top: 0.5em;">
+    <small class="text-muted">{{ lang._('Edit changes only the fields below. The rest of this tunnel is set on the core pages:') }}</small>
+    <div id="wgct-edit-core" class="small"></div>
+</div>
 <div id="wgct-edit-kept-wrap" style="display: none; margin-top: 0.5em;">
     <small class="text-muted">{{ lang._('Other outbound NAT rules on this interface, kept exactly as they are (edit them on Firewall: NAT: Source NAT):') }}</small>
     <div id="wgct-edit-kept" class="text-muted small"></div>
