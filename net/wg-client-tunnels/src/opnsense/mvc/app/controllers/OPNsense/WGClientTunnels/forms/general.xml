@@ -1,13 +1,13 @@
 <form>
     <field>
         <type>header</type>
-        <label>General</label>
+        <label>Settings</label>
     </field>
     <field>
         <id>wgclienttunnels.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
-        <help>Manage the WireGuard tunnels listed on the Tunnels tab. Turning this off stops every behaviour below. Turning this off removes security pins from the firewall.</help>
+        <help>Manage the WireGuard tunnels listed below. Turning this off stops every behaviour below. Turning this off removes security pins from the firewall.</help>
     </field>
     <field>
         <id>wgclienttunnels.health_mirror</id>

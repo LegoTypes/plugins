@@ -21,14 +21,14 @@ const WGCT_DEFAULT_MTU = 1420;
 
 /* finding code => [blocking, where it is fixed] (spec section 3.4) */
 const WGCT_FINDINGS = [
-    'instance-missing' => [true, 'the managed WireGuard instance was deleted; Remove on the Tunnels tab (tunnel.php remove) drops it from the managed list'],
+    'instance-missing' => [true, 'the managed WireGuard instance was deleted; Remove in the tunnel list (tunnel.php remove) drops it from the managed list'],
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
     'interface-disabled' => [true, "Interfaces > the tunnel's interface: enable it"],
     'not-single-peer' => [true, 'VPN > WireGuard > Instances: exactly one peer'],
     'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 endpoint address'],
     'ambiguous-gateway' => [true, 'System > Gateways: one gateway per family on the tunnel interface'],
-    'unbound' => [false, 'Rebind on the Tunnels tab (tunnel.php rebind), or System > Routes: a /32 route to the endpoint via its WAN gateway'],
-    'stale-route' => [false, 'Rebind on the Tunnels tab offers to delete it with its kernel route; or re-point or remove it on System > Routes'],
+    'unbound' => [false, 'Rebind in the tunnel list (tunnel.php rebind), or System > Routes: a /32 route to the endpoint via its WAN gateway'],
+    'stale-route' => [false, 'Rebind in the tunnel list offers to delete it with its kernel route; or re-point or remove it on System > Routes'],
     'wan-unavailable' => [false, 'System > Gateways / Interfaces: enable the bound WAN'],
     'ipv6-incomplete' => [false, 'Instances and System > Gateways: IPv6 tunnel address and IPv6 gateway together'],
     'mtu-override' => [false, 'Interfaces > wgN: clear MTU or match the instance MTU'],
@@ -38,7 +38,7 @@ const WGCT_FINDINGS = [
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
     'sentinel-missing' => [false, 'Settings > Ensure sentinel (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways'],
     'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
-    'apply-pending' => [false, 'Apply on the Tunnels tab (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
+    'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
 ];
 
 /* the priority reserved for the WAN pin and inner-source block rules */
