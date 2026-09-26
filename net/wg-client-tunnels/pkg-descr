@@ -1,10 +1,10 @@
 WireGuard Upstream Tunnels Plugin
 
 Creates, edits, binds, monitors and removes WireGuard upstream tunnels
-(ProtonVPN and similar) from one page. The core WireGuard, interface, gateway, route and
-NAT pages stay the source of truth: every tunnel is derived from core
-configuration on each use, and the plugin stores only which instances it
-manages, which gateways it holds down, and its switches.
+(ProtonVPN and similar) from one page. The core WireGuard, interface,
+gateway, route and NAT pages stay the source of truth: every tunnel is
+derived from core configuration on each use, and the plugin stores only
+which instances it manages, which gateways it holds down, and its switches.
 
 Features:
 - Create a tunnel from a pasted wg-quick config -- WireGuard instance and
@@ -16,8 +16,9 @@ Features:
   and gateway names never change, so groups and rules keep working
 - Remove a tunnel and everything it owns (refused while anything references
   it), Rebind an unbound tunnel to a WAN, Adopt an existing WireGuard
-  instance, and Ensure sentinel (the NO_DEFAULT4/NO_DEFAULT6 gateways), each
-  with a dry-run preview, from the plugin's page or tunnel.php
+  instance, and Check default-route exclusion (the NO_DEFAULT4/NO_DEFAULT6
+  gateways), each with a dry-run preview, from the plugin's page or
+  tunnel.php
 - One page: the settings pane above a standard grid of every managed tunnel
   with its derived
   parts, live gateway status, links to the core page that owns each part,
@@ -71,8 +72,10 @@ Plugin Changelog
 * Shown as VPN > WireGuard > Upstream tunnels, and its firewall rules are
   described "WireGuard Upstream Tunnels:"; the package, pages' URLs and
   configd actions keep their wgclienttunnels names (3.1_1)
-* Settings and tunnels on one page: the settings pane (with Apply and
-  Ensure sentinel) above the tunnel list; the tabs are gone (3.1_1)
+* Settings and tunnels on one page: the settings pane, with Apply under
+  the switches, above the tunnel list; the tabs are gone. Ensure sentinel
+  is now Check default-route exclusion, beside the Default-route guard
+  switch (tunnel.php ensure-sentinel is unchanged) (3.1_1)
 
 3.0
 

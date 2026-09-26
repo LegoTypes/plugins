@@ -27,7 +27,7 @@ Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, edit, remove, rebin
   remove UUID                         remove a managed tunnel and everything it owns
   rebind UUID WAN [STALE_ROUTE_UUID]  bind an unbound tunnel to WAN, optionally deleting a stale route
   adopt UUID                          manage an existing WireGuard instance
-  ensure-sentinel                     create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel
+  ensure-sentinel                     check the default-route exclusion: create or repair the NO_DEFAULT4/NO_DEFAULT6 gateways
   measure-mtu WAN ENDPOINT            measure the tunnel MTU for WAN -> ENDPOINT
   apply UUID [MODE]                   run a tunnel's apply again; without MODE, the apply its saved change still
                                       needs (apply-pending), else tunnel (Create's apply, then wireguard restart);
