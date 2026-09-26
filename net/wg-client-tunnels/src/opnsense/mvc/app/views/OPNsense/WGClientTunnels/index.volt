@@ -804,8 +804,16 @@
             },
             onAction: function () { refreshAll(); }
         });
+        /* Settings: each switch's help (forms/general.xml, the one source) shown in its row's third column,
+         * readable and always visible, instead of behind the row's info icon */
+        $('#frm_general [data-for^="help_for_"]').each(function () {
+            var help = $(this);
+            help.closest('tr').children('td').eq(2).prepend($('<div class="wgct-help"/>').append(help.children('small').contents()));
+            help.remove();
+        });
+        $('#frm_general a.showhelp').replaceWith(function () { return $('<i class="fa fa-info-circle fa-fw text-muted"/>'); });
         /* the sentinel's repair belongs with the switch for the other half of the default-route exclusion */
-        $('#wgclienttunnels\\.default_guard').closest('td').append($('#wgct-exclusion-wrap').detach().show());
+        $('#wgclienttunnels\\.default_guard').closest('tr').children('td').eq(2).append($('#wgct-exclusion-wrap').detach().show());
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
         /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
@@ -854,7 +862,7 @@
 </script>
 
 <div class="content-box" id="settings">
-    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general', 'msgzone_width': 8]) }}
     <div style="padding: 0 1em 1em 1em;">
         <button class="btn btn-primary" id="reconfigureAct"
                 data-endpoint="/api/wgclienttunnels/service/reconfigure"
@@ -889,7 +897,7 @@
 
 <div id="wgct-exclusion-wrap" style="display: none; margin-top: 0.5em;">
     <button class="btn btn-default btn-xs" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Check default-route exclusion') }}</button>
-    <small class="text-muted">{{ lang._('Creates or repairs NO_DEFAULT4 and NO_DEFAULT6, shows what it would change first') }}</small>
+    <div class="wgct-help" style="margin-top: 0.25em;">{{ lang._('The other half of the exclusion: creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing anything; with nothing to change, it says so.') }}</div>
 </div>
 <span id="wgct-measure-wrap" style="display: none;">
     <button type="button" class="btn btn-default btn-xs" id="wgct-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
