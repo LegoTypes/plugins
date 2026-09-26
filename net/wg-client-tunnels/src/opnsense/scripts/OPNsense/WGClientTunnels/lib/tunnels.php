@@ -36,7 +36,7 @@ const WGCT_FINDINGS = [
     'legacy-mss' => [false, "Interfaces > the tunnel's interface: an MSS value is set by hand"],
     'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface (Create adds them from a template tunnel or the NAT sources)'],
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
-    'sentinel-missing' => [false, 'Settings > Ensure sentinel (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways'],
+    'sentinel-missing' => [false, 'Settings > Check default-route exclusion (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways that keep the tunnels out of the default route'],
     'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
 ];

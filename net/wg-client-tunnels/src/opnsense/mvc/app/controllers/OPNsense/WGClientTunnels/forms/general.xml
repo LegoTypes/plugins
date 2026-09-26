@@ -25,7 +25,7 @@
         <id>wgclienttunnels.default_guard</id>
         <label>Default-route guard</label>
         <type>checkbox</type>
-        <help>Remove a default route through a tunnel or any other non-default gateway, for both address families.</help>
+        <help>Default-route exclusion keeps every tunnel out of the default route, in two halves. The sentinel gateways NO_DEFAULT4 and NO_DEFAULT6 (address-less, priority 254, on a loopback) keep the tunnels out of core's default-gateway election; "Check default-route exclusion" creates or repairs them, showing what it would change first. This switch is the backstop: it removes a default route that still points through a tunnel or any other non-default gateway, for both address families.</help>
     </field>
     <field>
         <id>wgclienttunnels.wan_pins</id>
