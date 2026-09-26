@@ -3,7 +3,7 @@
 # Copyright (C) 2026 cayossarian (Bill Flood)
 # All rights reserved.
 #
-# WireGuard client tunnels: the managed tunnels' IPv6 addresses and next-hop
+# WireGuard upstream tunnels: the managed tunnels' IPv6 addresses and next-hop
 # routes, and the reconcile.
 #
 #   start | restart | configure_routes

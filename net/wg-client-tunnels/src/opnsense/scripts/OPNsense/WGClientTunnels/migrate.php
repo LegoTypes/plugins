@@ -54,7 +54,7 @@ try {
     $ok = $mdl->runMigrations();
     $after = $mdl->getVersion();
     if ($before !== $after && $ok) {
-        $cfg->save(['description' => "wg client tunnels: model {$after} migration"]);
+        $cfg->save(['description' => "wg upstream tunnels: model {$after} migration"]);
     }
 } finally {
     $cfg->unlock();

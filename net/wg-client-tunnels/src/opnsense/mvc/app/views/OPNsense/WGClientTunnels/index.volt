@@ -255,7 +255,7 @@
             /* POST like the lists: the choices (templates, stale routes) change with every action */
             ajaxCall('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
                 if (!data || status !== 'success' || data.status !== 'ok') {
-                    showResult("{{ lang._('Client tunnels') }}", null, status);
+                    showResult("{{ lang._('Upstream tunnels') }}", null, status);
                     return;
                 }
                 options = data;
@@ -894,7 +894,7 @@
             <button class="btn btn-primary" id="reconfigureAct"
                     data-endpoint="/api/wgclienttunnels/service/reconfigure"
                     data-label="{{ lang._('Apply') }}"
-                    data-error-title="{{ lang._('Error applying the WireGuard client tunnel settings') }}"
+                    data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
                     type="button"></button>
             <br/><br/>
         </div>

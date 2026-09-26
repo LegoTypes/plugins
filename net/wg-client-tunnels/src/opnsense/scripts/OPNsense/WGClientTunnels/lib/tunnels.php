@@ -531,7 +531,7 @@ function wgct_pin_rules(array $pinSet) {
                 'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
                 'ipprotocol' => $w['family'], 'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
                 'label' => md5('wgct-pin-wan-anywhere-' . $w['family']),
-                'descr' => "WireGuard Client Tunnels: this tunnel's bound WAN is unavailable, so its handshakes leave by no interface",
+                'descr' => "WireGuard Upstream Tunnels: this tunnel's bound WAN is unavailable, so its handshakes leave by no interface",
             ];
             continue;
         }
@@ -540,7 +540,7 @@ function wgct_pin_rules(array $pinSet) {
             'interface' => $w['wan_if'], 'interfacenot' => true, 'ipprotocol' => $w['family'],
             'protocol' => 'udp', 'to' => implode(',', $w['endpoints']),
             'label' => md5('wgct-pin-wan-' . $w['wan_if'] . '-' . $w['family']),
-            'descr' => 'WireGuard Client Tunnels: tunnels bound to this WAN never leave by another interface',
+            'descr' => 'WireGuard Upstream Tunnels: tunnels bound to this WAN never leave by another interface',
         ];
     }
     foreach ($pinSet['inner'] as $opt) {
@@ -548,7 +548,7 @@ function wgct_pin_rules(array $pinSet) {
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
             'interface' => $opt, 'ipprotocol' => 'inet46', 'from' => '(self)', 'from_not' => true,
             'label' => md5('wgct-pin-inner-' . $opt),
-            'descr' => 'WireGuard Client Tunnels: only firewall-sourced (NATed) traffic may enter the tunnel',
+            'descr' => 'WireGuard Upstream Tunnels: only firewall-sourced (NATed) traffic may enter the tunnel',
         ];
     }
     return $rules;

@@ -1,7 +1,7 @@
-WireGuard Client Tunnels Plugin
+WireGuard Upstream Tunnels Plugin
 
-Creates, binds, monitors and removes WireGuard VPN client tunnels (ProtonVPN
-and similar) from one page. The core WireGuard, interface, gateway, route and
+Creates, edits, binds, monitors and removes WireGuard upstream tunnels
+(ProtonVPN and similar) from one page. The core WireGuard, interface, gateway, route and
 NAT pages stay the source of truth: every tunnel is derived from core
 configuration on each use, and the plugin stores only which instances it
 manages, which gateways it holds down, and its switches.
@@ -67,6 +67,9 @@ Plugin Changelog
 * The Edit dialog links what Edit leaves to the core pages (gateways,
   gateway groups, firewall rules, outbound NAT, peer, interface), each as
   deep as the page allows; the grid's gateway links open that gateway (3.1_1)
+* Shown as VPN > WireGuard > Upstream tunnels, and its firewall rules are
+  described "WireGuard Upstream Tunnels:"; the package, pages' URLs and
+  configd actions keep their wgclienttunnels names (3.1_1)
 
 3.0
 
