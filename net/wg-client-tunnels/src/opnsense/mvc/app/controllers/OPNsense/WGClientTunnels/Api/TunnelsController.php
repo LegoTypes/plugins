@@ -12,7 +12,7 @@ use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
 
 /**
- * The Tunnels tab (spec 6, 7). search, search_grid, options and edit_form are
+ * The Upstream tunnels page (spec 6, 7). search, search_grid, options and edit_form are
  * views derived from core on every request. Create and Edit are the writes
  * done in-process, because only they may see a private key (spec 6.1, 6.5);
  * each then runs the keyless configd action `wgclienttunnels apply_mode`.
@@ -28,7 +28,7 @@ class TunnelsController extends ApiControllerBase
 
     /**
      * The whole view: the managed tunnels, the global findings and the unmanaged
-     * instances. GET or POST; the Tunnels tab posts it for its banners and the
+     * instances. GET or POST; the tunnel list posts it for its banners and the
      * unmanaged list.
      */
     public function searchAction(): array

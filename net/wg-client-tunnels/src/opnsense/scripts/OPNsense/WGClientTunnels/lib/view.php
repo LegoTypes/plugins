@@ -89,7 +89,7 @@ function wgct_gateway_status_maps(mixed $raw): array {
 }
 
 /**
- * The Tunnels tab's record of each managed tunnel: the derived record plus the
+ * The tunnel list's record of each managed tunnel: the derived record plus the
  * live status of its gateways ('unknown' when gateway_status.php does not list
  * one, null without the gateway), whether the health mirror holds its IPv4
  * gateway, and its outbound NAT sources by interface description. Pure.
