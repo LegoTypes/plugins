@@ -96,7 +96,7 @@ if (in_array('--selftest', $argv ?? [], true)) {
         ['name' => 'PRIMARY_WAN_DHCP6', 'ipprotocol' => 'inet6', 'gateway' => 'fe80::1', 'if' => 'igc1', 'defaultgw' => true],
         ['name' => 'wg-A-ipv6', 'ipprotocol' => 'inet6', 'gateway' => 'fd00::5:2', 'if' => 'wg5', 'defaultgw' => false],
         ['name' => 'wg-A', 'ipprotocol' => 'inet', 'gateway' => '10.2.0.8', 'if' => 'wg5', 'defaultgw' => false],
-        ['name' => 'WAN2', 'ipprotocol' => 'inet', 'gateway' => '192.168.12.1', 'if' => 'igc2', 'defaultgw' => true],
+        ['name' => 'WAN2', 'ipprotocol' => 'inet', 'gateway' => '198.51.100.1', 'if' => 'igc2', 'defaultgw' => true],
         ['name' => 'NO_DEFAULT6', 'ipprotocol' => 'inet6', 'if' => 'lo1', 'defaultgw' => false],
         ['name' => 'loopback', 'ipprotocol' => 'inet6', 'gateway' => '::1', 'if' => 'lo0', 'is_loopback' => true],
     ];
@@ -106,7 +106,7 @@ if (in_array('--selftest', $argv ?? [], true)) {
         ['tunnel IPv6, expanded form => match', 'inet6', 'fd00:0:0:0:0:0:5:2', 'wg5', 'wg-A-ipv6'],
         ['tunnel IPv4 default => match',        'inet',  '10.2.0.8',         'wg5',  'wg-A'],
         ['native IPv6 link-local => keep',      'inet6', 'fe80::1%igc1',     'igc1', null],
-        ['native IPv4 => keep',                 'inet',  '192.168.12.1',     'igc2', null],
+        ['native IPv4 => keep',                 'inet',  '198.51.100.1',     'igc2', null],
         ['tunnel address, other if => keep',    'inet6', 'fd00::5:2',        'wg4',  null],
         ['unknown gateway => keep',             'inet',  '203.0.113.1',      'igc1', null],
         ['not an address => keep',              'inet',  'link#5',           'lo0',  null],
