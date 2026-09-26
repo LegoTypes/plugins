@@ -96,8 +96,8 @@ function wgct_gateway_status_maps(mixed $raw): array {
  *
  * @param array $view wgct_tunnel_view()
  * @param array{status: array<string, string>, text: array<string, string>} $gw wgct_gateway_status_maps()
- * @return list<array> the tunnel records, with gw4_status, gw4_status_text, gw6_status,
- *                     gw6_status_text, held and nat_display added
+ * @return list<array> the tunnel records, with gw4_status, gw4_status_text, gw4_uuid, gw6_status,
+ *                     gw6_status_text, gw6_uuid, held and nat_display added
  */
 function wgct_tunnel_rows(array $view, array $gw): array {
     $core = $view['core'];
@@ -110,6 +110,8 @@ function wgct_tunnel_rows(array $view, array $gw): array {
         foreach (['gw4', 'gw6'] as $key) {
             $t[$key . '_status'] = $t[$key] !== null ? ($gw['status'][$t[$key]] ?? 'unknown') : null;
             $t[$key . '_status_text'] = $t[$key] !== null ? ($gw['text'][$t[$key]] ?? 'unknown') : null;
+            /* for core's Gateways page deep link, #edit=<uuid> */
+            $t[$key . '_uuid'] = $t[$key] !== null ? ($core['gateways'][$t[$key]]['uuid'] ?? '') : '';
         }
         $t['held'] = $t['gw4'] !== null && isset($held[$core['gateways'][$t['gw4']]['uuid'] ?? '']);
         $t['nat_display'] = [
@@ -190,11 +192,13 @@ function wgct_grid_row(array $t): array {
         'gw4_status' => $t['gw4_status'] ?? '',
         'gw4_status_text' => $t['gw4_status_text'] ?? '',
         'gw4_label_class' => $t['gw4'] === null ? '' : wgct_gateway_label_class($t['gw4_status'] ?? ''),
+        'gw4_uuid' => $t['gw4_uuid'] ?? '',
         'held' => $t['held'],
         'gw6' => $t['gw6'] ?? '',
         'gw6_status' => $t['gw6_status'] ?? '',
         'gw6_status_text' => $t['gw6_status_text'] ?? '',
         'gw6_label_class' => $t['gw6'] === null ? '' : wgct_gateway_label_class($t['gw6_status'] ?? ''),
+        'gw6_uuid' => $t['gw6_uuid'] ?? '',
         'nat_text' => implode('; ', $nat),
         'groups_text' => implode(', ', $t['groups']),
         'findings' => $t['findings'],
@@ -262,6 +266,8 @@ function wgct_view_selftest(): int {
 
     $a = wgct_grid_row($rows[0]);
     $b = wgct_grid_row($rows[1]);
+    wgct_check($t, 'view: a grid row carries each gateway\'s uuid for core\'s #edit= deep link, empty when there is none',
+        $a['gw4_uuid'] === 'gw-a-uuid' && $a['gw6_uuid'] === 'gw-a6-uuid' && $b['gw4_uuid'] === '' && $b['gw6_uuid'] === '');
     wgct_check($t, 'view: a grid row flattens clamps, NAT and groups into sortable text',
         $a['clamp_text'] === 'MSS v4 1336 / v6 1316' && $a['nat_text'] === 'v4: LAN, hosts_alias; v6: LAN'
         && $a['groups_text'] === 'g1, g2' && $a['mtu'] === 1376 && $a['enabled'] === '1');

@@ -64,6 +64,9 @@ Plugin Changelog
   apply, and only a complete one clears it. Create's re-run is the tunnel
   apply, which now ends with wireguard restart, so a re-run handshakes via
   the bound WAN; tunnel.php apply UUID filter|routes|first|tunnel names one
+* The Edit dialog links what Edit leaves to the core pages (gateways,
+  gateway groups, firewall rules, outbound NAT, peer, interface), each as
+  deep as the page allows; the grid's gateway links open that gateway (3.1_1)
 
 3.0
 

@@ -316,6 +316,11 @@ function wgct_edit_prefill(array $snap, string $uuid): array {
         'ipv6_others' => array_map('strval', array_keys(wgct_edit_other_ipv6($core, $uuid))),
         'unique_convention' => wgct_unique_convention($derived),
         'findings' => array_values(array_column($t['findings'], 'code')),
+        /* what Edit leaves to the core pages, for the dialog's links to them */
+        'gw4' => $t['gw4'] ?? '', 'gw4_uuid' => $t['gw4'] !== null ? ($core['gateways'][$t['gw4']]['uuid'] ?? '') : '',
+        'gw6' => $t['gw6'] ?? '', 'gw6_uuid' => $t['gw6'] !== null ? ($core['gateways'][$t['gw6']]['uuid'] ?? '') : '',
+        'groups' => $t['groups'],
+        'peer_name' => $core['peers'][$inst['peers'][0] ?? '']['name'] ?? '',
     ]];
 }
 
@@ -1028,6 +1033,9 @@ function wgct_edit_selftest(): int {
         && $f['form']['ipv6'] === true && $f['form']['unique'] === true && $f['form']['nat4'] === ['opt3', 'TailscaleNetworks']
         && $f['form']['nat6'] === ['opt3'] && $f['form']['nat_kept'] === [] && $f['form']['endpoint_ip'] === '198.51.100.10'
         && $f['form']['ipv6_others'] === [] && $f['form']['unique_convention'] === true);
+    wgct_check($t, 'edit prefill: what Edit leaves to the core pages, for their links -- the gateways with uuids, the groups, the peer\'s name',
+        $f['form']['gw4'] === 'tun_a' && $f['form']['gw4_uuid'] === 'g-a4' && $f['form']['gw6'] === 'tun_a-ipv6'
+        && $f['form']['gw6_uuid'] === 'g-a6' && $f['form']['groups'] === ['grp_a'] && $f['form']['peer_name'] === 'tun_a');
     $f = wgct_edit_prefill($snap, 'i-b');
     wgct_check($t, 'edit prefill: an IPv4-only tunnel lists the other instances\' IPv6 addresses; an unmanaged one is refused',
         $f['form']['ipv6'] === false && $f['form']['unique'] === false && $f['form']['ipv6_others'] === ['fd00::1:1']
