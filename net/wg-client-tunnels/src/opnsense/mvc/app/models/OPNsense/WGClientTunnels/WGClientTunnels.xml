@@ -1,7 +1,7 @@
 <model>
     <mount>//OPNsense/WGClientTunnels</mount>
     <version>3.0.0</version>
-    <description>WireGuard client tunnels settings</description>
+    <description>WireGuard upstream tunnels settings</description>
     <items>
         <enabled type="BooleanField">
             <Default>0</Default>

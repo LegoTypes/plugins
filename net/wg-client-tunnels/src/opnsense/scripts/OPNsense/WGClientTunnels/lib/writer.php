@@ -132,7 +132,7 @@ function wgct_action_snapshot(): array {
  */
 function wgct_action_commit(callable $mutate, string $description): array {
     try {
-        $commit = wgct_locked_commit($mutate, 'wg client tunnels: ' . $description);
+        $commit = wgct_locked_commit($mutate, 'wg upstream tunnels: ' . $description);
     } catch (\Throwable $e) {
         Config::getInstance()->forceReload();
         throw $e;
