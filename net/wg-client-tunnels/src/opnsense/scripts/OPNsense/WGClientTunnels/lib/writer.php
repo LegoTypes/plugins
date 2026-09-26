@@ -530,7 +530,7 @@ function wgct_sentinel_commit(bool $dry): array {
             'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $changes,
             'gateways' => $routing ? array_values(WGCT_SENTINELS) : [], 'steps' => $plan['steps'],
         ])];
-    }, 'ensure sentinel');
+    }, 'default-route exclusion (sentinel)');
 }
 
 /**

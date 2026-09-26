@@ -804,6 +804,8 @@
             },
             onAction: function () { refreshAll(); }
         });
+        /* the sentinel's repair belongs with the switch for the other half of the default-route exclusion */
+        $('#wgclienttunnels\\.default_guard').closest('td').append($('#wgct-exclusion-wrap').detach().show());
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
         /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
@@ -841,7 +843,7 @@
         $('#btn_dialogEdit_save').on('click', submitEdit);
         $('#dialogEdit').on('hidden.bs.modal', function () { $('#edit\\.config').val(''); });
         $('#btn-sentinel').on('click', function () {
-            confirmAction("{{ lang._('Ensure sentinel') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
+            confirmAction("{{ lang._('Check default-route exclusion') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
         });
         $('#btn-refresh').on('click', refreshAll);
         /* the grid's own refresh button reloads the grid; bring the banners and the unmanaged list along */
@@ -859,8 +861,6 @@
                 data-label="{{ lang._('Apply') }}"
                 data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
                 type="button"></button>
-        <button class="btn btn-default" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Ensure sentinel') }}</button>
-        <div><small class="text-muted">{{ lang._('Ensure sentinel creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing it.') }}</small></div>
     </div>
 </div>
 <div class="content-box" id="tunnels" style="padding: 1em; margin-top: 1em;">
@@ -887,6 +887,10 @@
     </table>
 </div>
 
+<div id="wgct-exclusion-wrap" style="display: none; margin-top: 0.5em;">
+    <button class="btn btn-default btn-xs" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Check default-route exclusion') }}</button>
+    <small class="text-muted">{{ lang._('Creates or repairs NO_DEFAULT4 and NO_DEFAULT6, shows what it would change first') }}</small>
+</div>
 <span id="wgct-measure-wrap" style="display: none;">
     <button type="button" class="btn btn-default btn-xs" id="wgct-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
     <small class="text-muted" id="wgct-mtu-why"></small>
