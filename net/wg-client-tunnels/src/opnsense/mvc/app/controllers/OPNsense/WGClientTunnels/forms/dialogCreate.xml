@@ -60,4 +60,10 @@
         <type>select_multiple</type>
         <help>The same, for IPv6.</help>
     </field>
+    <field>
+        <id>create.references</id>
+        <label>Tunnel References</label>
+        <type>info</type>
+        <help>Create builds the WireGuard instance and peer, the interface assignment, both gateways, the endpoint route and the outbound NAT. The rest is set on these core pages; add the new gateways to a gateway group there (or with set_gateway_tiers.php). After Create, each tunnel's Edit links its own gateways, groups, rules, peer and interface.</help>
+    </field>
 </form>
