@@ -41,8 +41,14 @@ const WGCT_FINDINGS = [
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
 ];
 
-/* the priority reserved for the WAN pin and inner-source block rules */
-const WGCT_PIN_PRIORITY = 100000;
+/*
+ * The priority of the WAN pin and inner-source block rules: the top of core's early automatic band
+ * (sort_order "0nnnnn", after core's own early rules at 1, 5 and 10000 and before every floating rule
+ * at 200000), so pf evaluates them where it did at 100000 while core's Rules page files them under
+ * "Automatically generated rules". At 100000 the rows fell in band 1, which the page has no group for,
+ * and it showed no rules at all.
+ */
+const WGCT_PIN_PRIORITY = 99999;
 
 /* the pf anchor name for the MSS clamp lines */
 const WGCT_MSS_ANCHOR = 'wgclienttunnels_mss';
