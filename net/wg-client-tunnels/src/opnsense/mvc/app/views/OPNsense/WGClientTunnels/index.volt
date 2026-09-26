@@ -21,7 +21,7 @@
             routes: '/ui/routes',
             nat: '/ui/firewall/source_nat',
             groups: '/ui/routing/gateway_groups',
-            rules: '/ui/firewall/filter_rule'
+            rules: '/ui/firewall/filter'
         };
         /* core's deep links (opnsense_ui.js getUrlHash()): the page's grid opens or filters on the hash value */
         function hashValue(value) {
@@ -420,6 +420,7 @@
                 $('#wgct-create-errors').empty();
                 handleFormValidation('frm_dialogCreate', {});
                 natRows();
+                $('#create\\.references').empty().append(referencesTable(noReferences));
                 $('#dialogCreate').modal('show');
             });
         }
@@ -559,10 +560,12 @@
                 $('#edit\\.mtu'), $('#wgct-edit-mtu-why'), $('#wgct-edit-measure'));
         }
 
-        /* Tunnel References: what Edit leaves to the core pages, each linked as deep as the page allows -- a
-         * gateway opens its dialog, the rules page selects the interface, Source NAT and the peers grid filter on
-         * it. A topic with nothing that references this tunnel still gets its row, linking the page by its menu path. */
-        function coreLinks(f) {
+        /* Tunnel References: what Create and Edit leave to the core pages, each linked as deep as the page allows --
+         * a gateway opens its dialog, the rules page selects the interface, Source NAT and the peers grid filter on
+         * it. A topic with nothing that references the tunnel (every topic, before Create) still gets its row,
+         * linking the page by its menu path. f: {gw4, gw4_uuid, gw6, gw6_uuid, groups, peer_name, interface} */
+        var noReferences = {gw4: '', gw4_uuid: '', gw6: '', gw6_uuid: '', groups: [], peer_name: '', interface: ''};
+        function referencesTable(f) {
             var body = $('<tbody/>');
             var row = function (title, nodes, pageName, pageHref) {
                 var cell = $('<td/>');
@@ -571,6 +574,7 @@
                 });
                 body.append($('<tr/>').append($('<th style="width: 35%;"/>').text(title), cell));
             };
+            var opt = f.interface;
             var gateways = [];
             $.each([[f.gw4, f.gw4_uuid], [f.gw6, f.gw6_uuid]], function (i, g) {
                 if (g[0]) {
@@ -580,13 +584,15 @@
             row("{{ lang._('Gateways') }}", gateways, "{{ lang._('System: Gateways: Configuration') }}", links.gateways);
             row("{{ lang._('Gateway groups') }}", $.map(f.groups, function (g) { return link(g, links.groups); }),
                 "{{ lang._('System: Gateways: Group') }}", links.groups);
-            row("{{ lang._('Firewall rules') }}", [link(f.interface, links.rules + '#interface=' + hashValue(f.interface))]);
-            row("{{ lang._('Outbound NAT') }}", [link(f.interface, links.nat + '#search=' + hashValue(f.interface))]);
+            row("{{ lang._('Firewall rules') }}", opt ? [link(opt, links.rules + '#interface=' + hashValue(opt))] : [],
+                "{{ lang._('Firewall: Rules') }}", links.rules);
+            row("{{ lang._('Outbound NAT') }}", opt ? [link(opt, links.nat + '#search=' + hashValue(opt))] : [],
+                "{{ lang._('Firewall: NAT: Source NAT') }}", links.nat);
             row("{{ lang._('Peer') }}", f.peer_name ? [link(f.peer_name, links.peers + '&search=' + hashValue(f.peer_name))] : [],
                 "{{ lang._('VPN: WireGuard: Peers') }}", links.peers);
-            row("{{ lang._('Interface') }}", [link(f.interface, links.iface + hashValue(f.interface))]);
-            $('#edit\\.references').empty().append(
-                $('<table class="table table-condensed" style="margin-bottom: 0;"/>').append(body));
+            row("{{ lang._('Interface') }}", opt ? [link(opt, links.iface + hashValue(opt))] : [],
+                "{{ lang._('Interfaces: Assignments') }}", links.assignments);
+            return $('<table class="table table-condensed" style="margin-bottom: 0;"/>').append(body);
         }
 
         function openEdit(t) {
@@ -616,7 +622,7 @@
                 var kept = $('#wgct-edit-kept').empty();
                 $.each(f.nat_kept, function (i, k) { kept.append($('<div/>').text(plain(k))); });
                 $('#wgct-edit-kept-wrap').toggle(f.nat_kept.length > 0);
-                coreLinks(f);
+                $('#edit\\.references').empty().append(referencesTable(f));
                 $('#wgct-edit-mtu-why').text(f.mtu_effective !== f.mtu
                     ? "{{ lang._('The interface MTU overrides this value (finding mtu-override):') }} " + f.mtu_effective : '');
                 $('#wgct-edit-errors').empty();
