@@ -756,6 +756,17 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] render_firewall: enabled with pins and MSS => rules, anchor, rendered record\n", $ok ? 'PASS' : 'FAIL');
 
+    /* core's Rules page (Firewall/filter_rule.volt) files a row by the first digit of its sort_order,
+     * sprintf("%06d.1%06d", priority, sequence): 0 automatic (early), 2 floating, 3 group, 4 interface,
+     * 5 automatic (late), 6 defunct. A row in any other band has no group, the page's grouping throws,
+     * and it shows no rules at all. The pins belong after core's early automatic rules (up to 10000) and
+     * before every floating rule, i.e. at the top of band 0. */
+    $band = substr(sprintf('%06d', WGCT_PIN_PRIORITY), 0, 1);
+    $ok = $band === '0' && WGCT_PIN_PRIORITY > 10000;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] render_firewall: pins sit in core's early automatic band (sort_order digit %s), after its own early rules\n", $ok ? 'PASS' : 'FAIL', $band);
+
     /* case 2: $wanted throws => anchor is kept (registered before $wanted()
      * runs), no rules, failed with the message */
     $fw = $makeFw();
