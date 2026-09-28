@@ -1099,6 +1099,9 @@ function wgct_actions_selftest(): int {
     $s['local6'] = null;
     wgct_check($t, 'create: (c) the firewall\'s addresses unreadable => monitor6 refused with a retry, never accepted unchecked',
         str_contains(wgct_plan_create($s, $req, $conf)['errors']['monitor6'] ?? '', 'could not read'));
+    $q = wgct_plan_create($s, ['ipv6' => false, 'monitor6' => ''] + $req, $conf);
+    wgct_check($t, 'create: (c2) no monitor6 to check => the unread firewall addresses (null) refuse nothing',
+        !isset($q['errors']['monitor6']) && count($q['gateways']) === 1);
     wgct_check($t, 'create: (d) monitor6 on the firewall\'s own network => refused',
         str_contains(wgct_plan_create($snap, ['monitor6' => '2001:db8:1:1::5'] + $req, $conf)['errors']['monitor6'] ?? '', 'own network'));
     wgct_check($t, 'create: (e) another tunnel\'s IPv6 monitor => refused',
