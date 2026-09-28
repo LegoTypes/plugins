@@ -572,12 +572,7 @@ function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleU
         $plan['errors'][] = ($t['name'] !== '' ? $t['name'] : $uuid) . ' is not unbound; a bound tunnel changes WAN on System > Routes';
         return $plan;
     }
-    /* S1: removed in Task 10 */
-    if ($t['endpoint_family'] === 'inet6') {
-        $plan['errors'][] = 'IPv6 endpoints are bound on System > Routes until the next release';
-        return $plan;
-    }
-    $wanError = wgct_wan_error($core, $wan);
+    $wanError = wgct_wan_error($core, $wan, (string)$t['endpoint_family']);
     if ($wanError !== null) {
         $plan['errors'][] = $wanError;
     }
@@ -585,8 +580,8 @@ function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleU
     if ($staleUuid !== '' && !isset($stale[$staleUuid])) {
         $plan['errors'][] = 'the route to delete is not a stale endpoint route';
     }
-    $network = $t['endpoint_ip'] . '/32';
-    $same = array_filter($core['routes'], fn (array $r): bool => $r['network'] === $network);
+    $network = wgct_host_network($t['endpoint_ip']);
+    $same = array_filter($core['routes'], fn (array $r): bool => (wgct_host_route($r['network'])['ip'] ?? null) === $t['endpoint_ip']);
     if (count($same) > 1) {
         $plan['errors'][] = "several routes to {$network} exist; keep one on System > Routes first";
     }
@@ -1189,12 +1184,14 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_remove($s6, [], 'i-d');
     wgct_check($t, 'remove: an IPv6 endpoint route (/128, non-canonical) is deleted with the tunnel',
         isset($p['routes']['r-d']) && $p['routes']['r-d'] === '2001:DB8:0::13/128');
-    /* S1: Rebind refuses an IPv6 endpoint */
+    /* S1: removed in Task 10 */
     $s6u = $s6;
     unset($s6u['core']['routes']['r-d']);
+    $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A6', '');
+    wgct_check($t, 'rebind: an unbound IPv6 endpoint gets a /128 via an IPv6 gateway',
+        $p['errors'] === [] && $p['route']['fields']['network'] === '2001:db8::13/128' && $p['route']['fields']['gateway'] === 'WAN_A6');
     $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A', '');
-    wgct_check($t, 'rebind (S1): an IPv6 endpoint is refused until the next release',
-        $p['errors'] === ['IPv6 endpoints are bound on System > Routes until the next release']);
+    wgct_check($t, 'rebind: an IPv6 endpoint on an IPv4 gateway is refused', $p['errors'] === ['WAN_A is IPv4; this endpoint is IPv6']);
     /* IPv6 endpoints: /128 via the IPv6 WAN gateway; family mismatch, 6rd/6to4 and monitor refusals (S1 lifted) */
     $conf6 = ['endpoint_ip' => '2001:db8::12', 'endpoint_family' => 'inet6'] + $conf;
     $p = wgct_plan_create($snap, ['wan' => 'WAN_A6'] + $req, $conf6);
