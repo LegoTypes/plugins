@@ -187,6 +187,7 @@ function wgct_grid_row(array $t): array {
         'interface' => $t['interface'] ?? '',
         'interface_descr' => $t['interface_descr'],
         'endpoint' => $t['endpoint'],
+        'endpoint_family' => $t['endpoint_family'] ?? '',
         'bound_wan' => $t['bound_wan'] ?? '',
         'mtu' => (int)$t['mtu'],
         'clamp_text' => $clamp === [] ? '' : 'MSS ' . implode(' / ', $clamp),
