@@ -616,7 +616,8 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     $wanAfter = $req['wan'] ?? $wanNow;
     /* the bound gateway must carry the new endpoint's family: infer it when the request names none */
     $wanNowFamily = $wanNow !== null ? ($core['gateways'][$wanNow]['ipprotocol'] ?? null) : null;
-    if ($req['wan'] === null && $endpointAfter !== $endpointNow && $wanNow !== null && $wanNowFamily !== $familyAfter) {
+    if (($req['wan'] === null || $req['wan'] === $wanNow) && $endpointAfter !== $endpointNow && $wanNow !== null
+        && $wanNowFamily !== null && $wanNowFamily !== $familyAfter) {
         $bindIf = $core['gateways'][$wanNow]['interface'] ?? '';
         $candidates = [];
         foreach ($core['gateways'] as $gwName => $g) {
@@ -1059,6 +1060,16 @@ function wgct_edit_selftest(): int {
     $p = $plan(['uuid' => 'i-b', 'wan' => 'WAN_A6'] + $none, $swapB(['endpoint_ip' => '2001:db8::44']), $s);
     wgct_check($t, 'edit (f): a swap onto another instance\'s endpoint written differently => refused on config',
         str_contains($p['errors']['config'] ?? '', '2001:db8::44 is already the endpoint of'));
+    /* (g) the GUI always sends the current WAN, never null: that still counts as "none named" for inference */
+    $p = $plan(['uuid' => 'i-d', 'wan' => 'WAN_A'] + $none, $swapB(['endpoint_ip' => '2001:db8::45']));
+    wgct_check($t, 'edit (g): a GUI-shaped swap to IPv6 (wan = the current IPv4 gateway) => inferred IPv6 gateway',
+        $p['errors'] === [] && ($p['routes']['add'][0]['gateway'] ?? '') === 'WAN_A6');
+    /* (h) an unsaved bound gateway (no family to compare) skips inference; the route block's own error stands */
+    $s = $snap;
+    $s['core']['routes']['r-d']['gateway'] = 'NOPE';
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '198.51.100.46']), $s);
+    wgct_check($t, 'edit (h): an IPv4 swap on a tunnel bound through an unsaved gateway keeps today\'s message',
+        ($p['errors']['wan'] ?? '') === 'no gateway named NOPE');
 
     /* ---- blocking findings, managed list ---- */
     $s = $snap;
