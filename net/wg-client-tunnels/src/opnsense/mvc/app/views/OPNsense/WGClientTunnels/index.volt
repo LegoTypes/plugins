@@ -590,7 +590,9 @@
             var current = $('#edit\\.wan').val();
             var selected = mismatch ? f.wan
                 : (wans.some(function (w) { return w.value === current; }) ? current : (wans.length ? wans[0].value : ''));
-            fillSelect('#edit\\.wan', wans, selected === '' ? [] : [selected]);
+            /* selected may legitimately be '' -- the unbound placeholder's own value, still one of wans --
+             * so it is always passed through, never dropped as if nothing were selected */
+            fillSelect('#edit\\.wan', wans, [selected]);
             editRows();
         }
 
