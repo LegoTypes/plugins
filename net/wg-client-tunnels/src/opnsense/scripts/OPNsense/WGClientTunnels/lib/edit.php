@@ -619,7 +619,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     /* the bound gateway must carry the new endpoint's family: infer it when the request names none */
     $wanNowFamily = $wanNow !== null ? ($core['gateways'][$wanNow]['ipprotocol'] ?? null) : null;
     if (($req['wan'] === null || $req['wan'] === $wanNow) && $endpointAfter !== $endpointNow && $wanNow !== null
-        && $wanNowFamily !== null && $wanNowFamily !== $familyAfter) {
+        && $wanNowFamily !== null && $wanNowFamily !== $familyAfter && !isset($e['config'])) {
         $bindIf = $core['gateways'][$wanNow]['interface'] ?? '';
         $candidates = [];
         foreach ($core['gateways'] as $gwName => $g) {
@@ -629,8 +629,8 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
         if (count($candidates) === 1) {
             $wanAfter = $candidates[0];
-            $ifDescr = $core['interfaces'][$bindIf]['descr'] ?? $bindIf;
-            $c[] = "bound to {$wanAfter}, " . ($ifDescr !== '' ? $ifDescr : $bindIf) . "'s " . ($familyAfter === 'inet6' ? 'IPv6' : 'IPv4') . ' gateway';
+            $ifDescr = ($core['interfaces'][$bindIf]['descr'] ?? '') !== '' ? $core['interfaces'][$bindIf]['descr'] : $bindIf;
+            $c[] = "bound to {$wanAfter}, {$ifDescr}'s " . ($familyAfter === 'inet6' ? 'IPv6' : 'IPv4') . ' gateway';
         } else {
             $e['wan'] = $familyAfter === 'inet6' ? 'the new endpoint is IPv6: choose an IPv6 gateway' : 'the new endpoint is IPv4: choose an IPv4 gateway';
         }
@@ -1072,6 +1072,55 @@ function wgct_edit_selftest(): int {
     $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '198.51.100.46']), $s);
     wgct_check($t, 'edit (h): an IPv4 swap on a tunnel bound through an unsaved gateway keeps today\'s message',
         ($p['errors']['wan'] ?? '') === 'no gateway named NOPE');
+    /* (i) a refused new endpoint (shared with another instance, the other family) reports config alone: the
+     * inference never runs once config already refuses it, so no stray wan error or "bound to" line joins it */
+    $s = $snap;
+    $s['core']['peers']['p-b']['serveraddress'] = '2001:db8::49';
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '2001:db8::49']), $s);
+    wgct_check($t, 'edit (i): a swap to another instance\'s endpoint of the other family => refused on config alone, no wan error or "bound to" line',
+        ($p['errors']['config'] ?? '') !== '' && !isset($p['errors']['wan']) && !$has($p['changes'], 'bound to'));
+    /* (j) two IPv6 gateways on the bound interface: an inferred swap to IPv6 stays ambiguous, refused not guessed */
+    $s = $snap;
+    $s['core']['gateways']['WAN_A6B'] = ['uuid' => 'g-wa6b', 'interface' => 'opt1', 'ipprotocol' => 'inet6', 'gateway' => 'fe80::2',
+        'monitor' => '', 'disabled' => false, 'force_down' => false, 'losshigh' => '20', 'losslow' => '10', 'time_period' => '80'];
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '2001:db8::48']), $s);
+    wgct_check($t, 'edit (j): two IPv6 gateways on the bound interface => a swap to IPv6 with no gateway named is refused, not guessed',
+        ($p['errors']['wan'] ?? '') === 'the new endpoint is IPv6: choose an IPv6 gateway');
+    /* (k) the other direction: an IPv6-endpoint tunnel swapped to IPv4 infers the bound interface's IPv4 gateway */
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '198.51.100.47']), $s);
+    wgct_check($t, 'edit (k): an IPv6-endpoint tunnel swapped to IPv4 with no gateway named => the bound interface\'s single IPv4 gateway',
+        $p['errors'] === [] && ($p['routes']['add'][0]['gateway'] ?? '') === 'WAN_A'
+        && ($p['routes']['add'][0]['network'] ?? '') === '198.51.100.47/32' && isset($p['routes']['delete']['r-d'])
+        && $has($p['changes'], 'bound to WAN_A'));
+    /* (l) an IPv6-to-IPv6 swap deletes the old /128 route and adds the new one via the same gateway */
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '2001:db8::14']), $s);
+    wgct_check($t, 'edit (l): an IPv6-to-IPv6 swap deletes the old /128 route and adds the new one via the same gateway',
+        $p['errors'] === [] && ($p['routes']['delete']['r-d'] ?? '') === '2001:db8::13/128'
+        && $p['routes']['add'] === [['network' => '2001:db8::14/128', 'gateway' => 'WAN_A6', 'descr' => 'wireguard - tun_d', 'enabled' => '1']]);
+    /* (m) the tunnel's own peer serveraddress written non-canonically: a swap to the same endpoint with the
+     * same keys is a no-op, not a spurious canonicalizing write */
+    $swapD = ['public' => ['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => []], 'peer_pubkey' => $key('R'),
+                           'endpoint_ip' => '2001:db8::13', 'endpoint_port' => '51820', 'has_psk' => false],
+              'own_pubkey' => $key('G'), 'psk_same' => true];
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:DB8:0::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapD, $s);
+    wgct_check($t, 'edit (m): the same endpoint written non-canonically, same keys => no peer write, no route work',
+        $p['errors'] === [] && $p['mode'] === 'none' && $p['peer'] === [] && $p['routes'] === ['add' => [], 'update' => [], 'delete' => []]);
+    /* (n) a non-binding edit on an IPv6-endpoint tunnel is otherwise ordinary */
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $p = $plan(['uuid' => 'i-d', 'mtu' => 1400] + $none, null, $s);
+    wgct_check($t, 'edit (n): an MTU change on an IPv6-endpoint tunnel succeeds like any other',
+        $p['errors'] === [] && $p['instance'] === ['mtu' => '1400'] && $p['mode'] === 'tunnel');
 
     /* ---- blocking findings, managed list ---- */
     $s = $snap;
