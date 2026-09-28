@@ -206,8 +206,35 @@ function wgct_core_snapshot() {
     /* the plugin's route switch (the monitor routes, spec 3.5) and core's dpinger defaults, read once here so
      * the derivation stays pure */
     $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
-    $core['dpinger_defaults'] = \OPNsense\Routing\FieldTypes\GatewayField::getDpingerDefaults();
+    $core['dpinger_defaults'] = [];
+    try {
+        if (is_callable([\OPNsense\Routing\FieldTypes\GatewayField::class, 'getDpingerDefaults'])) {
+            $core['dpinger_defaults'] = wgct_dpinger_defaults(\OPNsense\Routing\FieldTypes\GatewayField::getDpingerDefaults());
+        }
+    } catch (\Throwable $e) {
+        /* advisory only: a core that no longer offers the defaults must not break the filter and mirror paths */
+    }
     return $core;
+}
+
+/**
+ * Core's dpinger defaults as the derivation uses them: the threshold entries that are whole numbers. Pure.
+ *
+ * @param mixed $raw whatever GatewayField::getDpingerDefaults() returned
+ * @return array<string, int> threshold name => default; [] when $raw is unusable
+ */
+function wgct_dpinger_defaults(mixed $raw): array {
+    if (!is_array($raw)) {
+        return [];
+    }
+    $defaults = [];
+    foreach (['latencylow', 'latencyhigh', 'losslow', 'losshigh'] as $name) {
+        $v = $raw[$name] ?? null;
+        if (is_int($v) || (is_string($v) && ctype_digit($v))) {
+            $defaults[$name] = (int)$v;
+        }
+    }
+    return $defaults;
 }
 
 /**
@@ -1287,6 +1314,14 @@ function wgct_tunnels_selftest() {
         && wgct_threshold('x', 500) === null;
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] derive: (s) empty thresholds with no defaults are not compared; wgct_threshold\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (t) core's dpinger defaults are read fail-soft: only the int thresholds survive */
+    $ok = wgct_dpinger_defaults(null) === [] && wgct_dpinger_defaults('x') === []
+        && wgct_dpinger_defaults(['latencyhigh' => 'x', 'losshigh' => '', 'losslow' => null, 'latencylow' => 2.5]) === []
+        && wgct_dpinger_defaults(['latencyhigh' => 500, 'losshigh' => '20', 'interval' => 1, 'other' => 7])
+            === ['latencyhigh' => 500, 'losshigh' => 20];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (t) wgct_dpinger_defaults keeps int thresholds, drops the rest\n", $ok ? 'PASS' : 'FAIL');
 
     /* gateway_config.php's protocol (spec 3.4.1) */
     $c = $base();
