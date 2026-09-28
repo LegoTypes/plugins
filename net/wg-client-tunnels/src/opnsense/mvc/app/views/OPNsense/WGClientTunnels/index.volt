@@ -266,7 +266,8 @@
         function fillSelect(selector, items, selected) {
             var select = $(selector).empty();
             $.each(items, function (i, it) {
-                select.append($('<option/>').val(it.value).text(plain(it.label)).prop('selected', selected.indexOf(it.value) !== -1));
+                select.append($('<option/>').val(it.value).text(plain(it.label))
+                    .prop('selected', selected.indexOf(it.value) !== -1).prop('disabled', !!it.disabled));
             });
             select.selectpicker('refresh');
         }
@@ -275,6 +276,19 @@
         function wansFor(family) {
             var f = family || 'inet';
             return options.wans.filter(function (w) { return w.family === f; });
+        }
+
+        /* wansFor(family), or a single disabled hint option in its place when none is saved: a WAN select
+         * for a family with nothing to offer is never left empty */
+        function wansHint(family) {
+            var wans = wansFor(family);
+            if (wans.length > 0) {
+                return wans;
+            }
+            var f = family || 'inet';
+            return [{value: '', disabled: true, label: f === 'inet6'
+                ? "{{ lang._('(no saved IPv6 gateway: save the WAN\'s DHCPv6 gateway once on System > Gateways)') }}"
+                : "{{ lang._('(no saved IPv4 gateway)') }}"}];
         }
 
         /* the public parts of a wg-quick config, read in the browser; the private key is never touched */
@@ -361,7 +375,7 @@
                 natRows();
             }
             /* the WAN list follows the pasted endpoint's family (IPv4 with no config pasted, ruling: same list as before) */
-            var wans = wansFor(p.endpoint_family);
+            var wans = wansHint(p.endpoint_family);
             var current = $('#create\\.wan').val();
             fillSelect('#create\\.wan', wans,
                 wans.some(function (w) { return w.value === current; }) ? [current] : (wans.length ? [wans[0].value] : []));
@@ -422,7 +436,7 @@
                 $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.mtu').val('');
                 $('#create\\.ipv6').prop('checked', false).prop('disabled', true);
                 $('#create\\.unique').prop('checked', false);
-                var createWans = wansFor('inet');
+                var createWans = wansHint('inet');
                 fillSelect('#create\\.wan', createWans, createWans.length ? [createWans[0].value] : []);
                 fillSelect('#create\\.template', [{value: '', label: "{{ lang._('(none: choose NAT sources)') }}"}].concat(options.templates),
                     options.templates.length ? [options.templates[0].value] : ['']);
@@ -488,7 +502,7 @@
 
         function openRebind(t) {
             loadOptions(function () {
-                var rebindWans = wansFor(t.endpoint_family);
+                var rebindWans = wansHint(t.endpoint_family);
                 fillSelect('#rebind\\.wan', rebindWans, rebindWans.length ? [rebindWans[0].value] : []);
                 var stale = options.stale_routes.filter(function (s) { return s.family === (t.endpoint_family || 'inet'); });
                 fillSelect('#rebind\\.stale', [{value: '', label: "{{ lang._('(keep every route)') }}"}].concat(stale), ['']);
@@ -535,30 +549,36 @@
             fillSelect(selector, choices, selected);
         }
 
-        /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: null when none
-         * is pasted). The gateways offered are the ENDPOINT's family -- the pasted config's, else the tunnel's
-         * own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN move is how a tunnel bound
-         * through a gateway of the other family is repaired (spec 3.8), so an IPv6 endpoint bound by a /128 via
-         * an IPv4 gateway is offered the IPv6 gateways. First comes the unbound placeholder when the tunnel has
-         * no bound WAN (Rebind is what binds one), or, when a pasted config's family differs from the bound
-         * gateway's saved family, a placeholder for the same WAN's gateway of the new family: its value is the
-         * bound WAN itself, which the planner treats as none named and replaces with the single gateway of the
-         * new family on the same interface (edit.php, the endpoint route; an unsaved bound gateway has no
-         * family, and the planner infers nothing for it). The bound WAN is always listed: when neither that
-         * placeholder nor the family's gateways name it (the other family, a sentinel, a WireGuard-interface
-         * gateway, an unsaved automatic DHCPv6 gateway), it is appended under its own name, so neither the
-         * opener nor a later keystroke drops it out from under the tunnel. */
+        /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: wgPublic()'s
+         * result, or null when none is pasted). The gateways offered are the ENDPOINT's family -- the pasted
+         * config's, else the tunnel's own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN
+         * move is how a tunnel bound through a gateway of the other family is repaired (spec 3.8), so an IPv6
+         * endpoint bound by a /128 via an IPv4 gateway is offered the IPv6 gateways. A family with no saved
+         * gateway gets one disabled hint option in its place (wansHint), never an empty list. First comes the
+         * unbound placeholder when the tunnel has no bound WAN (Rebind is what binds one), or, when the pasted
+         * config's family differs from the bound gateway's saved family AND also changes the endpoint address
+         * (else the planner infers nothing -- matching its own "on an endpoint change" rule), a placeholder for
+         * the same WAN's gateway of the new family: its value is the bound WAN itself, which the planner treats
+         * as none named and replaces with the single gateway of the new family on the same interface (edit.php,
+         * the endpoint route; an unsaved bound gateway has no family, and the planner infers nothing for it).
+         * The bound WAN is always listed: when neither that placeholder nor the family's gateways name it (the
+         * other family, a sentinel, a WireGuard-interface gateway, an unsaved automatic DHCPv6 gateway), it is
+         * appended under its own name, so neither the opener nor a later keystroke drops it out from under the
+         * tunnel. */
         function editWans(pasted) {
             var f = editState.form;
             var wans = [];
+            var family = pasted ? pasted.endpoint_family : null;
+            var endpointChanged = !!(pasted && pasted.endpoint_ip !== null && (family === 'inet6'
+                ? expand6(pasted.endpoint_ip) !== expand6(f.endpoint_ip) : pasted.endpoint_ip !== f.endpoint_ip));
             if (!f.wan) {
                 wans.push({value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"});
-            } else if (pasted && f.wan_family && pasted !== f.wan_family) {
-                wans.push({value: f.wan, label: pasted === 'inet6'
+            } else if (endpointChanged && f.wan_family && family && family !== f.wan_family) {
+                wans.push({value: f.wan, label: family === 'inet6'
                     ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
                     : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"});
             }
-            wans = wans.concat(wansFor(pasted || f.endpoint_family || 'inet'));
+            wans = wans.concat(wansHint(family || f.endpoint_family || 'inet'));
             if (f.wan && !wans.some(function (w) { return w.value === f.wan; })) {
                 wans.push({value: f.wan, label: f.wan});
             }
@@ -600,7 +620,7 @@
              * on the transition into a family mismatch the placeholder, whose value is the bound WAN, stays
              * selected -- else it falls back to the bound WAN (always listed), so undoing a family change never
              * proposes a WAN move nobody asked for */
-            var wans = editWans(p.endpoint_family);
+            var wans = editWans(p);
             var listed = function (v) { return wans.some(function (w) { return w.value === v; }); };
             var current = $('#edit\\.wan').val();
             var selected = listed(current) ? current : (listed(f.wan) ? f.wan : (wans.length ? wans[0].value : ''));
