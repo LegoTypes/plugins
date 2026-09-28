@@ -34,8 +34,8 @@ Features:
     other WAN
   - forces each IPv6 tunnel gateway down along with its IPv4 tunnel when
     that tunnel loses packets, loses its monitor or is forced down, using
-    that gateway's loss thresholds with hysteresis; core's own monitor on
-    the IPv6 gateway, pinged through the tunnel, takes it down when IPv6
+    the IPv4 gateway's loss thresholds with hysteresis; core's own monitor
+    on the IPv6 gateway, pinged through the tunnel, takes it down when IPv6
     alone fails
   - ignores a freshly restarted monitor's readings until they settle, so
     a gateway is never released in the middle of an outage
