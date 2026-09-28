@@ -83,11 +83,12 @@ configure_gateway() {
 # Run "route add|delete" for a monitor's host route: 0 on success, which also
 # forgets an earlier failure of that (monitor, device); on failure, log once
 # per (monitor, device) in route_failures, so a persistent failure does not
-# repeat every minute.
+# repeat every minute. No -q here: route(8) prints nothing under it, and the
+# log line carries route's reason.
 monitor_route() {
-    local verb="$1" monitor="$2" dev="$3" out file="${STATE_DIR}/route_failures"
+    local verb="$1" monitor="$2" dev="$3" out reason file="${STATE_DIR}/route_failures"
     shift 3
-    if out=$(/sbin/route -q -n "${verb}" -6 -host "${monitor}" "$@" 2>&1); then
+    if out=$(/sbin/route -n "${verb}" -6 -host "${monitor}" "$@" 2>&1); then
         if grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
             grep -vxF "${monitor}|${dev}" "${file}" > "${file}.tmp"
             mv -f "${file}.tmp" "${file}"
@@ -96,7 +97,8 @@ monitor_route() {
     fi
     if ! grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
         printf '%s|%s\n' "${monitor}" "${dev}" >> "${file}"
-        log_msg "route ${verb} for monitor ${monitor} on ${dev} failed: $(printf '%s' "${out}" | tr '\n' ' ')"
+        reason=$(printf '%s' "${out}" | tr '\n' ' ')
+        log_msg "route ${verb} for monitor ${monitor} on ${dev} failed${reason:+: ${reason}}"
     fi
     return 1
 }
