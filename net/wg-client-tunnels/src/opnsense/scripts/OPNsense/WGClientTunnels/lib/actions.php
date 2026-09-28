@@ -291,6 +291,10 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         $e['wan'] = $wanError;
     }
     $endpoint = $conf['endpoint_ip'];
+    /* S1: IPv6 endpoints are created from the next release (spec 2026-09-27 section 6); removed in Task 8 */
+    if (wgct_ip_family($endpoint) === 'inet6') {
+        $e['config'] = 'IPv6 endpoints arrive in the next release';
+    }
     $network = $endpoint . '/32';
     $same = array_filter($core['routes'], fn (array $r): bool => $r['network'] === $network);
     if (count($same) > 1) {
@@ -561,11 +565,16 @@ function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleU
         $plan['errors'][] = ($t['name'] !== '' ? $t['name'] : $uuid) . ' is not unbound; a bound tunnel changes WAN on System > Routes';
         return $plan;
     }
+    /* S1: removed in Task 10 */
+    if ($t['endpoint_family'] === 'inet6') {
+        $plan['errors'][] = 'IPv6 endpoints are bound on System > Routes until the next release';
+        return $plan;
+    }
     $wanError = wgct_wan_error($core, $wan);
     if ($wanError !== null) {
         $plan['errors'][] = $wanError;
     }
-    $stale = wgct_stale_candidates($core);
+    $stale = array_filter(wgct_stale_candidates($core), fn (array $b): bool => $b['family'] === $t['endpoint_family']);
     if ($staleUuid !== '' && !isset($stale[$staleUuid])) {
         $plan['errors'][] = 'the route to delete is not a stale endpoint route';
     }
@@ -587,8 +596,8 @@ function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleU
         $plan['changes'][] = "static route {$network} via {$wan}";
     }
     if ($staleUuid !== '') {
-        $plan['delete'] = ['uuid' => $staleUuid, 'network' => $stale[$staleUuid]['ip'] . '/32'];
-        $plan['changes'][] = "delete the stale route {$stale[$staleUuid]['ip']}/32 via {$stale[$staleUuid]['gateway']}, and its kernel route";
+        $plan['delete'] = ['uuid' => $staleUuid, 'network' => wgct_host_network($stale[$staleUuid]['ip'])];
+        $plan['changes'][] = 'delete the stale route ' . wgct_host_network($stale[$staleUuid]['ip']) . " via {$stale[$staleUuid]['gateway']}, and its kernel route";
     }
     $plan['gateways'] = array_values(array_filter([$t['gw4'], $t['gw6']], fn (?string $g): bool => $g !== null));
     return $plan;
@@ -684,25 +693,28 @@ function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
     /* its endpoint routes, unless another instance's peer uses the same endpoint */
     $mine = [];
     foreach ($plan['peers'] as $peerUuid) {
-        $mine[] = $core['peers'][$peerUuid]['serveraddress'];
+        $ip = wgct_canon_ip($core['peers'][$peerUuid]['serveraddress']);
+        if ($ip !== null) {
+            $mine[] = $ip;
+        }
     }
     $theirs = [];
     foreach (array_keys($otherPeers) as $peerUuid) {
-        if (isset($core['peers'][$peerUuid])) {
-            $theirs[] = $core['peers'][$peerUuid]['serveraddress'];
+        $ip = isset($core['peers'][$peerUuid]) ? wgct_canon_ip($core['peers'][$peerUuid]['serveraddress']) : null;
+        if ($ip !== null) {
+            $theirs[] = $ip;
         }
     }
     $kept = [];
     foreach ($core['routes'] as $routeUuid => $r) {
-        foreach ($mine as $ip) {
-            if ($ip === '' || $r['network'] !== $ip . '/32') {
-                continue;
-            }
-            if (in_array($ip, $theirs, true)) {
-                $kept[] = "KEEP static route {$r['network']}: another instance's peer uses {$ip}";
-            } else {
-                $plan['routes'][(string)$routeUuid] = $r['network'];
-            }
+        $host = wgct_host_route($r['network']);
+        if ($host === null || !in_array($host['ip'], $mine, true)) {
+            continue;
+        }
+        if (in_array($host['ip'], $theirs, true)) {
+            $kept[] = "KEEP static route {$r['network']}: another instance's peer uses {$host['ip']}";
+        } else {
+            $plan['routes'][(string)$routeUuid] = $r['network'];
         }
     }
 
@@ -1162,6 +1174,23 @@ function wgct_actions_selftest(): int {
         ['id' => 'if:opt14', 'what' => 'interface opt14', 'gateways' => ['tun_d'], 'interfaces' => []],
     ];
     wgct_check($t, 'remove: its own NAT rule, endpoint route and interface do not refuse it', wgct_plan_remove($snap, $ownRefs, 'i-d')['errors'] === []);
+    /* Remove: an IPv6 endpoint's /128, written in another notation, is removed */
+    $s6 = $snap;
+    $s6['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s6['core']['routes']['r-d'] = ['network' => '2001:DB8:0::13/128', 'gateway' => 'WAN_A', 'enabled' => true];
+    $p = wgct_plan_remove($s6, [], 'i-d');
+    wgct_check($t, 'remove: an IPv6 endpoint route (/128, non-canonical) is deleted with the tunnel',
+        isset($p['routes']['r-d']) && $p['routes']['r-d'] === '2001:DB8:0::13/128');
+    /* S1: Rebind refuses an IPv6 endpoint */
+    $s6u = $s6;
+    unset($s6u['core']['routes']['r-d']);
+    $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A', '');
+    wgct_check($t, 'rebind (S1): an IPv6 endpoint is refused until the next release',
+        $p['errors'] === ['IPv6 endpoints are bound on System > Routes until the next release']);
+    /* S1: Create refuses an IPv6 endpoint */
+    $p = wgct_plan_create($snap, $req, ['endpoint_ip' => '2001:db8::12'] + $conf);
+    wgct_check($t, 'create (S1): an IPv6 endpoint is refused until the next release',
+        ($p['errors']['config'] ?? '') === 'IPv6 endpoints arrive in the next release');
 
     /* ---- sentinel ---- */
     $want = fn (string $family, string $name, string $opt): array => [

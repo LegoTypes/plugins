@@ -57,7 +57,9 @@ function wgct_tunnel_view(): array {
         $endpoint = '';
         if (count($inst['peers']) === 1 && isset($core['peers'][$inst['peers'][0]])) {
             $peer = $core['peers'][$inst['peers'][0]];
-            $endpoint = $peer['serveraddress'] . ($peer['serverport'] !== '' ? ':' . $peer['serverport'] : '');
+            $ip = wgct_canon_ip($peer['serveraddress']);
+            $endpoint = $ip !== null ? wgct_format_endpoint($ip, $peer['serverport'])
+                : $peer['serveraddress'] . ($peer['serverport'] !== '' ? ':' . $peer['serverport'] : '');
         }
         $unmanaged[] = [
             'uuid' => (string)$uuid, 'name' => $inst['name'], 'device' => 'wg' . $inst['instance'],
