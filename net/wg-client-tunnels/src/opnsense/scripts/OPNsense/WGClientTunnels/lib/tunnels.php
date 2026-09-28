@@ -579,6 +579,41 @@ function wgct_mirror_inputs(array $derived) {
 }
 
 /**
+ * gateway_config.php's output (spec 3.4.1), read by wgct.sh's route set and status: `state|on` or
+ * `state|off`, then one `route` line per tunnel the route set configures and one `keep` line per managed
+ * tunnel that is blocked (its recorded routes are kept, never deleted, while the finding stands). A tunnel
+ * with no IPv6 or a disabled instance gets no line. Pure.
+ *
+ * @param array $derived    wgct_derive()
+ * @param bool  $enabled    the plugin's Enable switch
+ * @param bool  $ipv6Routes the "IPv6 addresses and routes" switch
+ * @return list<string>
+ */
+function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): array {
+    if (!$enabled || !$ipv6Routes) {
+        return ['state|off'];
+    }
+    $clean = fn (mixed $v): string => str_replace(['|', "\r", "\n"], ' ', trim((string)$v));
+    $lines = ['state|on'];
+    foreach ($derived['tunnels'] as $t) {
+        if ($t['device'] === '') {
+            continue;
+        }
+        if (wgct_blocked($t)) {
+            $lines[] = 'keep|' . $clean($t['device']);
+            continue;
+        }
+        if (!$t['enabled'] || $t['gw4'] === null || $t['gw6'] === null || $t['ipv6_address'] === null
+            || (string)$t['ipv6_next_hop'] === '') {
+            continue;
+        }
+        $lines[] = implode('|', array_map($clean,
+            ['route', $t['device'], $t['ipv6_address'], $t['ipv6_next_hop'], $t['gw4'], $t['gw6'], $t['monitor6']]));
+    }
+    return $lines;
+}
+
+/**
  * What the WAN pins (R1) and inner-source blocks (R7) cover. Pure; canonical
  * order so two sets compare with ===. A bound tunnel whose WAN cannot be
  * resolved to an enabled interface (wan_interface null) still gets a WAN
@@ -1252,6 +1287,37 @@ function wgct_tunnels_selftest() {
         && wgct_threshold('x', 500) === null;
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] derive: (s) empty thresholds with no defaults are not compared; wgct_threshold\n", $ok ? 'PASS' : 'FAIL');
+
+    /* gateway_config.php's protocol (spec 3.4.1) */
+    $c = $base();
+    $d = wgct_derive($c, ['i-a']);
+    $ok = wgct_route_lines($d, false, true) === ['state|off'] && wgct_route_lines($d, true, false) === ['state|off'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] routes: (a) plugin or IPv6 routes off => state|off and nothing else\n", $ok ? 'PASS' : 'FAIL');
+    $ok = wgct_route_lines($d, true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|2001:db8:ffff::9'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] routes: (b) a monitored tunnel => its route line with the monitor\n", $ok ? 'PASS' : 'FAIL');
+    $c['gateways']['tun_a-ipv6']['monitor_disable'] = true;
+    $ok = wgct_route_lines(wgct_derive($c, ['i-a']), true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] routes: (c) an unmonitored tunnel => an empty monitor field\n", $ok ? 'PASS' : 'FAIL');
+    $c = $base();
+    $c['interfaces']['opt11']['enable'] = false;
+    $c2 = $base();
+    unset($c2['interfaces']['opt11']);
+    $ok = wgct_route_lines(wgct_derive($c, ['i-a']), true, true) === ['state|on', 'keep|wg1']
+        && wgct_route_lines(wgct_derive($c2, ['i-a']), true, true) === ['state|on', 'keep|wg1'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] routes: (d) a blocked tunnel (disabled or unassigned interface) => keep|wg1\n", $ok ? 'PASS' : 'FAIL');
+    $c = $base();
+    $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    unset($c['gateways']['tun_a-ipv6']);
+    $c2 = $base();
+    $c2['instances']['i-a']['enabled'] = false;
+    $ok = wgct_route_lines(wgct_derive($c, ['i-a']), true, true) === ['state|on']
+        && wgct_route_lines(wgct_derive($c2, ['i-a']), true, true) === ['state|on'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] routes: (e) an IPv4-only or disabled tunnel => no line\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
