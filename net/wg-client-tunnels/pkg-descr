@@ -84,6 +84,10 @@ Plugin Changelog
   unchanged (3.1_1)
 * Removed the migration from the 2.x plugin (os-wg-ipv6-gateway); a
   configuration saved before 3.0 comes up with default settings (3.1_1)
+* Fix: wgct.sh is installed executable. Since 3.0 was first installed as a
+  package it was not, so the minute's reconcile (route self-heal,
+  default-route guard, rule freshness), the service actions and the
+  interface hooks failed with "Permission denied" (3.1_2)
 
 3.0
 
