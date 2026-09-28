@@ -15,6 +15,7 @@
 require_once __DIR__ . '/view.php';
 require_once __DIR__ . '/writer.php';
 require_once __DIR__ . '/apply.php';
+require_once __DIR__ . '/addr.php';
 require_once __DIR__ . '/selftest.php';
 
 const WGCT_CLI_USAGE = <<<'TXT'
@@ -335,7 +336,7 @@ function wgct_cli_selftest(): int {
     require_once __DIR__ . '/render.php';
     require_once __DIR__ . '/edit.php';
     $codes = [
-        wgct_cli_own_selftest(), wgct_tunnels_selftest(), wgct_render_selftest(), wgct_wgconf_selftest(),
+        wgct_addr_selftest(), wgct_cli_own_selftest(), wgct_tunnels_selftest(), wgct_render_selftest(), wgct_wgconf_selftest(),
         wgct_refs_selftest(), wgct_actions_selftest(), wgct_mtu_selftest(), wgct_apply_selftest(),
         wgct_view_selftest(), wgct_edit_selftest(),
     ];

@@ -16,6 +16,8 @@
 
 use OPNsense\Core\Config;
 
+require_once __DIR__ . '/addr.php';
+
 /* WireGuard's MTU when neither the instance nor the interface sets one. */
 const WGCT_DEFAULT_MTU = 1420;
 
