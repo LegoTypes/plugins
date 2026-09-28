@@ -18,9 +18,14 @@ export WGCT_STATE_DIR="$T/state" WGCT_CONFIG_HELPER="$T/helper" WGCT_TEST_DIR="$
 mkdir -p "$WGCT_STATE_DIR"
 cat > "$T/helper" <<'EOF'
 #!/bin/sh
-[ -f "$WGCT_TEST_DIR/sleep" ] && sleep "$(cat "$WGCT_TEST_DIR/sleep")"
-cat "$WGCT_TEST_DIR/out"
-exit "$(cat "$WGCT_TEST_DIR/rc" 2>/dev/null || echo 0)"
+D="$WGCT_TEST_DIR"
+[ -e "$D/inside" ] && touch "$D/overlap"
+touch "$D/inside"
+[ -f "$D/sleep" ] && sleep "$(cat "$D/sleep")"
+[ -f "$D/daemon.on" ] && { sleep 30 </dev/null >/dev/null 2>&1 & echo $! > "$D/daemon"; }
+cat "$D/out"
+rm -f "$D/inside"
+exit "$(cat "$D/rc" 2>/dev/null || echo 0)"
 EOF
 chmod +x "$T/helper"
 
@@ -96,12 +101,17 @@ printf 'lo91|fd00::91:1/128|fd00::91:2|t91\n' > "$REC"
 check "15 stop reads a four-field record written by the previous version" '! netstat -rn -f inet6 | grep -q "fd00::91:2.*lo91" && [ ! -f "$REC" ]'
 say 'state|on' "$(line lo91 91 $M1)"; echo 2 > "$T/sleep"
 "$W" configure_routes & a=$!
+sleep 1
 "$W" configure_routes & b=$!
 wait $a; ra=$?
 wait $b; rb=$?
 rm -f "$T/sleep"
-check "16 two concurrent route sets both complete (the second waits) and leave one record line" '[ $ra = 0 ] && [ $rb = 0 ] && [ "$(grep -c . "$REC")" = 1 ]'
-check "17 nothing holds routes.lock once the section returned" '[ "$(fstat "$WGCT_STATE_DIR/routes.lock" | grep -c .)" -le 1 ]'
+check "16 two concurrent route sets both complete, never overlap (the second waits), and leave one record line" '[ $ra = 0 ] && [ $rb = 0 ] && [ ! -e "$T/overlap" ] && [ "$(grep -c . "$REC")" = 1 ]'
+touch "$T/daemon.on"
+run
+rm -f "$T/daemon.on"
+check "17 a daemon the section started does not inherit routes.lock" '[ "$(fstat "$WGCT_STATE_DIR/routes.lock" | grep -c .)" -le 1 ]'
+kill "$(cat "$T/daemon")" 2>/dev/null
 /usr/local/bin/flock "$WGCT_STATE_DIR/routes.lock" sleep 15 & h=$!
 sleep 1
 "$W" configure_routes; rt=$?
