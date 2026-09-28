@@ -9,9 +9,10 @@
 #   start | restart | configure_routes
 #       add each managed tunnel's IPv6 address to its device, the host route
 #       to its IPv6 next hop and the host route to its IPv6 monitor
-#   reconcile
+#   reconcile [--repair]
 #       the same as start, silent unless it repairs something; then
-#       default_guard.php and freshness.php
+#       default_guard.php and freshness.php; with --repair (the minute cron
+#       only) monitor_repair.php, which restarts a missing IPv6 monitor
 #   stop     remove what start added
 #   status   the service line the dashboard reads, then per-tunnel JSON
 #   _routes [quiet] | _cleanup
@@ -294,6 +295,11 @@ case "$1" in
         "${PHP}" "${GUARD}"
         # Then keep the rendered pins and MSS anchor current (freshness.php).
         "${PHP}" "${FRESHNESS}"
+        # The minute cron alone restarts a missing IPv6 monitor (monitor_repair.php):
+        # never the hooks, where the address is still tentative or the gateway lock held.
+        if [ "$2" = "--repair" ]; then
+            "${PHP}" "${SCRIPTS}/monitor_repair.php"
+        fi
         ;;
     _routes)
         routes_section "$2"
