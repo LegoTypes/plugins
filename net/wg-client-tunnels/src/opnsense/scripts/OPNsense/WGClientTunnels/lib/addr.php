@@ -103,7 +103,7 @@ function wgct_addr_selftest(): int {
     wgct_check($t, 'addr: family of IPv4, IPv6, other',
         wgct_ip_family('198.51.100.10') === 'inet' && wgct_ip_family('2001:db8::10') === 'inet6' && wgct_ip_family('vpn.example.net') === null);
     wgct_check($t, 'addr: global IPv6 is 2000::/3 only',
-        wgct_is_global6('2001:db8::10') && wgct_is_global6('2606:4700:4700::1111')
+        wgct_is_global6('2001:db8::10') && wgct_is_global6('3fff::1')
         && !wgct_is_global6('fe80::1') && !wgct_is_global6('fd00::1') && !wgct_is_global6('::ffff:198.51.100.10')
         && !wgct_is_global6('ff02::1') && !wgct_is_global6('::1') && !wgct_is_global6('198.51.100.10'));
     wgct_check($t, 'addr: a supported endpoint is IPv4 or global IPv6, canonical',
