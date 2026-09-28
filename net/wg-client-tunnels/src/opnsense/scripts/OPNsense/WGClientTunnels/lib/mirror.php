@@ -672,6 +672,12 @@ function wgct_selftest() {
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
             $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
             [], ['tun_a']],
+        ['monitored IPv6 gateway reading 100% loss while its IPv4 tunnel is healthy => pass 2 leaves it (core owns its own status)',
+            $config(['tun_a-ipv6' => ['monitor_disable' => false]]),
+            $live(['status' => ['WAN_A' => 'none', 'tun_a' => 'none', 'tun_a-ipv6' => 'down'],
+                   'loss' => ['WAN_A' => 0, 'tun_a' => 0, 'tun_a-ipv6' => 100],
+                   'sock_age' => ['WAN_A' => 600, 'tun_a' => 600, 'tun_a-ipv6' => 600]]), [],
+            [], []],
     ];
     foreach ($planCases as $c) {
         [$desc, $cfg, $lv, $heldNames, $expChanges, $expHeld] = $c;
