@@ -286,7 +286,7 @@ function wgct_binding_routes(array $core): array {
  * peer's endpoint. Pure.
  *
  * @param array $core wgct_core_snapshot()
- * @return array<string, array{ip: string, gateway: string}>
+ * @return array<string, array{ip: string, gateway: string, family: string}> route uuid => binding
  */
 function wgct_stale_candidates(array $core): array {
     $endpoints = [];
@@ -330,7 +330,9 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         $port = $peer !== null ? $peer['serverport'] : '';
         $ip = wgct_endpoint_ip($raw);
         $family = $ip !== null ? wgct_ip_family($ip) : null;
-        $t['endpoint'] = $ip !== null ? wgct_format_endpoint($ip, $port) : $raw . ($port !== '' ? ':' . $port : '');
+        /* the canonical address when supported; else the raw value, an IPv6 one still in brackets (a link-local
+         * or other non-global address), a hostname or empty one as it is */
+        $t['endpoint'] = wgct_format_endpoint($ip ?? $raw, $port);
         $t['endpoint_ip'] = $ip;
         $t['endpoint_family'] = $family;
         if ($ip === null) {
@@ -772,6 +774,17 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] derive: unknown gateway name on the route => wan-unavailable, bound_wan is the route's gateway, wan_interface fails closed\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (b) an unsupported IPv6 endpoint is still shown in brackets; a hostname as it is */
+    $c = $base();
+    $c['peers']['p-a']['serveraddress'] = 'fe80::10';
+    $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $c['peers']['p-a']['serveraddress'] = 'vpn.example.net';
+    $h = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $t['endpoint'] === '[fe80::10]:51820' && $t['endpoint_ip'] === null && $h['endpoint'] === 'vpn.example.net:51820';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: (b) a link-local IPv6 endpoint is shown as [fe80::10]:51820, a hostname unbracketed\n", $ok ? 'PASS' : 'FAIL');
 
     /* interface MTU equal to the instance MTU => no override finding, mtu is the instance's */
     $c = $base();
