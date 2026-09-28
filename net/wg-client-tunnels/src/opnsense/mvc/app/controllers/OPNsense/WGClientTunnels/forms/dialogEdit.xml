@@ -22,7 +22,7 @@
         <id>edit.wan</id>
         <label>Bound WAN</label>
         <type>dropdown</type>
-        <help>Moves the tunnel to another WAN: its endpoint route changes gateway and the tunnel restarts, so it handshakes via that WAN. An unbound tunnel is bound with Rebind.</help>
+        <help>Moves the tunnel to another WAN: its endpoint route changes gateway and the tunnel restarts, so it handshakes via that WAN. The list shows gateways of the endpoint's family (the replacement config's, when one is pasted) and the current one; moving to a gateway of the endpoint's family repairs a tunnel bound through a gateway of the other family. An unbound tunnel is bound with Rebind.</help>
     </field>
     <field>
         <id>edit.monitor</id>

@@ -1104,6 +1104,14 @@ function wgct_edit_selftest(): int {
     wgct_check($t, 'edit prefill: an IPv4-only tunnel lists the other instances\' IPv6 addresses; an unmanaged one is refused',
         $f['form']['ipv6'] === false && $f['form']['unique'] === false && $f['form']['ipv6_others'] === ['fd00::1:1']
         && wgct_edit_prefill($snap, 'i-x')['errors'] === ['not a managed tunnel']);
+    /* the dialog lists the endpoint family's gateways and needs the bound gateway's family for its mismatch placeholder */
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A', 'enabled' => true];
+    $f = wgct_edit_prefill($s, 'i-d');
+    wgct_check($t, 'edit prefill: a mismatched tunnel reports its endpoint family and its bound gateway family',
+        $f['errors'] === [] && $f['form']['wan'] === 'WAN_A' && $f['form']['endpoint_family'] === 'inet6'
+        && $f['form']['wan_family'] === 'inet');
 
     return wgct_tally_report('edit', $t);
 }
