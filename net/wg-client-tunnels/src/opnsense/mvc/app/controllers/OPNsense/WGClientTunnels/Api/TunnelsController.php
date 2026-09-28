@@ -89,9 +89,11 @@ class TunnelsController extends ApiControllerBase
         $core = $view['core'];
         $wans = [];
         foreach ($core['gateways'] as $name => $g) {
-            if (wgct_wan_error($core, (string)$name) === null) {
+            $family = (string)$g['ipprotocol'];
+            if (in_array($family, ['inet', 'inet6'], true) && wgct_wan_error($core, (string)$name, $family) === null) {
                 $descr = $core['interfaces'][$g['interface']]['descr'] ?? '';
-                $wans[] = ['value' => (string)$name, 'label' => $name . ' (' . ($descr !== '' ? $descr : $g['interface']) . ')'];
+                $wans[] = ['value' => (string)$name, 'family' => $family,
+                           'label' => $name . ' (' . ($descr !== '' ? $descr : $g['interface']) . ($family === 'inet6' ? ', IPv6' : '') . ')'];
             }
         }
         $templates = [];
@@ -115,7 +117,8 @@ class TunnelsController extends ApiControllerBase
         }
         $stale = [];
         foreach (wgct_stale_candidates($core) as $uuid => $b) {
-            $stale[] = ['value' => (string)$uuid, 'label' => wgct_host_network($b['ip']) . " via {$b['gateway']}"];
+            $stale[] = ['value' => (string)$uuid, 'family' => $b['family'],
+                        'label' => wgct_host_network($b['ip']) . " via {$b['gateway']}"];
         }
         return [
             'wans' => $wans, 'templates' => $templates, 'nat_sources' => $sources,
