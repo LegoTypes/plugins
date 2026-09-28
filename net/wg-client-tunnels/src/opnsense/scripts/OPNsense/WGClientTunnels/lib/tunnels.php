@@ -38,6 +38,8 @@ const WGCT_FINDINGS = [
     'legacy-mss' => [false, "Interfaces > the tunnel's interface: an MSS value is set by hand"],
     'nat-missing' => [false, 'Firewall > NAT > Source NAT: rules on the tunnel interface (Create adds them from a template tunnel or the NAT sources)'],
     'monitor-shared' => [false, 'System > Gateways: a monitor IP nothing else uses'],
+    'ipv6-unmonitored' => [false, 'Edit the tunnel: set an IPv6 monitor'],
+    'ipv6-monitor-config' => [false, 'Edit the tunnel and save its IPv6 monitor again (it resets the monitor route setting and copies the IPv4 thresholds)'],
     'sentinel-missing' => [false, 'Settings > Check default-route exclusion (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways that keep the tunnels out of the default route'],
     'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
@@ -170,6 +172,9 @@ function wgct_core_snapshot() {
             'losslow' => (string)$g->losslow,
             'time_period' => (string)$g->time_period,
             'monitor_disable' => (string)$g->monitor_disable === '1',
+            'monitor_noroute' => (string)$g->monitor_noroute === '1',
+            'latencylow' => (string)$g->latencylow,
+            'latencyhigh' => (string)$g->latencyhigh,
         ];
     }
     foreach ((new \OPNsense\Firewall\Filter())->snatrules->rule->iterateItems() as $rule) {
@@ -198,6 +203,10 @@ function wgct_core_snapshot() {
             $core['forwarders'][] = (string)$dot->server;
         }
     }
+    /* the plugin's route switch (the monitor routes, spec 3.5) and core's dpinger defaults, read once here so
+     * the derivation stays pure */
+    $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
+    $core['dpinger_defaults'] = \OPNsense\Routing\FieldTypes\GatewayField::getDpingerDefaults();
     return $core;
 }
 
@@ -209,8 +218,9 @@ function wgct_core_snapshot() {
  * @return array ['tunnels' => [record, ...], 'global' => [finding, ...]]
  */
 function wgct_derive(array $core, array $managed) {
+    $canon = fn (string $a): string => wgct_canon_ip($a) ?? $a;
     $ctx = ['opt_by_device' => [], 'gw_by_if' => [], 'binding_routes' => [], 'stale_routes' => [],
-            'monitor_users' => [], 'resolvers' => array_merge($core['dns_servers'], $core['forwarders'])];
+            'monitor_users' => [], 'resolvers' => array_map($canon, array_merge($core['dns_servers'], $core['forwarders']))];
     foreach ($core['interfaces'] as $opt => $if) {
         if ($if['if'] !== '') {
             $ctx['opt_by_device'][$if['if']] = $opt;
@@ -219,7 +229,7 @@ function wgct_derive(array $core, array $managed) {
     foreach ($core['gateways'] as $name => $g) {
         $ctx['gw_by_if'][$g['interface']][$g['ipprotocol']][] = $name;
         if ($g['monitor'] !== '') {
-            $ctx['monitor_users'][$g['monitor']][] = $name;
+            $ctx['monitor_users'][$canon($g['monitor'])][] = $name;
         }
     }
     foreach (wgct_binding_routes($core) as $b) {
@@ -309,7 +319,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         'uuid' => $uuid, 'name' => '', 'enabled' => false, 'device' => '', 'interface' => null,
         'interface_descr' => '', 'endpoint' => '', 'endpoint_ip' => null, 'endpoint_family' => null, 'bound_wan' => null, 'wan_interface' => null,
         'mtu' => WGCT_DEFAULT_MTU, 'mss' => '',
-        'gw4' => null, 'monitor' => '', 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
+        'gw4' => null, 'monitor' => '', 'monitor6' => '', 'monitor6_mode' => null, 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
         'nat' => ['inet' => [], 'inet6' => []], 'groups' => [], 'findings' => [], 'enforceable' => false,
     ];
     $inst = $core['instances'][$uuid] ?? null;
@@ -418,6 +428,12 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     if ($t['gw6'] !== null) {
         $t['ipv6_next_hop'] = $core['gateways'][$t['gw6']]['gateway'];
     }
+    /* the IPv6 gateway's own monitor (R3, spec 3.5) */
+    if ($t['gw6'] !== null) {
+        $g6 = $core['gateways'][$t['gw6']];
+        $t['monitor6_mode'] = !empty($g6['monitor_disable']) ? 'off' : ($g6['monitor'] === '' ? 'empty' : 'monitored');
+        $t['monitor6'] = $t['monitor6_mode'] === 'monitored' ? (wgct_canon_ip($g6['monitor']) ?? $g6['monitor']) : '';
+    }
     if (count($v6) > 1) {
         $t['findings'][] = wgct_finding('ipv6-incomplete', count($v6) . ' IPv6 tunnel addresses');
     } elseif (($t['gw6'] !== null) !== ($t['ipv6_address'] !== null)) {
@@ -452,13 +468,35 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         $t['findings'][] = wgct_finding('nat-missing', 'no IPv6 outbound NAT on ' . $opt);
     }
 
-    /* the monitor IP must be used for nothing else (R2) */
-    if ($t['monitor'] !== '') {
-        $others = array_values(array_diff($ctx['monitor_users'][$t['monitor']] ?? [], [$t['gw4']]));
+    /* each monitor IP must be used for nothing else (R2, and R3 for the IPv6 one) */
+    foreach ([[$t['monitor'], $t['gw4']], [$t['monitor6'], $t['gw6']]] as [$m, $own]) {
+        if ($m === '') {
+            continue;
+        }
+        $key = wgct_canon_ip($m) ?? $m;
+        $others = array_values(array_diff($ctx['monitor_users'][$key] ?? [], [$own]));
         if (!empty($others)) {
-            $t['findings'][] = wgct_finding('monitor-shared', "{$t['monitor']} is also monitored by " . implode(', ', $others));
-        } elseif (in_array($t['monitor'], $ctx['resolvers'], true)) {
-            $t['findings'][] = wgct_finding('monitor-shared', "{$t['monitor']} is a system DNS server or Unbound forwarder");
+            $t['findings'][] = wgct_finding('monitor-shared', "{$m} is also monitored by " . implode(', ', $others));
+        } elseif (in_array($key, $ctx['resolvers'], true)) {
+            $t['findings'][] = wgct_finding('monitor-shared', "{$m} is a system DNS server or Unbound forwarder");
+        }
+    }
+
+    /* the IPv6 gateway's monitor state (spec 3.5) */
+    if ($t['monitor6_mode'] === 'off') {
+        $t['findings'][] = wgct_finding('ipv6-unmonitored', "{$t['gw6']}: IPv6 health follows the IPv4 tunnel only");
+    } elseif ($t['monitor6_mode'] === 'empty') {
+        $t['findings'][] = wgct_finding('ipv6-unmonitored',
+            "{$t['gw6']}: monitoring on with no monitor IP: core pings the next hop, which never answers, so the gateway reads down");
+    } elseif ($t['monitor6_mode'] === 'monitored') {
+        $why = wgct_monitor6_repair_reasons($core, $t);
+        $routesOff = !($core['ipv6_routes'] ?? true);
+        if ($routesOff) {
+            $why[] = 'the monitor routes are not maintained; a tunnel restart leaves this gateway unmeasured and reading down';
+        }
+        if ($why !== []) {
+            $t['findings'][] = wgct_finding('ipv6-monitor-config', "{$t['gw6']}: " . implode('; ', $why),
+                $routesOff && count($why) === 1 ? 'Settings: turn on IPv6 addresses and routes' : null);
         }
     }
 
@@ -469,6 +507,51 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     }
     $t['enforceable'] = $t['enabled'] && $t['bound_wan'] !== null && !wgct_blocked($t);
     return $t;
+}
+
+/**
+ * Why a monitored IPv6 gateway needs Edit's re-save (spec 3.5, 3.7): core may route its monitor, or its
+ * thresholds are tighter than its IPv4 gateway's. The routes switch is not a reason: Edit cannot fix it. Pure.
+ *
+ * @param array $core wgct_core_snapshot()
+ * @param array $t    a derived record with a gw6
+ * @return list<string>
+ */
+function wgct_monitor6_repair_reasons(array $core, array $t): array {
+    $g6 = $core['gateways'][$t['gw6']] ?? null;
+    if ($g6 === null) {
+        return [];
+    }
+    $why = [];
+    if (empty($g6['monitor_noroute'])) {
+        $why[] = 'core would route its monitor (monitor_noroute off)';
+    }
+    $g4 = $t['gw4'] !== null ? ($core['gateways'][$t['gw4']] ?? null) : null;
+    if ($g4 !== null) {
+        $defaults = $core['dpinger_defaults'] ?? [];
+        foreach (['latencyhigh', 'losshigh'] as $field) {
+            $v4 = wgct_threshold((string)($g4[$field] ?? ''), $defaults[$field] ?? null);
+            $v6 = wgct_threshold((string)($g6[$field] ?? ''), $defaults[$field] ?? null);
+            if ($v4 !== null && $v6 !== null && $v6 < $v4) {
+                $why[] = "{$field} {$v6} is below {$t['gw4']}'s {$v4}";
+            }
+        }
+    }
+    return $why;
+}
+
+/**
+ * A gateway threshold as a number: the value, or core's default when it is empty. Pure.
+ *
+ * @param string              $value   the stored value ('' when unset)
+ * @param int|string|null     $default core's default, null when unknown
+ * @return int|null null when unset with no default, or not a whole number
+ */
+function wgct_threshold(string $value, int|string|null $default): ?int {
+    if ($value !== '') {
+        return ctype_digit($value) ? (int)$value : null;
+    }
+    return $default === null ? null : (int)$default;
 }
 
 /**
@@ -642,6 +725,7 @@ function wgct_tunnels_selftest() {
             'uuid' => 'u-' . bin2hex(random_bytes(4)), 'interface' => 'opt1', 'ipprotocol' => 'inet',
             'gateway' => '', 'monitor' => '', 'disabled' => false, 'force_down' => false,
             'losshigh' => '', 'losslow' => '', 'time_period' => '', 'monitor_disable' => false,
+            'monitor_noroute' => false, 'latencylow' => '', 'latencyhigh' => '',
         ];
     };
     $base = function () use ($gw) {
@@ -661,7 +745,8 @@ function wgct_tunnels_selftest() {
                 'WAN_A' => $gw(['interface' => 'opt1', 'gateway' => '192.0.2.1']),
                 'WAN_A6' => $gw(['interface' => 'opt1', 'ipprotocol' => 'inet6', 'gateway' => 'fe80::1']),
                 'tun_a' => $gw(['interface' => 'opt11', 'gateway' => '10.2.0.4', 'monitor' => '203.0.113.9']),
-                'tun_a-ipv6' => $gw(['interface' => 'opt11', 'ipprotocol' => 'inet6', 'gateway' => 'fd00::1:2']),
+                'tun_a-ipv6' => $gw(['interface' => 'opt11', 'ipprotocol' => 'inet6', 'gateway' => 'fd00::1:2',
+                                     'monitor' => '2001:db8:ffff::9', 'monitor_noroute' => true]),
                 'NO_DEFAULT4' => $gw(['interface' => 'opt10']),
                 'NO_DEFAULT6' => $gw(['interface' => 'opt10', 'ipprotocol' => 'inet6']),
             ],
@@ -672,6 +757,8 @@ function wgct_tunnels_selftest() {
             'groups' => ['grp_a' => ['tun_a', 'WAN_A'], 'grp_b' => ['WAN_A']],
             'dns_servers' => ['203.0.113.53'],
             'forwarders' => ['203.0.113.54'],
+            'ipv6_routes' => true,
+            'dpinger_defaults' => ['latencylow' => 200, 'latencyhigh' => 500, 'losslow' => 10, 'losshigh' => 20],
         ];
     };
     $codes = function (array $t) {
@@ -749,6 +836,22 @@ function wgct_tunnels_selftest() {
             function ($c) { $c['interfaces']['opt1']['ipaddrv6'] = '6rd'; return $c; }, ['i-a'], [], true],
         ['(g) IPv6 endpoint, /128 via an unsaved gateway => wan-unavailable',
             function ($c) use ($v6) { return $v6($c, '2001:db8::10/128', 'WAN_DHCP6'); }, ['i-a'], ['wan-unavailable'], true],
+        ['(h) IPv6 gateway with monitoring off => ipv6-unmonitored, enforceable',
+            function ($c) { $c['gateways']['tun_a-ipv6']['monitor_disable'] = true; $c['gateways']['tun_a-ipv6']['monitor'] = ''; return $c; },
+            ['i-a'], ['ipv6-unmonitored'], true],
+        ['(i) IPv6 gateway monitoring on with no monitor => ipv6-unmonitored',
+            function ($c) { $c['gateways']['tun_a-ipv6']['monitor'] = ''; return $c; }, ['i-a'], ['ipv6-unmonitored'], true],
+        ['(j) monitored IPv6 gateway with monitor_noroute off => ipv6-monitor-config',
+            function ($c) { $c['gateways']['tun_a-ipv6']['monitor_noroute'] = false; return $c; }, ['i-a'], ['ipv6-monitor-config'], true],
+        ['(k) IPv6 latencyhigh (empty = default 500) below the IPv4 gateway\'s 1600 => ipv6-monitor-config',
+            function ($c) { $c['gateways']['tun_a']['latencyhigh'] = '1600'; return $c; }, ['i-a'], ['ipv6-monitor-config'], true],
+        ['(l) IPv6 losshigh below the IPv4 gateway\'s => ipv6-monitor-config',
+            function ($c) { $c['gateways']['tun_a']['losshigh'] = '20'; $c['gateways']['tun_a-ipv6']['losshigh'] = '10'; return $c; },
+            ['i-a'], ['ipv6-monitor-config'], true],
+        ['(m) IPv6 addresses and routes switched off => ipv6-monitor-config',
+            function ($c) { $c['ipv6_routes'] = false; return $c; }, ['i-a'], ['ipv6-monitor-config'], true],
+        ['(n) IPv6 monitor shared with another gateway, spelled differently => monitor-shared',
+            function ($c) { $c['gateways']['WAN_A6']['monitor'] = '2001:DB8:FFFF:0::9'; return $c; }, ['i-a'], ['monitor-shared'], true],
     ];
     $fail = 0;
     $total = 0;
@@ -1101,6 +1204,54 @@ function wgct_tunnels_selftest() {
     $ok = wgct_clamp_for($t6, true) === ['v4' => 960, 'v6' => null];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] clamp_for: MTU below the IPv6 minimum, IPv6 address present => v4 clamp only\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (o) the derived IPv6 monitor and its mode */
+    $c = $base();
+    $mon = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $c['gateways']['tun_a-ipv6']['monitor_disable'] = true;
+    $off = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $c = $base();
+    $c['gateways']['tun_a-ipv6']['monitor'] = '';
+    $empty = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $mon['monitor6'] === '2001:db8:ffff::9' && $mon['monitor6_mode'] === 'monitored'
+        && $off['monitor6'] === '' && $off['monitor6_mode'] === 'off' && $empty['monitor6'] === '' && $empty['monitor6_mode'] === 'empty';
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (o) monitor6 is the canonical monitor only when monitored; mode monitored/off/empty\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (p) the unmonitored detail says what each mode does */
+    $detail6 = fn (array $t, string $code): string => implode(' ', array_column(array_filter($t['findings'], fn ($f) => $f['code'] === $code), 'detail'));
+    $ok = str_contains($detail6($off, 'ipv6-unmonitored'), 'follows the IPv4 tunnel only')
+        && str_contains($detail6($empty, 'ipv6-unmonitored'), 'never answers');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (p) ipv6-unmonitored detail: off follows IPv4, empty reads down\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (q) routes switched off is fixed in the settings, not by Edit, and is not a repair reason */
+    $c = $base();
+    $c['ipv6_routes'] = false;
+    $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $f = array_values(array_filter($t['findings'], fn ($x) => $x['code'] === 'ipv6-monitor-config'))[0] ?? ['fix' => ''];
+    $ok = str_contains($f['fix'], 'IPv6 addresses and routes') && wgct_monitor6_repair_reasons($c, $t) === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (q) ipv6_routes off => fix names the setting; not an Edit repair reason\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (r) an IPv4-only tunnel has no IPv6 monitor state and no IPv6 findings */
+    $c = $base();
+    $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    unset($c['gateways']['tun_a-ipv6']);
+    $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $t['monitor6_mode'] === null && $t['monitor6'] === '' && $codes($t) === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (r) IPv4-only tunnel => monitor6_mode null, no IPv6 findings\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (s) without core's defaults, empty thresholds are not compared */
+    $c = $base();
+    unset($c['dpinger_defaults']);
+    $c['gateways']['tun_a']['latencyhigh'] = '1600';
+    $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $codes($t) === [] && wgct_threshold('', null) === null && wgct_threshold('', 500) === 500 && wgct_threshold('900', 500) === 900
+        && wgct_threshold('x', 500) === null;
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (s) empty thresholds with no defaults are not compared; wgct_threshold\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

@@ -844,9 +844,10 @@ function wgct_plan_sentinel(array $interfaces, array $gateways, string $device, 
  * @return array the wgct_action_snapshot() shape
  */
 function wgct_actions_fixture(): array {
-    $gw = fn (string $uuid, string $if, string $family, string $address, string $monitor = ''): array => [
+    $gw = fn (string $uuid, string $if, string $family, string $address, string $monitor = '', array $o = []): array => $o + [
         'uuid' => $uuid, 'interface' => $if, 'ipprotocol' => $family, 'gateway' => $address, 'monitor' => $monitor,
         'disabled' => false, 'force_down' => false, 'losshigh' => '20', 'losslow' => '10', 'time_period' => '80',
+        'monitor_disable' => false, 'monitor_noroute' => false, 'latencylow' => '', 'latencyhigh' => '',
     ];
     $if = fn (string $device, string $descr): array => ['if' => $device, 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => $descr];
     $rule = fn (string $iface, string $family, string $seq, string $source, string $dst = 'any', string $not = '0', string $descr = '', string $enabled = '1'): array => [
@@ -895,7 +896,7 @@ function wgct_actions_fixture(): array {
             'WAN_A6' => $gw('g-wa6', 'opt1', 'inet6', 'fe80::1'),
             'WAN_B' => $gw('g-wb', 'opt2', 'inet', '198.51.100.1'),
             'tun_a' => $gw('g-a4', 'opt11', 'inet', '10.2.0.4', '203.0.113.9'),
-            'tun_a-ipv6' => $gw('g-a6', 'opt11', 'inet6', 'fd00::1:2'),
+            'tun_a-ipv6' => $gw('g-a6', 'opt11', 'inet6', 'fd00::1:2', '2001:db8:ffff::9', ['monitor_noroute' => true]),
             'tun_b' => $gw('g-b4', 'opt12', 'inet', '10.2.0.5', '203.0.113.10'),
             'tun_d' => $gw('g-d4', 'opt14', 'inet', '10.2.0.7', '203.0.113.11'),
             'NO_DEFAULT4' => $gw('g-n4', 'opt10', 'inet', ''),
@@ -925,6 +926,8 @@ function wgct_actions_fixture(): array {
         'aliases' => ['TailscaleNetworks', 'LocalNetworks'],
         'ifgroup_names' => ['LANGRP'],
         'wireguard_enabled' => true,
+        /* the firewall's own IPv6 networks (wgct_local6_snapshot()): a LAN /64 and a delegated /56 */
+        'local6' => ['2001:db8:1:1::1/64', '2001:db8:2:100::/56'],
     ];
 }
 
@@ -943,7 +946,8 @@ function wgct_actions_selftest(): int {
     $has = fn (array $lines, string $needle): bool => array_filter($lines, fn (string $l): bool => strpos($l, $needle) !== false) !== [];
     $err = fn (array $plan, string $field): bool => isset($plan['errors'][$field]);
     $gwRow = fn (string $address): array => ['uuid' => 'g-o', 'interface' => 'opt2', 'ipprotocol' => 'inet', 'gateway' => $address, 'monitor' => '',
-                                            'disabled' => false, 'force_down' => false, 'losshigh' => '', 'losslow' => '', 'time_period' => ''];
+                                            'disabled' => false, 'force_down' => false, 'losshigh' => '', 'losslow' => '', 'time_period' => '',
+                                            'monitor_disable' => false, 'monitor_noroute' => false, 'latencylow' => '', 'latencyhigh' => ''];
 
     /* ---- create ---- */
     $p = wgct_plan_create($snap, $req, $conf);
