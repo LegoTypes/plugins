@@ -4,7 +4,7 @@
         <label>WireGuard config</label>
         <type>textbox</type>
         <height>10</height>
-        <help>The provider's wg-quick file: paste it, or use "Load file" (read by your browser; nothing is uploaded). Only PrivateKey, Address, the peer's PublicKey, PresharedKey and Endpoint (an IPv4 address) are used. The private key is stored in the WireGuard instance, as the WireGuard page stores it, and is never shown again.</help>
+        <help>The provider's wg-quick file: paste it, or use "Load file" (read by your browser; nothing is uploaded). Only PrivateKey, Address, the peer's PublicKey, PresharedKey and Endpoint (an IPv4 address, or a global IPv6 address in brackets: [2001:db8::1]:51820) are used. The private key is stored in the WireGuard instance, as the WireGuard page stores it, and is never shown again.</help>
     </field>
     <field>
         <id>create.name</id>

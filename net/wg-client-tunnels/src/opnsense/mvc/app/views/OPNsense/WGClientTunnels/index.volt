@@ -928,7 +928,7 @@
     </div>
 </div>
 <div class="content-box" id="tunnels" style="padding: 1em; margin-top: 1em;">
-    <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
+    <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 or /128 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
         <a href="/ui/interfaces/assignment">{{ lang._('Interfaces: Assignments') }}</a></p>
     <div id="tunnel-banners"></div>
     <button class="btn btn-primary" id="btn-create" type="button"><i class="fa fa-plus fa-fw"></i> {{ lang._('Create') }}</button>

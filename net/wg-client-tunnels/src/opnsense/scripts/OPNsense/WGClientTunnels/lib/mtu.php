@@ -100,7 +100,8 @@ function wgct_common_prefix6(string $a, string $b): int {
  * The IPv6 source for probing an endpoint, from `ifconfig -L <dev> inet6`:
  * a global address, not deprecated, tentative, detached, duplicated or
  * temporary; the longest prefix shared with the endpoint, then the longest
- * preferred lifetime (spec 2026-09-27 section 3.6). Pure.
+ * preferred lifetime, a static address's being infinite (spec 2026-09-27
+ * section 3.6). Pure.
  */
 function wgct_pick_source6(string $ifconfigOut, string $endpoint): ?string {
     $best = null;
@@ -119,7 +120,8 @@ function wgct_pick_source6(string $ifconfigOut, string $endpoint): ?string {
                 continue 2;
             }
         }
-        $pl = preg_match('/\spltime\s+(\d+|infty)\s/', $rest, $p) === 1 ? ($p[1] === 'infty' ? PHP_INT_MAX : (int)$p[1]) : 0;
+        /* no pltime: a static address, whose infinite lifetimes `ifconfig -L` does not print */
+        $pl = preg_match('/\spltime\s+(\d+|infty)\s/', $rest, $p) === 1 ? ($p[1] === 'infty' ? PHP_INT_MAX : (int)$p[1]) : PHP_INT_MAX;
         $key = [wgct_common_prefix6($addr, $endpoint), $pl];
         if ($bestKey === null || $key > $bestKey) {
             $best = wgct_canon_ip($addr);
@@ -295,6 +297,8 @@ function wgct_mtu_selftest(): int {
         wgct_pick_source6("\tinet6 fe80::1%igc2 prefixlen 64 scopeid 0x3\n\tinet6 fd00:0:0:1::1 prefixlen 64 pltime 3600 vltime 3600\n", '2001:db8::10') === null);
     wgct_check($t, 'mtu (g): among global addresses, the longest prefix shared with the endpoint wins',
         wgct_pick_source6("\tinet6 2001:db8:40::1 prefixlen 64 pltime 9000 vltime 9000\n\tinet6 2001:db8:99::1 prefixlen 64 pltime 100 vltime 100\n", '2001:db8:99::10') === '2001:db8:99::1');
+    wgct_check($t, 'mtu (g2): the same shared prefix, a static address (no lifetimes printed) beats an expiring one',
+        wgct_pick_source6("\tinet6 2001:db8:40:1::c1 prefixlen 64 autoconf pltime 100 vltime 100\n\tinet6 2001:db8:40:1::c2 prefixlen 64\n", '2001:db8:99::10') === '2001:db8:40:1::c2');
     wgct_check($t, 'mtu (h): an IPv6 path below 1360 gets a note; IPv4 never does',
         str_contains((string)wgct_small_path_note(1340, 'inet6'), 'stays at the 1280 minimum')
         && wgct_small_path_note(1400, 'inet6') === null && wgct_small_path_note(1300, 'inet') === null);

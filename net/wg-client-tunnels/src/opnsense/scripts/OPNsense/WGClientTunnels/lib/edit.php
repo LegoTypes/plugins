@@ -452,7 +452,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $e['config'] = "{$pub['endpoint_ip']} is already the endpoint of {$theirs[$pub['endpoint_ip']]}";
         }
         if ($pub['endpoint_ip'] !== $endpointNow && !isset($e['config'])) {
-            /* R2 from the other side: dpinger's host route to a monitor IP would capture the endpoint's /32 */
+            /* R2 from the other side: dpinger's host route to a monitor IP would capture the endpoint's /32 or /128 */
             foreach ($core['gateways'] as $gwName => $g) {
                 if ($g['monitor'] !== '' && wgct_ip_equal($g['monitor'], $pub['endpoint_ip'])) {
                     $e['config'] = "{$pub['endpoint_ip']} is the monitor of {$gwName}; a tunnel endpoint may not be a monitor IP";

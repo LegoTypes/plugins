@@ -16,7 +16,7 @@
         <label>Replacement config</label>
         <type>textbox</type>
         <height>8</height>
-        <help>Optional: a new wg-quick file for this tunnel (another server, or new keys): paste it, or use "Load file" (read by your browser; nothing is uploaded). It replaces the instance key pair, the peer's public and preshared keys, the endpoint and the tunnel addresses; the old endpoint's route is deleted, with its kernel route, and one to the new endpoint written via the bound WAN. Leave it empty to keep them. The private key is never shown again.</help>
+        <help>Optional: a new wg-quick file for this tunnel (another server, or new keys): paste it, or use "Load file" (read by your browser; nothing is uploaded). It replaces the instance key pair, the peer's public and preshared keys, the endpoint and the tunnel addresses; the old endpoint's route is deleted, with its kernel route, and one to the new endpoint written via the bound WAN (when the new endpoint is of the other family, via the bound WAN's gateway of that family, or the gateway chosen below). Leave it empty to keep them. The private key is never shown again.</help>
     </field>
     <field>
         <id>edit.wan</id>
