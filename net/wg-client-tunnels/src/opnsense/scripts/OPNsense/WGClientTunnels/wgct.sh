@@ -80,6 +80,27 @@ configure_gateway() {
     fi
 }
 
+# Run "route add|delete" for a monitor's host route: 0 on success, which also
+# forgets an earlier failure of that (monitor, device); on failure, log once
+# per (monitor, device) in route_failures, so a persistent failure does not
+# repeat every minute.
+monitor_route() {
+    local verb="$1" monitor="$2" dev="$3" out file="${STATE_DIR}/route_failures"
+    shift 3
+    if out=$(/sbin/route -q -n "${verb}" -6 -host "${monitor}" "$@" 2>&1); then
+        if grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
+            grep -vxF "${monitor}|${dev}" "${file}" > "${file}.tmp"
+            mv -f "${file}.tmp" "${file}"
+        fi
+        return 0
+    fi
+    if ! grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
+        printf '%s|%s\n' "${monitor}" "${dev}" >> "${file}"
+        log_msg "route ${verb} for monitor ${monitor} on ${dev} failed: $(printf '%s' "${out}" | tr '\n' ' ')"
+    fi
+    return 1
+}
+
 # The host route to a tunnel's IPv6 monitor, as an interface route: it needs
 # no next hop, so it works as soon as the device exists. A host route to the
 # monitor that the plugin did not record (a static route, an operator's
@@ -97,8 +118,9 @@ configure_monitor_route() {
         fi
         return 0
     fi
-    /sbin/route -q -n add -6 -host "${monitor}" -iface "${iface}"
-    log_msg "added monitor route ${monitor} via ${iface}"
+    if monitor_route add "${monitor}" "${iface}" -iface "${iface}"; then
+        log_msg "added monitor route ${monitor} via ${iface}"
+    fi
 }
 
 # Forget foreign routes that are gone, so a new one is noted again.
@@ -159,8 +181,9 @@ routes_section() {
                 continue
             fi
             if [ "$(host_route_dev "${monitor}")" = "${dev}" ]; then
-                /sbin/route -q -n delete -6 -host "${monitor}"
-                log_msg "removed monitor route ${monitor} via ${dev}"
+                if monitor_route delete "${monitor}" "${dev}"; then
+                    log_msg "removed monitor route ${monitor} via ${dev}"
+                fi
             fi
         done < "${RECORD}"
     fi
@@ -181,16 +204,17 @@ routes_section() {
 # Remove every recorded route and address (stop). Reads the previous
 # version's four-field record too. Run only under routes.lock.
 cleanup_section() {
-    local dev addr nexthop gw4 monitor
+    local dev addr nexthop gw4 monitor removed
     if [ -f "${RECORD}" ]; then
         while IFS='|' read -r dev addr nexthop gw4 monitor; do
             [ -n "${dev}" ] || continue
+            removed=""
             if [ -n "${monitor}" ] && [ "$(host_route_dev "${monitor}")" = "${dev}" ]; then
-                /sbin/route -q -n delete -6 -host "${monitor}"
+                monitor_route delete "${monitor}" "${dev}" && removed=" and monitor route ${monitor}"
             fi
             /sbin/route -q -n delete -6 "${nexthop}" 2>/dev/null
             /sbin/ifconfig "${dev}" inet6 "${addr%/*}" -alias 2>/dev/null
-            log_msg "removed ${addr} and route ${nexthop}${monitor:+ and monitor route ${monitor}} from ${dev}"
+            log_msg "removed ${addr} and route ${nexthop}${removed} from ${dev}"
         done < "${RECORD}"
         rm -f "${RECORD}"
     fi

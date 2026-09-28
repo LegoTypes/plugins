@@ -118,5 +118,35 @@ sleep 1
 kill $h 2>/dev/null
 check "18 a wait past 10 s gives up with exit 75" '[ $rt = 75 ]'
 
+# a failing route command: a copy of wgct.sh whose route and logger are stand-ins (route fails for a host route
+# while $T/route.fail exists), so the log can be read back
+"$W" stop
+sed -e "s#/sbin/route -q -n#$T/route -q -n#g" -e "s#logger -t#$T/logger -t#g" "$W" > "$T/wgct_stub.sh"
+chmod +x "$T/wgct_stub.sh"
+cat > "$T/route" <<'EOF'
+#!/bin/sh
+if [ -f "$WGCT_TEST_DIR/route.fail" ]; then
+    echo "route: writing to routing socket: Network is unreachable"
+    exit 1
+fi
+exec /sbin/route "$@"
+EOF
+cat > "$T/logger" <<'EOF'
+#!/bin/sh
+shift 2
+echo "$*" >> "$WGCT_TEST_DIR/log"
+EOF
+chmod +x "$T/route" "$T/logger"
+: > "$T/log"
+touch "$T/route.fail"
+say 'state|on' "$(line lo91 91 $M4)"; "$T/wgct_stub.sh" configure_routes; "$T/wgct_stub.sh" configure_routes
+check "19 a failing route add is logged once, never as an added route, and noted" '[ -z "$(dev_of $M4)" ] && [ "$(grep -c "route add for monitor $M4 on lo91 failed" "$T/log")" = 1 ] && ! grep -q "added monitor route" "$T/log" && grep -qxF "$M4|lo91" "$WGCT_STATE_DIR/route_failures"'
+rm -f "$T/route.fail"; "$T/wgct_stub.sh" configure_routes
+check "20 once it succeeds the route is added, logged, and the failure note cleared" '[ "$(dev_of $M4)" = lo91 ] && grep -q "added monitor route $M4 via lo91" "$T/log" && ! grep -qxF "$M4|lo91" "$WGCT_STATE_DIR/route_failures"'
+: > "$T/log"; touch "$T/route.fail"
+"$T/wgct_stub.sh" stop
+check "21 a failing route delete in stop is logged as a failure, not as a removed monitor route" '[ "$(dev_of $M4)" = lo91 ] && grep -q "route delete for monitor $M4 on lo91 failed" "$T/log" && ! grep -q "monitor route $M4" "$T/log"'
+rm -f "$T/route.fail"
+
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]
