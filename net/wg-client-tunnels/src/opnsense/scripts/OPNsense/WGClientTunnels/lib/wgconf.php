@@ -14,6 +14,7 @@
  * so a key cannot reach a log, the crash reporter or an API response.
  */
 
+require_once __DIR__ . '/addr.php';
 require_once __DIR__ . '/tunnels.php';
 require_once __DIR__ . '/selftest.php';
 
@@ -70,13 +71,13 @@ function wgct_normalize_address(string $address): ?array {
  * plugin sets those itself (spec 6.1). Messages never quote a line.
  *
  * @param string $text the config as pasted or read from a file
- * @return array{errors: list<string>, public: array{addresses: array{inet: list<string>, inet6: list<string>}, peer_pubkey: string, endpoint_ip: string, endpoint_port: string, has_psk: bool}, secret: array{privkey: string, psk: string}}
+ * @return array{errors: list<string>, public: array{addresses: array{inet: list<string>, inet6: list<string>}, peer_pubkey: string, endpoint_ip: string, endpoint_port: string, endpoint_family: string, has_psk: bool}, secret: array{privkey: string, psk: string}}
  */
 function wgct_parse_wgquick(#[\SensitiveParameter] string $text): array {
     $errors = [];
     $public = [
         'addresses' => ['inet' => [], 'inet6' => []],
-        'peer_pubkey' => '', 'endpoint_ip' => '', 'endpoint_port' => '', 'has_psk' => false,
+        'peer_pubkey' => '', 'endpoint_ip' => '', 'endpoint_port' => '', 'endpoint_family' => '', 'has_psk' => false,
     ];
     $secret = ['privkey' => '', 'psk' => ''];
     $section = '';
@@ -152,15 +153,21 @@ function wgct_parse_wgquick(#[\SensitiveParameter] string $text): array {
         $errors[] = 'PresharedKey is not a WireGuard key';
     }
     $public['has_psk'] = $secret['psk'] !== '';
-    if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):(\d{1,5})$/', $endpoint, $m) === 1
-        && filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
-        && (int)$m[2] >= 1 && (int)$m[2] <= 65535) {
-        $public['endpoint_ip'] = $m[1];
-        $public['endpoint_port'] = (string)(int)$m[2];
-    } else {
+    $public['endpoint_family'] = '';
+    if (preg_match('/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9A-Fa-f:.]+)\]):(\d{1,5})$/', $endpoint, $m) === 1
+        && (int)$m[3] >= 1 && (int)$m[3] <= 65535) {
+        $ip = $m[1] !== '' ? (filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $m[1] : null)
+            : (wgct_is_global6($m[2]) ? wgct_canon_ip($m[2]) : null);
+        if ($ip !== null) {
+            $public['endpoint_ip'] = $ip;
+            $public['endpoint_port'] = (string)(int)$m[3];
+            $public['endpoint_family'] = wgct_ip_family($ip);
+        }
+    }
+    if ($public['endpoint_family'] === '') {
         $errors[] = $endpoint === ''
             ? 'Endpoint is missing'
-            : 'Endpoint must be an IPv4 address and port; hostnames and IPv6 endpoints are not supported';
+            : 'Endpoint must be an IPv4 address or a global IPv6 address in brackets, with a port ([2001:db8::1]:51820); hostnames are not supported';
     }
     $v4 = count($public['addresses']['inet']);
     if ($v4 !== 1) {
@@ -340,6 +347,7 @@ function wgct_wgconf_selftest(): int {
         && $p['public']['addresses'] === ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]
         && $p['public']['peer_pubkey'] === $peer && $p['public']['endpoint_ip'] === '198.51.100.10'
         && $p['public']['endpoint_port'] === '51820' && $p['public']['has_psk'] === false
+        && $p['public']['endpoint_family'] === 'inet'
         && $p['secret'] === ['privkey' => $priv, 'psk' => '']);
 
     $p = wgct_parse_wgquick(str_replace(', 2001:db8::2:2/128', '', $base));
@@ -356,10 +364,18 @@ function wgct_wgconf_selftest(): int {
 
     $p = wgct_parse_wgquick(str_replace('198.51.100.10:51820', 'vpn.example.net:51820', $base));
     wgct_check($t, 'wgconf: hostname endpoint => one error',
-        count($p['errors']) === 1 && strpos($p['errors'][0], 'hostnames and IPv6 endpoints are not supported') !== false);
+        count($p['errors']) === 1 && str_contains($p['errors'][0], 'hostnames are not supported'));
 
-    $p = wgct_parse_wgquick(str_replace('198.51.100.10:51820', '[2001:db8::10]:51820', $base));
-    wgct_check($t, 'wgconf: IPv6 endpoint => one error', count($p['errors']) === 1);
+    $p = wgct_parse_wgquick(str_replace('198.51.100.10:51820', '[2001:DB8:0::10]:51820', $base));
+    wgct_check($t, 'wgconf: bracketed global IPv6 endpoint => accepted, canonical, family inet6',
+        $p['errors'] === [] && $p['public']['endpoint_ip'] === '2001:db8::10' && $p['public']['endpoint_port'] === '51820'
+        && $p['public']['endpoint_family'] === 'inet6');
+
+    $p = wgct_parse_wgquick(str_replace('198.51.100.10:51820', '2001:db8::10:51820', $base));
+    wgct_check($t, 'wgconf: IPv6 endpoint without brackets => one error', count($p['errors']) === 1);
+
+    $p = wgct_parse_wgquick(str_replace('198.51.100.10:51820', '[fe80::10]:51820', $base));
+    wgct_check($t, 'wgconf: link-local IPv6 endpoint => one error', count($p['errors']) === 1);
 
     $p = wgct_parse_wgquick($base . "\n[Peer]\nPublicKey = {$peer}\nEndpoint = 198.51.100.11:51820\n");
     wgct_check($t, 'wgconf: two peers => refused', in_array('exactly one [Peer] section is required, found 2', $p['errors'], true));
