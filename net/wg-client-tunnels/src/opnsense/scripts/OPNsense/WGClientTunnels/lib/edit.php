@@ -357,7 +357,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     $label = $t['name'] !== '' ? $t['name'] : $uuid;
     $plan['name'] = $t['name'];
 
-    /* a blocking finding stops the edit, unless the edit resolves it: a swap gives an IPv4 endpoint (ruling 13) */
+    /* a blocking finding stops the edit, unless the edit resolves it: a swap gives a supported endpoint (ruling 13) */
     $resolvable = $swap !== null ? ['endpoint-unsupported'] : [];
     $blocking = [];
     foreach ($t['findings'] as $f) {
@@ -410,8 +410,9 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
         foreach ($other['peers'] as $otherPeer) {
             $address = $core['peers'][$otherPeer]['serveraddress'] ?? '';
-            if ($address !== '' && !isset($theirs[$address])) {
-                $theirs[$address] = $other['name'] !== '' ? $other['name'] : (string)$otherUuid;
+            $canonical = $address !== '' ? (wgct_canon_ip($address) ?? $address) : '';
+            if ($canonical !== '' && !isset($theirs[$canonical])) {
+                $theirs[$canonical] = $other['name'] !== '' ? $other['name'] : (string)$otherUuid;
             }
         }
     }
@@ -437,11 +438,12 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $need['tunnel'] = true;
             $c[] = "keys of {$label}: " . implode(', ', $keys) . ' replaced';
         }
-        if ($pub['endpoint_ip'] !== $peerCore['serveraddress'] || $pub['endpoint_port'] !== $peerCore['serverport']) {
+        $serveraddressNow = wgct_canon_ip($peerCore['serveraddress']) ?? $peerCore['serveraddress'];
+        if ($pub['endpoint_ip'] !== $serveraddressNow || $pub['endpoint_port'] !== $peerCore['serverport']) {
             $plan['peer']['serveraddress'] = $pub['endpoint_ip'];
             $plan['peer']['serverport'] = $pub['endpoint_port'];
             $need['tunnel'] = true;
-            $c[] = "peer {$label}: endpoint " . ($t['endpoint'] !== '' ? $t['endpoint'] : '(none)') . " -> {$pub['endpoint_ip']}:{$pub['endpoint_port']}";
+            $c[] = "peer {$label}: endpoint " . ($t['endpoint'] !== '' ? $t['endpoint'] : '(none)') . ' -> ' . wgct_format_endpoint($pub['endpoint_ip'], $pub['endpoint_port']);
         }
         /* a replacement endpoint only (spec 6.5): new keys for the same server change no route */
         if ($pub['endpoint_ip'] !== $endpointNow && isset($theirs[$pub['endpoint_ip']])) {
@@ -610,16 +612,29 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
 
     /* the endpoint route: a WAN move, or a swap to a new endpoint (rulings 12, 13) */
     $wanNow = $t['bound_wan'];
+    $familyAfter = wgct_ip_family((string)$endpointAfter) ?? 'inet';
     $wanAfter = $req['wan'] ?? $wanNow;
-    /* S1: no binding change touches an IPv6 endpoint (spec 2026-09-27 section 6); removed in Task 9 */
-    $v6Binding = ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow)
-        && (wgct_ip_family((string)$endpointNow) === 'inet6' || wgct_ip_family((string)$endpointAfter) === 'inet6');
-    if ($v6Binding) {
-        $e['wan'] = 'changing the binding of an IPv6 endpoint arrives in the next release; change its /128 route on System > Routes';
+    /* the bound gateway must carry the new endpoint's family: infer it when the request names none */
+    $wanNowFamily = $wanNow !== null ? ($core['gateways'][$wanNow]['ipprotocol'] ?? null) : null;
+    if ($req['wan'] === null && $endpointAfter !== $endpointNow && $wanNow !== null && $wanNowFamily !== $familyAfter) {
+        $bindIf = $core['gateways'][$wanNow]['interface'] ?? '';
+        $candidates = [];
+        foreach ($core['gateways'] as $gwName => $g) {
+            if ($g['interface'] === $bindIf && !$g['disabled'] && wgct_wan_error($core, (string)$gwName, $familyAfter) === null) {
+                $candidates[] = (string)$gwName;
+            }
+        }
+        if (count($candidates) === 1) {
+            $wanAfter = $candidates[0];
+            $ifDescr = $core['interfaces'][$bindIf]['descr'] ?? $bindIf;
+            $c[] = "bound to {$wanAfter}, " . ($ifDescr !== '' ? $ifDescr : $bindIf) . "'s " . ($familyAfter === 'inet6' ? 'IPv6' : 'IPv4') . ' gateway';
+        } else {
+            $e['wan'] = $familyAfter === 'inet6' ? 'the new endpoint is IPv6: choose an IPv6 gateway' : 'the new endpoint is IPv4: choose an IPv4 gateway';
+        }
     }
     /* a refused new endpoint plans no route work, and its refusal is the one reported on config */
-    if (!$v6Binding && ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) && !($endpointAfter !== $endpointNow && isset($e['config']))) {
-        $wanError = $wanAfter === null ? "{$label} is unbound: choose the WAN the new endpoint is routed to" : wgct_wan_error($core, $wanAfter);
+    if (!isset($e['wan']) && ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) && !($endpointAfter !== $endpointNow && isset($e['config']))) {
+        $wanError = $wanAfter === null ? "{$label} is unbound: choose the WAN the new endpoint is routed to" : wgct_wan_error($core, $wanAfter, $familyAfter);
         if ($wanError !== null) {
             $e['wan'] = $wanError;
         } elseif ($endpointAfter === $endpointNow) {
@@ -628,20 +643,20 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             } else {
                 $binding = array_filter(wgct_binding_routes($core), fn (array $b): bool => $b['ip'] === $endpointNow);
                 if (count($binding) !== 1) {
-                    $e['wan'] = "several routes bind {$endpointNow}/32; keep one on System > Routes first";
+                    $e['wan'] = "several routes bind " . wgct_host_network((string)$endpointNow) . '; keep one on System > Routes first';
                 } elseif (isset($theirs[$endpointNow])) {
                     $e['wan'] = "{$endpointNow} is also the endpoint of {$theirs[$endpointNow]}, so its route would move that tunnel too; "
                         . "give one of them another server first";
                 } else {
                     $plan['routes']['update'][(string)array_key_first($binding)] = ['gateway' => $wanAfter];
                     $need['tunnel'] = true;
-                    $c[] = "static route {$endpointNow}/32: via {$wanNow} -> {$wanAfter}";
+                    $c[] = 'static route ' . wgct_host_network((string)$endpointNow) . ": via {$wanNow} -> {$wanAfter}";
                 }
             }
         } elseif ($endpointAfter !== null) {
             if ($endpointNow !== null) {
                 foreach ($core['routes'] as $routeUuid => $r) {
-                    if ($r['network'] !== $endpointNow . '/32') {
+                    if ((wgct_host_route($r['network'])['ip'] ?? null) !== $endpointNow) {
                         continue;
                     }
                     if (isset($theirs[$endpointNow])) {
@@ -652,8 +667,8 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
                     }
                 }
             }
-            $network = $endpointAfter . '/32';
-            $same = array_filter($core['routes'], fn (array $r): bool => $r['network'] === $network);
+            $network = wgct_host_network($endpointAfter);
+            $same = array_filter($core['routes'], fn (array $r): bool => (wgct_host_route($r['network'])['ip'] ?? null) === $endpointAfter);
             if (count($same) > 1) {
                 $e['wan'] = "several routes to {$network} exist; keep one on System > Routes first";
             } elseif (count($same) === 1) {
@@ -1014,16 +1029,36 @@ function wgct_edit_selftest(): int {
     $p2 = $plan(['ipv6' => false] + $none, $swapA);
     wgct_check($t, 'edit: a config without IPv6 on a tunnel with IPv6 => refused, unless the same edit turns IPv6 off',
         str_contains($p1['errors']['ipv6'] ?? '', 'no IPv6 Address') && $p2['errors'] === [] && $p2['gateways']['delete'] === ['g-a6']);
-    /* S1: no binding change touches an IPv6 endpoint */
-    $p = $plan(['uuid' => 'i-b'] + $none, $swapB(['endpoint_ip' => '2001:db8::40']));
-    wgct_check($t, 'edit (S1): a swap to an IPv6 endpoint is refused on wan',
-        str_contains($p['errors']['wan'] ?? '', 'arrives in the next release'));
+    /* (a) swap to an IPv6 endpoint, gateway named */
+    $p = $plan(['uuid' => 'i-b', 'wan' => 'WAN_A6'] + $none, $swapB(['endpoint_ip' => '2001:db8::40']));
+    wgct_check($t, 'edit (a): swap to IPv6 with an IPv6 gateway => /128 added, old /32 deleted, mode tunnel',
+        $p['errors'] === [] && $p['mode'] === 'tunnel'
+        && $p['routes']['add'] === [['network' => '2001:db8::40/128', 'gateway' => 'WAN_A6', 'descr' => 'wireguard - tun_b', 'enabled' => '1']]
+        && isset($p['routes']['delete']['r-b']));
+    /* (b) inferred: WAN_B's interface has no IPv6 gateway, WAN_A's has exactly one */
+    $p = $plan(['uuid' => 'i-d'] + $none, $swapB(['endpoint_ip' => '2001:db8::41']));
+    wgct_check($t, 'edit (b): swap to IPv6 with no gateway named => the single IPv6 gateway on the bound interface',
+        $p['errors'] === [] && ($p['routes']['add'][0]['gateway'] ?? '') === 'WAN_A6' && $has($p['changes'], 'bound to WAN_A6'));
+    /* (c) no IPv6 gateway on the bound interface => refused */
+    $p = $plan(['uuid' => 'i-b'] + $none, $swapB(['endpoint_ip' => '2001:db8::42']));
+    wgct_check($t, 'edit (c): swap to IPv6 with no IPv6 gateway on the bound interface => refused on wan',
+        ($p['errors']['wan'] ?? '') === 'the new endpoint is IPv6: choose an IPv6 gateway');
+    /* (d) a WAN move must use the endpoint's family */
+    $p = $plan(['uuid' => 'i-a', 'wan' => 'WAN_A6'] + $none);
+    wgct_check($t, 'edit (d): moving an IPv4 endpoint to an IPv6 gateway => refused on wan',
+        ($p['errors']['wan'] ?? '') === 'WAN_A6 is IPv6; this endpoint is IPv4');
+    /* (e) a WAN move repairs a family mismatch on an IPv6 endpoint */
     $s = $snap;
     $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
     $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A', 'enabled' => true];
-    $p = $plan(['uuid' => 'i-d', 'wan' => 'WAN_B'] + $none, null, $s);
-    wgct_check($t, 'edit (S1): moving an IPv6-endpoint tunnel is refused on wan',
-        str_contains($p['errors']['wan'] ?? '', 'arrives in the next release'));
+    $p = $plan(['uuid' => 'i-d', 'wan' => 'WAN_A6'] + $none, null, $s);
+    wgct_check($t, 'edit (e): moving an IPv6 endpoint from an IPv4 to an IPv6 gateway => route updated',
+        $p['errors'] === [] && ($p['routes']['update']['r-d']['gateway'] ?? '') === 'WAN_A6');
+    /* (f) canonical: another instance's endpoint in another notation is still shared */
+    $s['core']['peers']['p-x']['serveraddress'] = '2001:DB8:0::44';
+    $p = $plan(['uuid' => 'i-b', 'wan' => 'WAN_A6'] + $none, $swapB(['endpoint_ip' => '2001:db8::44']), $s);
+    wgct_check($t, 'edit (f): a swap onto another instance\'s endpoint written differently => refused on config',
+        str_contains($p['errors']['config'] ?? '', '2001:db8::44 is already the endpoint of'));
 
     /* ---- blocking findings, managed list ---- */
     $s = $snap;
