@@ -70,8 +70,10 @@ function wgclienttunnels_configure()
  * Re-add any missing IPv6 addresses and gateway host routes. Idempotent, so it
  * is safe to run on every event; only actual repairs are logged.
  *
- * Invoked directly rather than through configd because "monitor" fires from
- * inside a configd-run action, and re-entering configd there would deadlock.
+ * Invoked directly rather than through configd: "monitor" fires from inside
+ * actions that hold the gateway lock (routes.alarm, replay_alarm), and a
+ * configd action started from here that waits on that lock would stall until
+ * its timeout. configd itself is threaded and would not deadlock.
  */
 function wgclienttunnels_configure_do($verbose = false)
 {

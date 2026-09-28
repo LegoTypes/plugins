@@ -40,7 +40,13 @@
         <id>edit.ipv6</id>
         <label>IPv6</label>
         <type>checkbox</type>
-        <help>Unticking removes the IPv6 gateway (refused while a group or rule uses it), the IPv6 tunnel address, ::/0 from the peer and the IPv6 outbound NAT. Ticking needs a replacement config with an IPv6 Address, since the provider assigns it with the key; the new IPv6 gateway starts forced down and the health mirror releases it.</help>
+        <help>Unticking removes the IPv6 gateway (refused while a group or rule uses it), the IPv6 tunnel address, ::/0 from the peer and the IPv6 outbound NAT. Ticking needs a replacement config with an IPv6 Address, since the provider assigns it with the key, and an IPv6 monitor; the new IPv6 gateway starts forced down and the health mirror releases it.</help>
+    </field>
+    <field>
+        <id>edit.monitor6</id>
+        <label>IPv6 monitor IP</label>
+        <type>text</type>
+        <help>A global IPv6 address pinged through the tunnel, the same rules as Create's. Leave it as it is to keep it; saving the current value again repairs a gateway flagged ipv6-monitor-config. A change rewrites the IPv6 gateway's monitor and thresholds (copied from the IPv4 gateway) and reconfigures routing, which restarts every gateway monitor. It cannot be cleared while IPv6 is on; untick IPv6 to drop it.</help>
     </field>
     <field>
         <id>edit.unique</id>
