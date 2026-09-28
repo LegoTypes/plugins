@@ -380,9 +380,12 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
                 continue;
             }
             $wanGw = $gws[$wanName] ?? null;
-            [$wanSettled, $wanAge, $wanWindow] = $wanGw !== null
-                ? wgct_settled($wanGw, $live['sock_age'][$wanName] ?? null, $settleOverride)
-                : [true, null, 0];
+            /* a gateway with monitoring disabled has no dpinger socket and core reports it
+             * 'none' or 'force_down', never down: its reading is settled as it stands
+             * (spec 2026-09-27 section 3.4) */
+            [$wanSettled, $wanAge, $wanWindow] = $wanGw === null || !empty($wanGw['monitor_disable'])
+                ? [true, null, 0]
+                : wgct_settled($wanGw, $live['sock_age'][$wanName] ?? null, $settleOverride);
             $wan = [
                 'disabled' => $wanGw === null || $wanGw['disabled'],
                 'force_down' => $wanGw !== null && $wanGw['force_down'],
@@ -657,6 +660,18 @@ function wgct_selftest() {
         ['no dpinger data for IPv4 => IPv6 down',
             $config(), $live(['loss' => [], 'sock_age' => ['WAN_A' => 600]]), [],
             ['tun_a-ipv6' => true], []],
+        ['unmonitored WAN back up (no dpinger socket) => release tunnel and IPv6',
+            $config(['WAN_A' => ['monitor_disable' => true], 'tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
+            ['tun_a' => false, 'tun_a-ipv6' => false], []],
+        ['unmonitored WAN absent from status => keep holding',
+            $config(['WAN_A' => ['monitor_disable' => true], 'tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['status' => ['tun_a' => 'none'], 'sock_age' => ['tun_a' => 600]]), ['tun_a'],
+            [], ['tun_a']],
+        ['monitored WAN with no socket yet => keep holding (unchanged)',
+            $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
+            [], ['tun_a']],
     ];
     foreach ($planCases as $c) {
         [$desc, $cfg, $lv, $heldNames, $expChanges, $expHeld] = $c;

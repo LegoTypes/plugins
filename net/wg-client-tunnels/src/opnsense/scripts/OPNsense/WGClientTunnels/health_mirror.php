@@ -41,7 +41,8 @@
  * is ignored: it can still trip a gateway DOWN, never bring one back UP. The
  * window is the gateway's own time_period (SETTLE_FALLBACK_SECONDS if unset);
  * --settle=N overrides it and --settle=0 disables the guard. It applies to the
- * WAN reading in pass 1 and the tunnel reading in pass 2.
+ * WAN reading in pass 1 and the tunnel reading in pass 2. A bound WAN gateway
+ * with monitoring disabled counts as settled at once: it has no dpinger to wait for.
  *
  * --dry reports every decision against live config and live gateway status
  * without writing or reconfiguring anything. --selftest exercises the decision
