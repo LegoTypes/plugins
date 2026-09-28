@@ -17,6 +17,7 @@
  * re-plans under the lock and writes only the differences.
  */
 
+use OPNsense\Core\Backend;
 use OPNsense\Core\Config;
 
 require_once __DIR__ . '/tunnels.php';
@@ -120,6 +121,29 @@ function wgct_action_snapshot(): array {
         'peer_fields' => $peerFields,
         'instance_pubkeys' => $instancePubkeys,
     ];
+}
+
+/**
+ * The firewall's own IPv6 networks (spec 3.5), for Create's and Edit's IPv6 monitor check: configd's ifconfig
+ * dump (`pluginctl -D`) and the delegated prefixes dhcp6c records in /tmp/<device>_prefixv6 and
+ * /tmp/<device>:slaac_prefixv6 (one glob matches both). Called only from the prepare steps, which hold no lock:
+ * never inside Config::lock(), never from the mirror, reconcile or the filter hook.
+ *
+ * @return list<string>|null null when configd's dump cannot be read (the check then fails closed)
+ */
+function wgct_local6_snapshot(): ?array {
+    $dump = json_decode((string)(new Backend())->configdRun('interface list ifconfig'), true);
+    if (!is_array($dump)) {
+        return null;
+    }
+    $files = [];
+    foreach (glob('/tmp/*_prefixv6') ?: [] as $path) {
+        $content = @file_get_contents($path);
+        if (is_string($content)) {
+            $files[] = $content;
+        }
+    }
+    return wgct_local6_parse($dump, $files);
 }
 
 /**
