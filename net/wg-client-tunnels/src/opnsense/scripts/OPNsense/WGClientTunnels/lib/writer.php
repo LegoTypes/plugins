@@ -125,15 +125,16 @@ function wgct_action_snapshot(): array {
 
 /**
  * The firewall's own IPv6 networks (spec 3.5), for Create's and Edit's IPv6 monitor check: configd's ifconfig
- * dump (`pluginctl -D`) and the delegated prefixes dhcp6c records in /tmp/<device>_prefixv6 and
- * /tmp/<device>:slaac_prefixv6 (one glob matches both). Called only from the prepare steps, which hold no lock:
+ * dump (`interface list ifconfig`, which runs `pluginctl -D`) and the delegated prefixes dhcp6c records in
+ * /tmp/<device>_prefixv6 and /tmp/<device>:slaac_prefixv6 (one glob matches both). Called only from the prepare steps, which hold no lock:
  * never inside Config::lock(), never from the mirror, reconcile or the filter hook.
  *
- * @return list<string>|null null when configd's dump cannot be read (the check then fails closed)
+ * @return list<string>|null null when configd's dump cannot be read or is empty (a live firewall always has lo0);
+ *                            the check then fails closed
  */
 function wgct_local6_snapshot(): ?array {
     $dump = json_decode((string)(new Backend())->configdRun('interface list ifconfig'), true);
-    if (!is_array($dump)) {
+    if (!is_array($dump) || $dump === []) {
         return null;
     }
     $files = [];
@@ -178,7 +179,7 @@ function wgct_action_commit(callable $mutate, string $description): array {
  */
 function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequired): array {
     $in = wgct_create_request($raw, $mtuRequired);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => [], 'local6' => []];
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => [], 'local6' => null];
     if ($in['text'] !== '') {
         $conf = wgct_parse_wgquick($in['text']);
         if ($conf['errors'] !== []) {
@@ -573,7 +574,7 @@ function wgct_sentinel_commit(bool $dry): array {
  */
 function wgct_edit_prepare(#[\SensitiveParameter] array $raw, string $uuid): array {
     $in = wgct_edit_request($raw, $uuid);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => [], 'local6' => []];
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => [], 'local6' => null];
     if ($prep['errors'] === [] && $prep['req']['monitor6'] !== null) {
         $prep['local6'] = wgct_local6_snapshot();
     }
