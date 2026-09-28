@@ -16,7 +16,7 @@
         <id>create.wan</id>
         <label>Bound WAN</label>
         <type>dropdown</type>
-        <help>The WAN gateway named by the /32 route to the endpoint. The tunnel never leaves by another WAN, and is held down while this one is down.</help>
+        <help>The WAN gateway named by the /32 (IPv4) or /128 (IPv6) route to the endpoint. The tunnel never leaves by another WAN, and is held down while this one is down. The list shows gateways of the endpoint's family; save an automatic DHCPv6 gateway once on System > Gateways to see it.</help>
     </field>
     <field>
         <id>create.monitor</id>

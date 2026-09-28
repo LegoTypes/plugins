@@ -271,6 +271,12 @@
             select.selectpicker('refresh');
         }
 
+        /* the WAN gateways that can carry an endpoint of this family (IPv4 when unknown) */
+        function wansFor(family) {
+            var f = family || 'inet';
+            return options.wans.filter(function (w) { return w.family === f; });
+        }
+
         /* the public parts of a wg-quick config, read in the browser; the private key is never touched */
         function wgPublic(text) {
             var section = '';
@@ -340,21 +346,25 @@
             }
             var p = wgPublic($('#create\\.config').val());
             var key = p.v6.slice().sort().join(',');
-            if (key === lastV6) {
-                return;
+            if (key !== lastV6) {
+                lastV6 = key;
+                var hasV6 = p.v6.length > 0;
+                $('#create\\.ipv6').prop('disabled', !hasV6).prop('checked', hasV6);
+                var known = $.map(options.instance_ipv6, expand6);
+                var shared = false;
+                $.each(p.v6, function (i, a) {
+                    if (known.indexOf(expand6(a)) !== -1) {
+                        shared = true;
+                    }
+                });
+                $('#create\\.unique').prop('checked', hasV6 && (options.unique_convention || shared));
+                natRows();
             }
-            lastV6 = key;
-            var hasV6 = p.v6.length > 0;
-            $('#create\\.ipv6').prop('disabled', !hasV6).prop('checked', hasV6);
-            var known = $.map(options.instance_ipv6, expand6);
-            var shared = false;
-            $.each(p.v6, function (i, a) {
-                if (known.indexOf(expand6(a)) !== -1) {
-                    shared = true;
-                }
-            });
-            $('#create\\.unique').prop('checked', hasV6 && (options.unique_convention || shared));
-            natRows();
+            /* the WAN list follows the pasted endpoint's family (IPv4 with no config pasted, ruling: same list as before) */
+            var wans = wansFor(p.endpoint_family);
+            var current = $('#create\\.wan').val();
+            fillSelect('#create\\.wan', wans,
+                wans.some(function (w) { return w.value === current; }) ? [current] : (wans.length ? [wans[0].value] : []));
         }
 
         function natRows() {
@@ -412,7 +422,8 @@
                 $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.mtu').val('');
                 $('#create\\.ipv6').prop('checked', false).prop('disabled', true);
                 $('#create\\.unique').prop('checked', false);
-                fillSelect('#create\\.wan', options.wans, options.wans.length ? [options.wans[0].value] : []);
+                var createWans = wansFor('inet');
+                fillSelect('#create\\.wan', createWans, createWans.length ? [createWans[0].value] : []);
                 fillSelect('#create\\.template', [{value: '', label: "{{ lang._('(none: choose NAT sources)') }}"}].concat(options.templates),
                     options.templates.length ? [options.templates[0].value] : ['']);
                 fillSelect('#create\\.nat4', options.nat_sources, []);
@@ -477,8 +488,10 @@
 
         function openRebind(t) {
             loadOptions(function () {
-                fillSelect('#rebind\\.wan', options.wans, options.wans.length ? [options.wans[0].value] : []);
-                fillSelect('#rebind\\.stale', [{value: '', label: "{{ lang._('(keep every route)') }}"}].concat(options.stale_routes), ['']);
+                var rebindWans = wansFor(t.endpoint_family);
+                fillSelect('#rebind\\.wan', rebindWans, rebindWans.length ? [rebindWans[0].value] : []);
+                var stale = options.stale_routes.filter(function (s) { return s.family === (t.endpoint_family || 'inet'); });
+                fillSelect('#rebind\\.stale', [{value: '', label: "{{ lang._('(keep every route)') }}"}].concat(stale), ['']);
                 $('#wgct-rebind-errors').empty();
                 $('#btn_dialogRebind_save').off('click').on('click', function () {
                     $('#btn_dialogRebind_save').prop('disabled', true);
@@ -522,6 +535,15 @@
             fillSelect(selector, choices, selected);
         }
 
+        /* Edit's own WAN list: the unbound placeholder when the tunnel has no bound WAN (Rebind is what binds
+         * one), then the gateways of the given family. Shared by the opener and editDefaults() so a change of
+         * family from a pasted config never drops the unbound choice out from under an unbound tunnel. */
+        function editWans(family) {
+            var f = editState.form;
+            var wans = f.wan ? [] : [{value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"}];
+            return wans.concat(wansFor(family));
+        }
+
         function editRows() {
             var text = $('#edit\\.config').val();
             var swap = $.trim(text) !== '';
@@ -538,19 +560,37 @@
         /* rulings 3 and 4 for a replacement config: unique addressing on by default when its IPv6 address is
          * on another instance or the managed tunnels use fd00::N:1 */
         function editDefaults() {
+            var f = editState.form;
             var p = wgPublic($('#edit\\.config').val());
             var key = p.v6.slice().sort().join(',');
             if (key !== lastEditV6) {
                 lastEditV6 = key;
-                var known = $.map(editState.form.ipv6_others, expand6);
+                var known = $.map(f.ipv6_others, expand6);
                 var shared = false;
                 $.each(p.v6, function (i, a) {
                     if (known.indexOf(expand6(a)) !== -1) {
                         shared = true;
                     }
                 });
-                $('#edit\\.unique').prop('checked', p.v6.length > 0 ? (editState.form.unique_convention || shared) : editState.form.unique === true);
+                $('#edit\\.unique').prop('checked', p.v6.length > 0 ? (f.unique_convention || shared) : f.unique === true);
             }
+            /* the WAN list follows the replacement config's family (the bound WAN's own family with no
+             * replacement pasted). A family change from the bound gateway's own family offers a first option
+             * for the same WAN's gateway of the new family: the planner treats the bound gateway of the wrong
+             * family as none named and infers the single gateway of the new family on the same interface
+             * (Controller ruling, Task 9 review). */
+            var family = p.endpoint_family || f.endpoint_family;
+            var wans = editWans(family);
+            var mismatch = !!f.wan && family !== f.endpoint_family;
+            if (mismatch) {
+                wans = [{value: f.wan, label: family === 'inet6'
+                    ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
+                    : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"}].concat(wans);
+            }
+            var current = $('#edit\\.wan').val();
+            var selected = mismatch ? f.wan
+                : (wans.some(function (w) { return w.value === current; }) ? current : (wans.length ? wans[0].value : ''));
+            fillSelect('#edit\\.wan', wans, selected === '' ? [] : [selected]);
             editRows();
         }
 
@@ -603,6 +643,9 @@
                     showResult(titleText("{{ lang._('Edit') }} " + plain(t.name)), data, status);
                     return;
                 }
+                /* edit_form's reply carries the same choices as the options action (plus form); wansFor() reads
+                 * them from here so it sees this dialog's own fresh WAN list, not a stale or absent one */
+                options = data;
                 var f = data.form;
                 editState = {uuid: t.uuid, name: plain(f.name), form: f};
                 lastEditV6 = null;
@@ -610,8 +653,7 @@
                 $('#edit\\.config').val('');
                 $('#edit\\.monitor').val(plain(f.monitor));
                 $('#edit\\.mtu').val(f.mtu);
-                var wans = f.wan ? [] : [{value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"}];
-                wans = wans.concat(data.wans);
+                var wans = editWans(f.endpoint_family);
                 if (f.wan && !data.wans.some(function (w) { return w.value === f.wan; })) {
                     wans.push({value: f.wan, label: f.wan});
                 }

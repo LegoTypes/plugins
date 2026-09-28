@@ -312,6 +312,7 @@ function wgct_edit_prefill(array $snap, string $uuid): array {
         'ipv6' => $t['gw6'] !== null || $t['ipv6_address'] !== null,
         'unique' => wgct_edit_unique_now($t, $inst),
         'endpoint_ip' => $t['endpoint_ip'] ?? '',
+        'endpoint_family' => $t['endpoint_family'] ?? '',
         'nat4' => $nat['sources']['inet'], 'nat6' => $nat['sources']['inet6'], 'nat_kept' => $nat['kept'],
         'ipv6_others' => array_map('strval', array_keys(wgct_edit_other_ipv6($core, $uuid))),
         'unique_convention' => wgct_unique_convention($derived),
