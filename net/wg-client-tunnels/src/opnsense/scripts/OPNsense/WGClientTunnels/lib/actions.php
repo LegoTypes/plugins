@@ -169,6 +169,24 @@ function wgct_monitor6_error(array $core, array $local6, string $monitor, ?strin
 }
 
 /**
+ * An IPv6 tunnel gateway's monitor fields (spec 3.2): its own monitor, which core must not route (the plugin
+ * installs M/128 -iface wgN), and the thresholds of the tunnel's IPv4 gateway, so a latency spike never reads
+ * down on core's tighter defaults. Pure.
+ *
+ * @param string                $gw6Name   the IPv6 gateway's name
+ * @param string                $monitor6  the canonical monitor
+ * @param array<string, string> $gw4Fields the IPv4 gateway's fields (a missing threshold reads as '')
+ * @return array<string, string>
+ */
+function wgct_gw6_monitor_fields(string $gw6Name, string $monitor6, array $gw4Fields): array {
+    $fields = ['descr' => "{$gw6Name} (IPv6 tunnel)", 'monitor' => $monitor6, 'monitor_disable' => '0', 'monitor_noroute' => '1'];
+    foreach (WGCT_THRESHOLD_FIELDS as $field) {
+        $fields[$field] = (string)($gw4Fields[$field] ?? '');
+    }
+    return $fields;
+}
+
+/**
  * @param array  $core   wgct_core_snapshot()
  * @param string $wan    a gateway name
  * @param string $family the endpoint's family the WAN must match ('inet' or 'inet6')
@@ -481,6 +499,23 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         }
     }
 
+    /* the IPv6 gateway's own monitor (spec 3.3) */
+    $monitor6 = '';
+    if ($ipv6) {
+        if ($req['monitor6'] === '') {
+            $e['monitor6'] = 'required with IPv6: an IPv6 address pinged through the tunnel';
+        } elseif (!is_array($snap['local6'] ?? null)) {
+            $e['monitor6'] = "could not read this firewall's IPv6 addresses (configd interface list ifconfig); try again";
+        } else {
+            $why = wgct_monitor6_error($core, $snap['local6'], $req['monitor6'], null, [$endpoint]);
+            if ($why !== null) {
+                $e['monitor6'] = $why;
+            } else {
+                $monitor6 = (string)wgct_canon_ip($req['monitor6']);
+            }
+        }
+    }
+
     /*
      * The template's NAT rules to copy: enabled, IPv6 ones only with IPv6 on,
      * in sequence order. One whose source, destination or target names the
@@ -565,9 +600,9 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     ])];
     if ($ipv6) {
         $plan['gateways'][] = ['name' => $name6, 'fields' => array_merge($copy($tpl['gw6'] ?? null), [
-            'disabled' => '0', 'name' => $name6, 'descr' => "{$name6} (follows {$name})", 'interface' => $opt, 'ipprotocol' => 'inet6',
-            'gateway' => $next6, 'monitor' => '', 'defaultgw' => '0', 'fargw' => '1', 'monitor_disable' => '1', 'force_down' => '1',
-        ])];
+            'disabled' => '0', 'name' => $name6, 'interface' => $opt, 'ipprotocol' => 'inet6',
+            'gateway' => $next6, 'defaultgw' => '0', 'fargw' => '1', 'force_down' => '1',
+        ], wgct_gw6_monitor_fields($name6, $monitor6, $plan['gateways'][0]['fields']))];
     }
     if ($tpl !== null) {
         /* a description naming the template's device or interface names the new tunnel's instead */
@@ -609,7 +644,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     $c[] = "interface {$opt} ({$descr}) -> {$device}, enabled";
     foreach ($plan['gateways'] as $g) {
         $c[] = $g['fields']['force_down'] === '1'
-            ? "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, starts forced down (the health mirror releases it)"
+            ? "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, monitor {$g['fields']['monitor']}, starts forced down (the health mirror releases it)"
             : "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, monitor {$monitor}";
     }
     $c[] = match ($plan['route']['action']) {
@@ -1026,7 +1061,7 @@ function wgct_actions_fixture(): array {
 function wgct_actions_selftest(): int {
     $t = ['fail' => 0, 'total' => 0];
     $snap = wgct_actions_fixture();
-    $req = ['name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'ipv6' => true, 'unique' => null, 'mtu' => 1376,
+    $req = ['name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'monitor6' => '2001:db8:ffff::12', 'ipv6' => true, 'unique' => null, 'mtu' => 1376,
             'template' => 'i-a', 'nat' => ['inet' => [], 'inet6' => []]];
     $conf = ['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['fd00::1:1/128']], 'peer_pubkey' => base64_encode(str_repeat('B', 32)),
              'endpoint_ip' => '198.51.100.12', 'endpoint_port' => '51820', 'has_psk' => false];
@@ -1052,8 +1087,31 @@ function wgct_actions_selftest(): int {
         count($p['gateways']) === 2 && $p['gateways'][0]['name'] === 'tun_c' && $p['gateways'][1]['name'] === 'tun_c-ipv6'
         && $g4['gateway'] === '10.2.0.6' && $g4['interface'] === 'opt4' && $g4['monitor'] === '203.0.113.12' && $g4['latencylow'] === '900'
         && $g4['fargw'] === '1' && $g4['monitor_disable'] === '0' && $g4['force_down'] === '0' && $g4['defaultgw'] === '0'
-        && $g6['gateway'] === 'fd00::3:2' && $g6['ipprotocol'] === 'inet6' && $g6['fargw'] === '1' && $g6['monitor_disable'] === '1'
-        && $g6['force_down'] === '1' && $g6['losshigh'] === '20');
+        && $g6['gateway'] === 'fd00::3:2' && $g6['ipprotocol'] === 'inet6' && $g6['fargw'] === '1' && $g6['monitor_disable'] === '0'
+        && $g6['monitor'] === '2001:db8:ffff::12' && $g6['monitor_noroute'] === '1' && $g6['descr'] === 'tun_c-ipv6 (IPv6 tunnel)'
+        && $g6['force_down'] === '1' && $g6['losshigh'] === '20' && $g6['latencylow'] === '900' && $g6['latencyhigh'] === '1600');
+    wgct_check($t, 'create: (a) IPv6 on without monitor6 => refused on monitor6',
+        str_contains(wgct_plan_create($snap, ['monitor6' => ''] + $req, $conf)['errors']['monitor6'] ?? '', 'required with IPv6'));
+    $q = wgct_plan_create($snap, ['ipv6' => false, 'monitor6' => ''] + $req, $conf);
+    wgct_check($t, 'create: (b) IPv6 off needs no monitor6 and builds one gateway',
+        !isset($q['errors']['monitor6']) && count($q['gateways']) === 1);
+    $s = $snap;
+    $s['local6'] = null;
+    wgct_check($t, 'create: (c) the firewall\'s addresses unreadable => monitor6 refused with a retry, never accepted unchecked',
+        str_contains(wgct_plan_create($s, $req, $conf)['errors']['monitor6'] ?? '', 'could not read'));
+    wgct_check($t, 'create: (d) monitor6 on the firewall\'s own network => refused',
+        str_contains(wgct_plan_create($snap, ['monitor6' => '2001:db8:1:1::5'] + $req, $conf)['errors']['monitor6'] ?? '', 'own network'));
+    wgct_check($t, 'create: (e) another tunnel\'s IPv6 monitor => refused',
+        str_contains(wgct_plan_create($snap, ['monitor6' => '2001:db8:ffff::9'] + $req, $conf)['errors']['monitor6'] ?? '', 'the monitor of tun_a-ipv6'));
+    $q = wgct_plan_create($snap, ['monitor6' => '2001:DB8:FFFF:0::12'] + $req, $conf);
+    wgct_check($t, 'create: (f) a non-canonical monitor6 is stored canonical',
+        $q['errors'] === [] && ($q['gateways'][1]['fields']['monitor'] ?? '') === '2001:db8:ffff::12');
+    $q = wgct_plan_create($snap, ['template' => '', 'nat' => ['inet' => ['opt3'], 'inet6' => ['opt3']]] + $req, $conf);
+    $g6q = $q['gateways'][1]['fields'] ?? [];
+    wgct_check($t, 'create: (g) without a template every IPv6 threshold field is written, empty, like the IPv4 gateway\'s',
+        $q['errors'] === [] && array_intersect_key($g6q, array_flip(WGCT_THRESHOLD_FIELDS)) === array_fill_keys(WGCT_THRESHOLD_FIELDS, ''));
+    wgct_check($t, 'create: (h) the change list names the IPv6 monitor',
+        $has(wgct_plan_create($snap, $req, $conf)['changes'], 'gateway tun_c-ipv6 fd00::3:2 on opt4, monitor 2001:db8:ffff::12, starts forced down'));
     wgct_check($t, 'create: the endpoint route is added via the bound WAN',
         $p['route'] === ['action' => 'add', 'uuid' => '', 'fields' => ['network' => '198.51.100.12/32', 'gateway' => 'WAN_A', 'descr' => 'wireguard - tun_c', 'enabled' => '1']]);
     wgct_check($t, 'create: template NAT copied whole (destination and description kept), enabled rules only, in sequence order',

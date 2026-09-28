@@ -24,7 +24,7 @@ const WGCT_TUNNEL_MTU_MIN = 1280;
 const WGCT_TUNNEL_MTU_MAX = 1420;
 const WGCT_KEEPALIVE = '25';
 /* the Create request's keys: the API form's create.<key> and the CLI's JSON */
-const WGCT_CREATE_FIELDS = ['config', 'name', 'wan', 'monitor', 'ipv6', 'unique', 'mtu', 'template', 'nat4', 'nat6'];
+const WGCT_CREATE_FIELDS = ['config', 'name', 'wan', 'monitor', 'monitor6', 'ipv6', 'unique', 'mtu', 'template', 'nat4', 'nat6'];
 
 /**
  * @param string $key candidate WireGuard key
@@ -209,7 +209,7 @@ function wgct_request_flag(mixed $v): array {
  *                           mtu: int or digits ('' or absent = measure);
  *                           nat4/nat6: list of strings or a comma-separated string
  * @param bool  $mtuRequired the API requires an MTU; the CLI measures one when absent
- * @return array{errors: array<string, string>, req: array{name: string, wan: string, monitor: string, ipv6: ?bool, unique: ?bool, mtu: ?int, template: string, nat: array{inet: list<string>, inet6: list<string>}}, text: string}
+ * @return array{errors: array<string, string>, req: array{name: string, wan: string, monitor: string, monitor6: string, ipv6: ?bool, unique: ?bool, mtu: ?int, template: string, nat: array{inet: list<string>, inet6: list<string>}}, text: string}
  */
 function wgct_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequired): array {
     $errors = [];
@@ -255,6 +255,7 @@ function wgct_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequire
     if (filter_var($monitor, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
         $errors['monitor'] = 'an IPv4 address';
     }
+    $monitor6 = $str('monitor6');
     $mtuRaw = $raw['mtu'] ?? null;
     $mtu = null;
     if (is_int($mtuRaw)) {
@@ -274,7 +275,7 @@ function wgct_create_request(#[\SensitiveParameter] array $raw, bool $mtuRequire
     return [
         'errors' => $errors,
         'req' => [
-            'name' => $name, 'wan' => $wan, 'monitor' => $monitor,
+            'name' => $name, 'wan' => $wan, 'monitor' => $monitor, 'monitor6' => $monitor6,
             'ipv6' => $ipv6, 'unique' => $unique,
             'mtu' => $mtu, 'template' => $str('template'),
             'nat' => ['inet' => $list('nat4'), 'inet6' => $list('nat6')],
@@ -399,12 +400,12 @@ function wgct_wgconf_selftest(): int {
     $p = wgct_parse_wgquick($bad);
     wgct_check($t, 'wgconf: every message for a broken config is key-free', count($p['errors']) >= 3 && $noKey($p['errors']));
 
-    $raw = ['config' => $base, 'name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'ipv6' => '1', 'unique' => '0',
+    $raw = ['config' => $base, 'name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'monitor6' => ' 2001:db8:ffff::12 ', 'ipv6' => '1', 'unique' => '0',
             'mtu' => '1376', 'template' => '', 'nat4' => 'opt3,TailscaleNetworks', 'nat6' => ''];
     $r = wgct_create_request($raw, true);
     wgct_check($t, 'request: API form strings => typed request',
         $r['errors'] === [] && $r['text'] === $base
-        && $r['req'] === ['name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'ipv6' => true, 'unique' => false,
+        && $r['req'] === ['name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'monitor6' => '2001:db8:ffff::12', 'ipv6' => true, 'unique' => false,
                           'mtu' => 1376, 'template' => '', 'nat' => ['inet' => ['opt3', 'TailscaleNetworks'], 'inet6' => []]]);
 
     $json = ['config' => $base, 'name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'nat4' => ['opt3', ' ', 7]];
@@ -412,6 +413,10 @@ function wgct_wgconf_selftest(): int {
     wgct_check($t, 'request: CLI JSON with ipv6/unique/mtu absent => all three null (defaults decided by the planner); non-strings dropped from lists',
         $r['errors'] === [] && $r['req']['ipv6'] === null && $r['req']['unique'] === null && $r['req']['mtu'] === null
         && $r['req']['nat']['inet'] === ['opt3']);
+    wgct_check($t, 'request: monitor6 is trimmed; absent or a non-string is empty',
+        wgct_create_request($json + ['monitor6' => ' 2001:db8:ffff::12 '], false)['req']['monitor6'] === '2001:db8:ffff::12'
+        && wgct_create_request($json, false)['req']['monitor6'] === ''
+        && wgct_create_request($json + ['monitor6' => 7], false)['req']['monitor6'] === '');
 
     $r = wgct_create_request($json, true);
     wgct_check($t, 'request: API requires the MTU', ($r['errors']['mtu'] ?? '') === 'measure or enter the MTU');
