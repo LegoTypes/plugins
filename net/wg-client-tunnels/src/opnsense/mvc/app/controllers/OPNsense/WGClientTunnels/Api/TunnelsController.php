@@ -265,11 +265,8 @@ class TunnelsController extends ApiControllerBase
         require_once self::LIB . '/addr.php';
         $wan = $this->postString('wan');
         $endpoint = $this->postString('endpoint');
-        if (wgct_ip_family($endpoint) === 'inet6') {
-            return ['ok' => false, 'errors' => ['measuring IPv6 endpoints arrives in the next release']];
-        }
-        if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-            return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 endpoint first']];
+        if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || wgct_endpoint_ip($endpoint) === null) {
+            return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 or [IPv6] endpoint first']];
         }
         return wgct_configd_json('wgclienttunnels measure_mtu', [$wan, $endpoint], 120);
     }
