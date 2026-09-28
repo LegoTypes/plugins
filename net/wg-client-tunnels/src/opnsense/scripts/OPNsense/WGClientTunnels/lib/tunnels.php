@@ -7,8 +7,8 @@
  *
  * Tunnel derivation (spec 2026-09-24 section 3). Core config is the only
  * source of truth: a managed tunnel is assembled from its WireGuard instance
- * and peer, the interface assignment of its device, the /32 route to its
- * endpoint, the gateways on its interface, outbound NAT and the gateway
+ * and peer, the interface assignment of its device, the /32 or /128 route to
+ * its endpoint, the gateways on its interface, outbound NAT and the gateway
  * groups, every time it is needed. The plugin stores only which instances it
  * manages. wgct_core_snapshot() reads config through models; every other
  * function here is pure over that snapshot.
@@ -27,11 +27,11 @@ const WGCT_FINDINGS = [
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
     'interface-disabled' => [true, "Interfaces > the tunnel's interface: enable it"],
     'not-single-peer' => [true, 'VPN > WireGuard > Instances: exactly one peer'],
-    'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 endpoint address'],
+    'endpoint-unsupported' => [true, 'VPN > WireGuard > Peers: an IPv4 or global IPv6 server address (typed bare, without brackets)'],
     'ambiguous-gateway' => [true, 'System > Gateways: one gateway per family on the tunnel interface'],
-    'unbound' => [false, 'Rebind in the tunnel list (tunnel.php rebind), or System > Routes: a /32 route to the endpoint via its WAN gateway'],
+    'unbound' => [false, 'Rebind in the tunnel list (tunnel.php rebind), or System > Routes: a /32 (IPv4) or /128 (IPv6) route to the endpoint via a WAN gateway'],
     'stale-route' => [false, 'Rebind in the tunnel list offers to delete it with its kernel route; or re-point or remove it on System > Routes'],
-    'wan-unavailable' => [false, 'System > Gateways / Interfaces: enable the bound WAN'],
+    'wan-unavailable' => [false, 'System > Gateways, Interfaces: enable the bound gateway and its interface, or bind to a saved, enabled gateway of the endpoint\'s family'],
     'ipv6-incomplete' => [false, 'Instances and System > Gateways: IPv6 tunnel address and IPv6 gateway together'],
     'mtu-override' => [false, 'Interfaces > wgN: clear MTU or match the instance MTU'],
     'mtu-too-small' => [false, "VPN > WireGuard > Instances (or Interfaces > the tunnel's interface): the MTU is too small to clamp TCP MSS; set it to at least 1280"],
@@ -58,11 +58,12 @@ const WGCT_MSS_ANCHOR = 'wgclienttunnels_mss';
 /**
  * @param string $code   key of WGCT_FINDINGS
  * @param string $detail what was found
+ * @param ?string $fix   overrides the table's fix text, when the finding needs a more specific hint
  * @return array ['code', 'blocking', 'detail', 'fix']
  */
-function wgct_finding($code, $detail) {
-    [$blocking, $fix] = WGCT_FINDINGS[$code];
-    return ['code' => $code, 'blocking' => $blocking, 'detail' => $detail, 'fix' => $fix];
+function wgct_finding($code, $detail, ?string $fix = null) {
+    [$blocking, $tableFix] = WGCT_FINDINGS[$code];
+    return ['code' => $code, 'blocking' => $blocking, 'detail' => $detail, 'fix' => $fix ?? $tableFix];
 }
 
 /**
@@ -146,6 +147,7 @@ function wgct_core_snapshot() {
             'mtu' => (string)$if->mtu,
             'mss' => (string)$if->mss,
             'descr' => (string)$if->descr,
+            'ipaddrv6' => (string)$if->ipaddrv6,
         ];
     }
     foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $uuid => $r) {
@@ -167,6 +169,7 @@ function wgct_core_snapshot() {
             'losshigh' => (string)$g->losshigh,
             'losslow' => (string)$g->losslow,
             'time_period' => (string)$g->time_period,
+            'monitor_disable' => (string)$g->monitor_disable === '1',
         ];
     }
     foreach ((new \OPNsense\Firewall\Filter())->snatrules->rule->iterateItems() as $rule) {
@@ -220,14 +223,14 @@ function wgct_derive(array $core, array $managed) {
         }
     }
     foreach (wgct_binding_routes($core) as $b) {
-        $ctx['binding_routes'][$b['ip']] = $b['gateway'];
+        $ctx['binding_routes'][$b['family']][$b['ip']] = $b['gateway'];
     }
-    /* one entry per IP, the last route's gateway winning: byte-identical to the old IP-keyed loop */
-    $stale = [];
+    /* one entry per IP and family, the last route's gateway winning */
+    $stale = ['inet' => [], 'inet6' => []];
     foreach (wgct_stale_candidates($core) as $b) {
-        $stale[$b['ip']] = "{$b['ip']}/32 via {$b['gateway']}";
+        $stale[$b['family']][$b['ip']] = wgct_host_network($b['ip']) . " via {$b['gateway']}";
     }
-    $ctx['stale_routes'] = array_values($stale);
+    $ctx['stale_routes'] = ['inet' => array_values($stale['inet']), 'inet6' => array_values($stale['inet6'])];
 
     $tunnels = [];
     foreach ($managed as $uuid) {
@@ -253,28 +256,26 @@ function wgct_wg_devices(array $core): array {
 }
 
 /**
- * The routes that can bind a tunnel (spec 2.2): enabled /32 IPv4 routes whose
- * gateway is not on a WireGuard device. Pure. Derivation and Rebind both use
- * this, so they cannot disagree on what a binding is.
+ * The routes that can bind a tunnel (spec 2.2): enabled /32 IPv4 and /128
+ * global IPv6 routes whose gateway is not on a WireGuard device. Pure.
+ * Derivation and Rebind both use this, so they cannot disagree on what a
+ * binding is.
  *
  * @param array $core wgct_core_snapshot()
- * @return array<string, array{ip: string, gateway: string}> route uuid => binding
+ * @return array<string, array{ip: string, gateway: string, family: string}> route uuid => binding
  */
 function wgct_binding_routes(array $core): array {
     $wgDevices = wgct_wg_devices($core);
     $out = [];
     foreach ($core['routes'] as $uuid => $r) {
-        if (!$r['enabled'] || substr($r['network'], -3) !== '/32') {
-            continue;
-        }
-        $ip = substr($r['network'], 0, -3);
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        $host = $r['enabled'] ? wgct_host_route($r['network']) : null;
+        if ($host === null || ($host['family'] === 'inet6' && !wgct_is_global6($host['ip']))) {
             continue;
         }
         $g = $core['gateways'][$r['gateway']] ?? null;
         $dev = $g !== null ? ($core['interfaces'][$g['interface']]['if'] ?? '') : '';
         if (!isset($wgDevices[$dev])) {
-            $out[(string)$uuid] = ['ip' => $ip, 'gateway' => $r['gateway']];
+            $out[(string)$uuid] = ['ip' => $host['ip'], 'gateway' => $r['gateway'], 'family' => $host['family']];
         }
     }
     return $out;
@@ -290,7 +291,7 @@ function wgct_binding_routes(array $core): array {
 function wgct_stale_candidates(array $core): array {
     $endpoints = [];
     foreach ($core['peers'] as $p) {
-        $endpoints[$p['serveraddress']] = true;
+        $endpoints[wgct_canon_ip($p['serveraddress']) ?? $p['serveraddress']] = true;
     }
     return array_filter(wgct_binding_routes($core), fn (array $b): bool => !isset($endpoints[$b['ip']]));
 }
@@ -306,7 +307,7 @@ function wgct_stale_candidates(array $core): array {
 function wgct_derive_one(array $core, $uuid, array $ctx) {
     $t = [
         'uuid' => $uuid, 'name' => '', 'enabled' => false, 'device' => '', 'interface' => null,
-        'interface_descr' => '', 'endpoint' => '', 'endpoint_ip' => null, 'bound_wan' => null, 'wan_interface' => null,
+        'interface_descr' => '', 'endpoint' => '', 'endpoint_ip' => null, 'endpoint_family' => null, 'bound_wan' => null, 'wan_interface' => null,
         'mtu' => WGCT_DEFAULT_MTU, 'mss' => '',
         'gw4' => null, 'monitor' => '', 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
         'nat' => ['inet' => [], 'inet6' => []], 'groups' => [], 'findings' => [], 'enforceable' => false,
@@ -325,26 +326,43 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         $t['findings'][] = wgct_finding('not-single-peer', count($inst['peers']) . ' peers');
     } else {
         $peer = $core['peers'][$inst['peers'][0]] ?? null;
-        $ip = $peer !== null ? $peer['serveraddress'] : '';
-        $t['endpoint'] = $ip . ($peer !== null && $peer['serverport'] !== '' ? ':' . $peer['serverport'] : '');
-        $isValidV4 = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
-        $t['endpoint_ip'] = $isValidV4 ? $ip : null;
-        if (!$isValidV4) {
-            $t['findings'][] = wgct_finding('endpoint-unsupported', $ip === '' ? 'no endpoint' : "{$ip} is not an IPv4 address");
-        } elseif (!isset($ctx['binding_routes'][$ip])) {
-            $t['findings'][] = wgct_finding('unbound', "no enabled /32 route to {$ip} via a WAN gateway");
-            if (!empty($ctx['stale_routes'])) {
-                $t['findings'][] = wgct_finding('stale-route', implode(', ', $ctx['stale_routes']));
+        $raw = $peer !== null ? $peer['serveraddress'] : '';
+        $port = $peer !== null ? $peer['serverport'] : '';
+        $ip = wgct_endpoint_ip($raw);
+        $family = $ip !== null ? wgct_ip_family($ip) : null;
+        $t['endpoint'] = $ip !== null ? wgct_format_endpoint($ip, $port) : $raw . ($port !== '' ? ':' . $port : '');
+        $t['endpoint_ip'] = $ip;
+        $t['endpoint_family'] = $family;
+        if ($ip === null) {
+            $t['findings'][] = wgct_finding('endpoint-unsupported', $raw === '' ? 'no endpoint'
+                : (wgct_ip_family($raw) === 'inet6' ? "{$raw} is not a global IPv6 address" : "{$raw} is not an IPv4 or IPv6 address"));
+        } elseif (!isset($ctx['binding_routes'][$family][$ip])) {
+            /* S1: Rebind does not bind IPv6 endpoints yet (spec 2026-09-27 section 3.3); removed in Task 10 */
+            $fix = $family === 'inet6'
+                ? 'System > Routes: a /128 route to the endpoint via a saved IPv6 WAN gateway (Rebind binds IPv6 endpoints from the next release)'
+                : null;
+            $t['findings'][] = wgct_finding('unbound', 'no enabled ' . ($family === 'inet6' ? '/128' : '/32') . " route to {$ip} via a WAN gateway", $fix);
+            if (!empty($ctx['stale_routes'][$family])) {
+                $t['findings'][] = wgct_finding('stale-route', implode(', ', $ctx['stale_routes'][$family]));
             }
         } else {
-            $wan = $ctx['binding_routes'][$ip];
+            $wan = $ctx['binding_routes'][$family][$ip];
             $t['bound_wan'] = $wan;
             $wanGw = $core['gateways'][$wan] ?? null;
             $wanIf = $wanGw !== null ? ($core['interfaces'][$wanGw['interface']] ?? null) : null;
-            /* fail closed: only pin to an interface we can actually resolve and that is up */
-            $t['wan_interface'] = ($wanGw !== null && $wanIf !== null && $wanIf['enable']) ? $wanGw['interface'] : null;
+            /* an IPv6 endpoint needs an IPv6 gateway that is not a 6rd/6to4 tunnel; IPv4 keeps core's rule (RFC 5549) */
+            $unusable = null;
+            if ($wanGw !== null && $family === 'inet6' && $wanGw['ipprotocol'] !== 'inet6') {
+                $unusable = "{$wan} is IPv4; an IPv6 endpoint needs an IPv6 gateway";
+            } elseif ($wanGw !== null && $family === 'inet6' && in_array($wanIf['ipaddrv6'] ?? '', ['6rd', '6to4'], true)) {
+                $unusable = "{$wan} is on a 6rd/6to4 WAN; IPv6 over 6rd/6to4 is not supported as a binding";
+            }
+            /* fail closed: only pin to an interface we can actually resolve, that is up, and that can carry the endpoint */
+            $t['wan_interface'] = ($wanGw !== null && $wanIf !== null && $wanIf['enable'] && $unusable === null) ? $wanGw['interface'] : null;
             if ($wanGw === null) {
-                $t['findings'][] = wgct_finding('wan-unavailable', "the route names unknown gateway {$wan}");
+                $t['findings'][] = wgct_finding('wan-unavailable', "{$wan} is not a saved gateway; save it once on System > Gateways");
+            } elseif ($unusable !== null) {
+                $t['findings'][] = wgct_finding('wan-unavailable', $unusable);
             } elseif ($wanGw['disabled'] || $wanIf === null || !$wanIf['enable']) {
                 $t['findings'][] = wgct_finding('wan-unavailable', "{$wan} or its interface is disabled");
             }
@@ -625,7 +643,7 @@ function wgct_tunnels_selftest() {
         return $o + [
             'uuid' => 'u-' . bin2hex(random_bytes(4)), 'interface' => 'opt1', 'ipprotocol' => 'inet',
             'gateway' => '', 'monitor' => '', 'disabled' => false, 'force_down' => false,
-            'losshigh' => '', 'losslow' => '', 'time_period' => '',
+            'losshigh' => '', 'losslow' => '', 'time_period' => '', 'monitor_disable' => false,
         ];
     };
     $base = function () use ($gw) {
@@ -643,6 +661,7 @@ function wgct_tunnels_selftest() {
             'routes' => ['r-a' => ['network' => '198.51.100.10/32', 'gateway' => 'WAN_A', 'enabled' => true]],
             'gateways' => [
                 'WAN_A' => $gw(['interface' => 'opt1', 'gateway' => '192.0.2.1']),
+                'WAN_A6' => $gw(['interface' => 'opt1', 'ipprotocol' => 'inet6', 'gateway' => 'fe80::1']),
                 'tun_a' => $gw(['interface' => 'opt11', 'gateway' => '10.2.0.4', 'monitor' => '203.0.113.9']),
                 'tun_a-ipv6' => $gw(['interface' => 'opt11', 'ipprotocol' => 'inet6', 'gateway' => 'fd00::1:2']),
                 'NO_DEFAULT4' => $gw(['interface' => 'opt10']),
@@ -660,6 +679,12 @@ function wgct_tunnels_selftest() {
     $codes = function (array $t) {
         $c = array_map(function ($f) { return $f['code']; }, $t['findings']);
         sort($c);
+        return $c;
+    };
+    /* the tunnel moved to an IPv6 endpoint bound by a /128 via WAN_A6; $net and $gwName override the route */
+    $v6 = function (array $c, string $net = '2001:db8:0::10/128', string $gwName = 'WAN_A6') {
+        $c['peers']['p-a']['serveraddress'] = '2001:DB8::10';
+        $c['routes']['r-a'] = ['network' => $net, 'gateway' => $gwName, 'enabled' => true];
         return $c;
     };
     $cases = [
@@ -712,8 +737,20 @@ function wgct_tunnels_selftest() {
             function ($c) { $c['interfaces']['opt1']['enable'] = false; return $c; }, ['i-a'], ['wan-unavailable'], true],
         ['zero peers => not-single-peer',
             function ($c) { $c['instances']['i-a']['peers'] = []; return $c; }, ['i-a'], ['not-single-peer'], false],
-        ['IPv6 endpoint => endpoint-unsupported',
-            function ($c) { $c['peers']['p-a']['serveraddress'] = '2001:db8::10'; return $c; }, ['i-a'], ['endpoint-unsupported'], false],
+        ['(a) IPv6 endpoint, non-canonical, /128 via an IPv6 WAN gateway => no findings, enforceable',
+            function ($c) use ($v6) { return $v6($c); }, ['i-a'], [], true],
+        ['(b) link-local IPv6 endpoint => endpoint-unsupported',
+            function ($c) { $c['peers']['p-a']['serveraddress'] = 'fe80::10'; return $c; }, ['i-a'], ['endpoint-unsupported'], false],
+        ['(c) IPv6 endpoint with no /128 route => unbound, and no IPv4 stale candidate offered',
+            function ($c) { $c['peers']['p-a']['serveraddress'] = '2001:db8::10'; return $c; }, ['i-a'], ['unbound'], false],
+        ['(d) IPv6 endpoint, /128 via an IPv4 gateway => wan-unavailable, enforceable (fails closed)',
+            function ($c) use ($v6) { return $v6($c, '2001:db8::10/128', 'WAN_A'); }, ['i-a'], ['wan-unavailable'], true],
+        ['(e) IPv6 endpoint via a gateway on a 6rd WAN => wan-unavailable',
+            function ($c) use ($v6) { $c['interfaces']['opt1']['ipaddrv6'] = '6rd'; return $v6($c); }, ['i-a'], ['wan-unavailable'], true],
+        ['(f) IPv4 gateway on a 6rd WAN binds as today',
+            function ($c) { $c['interfaces']['opt1']['ipaddrv6'] = '6rd'; return $c; }, ['i-a'], [], true],
+        ['(g) IPv6 endpoint, /128 via an unsaved gateway => wan-unavailable',
+            function ($c) use ($v6) { return $v6($c, '2001:db8::10/128', 'WAN_DHCP6'); }, ['i-a'], ['wan-unavailable'], true],
     ];
     $fail = 0;
     $total = 0;
@@ -781,10 +818,71 @@ function wgct_tunnels_selftest() {
         && $t['endpoint_ip'] === '198.51.100.10' && $t['mtu'] === 1376 && $t['gw4'] === 'tun_a'
         && $t['gw6'] === 'tun_a-ipv6' && $t['ipv6_address'] === 'fd00::1:1/128'
         && $t['ipv6_next_hop'] === 'fd00::1:2' && $t['nat'] === ['inet' => ['opt3'], 'inet6' => ['opt3']]
-        && $t['groups'] === ['grp_a'] && $t['monitor'] === '203.0.113.9';
+        && $t['groups'] === ['grp_a'] && $t['monitor'] === '203.0.113.9' && $t['endpoint_family'] === 'inet';
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] derive: healthy record fields\n", $ok ? 'PASS' : 'FAIL');
+
+    $detail = function (array $t, string $code): string {
+        foreach ($t['findings'] as $f) {
+            if ($f['code'] === $code) {
+                return $f['detail'] . ' | ' . $f['fix'];
+            }
+        }
+        return '';
+    };
+    /* (h) record fields of an IPv6-endpoint tunnel */
+    $t6 = wgct_derive($v6($base()), ['i-a'])['tunnels'][0];
+    $ok = $t6['endpoint'] === '[2001:db8::10]:51820' && $t6['endpoint_ip'] === '2001:db8::10'
+        && $t6['endpoint_family'] === 'inet6' && $t6['bound_wan'] === 'WAN_A6' && $t6['wan_interface'] === 'opt1';
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: IPv6 endpoint record fields\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (i) wrong-family gateway: bound, unresolvable, the anywhere pin in inet6 */
+    $dm = wgct_derive($v6($base(), '2001:db8::10/128', 'WAN_A'), ['i-a']);
+    $tm = $dm['tunnels'][0];
+    $ok = $tm['bound_wan'] === 'WAN_A' && $tm['wan_interface'] === null
+        && str_contains($detail($tm, 'wan-unavailable'), 'an IPv6 endpoint needs an IPv6 gateway')
+        && wgct_pin_set($dm, true, false)['wan'] === [['wan_if' => '', 'family' => 'inet6', 'endpoints' => ['2001:db8::10']]];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: wrong-family gateway fails closed with the inet6 anywhere pin\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (j) unsaved gateway: the save hint */
+    $tu = wgct_derive($v6($base(), '2001:db8::10/128', 'WAN_DHCP6'), ['i-a'])['tunnels'][0];
+    $ok = $tu['wan_interface'] === null
+        && str_contains($detail($tu, 'wan-unavailable'), 'WAN_DHCP6 is not a saved gateway; save it once on System > Gateways');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: a route via an unsaved gateway names the fix\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (k) an IPv4 tunnel's stale candidates never include a /128 */
+    $c = $base();
+    $c['peers']['p-a']['serveraddress'] = '198.51.100.20';
+    $c['routes']['r-x'] = ['network' => '2001:db8::99/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $tk = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = str_contains($detail($tk, 'stale-route'), '198.51.100.10/32 via WAN_A') && !str_contains($detail($tk, 'stale-route'), '2001:db8::99');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: stale candidates are filtered by the tunnel's family\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (l) S1: an unbound IPv6 endpoint's fix points to System > Routes, not Rebind */
+    $tl = wgct_derive((function ($c) { $c['peers']['p-a']['serveraddress'] = '2001:db8::10'; return $c; })($base()), ['i-a'])['tunnels'][0];
+    $ok = str_contains($detail($tl, 'unbound'), 'no enabled /128 route to 2001:db8::10')
+        && str_contains($detail($tl, 'unbound'), 'System > Routes: a /128 route');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: unbound IPv6 endpoint names the /128 route and System > Routes\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (m) the pin set and rule for an IPv6 endpoint */
+    $d6 = wgct_derive($v6($base()), ['i-a']);
+    $ps6 = wgct_pin_set($d6, true, false);
+    $r6 = wgct_pin_rules($ps6)[0];
+    $ok = $ps6['wan'] === [['wan_if' => 'opt1', 'family' => 'inet6', 'endpoints' => ['2001:db8::10']]]
+        && $r6['ipprotocol'] === 'inet6' && $r6['to'] === '2001:db8::10' && $r6['label'] === md5('wgct-pin-wan-opt1-inet6');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] render: an IPv6 endpoint is pinned in inet6 on its WAN\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (n) the mirror follows the IPv6 bound gateway */
+    $ok = wgct_mirror_inputs($d6)['underlays'] === ['tun_a' => 'WAN_A6'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] mirror inputs: an IPv6-endpoint tunnel's underlay is its IPv6 gateway\n", $ok ? 'PASS' : 'FAIL');
 
     /* global finding */
     $c = $base();
