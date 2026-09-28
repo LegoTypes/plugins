@@ -337,11 +337,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
             $t['findings'][] = wgct_finding('endpoint-unsupported', $raw === '' ? 'no endpoint'
                 : (wgct_ip_family($raw) === 'inet6' ? "{$raw} is not a global IPv6 address" : "{$raw} is not an IPv4 or IPv6 address"));
         } elseif (!isset($ctx['binding_routes'][$family][$ip])) {
-            /* S1: Rebind does not bind IPv6 endpoints yet (spec 2026-09-27 section 3.3); removed in Task 10 */
-            $fix = $family === 'inet6'
-                ? 'System > Routes: a /128 route to the endpoint via a saved IPv6 WAN gateway (Rebind binds IPv6 endpoints from the next release)'
-                : null;
-            $t['findings'][] = wgct_finding('unbound', 'no enabled ' . ($family === 'inet6' ? '/128' : '/32') . " route to {$ip} via a WAN gateway", $fix);
+            $t['findings'][] = wgct_finding('unbound', 'no enabled ' . ($family === 'inet6' ? '/128' : '/32') . " route to {$ip} via a WAN gateway");
             if (!empty($ctx['stale_routes'][$family])) {
                 $t['findings'][] = wgct_finding('stale-route', implode(', ', $ctx['stale_routes'][$family]));
             }
@@ -863,12 +859,12 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] derive: stale candidates are filtered by the tunnel's family\n", $ok ? 'PASS' : 'FAIL');
 
-    /* (l) S1: an unbound IPv6 endpoint's fix points to System > Routes, not Rebind */
+    /* (l) unbound IPv6 endpoint's fix is now Rebind */
     $tl = wgct_derive((function ($c) { $c['peers']['p-a']['serveraddress'] = '2001:db8::10'; return $c; })($base()), ['i-a'])['tunnels'][0];
     $ok = str_contains($detail($tl, 'unbound'), 'no enabled /128 route to 2001:db8::10')
-        && str_contains($detail($tl, 'unbound'), 'System > Routes: a /128 route');
+        && str_contains($detail($tl, 'unbound'), 'Rebind in the tunnel list');
     $fail += $ok ? 0 : 1; $total++;
-    printf("[%s] derive: unbound IPv6 endpoint names the /128 route and System > Routes\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] derive: unbound IPv6 endpoint names the /128 route and Rebind\n", $ok ? 'PASS' : 'FAIL');
 
     /* (m) the pin set and rule for an IPv6 endpoint */
     $d6 = wgct_derive($v6($base()), ['i-a']);
