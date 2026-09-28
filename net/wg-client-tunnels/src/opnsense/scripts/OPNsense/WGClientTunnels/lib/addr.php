@@ -93,6 +93,34 @@ function wgct_host_network(string $ip): string {
     return $ip . (wgct_ip_family($ip) === 'inet6' ? '/128' : '/32');
 }
 
+/**
+ * Whether $ip lies inside $network ("address/bits"), comparing the leading bits of the packed addresses.
+ * Different families, a missing or out-of-range prefix length, or a non-address never match. Pure.
+ *
+ * @param string $ip      an address
+ * @param string $network "address/bits"
+ * @return bool
+ */
+function wgct_in_network(string $ip, string $network): bool {
+    [$net, $bits] = array_pad(explode('/', $network, 2), 2, '');
+    $a = @inet_pton($ip);
+    $n = @inet_pton($net);
+    if ($a === false || $n === false || strlen($a) !== strlen($n) || !ctype_digit($bits) || (int)$bits > strlen($a) * 8) {
+        return false;
+    }
+    $bits = (int)$bits;
+    $whole = intdiv($bits, 8);
+    if (substr($a, 0, $whole) !== substr($n, 0, $whole)) {
+        return false;
+    }
+    $rest = $bits % 8;
+    if ($rest === 0) {
+        return true;
+    }
+    $mask = (0xff << (8 - $rest)) & 0xff;
+    return (ord($a[$whole]) & $mask) === (ord($n[$whole]) & $mask);
+}
+
 function wgct_addr_selftest(): int {
     $t = ['fail' => 0, 'total' => 0];
     wgct_check($t, 'addr: canonical IPv4 is unchanged; IPv6 is compressed and lower case',
@@ -124,5 +152,10 @@ function wgct_addr_selftest(): int {
         && wgct_host_route('198.51.100.10/abc') === null && wgct_host_route('fe80::1%igc1/128') === null);
     wgct_check($t, 'addr: host network per family',
         wgct_host_network('198.51.100.10') === '198.51.100.10/32' && wgct_host_network('2001:db8::10') === '2001:db8::10/128');
+    wgct_check($t, 'addr: in_network by prefix, both families, never across families or with bad bits',
+        wgct_in_network('2001:db8:1:1::abcd', '2001:db8:1:1::1/64') && !wgct_in_network('2001:db8:1:2::1', '2001:db8:1:1::1/64')
+        && wgct_in_network('2001:db8:2:1ff::5', '2001:db8:2:100::/56') && wgct_in_network('2001:db8::10', '2001:db8::10/128')
+        && wgct_in_network('198.51.100.7', '198.51.100.0/24') && !wgct_in_network('198.51.100.7', '2001:db8::/32')
+        && !wgct_in_network('2001:db8::1', '2001:db8::/129') && !wgct_in_network('2001:db8::1', '2001:db8::') && !wgct_in_network('x', '::/0'));
     return wgct_tally_report('addr', $t);
 }

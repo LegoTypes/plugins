@@ -31,6 +31,9 @@ const WGCT_GATEWAY_COPY_FIELDS = [
     'monitor_noroute', 'monitor_killstates', 'monitor_killstates_priority', 'priority', 'weight',
     'latencylow', 'latencyhigh', 'losslow', 'losshigh', 'interval', 'time_period', 'loss_interval', 'data_length', 'nosync',
 ];
+/* the gateway fields that decide when dpinger reports delay, loss or down: an IPv6 tunnel gateway takes them
+ * from its IPv4 gateway (spec 3.2) */
+const WGCT_THRESHOLD_FIELDS = ['latencylow', 'latencyhigh', 'losslow', 'losshigh', 'interval', 'time_period', 'loss_interval', 'data_length'];
 /* snatrules fields a copied rule does not take from its template (volatile, or its own) */
 const WGCT_SNAT_SKIP_FIELDS = ['interface', 'sequence', 'sort_order', 'prio_group', 'audit'];
 const WGCT_SENTINELS = ['inet' => 'NO_DEFAULT4', 'inet6' => 'NO_DEFAULT6'];
@@ -79,6 +82,90 @@ function wgct_ip_in(string $ip, array $list): bool {
         }
     }
     return false;
+}
+
+/**
+ * The firewall's own IPv6 networks (spec 3.5): every non-link-local address of configd's ifconfig dump as
+ * "address/bits", and every prefix in the delegated-prefix files dhcp6c writes. Pure.
+ *
+ * @param mixed        $ifconfig    `interface list ifconfig` decoded: device => ['ipv6' => [['ipaddr', 'subnetbits', 'link-local'], ...]]
+ * @param list<string> $prefixFiles the contents of /tmp/*_prefixv6
+ * @return list<string> canonical "address/bits", sorted, unique
+ */
+function wgct_local6_parse(mixed $ifconfig, array $prefixFiles): array {
+    $out = [];
+    foreach (is_array($ifconfig) ? $ifconfig : [] as $dev) {
+        $rows = is_array($dev) && is_array($dev['ipv6'] ?? null) ? $dev['ipv6'] : [];
+        foreach ($rows as $a) {
+            if (!is_array($a) || !empty($a['link-local'])) {
+                continue;
+            }
+            $ip = wgct_canon_ip((string)($a['ipaddr'] ?? ''));
+            $bits = $a['subnetbits'] ?? null;
+            if ($ip !== null && wgct_ip_family($ip) === 'inet6' && is_numeric($bits) && (int)$bits >= 0 && (int)$bits <= 128) {
+                $out[] = $ip . '/' . (int)$bits;
+            }
+        }
+    }
+    foreach ($prefixFiles as $content) {
+        foreach (preg_split('/\s+/', trim($content)) ?: [] as $prefix) {
+            [$ip, $bits] = array_pad(explode('/', $prefix, 2), 2, '');
+            $c = wgct_canon_ip($ip);
+            if ($c !== null && wgct_ip_family($c) === 'inet6' && ctype_digit($bits) && (int)$bits <= 128) {
+                $out[] = "{$c}/{$bits}";
+            }
+        }
+    }
+    $out = array_values(array_unique($out));
+    sort($out);
+    return $out;
+}
+
+/**
+ * Why an address cannot be a tunnel's IPv6 monitor, or null when it can (spec 3.3). Pure.
+ *
+ * @param array        $core      wgct_core_snapshot()
+ * @param list<string> $local6    wgct_local6_parse()
+ * @param string       $monitor   the requested monitor
+ * @param string|null  $ownGw6    the tunnel's own IPv6 gateway (Edit): its monitor is no conflict
+ * @param list<string> $endpoints further endpoints to refuse (the tunnel's own new endpoint)
+ * @return string|null
+ */
+function wgct_monitor6_error(array $core, array $local6, string $monitor, ?string $ownGw6, array $endpoints): ?string {
+    $m = wgct_canon_ip($monitor);
+    if ($m === null || !wgct_is_global6($m)) {
+        return 'must be a global IPv6 address';
+    }
+    if (wgct_in_network($m, '2002::/16') || wgct_in_network($m, '2001::/32')) {
+        return 'a 6to4 or Teredo address is not reachable through a tunnel';
+    }
+    foreach ($local6 as $net) {
+        if (wgct_in_network($m, $net)) {
+            return "{$m} is on this firewall's own network {$net}; the monitor route would send it into the tunnel";
+        }
+    }
+    foreach ($core['routes'] as $r) {
+        if ($r['enabled'] && wgct_in_network($m, $r['network'])) {
+            return "{$m} is inside static route {$r['network']}";
+        }
+    }
+    $uses = [];
+    foreach ($core['gateways'] as $gwName => $g) {
+        if ((string)$gwName !== $ownGw6 && $g['monitor'] !== '' && wgct_ip_equal($g['monitor'], $m)) {
+            $uses[] = "the monitor of {$gwName}";
+        }
+        if ($g['gateway'] !== '' && wgct_ip_equal($g['gateway'], $m)) {
+            $uses[] = "the address of {$gwName}";
+        }
+    }
+    if (wgct_ip_in($m, array_merge($core['dns_servers'], $core['forwarders']))) {
+        $uses[] = 'a system DNS server or Unbound forwarder';
+    }
+    if (wgct_ip_in($m, array_merge($endpoints, array_column($core['peers'], 'serveraddress')))) {
+        $uses[] = 'a WireGuard endpoint';
+    }
+    return $uses === [] ? null
+        : "{$m} is already " . implode(', ', array_unique($uses)) . '; a tunnel needs a monitor IP nothing else uses';
 }
 
 /**
@@ -1111,6 +1198,42 @@ function wgct_actions_selftest(): int {
     $s['wireguard_enabled'] = false;
     wgct_check($t, 'create: WireGuard disabled => a warning, not a refusal',
         $has(wgct_plan_create($s, $req, $conf)['changes'], 'WARNING WireGuard is disabled'));
+
+    /* ---- the IPv6 monitor (spec 3.3) ---- */
+    $l6 = wgct_local6_parse([
+        'igc1' => ['ipv6' => [['ipaddr' => '2001:DB8:1:1::1', 'subnetbits' => 64, 'link-local' => false],
+                              ['ipaddr' => 'fe80::1', 'subnetbits' => 64, 'link-local' => true]]],
+        'vlan0.3' => ['ipv6' => [['ipaddr' => 'not-an-ip', 'subnetbits' => 64], ['ipaddr' => '2001:db8:1:1::1', 'subnetbits' => 64]]],
+        'lo0' => 'not a row',
+    ], ["2001:db8:2:100::/56 2001:db8:3::/48\n", 'junk /x 2001:db8:4::/129']);
+    wgct_check($t, 'local6: global addresses with their prefixes, link-local and junk dropped, delegated prefixes split on whitespace',
+        $l6 === ['2001:db8:1:1::1/64', '2001:db8:2:100::/56', '2001:db8:3::/48'] && wgct_local6_parse(null, []) === []);
+    $core6 = $snap['core'];
+    $core6['routes']['r-m'] = ['network' => '2001:db8:ffff::40/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $core6['gateways']['WAN_A6']['monitor'] = '2001:DB8:FFFF::20';
+    $core6['dns_servers'][] = '2001:db8:53::53';
+    $core6['peers']['p-y'] = ['name' => 'site_y', 'serveraddress' => '2001:db8:77::1', 'serverport' => '51820'];
+    foreach ([
+        ['(a) not an address', 'x', null, [], 'must be a global IPv6 address'],
+        ['(b) a ULA', 'fd00::5', null, [], 'must be a global IPv6 address'],
+        ['(c) an IPv4 address', '203.0.113.20', null, [], 'must be a global IPv6 address'],
+        ['(d) 6to4', '2002:c000:201::1', null, [], '6to4 or Teredo'],
+        ['(e) Teredo', '2001:0:4136:e378::1', null, [], '6to4 or Teredo'],
+        ['(f) on a firewall LAN prefix', '2001:db8:1:1::abcd', null, [], "own network 2001:db8:1:1::1/64"],
+        ['(g) in the delegated prefix', '2001:db8:2:1ff::5', null, [], "own network 2001:db8:2:100::/56"],
+        ['(h) inside a static route', '2001:db8:ffff::40', null, [], 'inside static route 2001:db8:ffff::40/128'],
+        ['(i) another gateway\'s monitor, spelled differently', '2001:db8:ffff::20', null, [], 'the monitor of WAN_A6'],
+        ['(j) this tunnel\'s own IPv6 gateway\'s monitor, excluded for Edit', '2001:db8:ffff::9', 'tun_a-ipv6', [], null],
+        ['(k) the same monitor for a new tunnel', '2001:db8:ffff::9', null, [], 'the monitor of tun_a-ipv6'],
+        ['(l) a system DNS server', '2001:db8:53::53', null, [], 'a system DNS server or Unbound forwarder'],
+        ['(m) a WireGuard peer endpoint', '2001:db8:77::1', null, [], 'a WireGuard endpoint'],
+        ['(n) the tunnel\'s own new endpoint', '2001:db8:78::1', null, ['2001:db8:78::1'], 'a WireGuard endpoint'],
+        ['(o) a free global address', '2001:db8:ffff::30', null, [], null],
+    ] as [$desc, $m, $own, $eps, $want]) {
+        $got = wgct_monitor6_error($core6, $snap['local6'], $m, $own, $eps);
+        wgct_check($t, "monitor6: {$desc} => " . ($want === null ? 'accepted' : "refused ({$want})"),
+            $want === null ? $got === null : ($got !== null && str_contains($got, $want)));
+    }
 
     /* ---- rebind ---- */
     $moved = $snap;
