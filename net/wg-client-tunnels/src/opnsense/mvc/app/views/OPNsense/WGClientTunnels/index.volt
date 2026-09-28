@@ -302,8 +302,9 @@
                     });
                 }
             });
-            var m = endpoint ? endpoint.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d{1,5}$/) : null;
-            return {endpoint_ip: m ? m[1] : null, v6: v6};
+            var m = endpoint ? endpoint.match(/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9A-Fa-f:.]+)\]):\d{1,5}$/) : null;
+            var ip = m ? (m[1] || m[2].toLowerCase()) : null;
+            return {endpoint_ip: ip, endpoint_family: m ? (m[1] ? 'inet' : 'inet6') : null, v6: v6};
         }
 
         /* an IPv6 address in one comparable form: 8 groups, lower case, no leading zeros */
@@ -367,7 +368,7 @@
         /* the keyless MTU probe (measure_mtu) for Create's and Edit's MTU fields */
         function measureMtu(endpoint, wan, mtuInput, why, button) {
             if (!endpoint || !wan) {
-                why.text("{{ lang._('Choose the WAN, and paste a config with an IPv4 endpoint for a new server, first.') }}");
+                why.text("{{ lang._('Choose the WAN, and paste a config with an IPv4 or [IPv6] endpoint for a new server, first.') }}");
                 return;
             }
             button.prop('disabled', true);
