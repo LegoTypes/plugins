@@ -1114,7 +1114,7 @@ function wgct_actions_selftest(): int {
     $s['core']['routes']['r-w'] = ['network' => '198.51.100.99/32', 'gateway' => 'tun_a', 'enabled' => true];
     wgct_check($t, 'binding: enabled /32 routes via a non-WireGuard gateway only', array_keys(wgct_binding_routes($s['core'])) === ['r-a', 'r-b', 'r-d']);
     wgct_check($t, 'binding: the stale candidate is the route to the old endpoint',
-        wgct_stale_candidates($moved['core']) === ['r-a' => ['ip' => '198.51.100.10', 'gateway' => 'WAN_A']]);
+        wgct_stale_candidates($moved['core']) === ['r-a' => ['ip' => '198.51.100.10', 'gateway' => 'WAN_A', 'family' => 'inet']]);
     $s = $moved;
     $s['core']['routes']['r-a2'] = ['network' => '198.51.100.10/32', 'gateway' => 'WAN_B', 'enabled' => true];
     $stale = array_values(array_filter(
