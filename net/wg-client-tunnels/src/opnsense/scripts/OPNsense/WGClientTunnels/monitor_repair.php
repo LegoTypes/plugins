@@ -27,12 +27,17 @@ $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if ((string)$mdl->enabled !== '1') {
     exit(0);
 }
+$log = fn (string $msg): bool => syslog(LOG_NOTICE, "[wgct-monitor] {$msg}");
 /* one tick at a time: a tick whose replay runs long must not overlap the next on the state file */
-$self = wgct_poll_lock("{$stateDir}/monitor_repair.lock", 0, 50);
+try {
+    $self = wgct_poll_lock("{$stateDir}/monitor_repair.lock", 0, 50);
+} catch (\Throwable $e) {
+    $log('cannot open the single-instance lock: ' . $e->getMessage());
+    exit(0);
+}
 if ($self === null) {
     exit(0);
 }
-$log = fn (string $msg): bool => syslog(LOG_NOTICE, "[wgct-monitor] {$msg}");
 $stateFile = "{$stateDir}/monitor_repair.json";
 $state = json_decode((string)@file_get_contents($stateFile), true);
 $state = (is_array($state) ? $state : []) + ['attempts' => [], 'noted' => [], 'duplicated' => []];
@@ -71,8 +76,13 @@ foreach (wgct_repair_watch(wgct_derive($core, wgct_split_csv((string)$mdl->manag
 $lock = null;
 $result = wgct_repair_run($candidates, [
     'status' => fn (): ?array => wgct_gateway_status(),
-    'lock' => function () use (&$lock): bool {
-        $lock = wgct_poll_lock(WGCT_GATEWAY_LOCK_FILE, 0, 50);
+    'lock' => function () use (&$lock, $log): bool {
+        try {
+            $lock = wgct_poll_lock(WGCT_GATEWAY_LOCK_FILE, 0, 50);
+        } catch (\Throwable $e) {
+            $log('cannot open the gateway lock: ' . $e->getMessage());
+            return false;
+        }
         return $lock !== null;
     },
     'unlock' => function () use (&$lock): void {
@@ -89,13 +99,17 @@ $result = wgct_repair_run($candidates, [
         usleep($usec);
     },
     'clock' => fn (): float => microtime(true),
+    'started' => function (array $started) use (&$state, $now, $stateFile): void {
+        /* recorded and written before the replay: a replay that throws must not skip the back-off */
+        foreach ($started as $gw) {
+            $state = wgct_repair_record($state, $gw, $now);
+        }
+        wgct_write_file_atomic($stateFile, json_encode($state) . "\n");
+    },
     'replay' => function (array $ours, ?array $before): void {
         wgct_replay_after_hold($ours, $before);
     },
 ]);
-foreach ($result['started'] as $gw) {
-    $state = wgct_repair_record($state, $gw, $now);
-}
 foreach ($result['lines'] as $line) {
     $log($line);
 }
