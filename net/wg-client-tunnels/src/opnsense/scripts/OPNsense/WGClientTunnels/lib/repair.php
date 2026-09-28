@@ -170,12 +170,15 @@ function wgct_repair_route_dev(array $lines, string $ip): ?string {
  * (a concurrent core reconfigure may have started it); every start happens before one shared poll, so the
  * lock is held about WGCT_REPAIR_POLL_SECONDS whatever the number of candidates; the replay after release
  * names no gateway of its own (naming one would force a full alarm reconfigure that restarts the dpinger
- * just started), so only alarms dropped while the lock was held are replayed. Pure: every effect is $io's.
+ * just started), so only alarms dropped while the lock was held are replayed. The optional started() callback
+ * receives the gateways started, after the release and before the replay, so the caller can record them first:
+ * a replay that throws must not skip the back-off. Pure: every effect is $io's.
  *
  * @param list<string> $candidates IPv6 gateways wgct_repair_judge() accepted
  * @param array        $io         status(): ?array, lock(): bool, unlock(): void, live(string): bool,
  *                                 start(string): string (its output), sleep(int usec): void, clock(): float,
- *                                 replay(list<string> $ours, ?array $before): void
+ *                                 replay(list<string> $ours, ?array $before): void, and optionally
+ *                                 started(list<string> $gateways): void
  * @return array{skipped: bool, started: list<string>, lines: list<string>}
  */
 function wgct_repair_run(array $candidates, array $io): array {
@@ -210,6 +213,9 @@ function wgct_repair_run(array $candidates, array $io): array {
         ($io['sleep'])(WGCT_REPAIR_POLL_USEC);
     }
     ($io['unlock'])();
+    if ($result['started'] !== [] && isset($io['started'])) {
+        ($io['started'])($result['started']);
+    }
     ($io['replay'])([], $before);
     $result['lines'] = wgct_repair_outcome($live, $output);
     return $result;
@@ -321,6 +327,30 @@ function wgct_repair_selftest(): int {
     wgct_check($t, 'repair: (u) every candidate is started before one shared poll',
         $trace === ['status', 'lock', 'live:g1', 'start:g1', 'live:g2', 'start:g2', 'live:g1', 'live:g2', 'unlock', $replay]
         && $r['started'] === ['g1', 'g2']);
+
+    /* the starts are handed over before the replay, so a replay that throws cannot skip their record */
+    $trace = [];
+    $io2 = $io(['g1' => 0, 'g2' => 1], true, $trace) + ['started' => function (array $gws) use (&$trace): void {
+        $trace[] = 'started:' . json_encode($gws);
+    }];
+    wgct_repair_run(['g1', 'g2'], $io2);
+    $tail = array_slice($trace, -3);
+    $trace = [];
+    $io3 = $io(['g1' => 1], true, $trace);
+    $io3['replay'] = function () use (&$trace): void {
+        $trace[] = 'replay';
+        throw new \RuntimeException('replay failed');
+    };
+    $io3['started'] = function (array $gws) use (&$trace): void {
+        $trace[] = 'started:' . json_encode($gws);
+    };
+    try {
+        wgct_repair_run(['g1'], $io3);
+    } catch (\RuntimeException $e) {
+        $trace[] = 'threw';
+    }
+    wgct_check($t, 'repair: (v) started() runs after the release and before the replay, and a throwing replay comes after it',
+        $tail === ['unlock', 'started:["g2"]', $replay] && array_slice($trace, -4) === ['unlock', 'started:["g1"]', 'replay', 'threw']);
 
     return wgct_tally_report('repair', $t);
 }
