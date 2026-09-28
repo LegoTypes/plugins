@@ -535,26 +535,31 @@
             fillSelect(selector, choices, selected);
         }
 
-        /* the bound gateway's own family (wan_family), falling back to the endpoint's family when the
-         * tunnel is unbound or wan_family is otherwise unknown */
-        function editBoundFamily() {
+        /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: null when none
+         * is pasted). The gateways offered are the ENDPOINT's family -- the pasted config's, else the tunnel's
+         * own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN move is how a tunnel bound
+         * through a gateway of the other family is repaired (spec 3.8), so an IPv6 endpoint bound by a /128 via
+         * an IPv4 gateway is offered the IPv6 gateways. First comes the unbound placeholder when the tunnel has
+         * no bound WAN (Rebind is what binds one), or, when a pasted config's family differs from the bound
+         * gateway's saved family, a placeholder for the same WAN's gateway of the new family: its value is the
+         * bound WAN itself, which the planner treats as none named and replaces with the single gateway of the
+         * new family on the same interface (edit.php, the endpoint route; an unsaved bound gateway has no
+         * family, and the planner infers nothing for it). The bound WAN is always listed: when neither that
+         * placeholder nor the family's gateways name it (the other family, a sentinel, a WireGuard-interface
+         * gateway, an unsaved automatic DHCPv6 gateway), it is appended under its own name, so neither the
+         * opener nor a later keystroke drops it out from under the tunnel. */
+        function editWans(pasted) {
             var f = editState.form;
-            return f.wan_family || f.endpoint_family;
-        }
-
-        /* Edit's own WAN list: the unbound placeholder when the tunnel has no bound WAN (Rebind is what binds
-         * one); otherwise the gateways of the given family, with the bound WAN appended under its own name
-         * when the given family is the bound gateway's own family but it is not among them -- a sentinel, a
-         * WireGuard-interface gateway, or an unsaved automatic DHCPv6 gateway (review finding 1). Never appends
-         * that fallback for a family other than the bound gateway's own: editDefaults() prepends its own
-         * mismatch placeholder for that case instead, so the two never both name the bound WAN at once (review
-         * finding 3). Shared by the opener and editDefaults() so neither a family change from a pasted config
-         * nor a later keystroke ever silently drops the bound WAN out from under the tunnel. */
-        function editWans(family) {
-            var f = editState.form;
-            var wans = f.wan ? [] : [{value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"}];
-            wans = wans.concat(wansFor(family));
-            if (f.wan && family === editBoundFamily() && !wans.some(function (w) { return w.value === f.wan; })) {
+            var wans = [];
+            if (!f.wan) {
+                wans.push({value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"});
+            } else if (pasted && f.wan_family && pasted !== f.wan_family) {
+                wans.push({value: f.wan, label: pasted === 'inet6'
+                    ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
+                    : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"});
+            }
+            wans = wans.concat(wansFor(pasted || f.endpoint_family || 'inet'));
+            if (f.wan && !wans.some(function (w) { return w.value === f.wan; })) {
                 wans.push({value: f.wan, label: f.wan});
             }
             return wans;
@@ -590,25 +595,15 @@
                 });
                 $('#edit\\.unique').prop('checked', p.v6.length > 0 ? (f.unique_convention || shared) : f.unique === true);
             }
-            /* the WAN list follows the replacement config's family (the bound gateway's own family, wan_family,
-             * with no replacement pasted). A family change from the bound gateway's own family offers a first
-             * option for the same WAN's gateway of the new family: the planner treats the bound gateway of the
-             * wrong family as none named and infers the single gateway of the new family on the same interface
-             * (Controller ruling, Task 9 review). The current selection is kept when it is still listed --
-             * which, on the transition into a mismatch, it is: the prepended placeholder's value is f.wan
-             * itself, the bound WAN's own current selection -- so this alone gives the ruling's default without
-             * forcing the placeholder back over a listed gateway the user picked afterward (review finding 2). */
-            var boundFamily = editBoundFamily();
-            var family = p.endpoint_family || boundFamily;
-            var wans = editWans(family);
-            var mismatch = !!f.wan && family !== boundFamily;
-            if (mismatch) {
-                wans = [{value: f.wan, label: family === 'inet6'
-                    ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
-                    : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"}].concat(wans);
-            }
+            /* the WAN list follows the replacement config's endpoint family (editWans). The selection is kept
+             * while it is still listed -- a gateway the user picked survives further edits of the config, and
+             * on the transition into a family mismatch the placeholder, whose value is the bound WAN, stays
+             * selected -- else it falls back to the bound WAN (always listed), so undoing a family change never
+             * proposes a WAN move nobody asked for */
+            var wans = editWans(p.endpoint_family);
+            var listed = function (v) { return wans.some(function (w) { return w.value === v; }); };
             var current = $('#edit\\.wan').val();
-            var selected = wans.some(function (w) { return w.value === current; }) ? current : (wans.length ? wans[0].value : '');
+            var selected = listed(current) ? current : (listed(f.wan) ? f.wan : (wans.length ? wans[0].value : ''));
             /* selected may legitimately be '' -- the unbound placeholder's own value, still one of wans --
              * so it is always passed through, never dropped as if nothing were selected */
             fillSelect('#edit\\.wan', wans, [selected]);
@@ -674,11 +669,8 @@
                 $('#edit\\.config').val('');
                 $('#edit\\.monitor').val(plain(f.monitor));
                 $('#edit\\.mtu').val(f.mtu);
-                /* editWans() itself appends the bound WAN under its own name when it is off the family's
-                 * choices (a sentinel, a WireGuard-interface gateway, an unsaved automatic DHCPv6 gateway),
-                 * since the family passed here is the bound gateway's own (review finding 1) */
-                var wans = editWans(editBoundFamily());
-                fillSelect('#edit\\.wan', wans, [f.wan]);
+                /* nothing pasted yet: the endpoint's own family, with the bound WAN always listed (editWans) */
+                fillSelect('#edit\\.wan', editWans(null), [f.wan]);
                 $('#edit\\.ipv6').prop('checked', f.ipv6 === true);
                 $('#edit\\.unique').prop('checked', f.unique === true);
                 natSelect('#edit\\.nat4', data.nat_sources, f.nat4);
