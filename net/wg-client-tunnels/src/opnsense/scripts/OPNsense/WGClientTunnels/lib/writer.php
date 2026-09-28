@@ -174,11 +174,11 @@ function wgct_action_commit(callable $mutate, string $description): array {
  *
  * @param array $raw         the API form or the CLI JSON (see wgct_create_request())
  * @param bool  $mtuRequired the API requires an MTU; the CLI measures one
- * @return array{errors: array<string, string>, req: array, public: array, secret: array{privkey: string, psk: string, pubkey: string}, notes: list<string>}
+ * @return array{errors: array<string, string>, req: array, public: array, secret: array{privkey: string, psk: string, pubkey: string}, notes: list<string>, local6: list<string>|null}
  */
 function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequired): array {
     $in = wgct_create_request($raw, $mtuRequired);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => []];
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => [], 'local6' => []];
     if ($in['text'] !== '') {
         $conf = wgct_parse_wgquick($in['text']);
         if ($conf['errors'] !== []) {
@@ -205,6 +205,10 @@ function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequire
         }
         $prep['req']['mtu'] = $m['mtu'];
         $prep['notes'][] = "mtu {$m['mtu']}: {$m['why']}";
+    }
+    /* the firewall's own IPv6 networks, read here outside any lock, only when there is a monitor to check */
+    if ($prep['req']['monitor6'] !== '') {
+        $prep['local6'] = wgct_local6_snapshot();
     }
     return $prep;
 }
@@ -312,7 +316,9 @@ function wgct_write_create(array $plan, #[\SensitiveParameter] array $secret): a
  */
 function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): array {
     $result = wgct_action_commit(function () use ($prep, $dry): array {
-        $plan = wgct_plan_create(wgct_action_snapshot(), $prep['req'], $prep['public']);
+        $snap = wgct_action_snapshot();
+        $snap['local6'] = $prep['local6'];
+        $plan = wgct_plan_create($snap, $prep['req'], $prep['public']);
         $changes = array_merge($prep['notes'], $plan['changes']);
         if ($plan['errors'] !== []) {
             return ['save' => false, 'result' => wgct_result(['errors' => $plan['errors'], 'changes' => $changes, 'dry' => $dry])];
