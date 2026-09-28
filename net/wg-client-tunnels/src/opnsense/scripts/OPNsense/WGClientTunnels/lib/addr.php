@@ -119,6 +119,9 @@ function wgct_addr_selftest(): int {
     wgct_check($t, 'addr: networks that are not host routes',
         wgct_host_route('2001:db8::/32') === null && wgct_host_route('198.51.100.0/24') === null
         && wgct_host_route('198.51.100.10') === null && wgct_host_route('198.51.100.10/128') === null);
+    wgct_check($t, 'addr: host route rejects a missing bits part, a missing IP part, non-numeric bits, and a zone id',
+        wgct_host_route('198.51.100.10/') === null && wgct_host_route('/32') === null
+        && wgct_host_route('x/abc') === null && wgct_host_route('fe80::1%igc1/128') === null);
     wgct_check($t, 'addr: host network per family',
         wgct_host_network('198.51.100.10') === '198.51.100.10/32' && wgct_host_network('2001:db8::10') === '2001:db8::10/128');
     return wgct_tally_report('addr', $t);
