@@ -63,6 +63,11 @@ Plugin Changelog
 * A tunnel held down on a WAN gateway with monitoring disabled is released
   once the gateway is enabled again.
 * Create refuses an endpoint that is some gateway's monitor address.
+* The WAN lists show a hint when no gateway of the endpoint's family is
+  saved (3.2_1)
+* Edit offers the bound WAN's other-family gateway only when the pasted
+  config changes the endpoint, and a refused new endpoint reports one
+  error (3.2_1)
 
 3.1
 
