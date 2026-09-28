@@ -128,7 +128,7 @@ function wgct_tunnel_rows(array $view, array $gw): array {
 /* the grid row fields the Tunnels grid searches: its text columns, never uuids or flags */
 const WGCT_GRID_SEARCH_FIELDS = [
     'name', 'device', 'interface', 'interface_descr', 'endpoint', 'bound_wan', 'mtu', 'clamp_text',
-    'gw4', 'gw4_status_text', 'gw6', 'gw6_status_text', 'nat_text', 'groups_text', 'findings_text',
+    'gw4', 'gw4_status_text', 'gw6', 'gw6_status_text', 'monitors_text', 'nat_text', 'groups_text', 'findings_text',
 ];
 
 /**
@@ -154,6 +154,24 @@ function wgct_gateway_label_class(string $status): string {
         return 'fa fa-plug text-success';
     }
     return 'fa fa-plug text-default';
+}
+
+/**
+ * The Monitors column (spec 3.8): the IPv4 monitor, and the IPv6 one or "none" when the tunnel has an IPv6
+ * gateway without its own monitor. Pure.
+ *
+ * @param array $t a derived record (gw4, monitor, gw6, monitor6)
+ * @return string
+ */
+function wgct_monitors_text(array $t): string {
+    $parts = [];
+    if (($t['gw4'] ?? null) !== null) {
+        $parts[] = 'v4 ' . (($t['monitor'] ?? '') !== '' ? $t['monitor'] : 'none');
+    }
+    if (($t['gw6'] ?? null) !== null) {
+        $parts[] = 'v6 ' . (($t['monitor6'] ?? '') !== '' ? $t['monitor6'] : 'none');
+    }
+    return implode('; ', $parts);
 }
 
 /**
@@ -202,6 +220,7 @@ function wgct_grid_row(array $t): array {
         'gw6_status_text' => $t['gw6_status_text'] ?? '',
         'gw6_label_class' => $t['gw6'] === null ? '' : wgct_gateway_label_class($t['gw6_status'] ?? ''),
         'gw6_uuid' => $t['gw6_uuid'] ?? '',
+        'monitors_text' => wgct_monitors_text($t),
         'nat_text' => implode('; ', $nat),
         'groups_text' => implode(', ', $t['groups']),
         'findings' => $t['findings'],
@@ -296,5 +315,12 @@ function wgct_view_selftest(): int {
         && $b['gw4_label_class'] === '' && $b['gw6_label_class'] === '');
     wgct_check($t, 'view: every searched field is a grid row field',
         array_diff(WGCT_GRID_SEARCH_FIELDS, array_keys($a)) === []);
+    wgct_check($t, 'view: the Monitors column names both monitors, "none" for an unmonitored IPv6 gateway',
+        wgct_monitors_text(['gw4' => 'tun_a', 'monitor' => '203.0.113.9', 'gw6' => 'tun_a-ipv6', 'monitor6' => '2001:db8:ffff::9'])
+            === 'v4 203.0.113.9; v6 2001:db8:ffff::9'
+        && wgct_monitors_text(['gw4' => 'tun_a', 'monitor' => '203.0.113.9', 'gw6' => 'tun_a-ipv6', 'monitor6' => '']) === 'v4 203.0.113.9; v6 none');
+    wgct_check($t, 'view: an IPv4-only tunnel shows only its IPv4 monitor; the column is searchable',
+        wgct_monitors_text(['gw4' => 'tun_a', 'monitor' => '203.0.113.9', 'gw6' => null, 'monitor6' => '']) === 'v4 203.0.113.9'
+        && in_array('monitors_text', WGCT_GRID_SEARCH_FIELDS, true));
     return wgct_tally_report('view', $t);
 }

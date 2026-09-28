@@ -28,7 +28,13 @@
         <id>create.ipv6</id>
         <label>IPv6</label>
         <type>checkbox</type>
-        <help>Add an IPv6 gateway that follows the IPv4 tunnel's health. It starts forced down; the health mirror releases it once the IPv4 tunnel is healthy. Only possible when the config has an IPv6 Address: without one the provider assigned no IPv6 address to this peer, and the box stays off.</help>
+        <help>Add an IPv6 gateway with its own monitor (below). It starts forced down; the health mirror releases it once the IPv4 tunnel is healthy, and from then on its own monitor decides whether it is up. Only possible when the config has an IPv6 Address: without one the provider assigned no IPv6 address to this peer, and the box stays off.</help>
+    </field>
+    <field>
+        <id>create.monitor6</id>
+        <label>IPv6 monitor IP</label>
+        <type>text</type>
+        <help>A global IPv6 address pinged through the tunnel; required with IPv6. It must answer ICMPv6 echo through the provider and be used for nothing else: no other gateway's monitor or address, no DNS server or forwarder, no endpoint, nothing on this firewall's own networks. The plugin routes it into the tunnel, so traffic from the LANs to it goes there too: do not pick a resolver the LANs use.</help>
     </field>
     <field>
         <id>create.unique</id>

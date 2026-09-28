@@ -64,6 +64,13 @@
         </grid_view>
     </field>
     <field>
+        <id>tunnel.monitors_text</id>
+        <label>Monitors</label>
+        <grid_view>
+            <formatter>monitors</formatter>
+        </grid_view>
+    </field>
+    <field>
         <id>tunnel.nat_text</id>
         <label>Outbound NAT</label>
         <grid_view>
