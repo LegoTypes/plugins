@@ -9,11 +9,12 @@
  * Health mirror for the WireGuard tunnel gateways. Two passes, one save:
  *
  * 1. Underlay: a tunnel is bound to exactly one WAN -- the gateway of the /32
- *    static route to its peer's endpoint -- and is forced down whenever that WAN
- *    is not up: disabled, force_down, absent from gateway status, or in a state
- *    a downloss gateway group treats as down (down, loss, delay+loss). A tunnel
- *    never migrates to the other WAN. Only a force_down this pass set itself is
- *    ever released, so an operator's manual force_down on a tunnel is left alone.
+ *    or /128 static route to its peer's endpoint -- and is forced down whenever
+ *    that WAN is not up: disabled, force_down, absent from gateway status, or in
+ *    a state a downloss gateway group treats as down (down, loss, delay+loss).
+ *    A tunnel never migrates to the other WAN. Only a force_down this pass set
+ *    itself is ever released, so an operator's manual force_down on a tunnel is
+ *    left alone.
  *
  * 2. IPv6: each IPv6 tunnel gateway follows its own IPv4 tunnel and nothing
  *    else. IPv6 rides inside the IPv4 tunnel and Proton NATs it server-side, so

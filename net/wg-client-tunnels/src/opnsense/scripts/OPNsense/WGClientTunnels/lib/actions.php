@@ -1192,6 +1192,12 @@ function wgct_actions_selftest(): int {
         $p['errors'] === [] && $p['route']['fields']['network'] === '2001:db8::13/128' && $p['route']['fields']['gateway'] === 'WAN_A6');
     $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A', '');
     wgct_check($t, 'rebind: an IPv6 endpoint on an IPv4 gateway is refused', $p['errors'] === ['WAN_A is IPv4; this endpoint is IPv6']);
+    /* the unbound IPv4 fixture of the rebind checks, plus a stale /128: a candidate, but of the other family */
+    $s = $moved;
+    $s['core']['routes']['r-v6'] = ['network' => '2001:db8::99/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+    $p = wgct_plan_rebind($s, 'i-a', 'WAN_B', 'r-v6');
+    wgct_check($t, 'rebind: an IPv4 tunnel is not offered a /128 stale route',
+        isset(wgct_stale_candidates($s['core'])['r-v6']) && $p['errors'] === ['the route to delete is not a stale endpoint route']);
     /* IPv6 endpoints: /128 via the IPv6 WAN gateway; family mismatch, 6rd/6to4 and monitor refusals (S1 lifted) */
     $conf6 = ['endpoint_ip' => '2001:db8::12', 'endpoint_family' => 'inet6'] + $conf;
     $p = wgct_plan_create($snap, ['wan' => 'WAN_A6'] + $req, $conf6);
@@ -1212,6 +1218,11 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_create($snap, $req, ['endpoint_ip' => '203.0.113.9'] + $conf);
     wgct_check($t, 'create: an endpoint that is a gateway\'s monitor is refused on config (both families)',
         str_contains($p['errors']['config'] ?? '', '203.0.113.9 is the monitor of tun_a'));
+    $s = $snap;
+    $s['core']['gateways']['WAN_A6']['monitor'] = '2001:DB8:0::77';
+    $p = wgct_plan_create($s, ['wan' => 'WAN_A6'] + $req, ['endpoint_ip' => '2001:db8::77', 'endpoint_family' => 'inet6'] + $conf);
+    wgct_check($t, 'create: an IPv6 endpoint that is a gateway\'s monitor is refused on config',
+        str_contains($p['errors']['config'] ?? '', '2001:db8::77 is the monitor of WAN_A6'));
 
     /* ---- sentinel ---- */
     $want = fn (string $family, string $name, string $opt): array => [

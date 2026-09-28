@@ -46,13 +46,13 @@ const WGCT_APPLY_PENDING_FILE = '/var/db/wgclienttunnels/apply_pending.json';
  * routes applies do, with the routes applied once BEFORE the device exists.
  * WireGuard keeps the source address of its first path, core's force-gateway
  * rules keep that state alive and keepalive 25 refreshes it forever: a first
- * handshake sent before the endpoint /32 is in place leaves by the default
- * route's WAN and stays there. The complete list is also what clears
+ * handshake sent before the endpoint /32 or /128 is in place leaves by the
+ * default route's WAN and stays there. The complete list is also what clears
  * apply-pending (wgct_pending_outcome()).
  */
 const WGCT_CREATE_APPLY_STEPS = [
     ['template reload', ['OPNsense/Wireguard']],   // writes wgN.conf; `wireguard configure` alone never does
-    ['interface routes configure', []],            // the endpoint /32 via the bound WAN, before the first handshake
+    ['interface routes configure', []],            // the endpoint /32 or /128 via the bound WAN, before the first handshake
     ['wireguard configure', []],                   // creates wgN; a first start configures its interface
     ['interface invoke registration', []],         // the device appears on Interfaces > Assignments
     ['!interface list assign-opts', []],           // and the 60 s cached device list is refreshed
@@ -74,8 +74,8 @@ const WGCT_REMOVE_APPLY_STEPS = [
 
 /**
  * Rebind's apply. `interface routes configure` installs the new endpoint /32
- * (and consumes the stale route's todo file); `wireguard restart` then makes
- * the tunnel handshake again on that route -- without it WireGuard keeps its
+ * or /128 (and consumes the stale route's todo file); `wireguard restart` then
+ * makes the tunnel handshake again on that route -- without it WireGuard keeps its
  * old source address, which core's force-gateway state and keepalive hold on
  * the old WAN. The restart (wg-service-control) destroys and recreates wgN,
  * then reconfigures its interface and routing (interfaces_restart_by_device());
