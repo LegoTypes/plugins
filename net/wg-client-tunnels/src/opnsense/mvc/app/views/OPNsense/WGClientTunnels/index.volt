@@ -116,6 +116,7 @@
             status6: function (column, t) { return statusNode(t.gw6_label_class, t.gw6_status_text); },
             nat: function (column, t) { return linkOrDash(t.nat_text, links.nat); },
             groups: function (column, t) { return linkOrDash(t.groups_text, links.groups); },
+            monitors: function (column, t) { return t.monitors_text ? $('<span/>').text(plain(t.monitors_text))[0] : dash()[0]; },
             /* bootgrid-tooltip: the grid gives each badge core's tooltip, which shows the title as text */
             findings: function (column, t) {
                 if (!t.findings.length) {
@@ -387,6 +388,7 @@
             $('#row_create\\.nat4').toggle(!template);
             $('#row_create\\.nat6').toggle(!template && ipv6);
             $('#row_create\\.unique').toggle(ipv6);
+            $('#row_create\\.monitor6').toggle(ipv6);
         }
 
         /* the keyless MTU probe (measure_mtu) for Create's and Edit's MTU fields */
@@ -433,7 +435,7 @@
         function openCreate() {
             loadOptions(function () {
                 lastV6 = null;
-                $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.mtu').val('');
+                $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.monitor6, #create\\.mtu').val('');
                 $('#create\\.ipv6').prop('checked', false).prop('disabled', true);
                 $('#create\\.unique').prop('checked', false);
                 var createWans = wansHint('inet');
@@ -599,6 +601,7 @@
             }
             $('#row_edit\\.unique').toggle(swap && box.prop('checked'));
             $('#row_edit\\.nat6').toggle(box.prop('checked'));
+            $('#row_edit\\.monitor6').toggle(box.prop('checked'));
         }
 
         /* rulings 3 and 4 for a replacement config: unique addressing on by default when its IPv6 address is
@@ -691,6 +694,7 @@
                 $('#edit\\.name').val(plain(f.name) + ' (' + plain(f.device) + ', ' + plain(f.interface) + ')');
                 $('#edit\\.config').val('');
                 $('#edit\\.monitor').val(plain(f.monitor));
+                $('#edit\\.monitor6').val(plain(f.monitor6 || ''));
                 $('#edit\\.mtu').val(f.mtu);
                 /* nothing pasted yet: the endpoint's own family, with the bound WAN always listed (editWans) */
                 fillSelect('#edit\\.wan', editWans(null), [f.wan]);

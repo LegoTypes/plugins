@@ -13,13 +13,13 @@
         <id>wgclienttunnels.health_mirror</id>
         <label>Health mirror</label>
         <type>checkbox</type>
-        <help>Hold each tunnel down while its bound WAN is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy. Normally enabled.</help>
+        <help>Hold each tunnel down while its bound WAN is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy (the IPv6 gateway's own monitor decides the rest). Normally enabled.</help>
     </field>
     <field>
         <id>wgclienttunnels.ipv6_routes</id>
         <label>IPv6 addresses and routes</label>
         <type>checkbox</type>
-        <help>Keep each tunnel's IPv6 address and the host route to its IPv6 next hop in place (core adds no IPv6 far-gateway route). Normally enabled when any tunnel has IPv6.</help>
+        <help>Keep each tunnel's IPv6 address, next-hop route and IPv6 monitor route in place (core adds no IPv6 far-gateway route). Off stops maintaining them; a tunnel restart then leaves its IPv6 gateway without routes, unmeasured and reading down. Normally enabled when any tunnel has IPv6.</help>
     </field>
     <field>
         <id>wgclienttunnels.default_guard</id>

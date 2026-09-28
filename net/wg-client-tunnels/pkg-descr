@@ -10,8 +10,8 @@ Features:
 - Create a tunnel from a pasted wg-quick config -- WireGuard instance and
   peer, interface, IPv4 and IPv6 gateways, endpoint route to the chosen WAN
   and outbound NAT, in one save -- with the MTU measured from that WAN
-- Edit a tunnel in place -- outbound NAT sources, MTU, monitor IP, bound
-  WAN, IPv6 on or off, or a server swap from a replacement wg-quick config
+- Edit a tunnel in place -- outbound NAT sources, MTU, monitor IPs (IPv4
+  and IPv6), bound WAN, IPv6 on or off, or a server swap from a replacement wg-quick config
   -- with a preview of exactly what changes; its name, device, interface
   and gateway names never change, so groups and rules keep working
 - Remove a tunnel and everything it owns (refused while anything references
@@ -23,8 +23,8 @@ Features:
   with its derived
   parts, live gateway status, links to the core page that owns each part,
   and findings; it reloads as soon as an action completes
-- Gives each managed tunnel's IPv6 gateway its host route and keeps its
-  tunnel address in place: at boot, on gateway and WAN address events, on
+- Gives each managed tunnel's IPv6 gateway its host routes (to its next hop
+  and to its own monitor) and keeps its tunnel address in place: at boot, on gateway and WAN address events, on
   every configuration change, and every minute as a safety net
 - Health mirror (every 15 s):
   - binds each tunnel to the WAN its endpoint route uses and holds the
@@ -32,7 +32,8 @@ Features:
     other WAN
   - forces each IPv6 tunnel gateway down when its own IPv4 tunnel loses
     packets, loses its monitor or is forced down, using that gateway's
-    loss thresholds with hysteresis
+    loss thresholds with hysteresis, while the IPv6 gateway's own monitor,
+    pinged through the tunnel, takes it down when IPv6 alone fails
   - ignores a freshly restarted monitor's readings until they settle, so
     a gateway is never released in the middle of an outage
   - replays the gateway alarm its own reconfigure would otherwise drop,
@@ -53,6 +54,26 @@ Features:
 Plugin Changelog
 ================
 
+3.3
+
+* Each tunnel's IPv6 gateway has its own monitor, pinged through the
+  tunnel: an IPv6 failure inside a tunnel whose IPv4 still works takes
+  only that IPv6 gateway down and the IPv6 gateway groups fail over (the
+  IPv4 and IPv6 groups may then leave by different servers until it
+  recovers). The plugin owns the monitor's host route and restarts a
+  missing IPv6 monitor within a minute.
+* After upgrading, existing tunnels show ipv6-unmonitored and behave
+  exactly as before until each is edited; nothing changes on upgrade.
+* Setting the IPv6 monitor in Edit rewrites the IPv6 gateway's
+  description, monitor and thresholds (copied from the IPv4 gateway) and
+  reconfigures routing, so every gateway monitor restarts.
+* Create and Edit require an IPv6 monitor when IPv6 is on.
+* The WAN lists show a hint when no gateway of the endpoint's family is
+  saved.
+* Edit offers the bound WAN's other-family gateway only when the pasted
+  config changes the endpoint, and a refused new endpoint reports one
+  error.
+
 3.2
 
 * IPv6 endpoints: a tunnel may connect to its server over IPv6, bound by a
@@ -63,11 +84,6 @@ Plugin Changelog
 * A tunnel held down on a WAN gateway with monitoring disabled is released
   once the gateway is enabled again.
 * Create refuses an endpoint that is some gateway's monitor address.
-* The WAN lists show a hint when no gateway of the endpoint's family is
-  saved (3.2_1)
-* Edit offers the bound WAN's other-family gateway only when the pasted
-  config changes the endpoint, and a refused new endpoint reports one
-  error (3.2_1)
 
 3.1
 
