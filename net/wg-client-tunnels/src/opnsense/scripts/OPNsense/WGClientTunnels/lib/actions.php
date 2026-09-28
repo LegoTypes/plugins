@@ -82,11 +82,12 @@ function wgct_ip_in(string $ip, array $list): bool {
 }
 
 /**
- * @param array  $core wgct_core_snapshot()
- * @param string $wan  a gateway name
+ * @param array  $core   wgct_core_snapshot()
+ * @param string $wan    a gateway name
+ * @param string $family the endpoint's family the WAN must match ('inet' or 'inet6')
  * @return string|null why it cannot carry a tunnel's endpoint route, or null
  */
-function wgct_wan_error(array $core, string $wan): ?string {
+function wgct_wan_error(array $core, string $wan, string $family = 'inet'): ?string {
     $g = $core['gateways'][$wan] ?? null;
     if ($g === null) {
         return "no gateway named {$wan}";
@@ -94,8 +95,11 @@ function wgct_wan_error(array $core, string $wan): ?string {
     if (in_array($wan, WGCT_SENTINELS, true)) {
         return "{$wan} is a no-default sentinel";
     }
-    if ($g['ipprotocol'] !== 'inet') {
-        return "{$wan} is not an IPv4 gateway";
+    if ($g['ipprotocol'] !== $family) {
+        return $family === 'inet6' ? "{$wan} is IPv4; this endpoint is IPv6" : "{$wan} is IPv6; this endpoint is IPv4";
+    }
+    if ($family === 'inet6' && in_array($core['interfaces'][$g['interface']]['ipaddrv6'] ?? '', ['6rd', '6to4'], true)) {
+        return "{$wan} is on a 6rd/6to4 WAN; IPv6 over 6rd/6to4 is not supported";
     }
     if (isset(wgct_wg_devices($core)[$core['interfaces'][$g['interface']]['if'] ?? ''])) {
         return "{$wan} is on a WireGuard interface";
@@ -286,17 +290,20 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     }
 
     /* the WAN, and the endpoint route that binds the tunnel to it */
-    $wanError = wgct_wan_error($core, $req['wan']);
+    $endpoint = $conf['endpoint_ip'];
+    $family = wgct_ip_family($endpoint) ?? 'inet';
+    $wanError = wgct_wan_error($core, $req['wan'], $family);
     if ($wanError !== null) {
         $e['wan'] = $wanError;
     }
-    $endpoint = $conf['endpoint_ip'];
-    /* S1: IPv6 endpoints are created from the next release (spec 2026-09-27 section 6); removed in Task 8 */
-    if (wgct_ip_family($endpoint) === 'inet6') {
-        $e['config'] = 'IPv6 endpoints arrive in the next release';
+    /* R2 from the other side: dpinger's host route to a monitor IP would capture the handshake */
+    foreach ($core['gateways'] as $gwName => $g) {
+        if ($g['monitor'] !== '' && wgct_ip_equal($g['monitor'], $endpoint)) {
+            $e['config'] = "{$endpoint} is the monitor of {$gwName}; a tunnel endpoint may not be a monitor IP";
+        }
     }
-    $network = $endpoint . '/32';
-    $same = array_filter($core['routes'], fn (array $r): bool => $r['network'] === $network);
+    $network = wgct_host_network($endpoint);
+    $same = array_filter($core['routes'], fn (array $r): bool => (wgct_host_route($r['network'])['ip'] ?? null) === $endpoint);
     if (count($same) > 1) {
         $e['wan'] = "several routes to {$network} exist; keep one on System > Routes first";
     } elseif (count($same) === 1) {
@@ -511,7 +518,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     } else {
         $c[] = 'IPv6 off: no IPv6 gateway, IPv4-only allowed IPs';
     }
-    $c[] = sprintf('wireguard peer %s -> %s:%s%s', $name, $endpoint, $conf['endpoint_port'], $conf['has_psk'] ? ', with a preshared key' : '');
+    $c[] = sprintf('wireguard peer %s -> %s%s', $name, wgct_format_endpoint($endpoint, $conf['endpoint_port']), $conf['has_psk'] ? ', with a preshared key' : '');
     $c[] = "interface {$opt} ({$descr}) -> {$device}, enabled";
     foreach ($plan['gateways'] as $g) {
         $c[] = $g['fields']['force_down'] === '1'
@@ -890,6 +897,7 @@ function wgct_actions_fixture(): array {
         ],
         'gateways' => [
             'WAN_A' => $gw('g-wa', 'opt1', 'inet', '192.0.2.1'),
+            'WAN_A6' => $gw('g-wa6', 'opt1', 'inet6', 'fe80::1'),
             'WAN_B' => $gw('g-wb', 'opt2', 'inet', '198.51.100.1'),
             'tun_a' => $gw('g-a4', 'opt11', 'inet', '10.2.0.4', '203.0.113.9'),
             'tun_a-ipv6' => $gw('g-a6', 'opt11', 'inet6', 'fd00::1:2'),
@@ -1187,10 +1195,26 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A', '');
     wgct_check($t, 'rebind (S1): an IPv6 endpoint is refused until the next release',
         $p['errors'] === ['IPv6 endpoints are bound on System > Routes until the next release']);
-    /* S1: Create refuses an IPv6 endpoint */
-    $p = wgct_plan_create($snap, $req, ['endpoint_ip' => '2001:db8::12'] + $conf);
-    wgct_check($t, 'create (S1): an IPv6 endpoint is refused until the next release',
-        ($p['errors']['config'] ?? '') === 'IPv6 endpoints arrive in the next release');
+    /* IPv6 endpoints: /128 via the IPv6 WAN gateway; family mismatch, 6rd/6to4 and monitor refusals (S1 lifted) */
+    $conf6 = ['endpoint_ip' => '2001:db8::12', 'endpoint_family' => 'inet6'] + $conf;
+    $p = wgct_plan_create($snap, ['wan' => 'WAN_A6'] + $req, $conf6);
+    wgct_check($t, 'create: an IPv6 endpoint gets a /128 via the IPv6 WAN gateway',
+        $p['errors'] === [] && $p['route']['fields']['network'] === '2001:db8::12/128' && $p['route']['fields']['gateway'] === 'WAN_A6'
+        && $has($p['changes'], 'wireguard peer tun_c -> [2001:db8::12]:51820') && $has($p['changes'], 'static route 2001:db8::12/128 via WAN_A6'));
+    $p = wgct_plan_create($snap, $req, $conf6);
+    wgct_check($t, 'create: an IPv6 endpoint on an IPv4 gateway is refused on wan',
+        ($p['errors']['wan'] ?? '') === 'WAN_A is IPv4; this endpoint is IPv6');
+    $p = wgct_plan_create($snap, ['wan' => 'WAN_A6'] + $req, $conf);
+    wgct_check($t, 'create: an IPv4 endpoint on an IPv6 gateway is refused on wan',
+        ($p['errors']['wan'] ?? '') === 'WAN_A6 is IPv6; this endpoint is IPv4');
+    $s = $snap;
+    $s['core']['interfaces']['opt1']['ipaddrv6'] = '6rd';
+    $p = wgct_plan_create($s, ['wan' => 'WAN_A6'] + $req, $conf6);
+    wgct_check($t, 'create: an IPv6 gateway on a 6rd WAN is refused on wan',
+        str_contains($p['errors']['wan'] ?? '', '6rd/6to4'));
+    $p = wgct_plan_create($snap, $req, ['endpoint_ip' => '203.0.113.9'] + $conf);
+    wgct_check($t, 'create: an endpoint that is a gateway\'s monitor is refused on config (both families)',
+        str_contains($p['errors']['config'] ?? '', '203.0.113.9 is the monitor of tun_a'));
 
     /* ---- sentinel ---- */
     $want = fn (string $family, string $name, string $opt): array => [
