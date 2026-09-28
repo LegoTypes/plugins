@@ -115,7 +115,7 @@ class TunnelsController extends ApiControllerBase
         }
         $stale = [];
         foreach (wgct_stale_candidates($core) as $uuid => $b) {
-            $stale[] = ['value' => (string)$uuid, 'label' => "{$b['ip']}/32 via {$b['gateway']}"];
+            $stale[] = ['value' => (string)$uuid, 'label' => wgct_host_network($b['ip']) . " via {$b['gateway']}"];
         }
         return [
             'wans' => $wans, 'templates' => $templates, 'nat_sources' => $sources,
@@ -262,8 +262,12 @@ class TunnelsController extends ApiControllerBase
             return ['result' => 'failed'];
         }
         require_once self::LIB . '/apply.php';
+        require_once self::LIB . '/addr.php';
         $wan = $this->postString('wan');
         $endpoint = $this->postString('endpoint');
+        if (wgct_ip_family($endpoint) === 'inet6') {
+            return ['ok' => false, 'errors' => ['measuring IPv6 endpoints arrives in the next release']];
+        }
         if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || filter_var($endpoint, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 endpoint first']];
         }

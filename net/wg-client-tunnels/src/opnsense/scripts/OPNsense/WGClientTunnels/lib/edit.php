@@ -611,8 +611,14 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     /* the endpoint route: a WAN move, or a swap to a new endpoint (rulings 12, 13) */
     $wanNow = $t['bound_wan'];
     $wanAfter = $req['wan'] ?? $wanNow;
+    /* S1: no binding change touches an IPv6 endpoint (spec 2026-09-27 section 6); removed in Task 9 */
+    $v6Binding = ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow)
+        && (wgct_ip_family((string)$endpointNow) === 'inet6' || wgct_ip_family((string)$endpointAfter) === 'inet6');
+    if ($v6Binding) {
+        $e['wan'] = 'changing the binding of an IPv6 endpoint arrives in the next release; change its /128 route on System > Routes';
+    }
     /* a refused new endpoint plans no route work, and its refusal is the one reported on config */
-    if (($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) && !($endpointAfter !== $endpointNow && isset($e['config']))) {
+    if (!$v6Binding && ($wanAfter !== $wanNow || $endpointAfter !== $endpointNow) && !($endpointAfter !== $endpointNow && isset($e['config']))) {
         $wanError = $wanAfter === null ? "{$label} is unbound: choose the WAN the new endpoint is routed to" : wgct_wan_error($core, $wanAfter);
         if ($wanError !== null) {
             $e['wan'] = $wanError;
@@ -1008,6 +1014,16 @@ function wgct_edit_selftest(): int {
     $p2 = $plan(['ipv6' => false] + $none, $swapA);
     wgct_check($t, 'edit: a config without IPv6 on a tunnel with IPv6 => refused, unless the same edit turns IPv6 off',
         str_contains($p1['errors']['ipv6'] ?? '', 'no IPv6 Address') && $p2['errors'] === [] && $p2['gateways']['delete'] === ['g-a6']);
+    /* S1: no binding change touches an IPv6 endpoint */
+    $p = $plan(['uuid' => 'i-b'] + $none, $swapB(['endpoint_ip' => '2001:db8::40']));
+    wgct_check($t, 'edit (S1): a swap to an IPv6 endpoint is refused on wan',
+        str_contains($p['errors']['wan'] ?? '', 'arrives in the next release'));
+    $s = $snap;
+    $s['core']['peers']['p-d']['serveraddress'] = '2001:db8::13';
+    $s['core']['routes']['r-d'] = ['network' => '2001:db8::13/128', 'gateway' => 'WAN_A', 'enabled' => true];
+    $p = $plan(['uuid' => 'i-d', 'wan' => 'WAN_B'] + $none, null, $s);
+    wgct_check($t, 'edit (S1): moving an IPv6-endpoint tunnel is refused on wan',
+        str_contains($p['errors']['wan'] ?? '', 'arrives in the next release'));
 
     /* ---- blocking findings, managed list ---- */
     $s = $snap;
