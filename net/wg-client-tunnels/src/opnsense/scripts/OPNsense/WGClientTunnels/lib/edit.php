@@ -21,7 +21,7 @@ require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/selftest.php';
 
 /* the Edit request's keys: the API form's edit.<key> and the CLI's JSON (which adds uuid) */
-const WGCT_EDIT_FIELDS = ['config', 'wan', 'monitor', 'mtu', 'ipv6', 'unique', 'nat4', 'nat6'];
+const WGCT_EDIT_FIELDS = ['config', 'wan', 'monitor', 'monitor6', 'mtu', 'ipv6', 'unique', 'nat4', 'nat6'];
 
 /**
  * The typed Edit request. $raw is a form/JSON boundary, so every value is
@@ -33,7 +33,7 @@ const WGCT_EDIT_FIELDS = ['config', 'wan', 'monitor', 'mtu', 'ipv6', 'unique', '
  *
  * @param array  $raw  keys of WGCT_EDIT_FIELDS
  * @param string $uuid the managed instance
- * @return array{errors: array<string, string>, req: array{uuid: string, wan: ?string, monitor: ?string, mtu: ?int, ipv6: ?bool, unique: ?bool, nat: array{inet: ?list<string>, inet6: ?list<string>}}, text: string}
+ * @return array{errors: array<string, string>, req: array{uuid: string, wan: ?string, monitor: ?string, monitor6: ?string, mtu: ?int, ipv6: ?bool, unique: ?bool, nat: array{inet: ?list<string>, inet6: ?list<string>}}, text: string}
  */
 function wgct_edit_request(#[\SensitiveParameter] array $raw, string $uuid): array {
     $errors = [];
@@ -82,6 +82,15 @@ function wgct_edit_request(#[\SensitiveParameter] array $raw, string $uuid): arr
             $monitor = $str('monitor');
         }
     }
+    /* the IPv6 monitor: '' is unchanged too (spec 3.7), since the GUI sends it empty for a tunnel with none */
+    $monitor6 = null;
+    if ($given('monitor6')) {
+        if (!is_string($raw['monitor6'])) {
+            $errors['monitor6'] = 'an IPv6 address';
+        } elseif ($str('monitor6') !== '') {
+            $monitor6 = $str('monitor6');
+        }
+    }
     $mtu = null;
     if ($given('mtu')) {
         $m = $raw['mtu'];
@@ -111,7 +120,7 @@ function wgct_edit_request(#[\SensitiveParameter] array $raw, string $uuid): arr
     return [
         'errors' => $errors,
         'req' => [
-            'uuid' => $uuid, 'wan' => $wan, 'monitor' => $monitor, 'mtu' => $mtu,
+            'uuid' => $uuid, 'wan' => $wan, 'monitor' => $monitor, 'monitor6' => $monitor6, 'mtu' => $mtu,
             'ipv6' => $flags['ipv6'], 'unique' => $flags['unique'], 'nat' => $nat,
         ],
         'text' => is_string($raw['config'] ?? null) ? $raw['config'] : '',
@@ -307,7 +316,7 @@ function wgct_edit_prefill(array $snap, string $uuid): array {
     $nat = wgct_edit_nat_state($snap, $t['interface']);
     return ['errors' => [], 'form' => [
         'uuid' => $uuid, 'name' => $t['name'], 'device' => $t['device'], 'interface' => $t['interface'],
-        'wan' => $t['bound_wan'] ?? '', 'monitor' => $t['monitor'],
+        'wan' => $t['bound_wan'] ?? '', 'monitor' => $t['monitor'], 'monitor6' => $t['monitor6'],
         'mtu' => wgct_edit_instance_mtu($inst), 'mtu_effective' => $t['mtu'],
         'ipv6' => $t['gw6'] !== null || $t['ipv6_address'] !== null,
         'unique' => wgct_edit_unique_now($t, $inst),
@@ -528,6 +537,33 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
     }
 
+    /* the IPv6 monitor (spec 3.3, 3.7): the current value is a no-op unless the gateway needs Edit's repair;
+     * a new one is checked as Create checks it. Turning IPv6 off drops the gateway and any monitor sent with it. */
+    $monitor6 = null;
+    if ($req['monitor6'] !== null && !$ipv6After) {
+        if ($v6Change === 'none') {
+            $e['monitor6'] = 'IPv6 is off; turn it on to give the tunnel an IPv6 monitor';
+        }
+    } elseif ($req['monitor6'] !== null) {
+        $same = $t['monitor6'] !== '' && wgct_ip_equal($req['monitor6'], $t['monitor6']);
+        $repair = $same && $t['gw6'] !== null && wgct_monitor6_repair_reasons($core, $t) !== [];
+        if (($same && !$repair) && $v6Change !== 'on') {
+            /* the GUI's unchanged value */
+        } elseif ($t['gw6'] === null && $v6Change !== 'on') {
+            $e['monitor6'] = "{$label} has no IPv6 gateway to monitor";
+        } elseif (!is_array($snap['local6'] ?? null)) {
+            $e['monitor6'] = "could not read this firewall's IPv6 addresses (configd interface list ifconfig); try again";
+        } else {
+            $why = wgct_monitor6_error($core, $snap['local6'], $req['monitor6'], $t['gw6'],
+                $endpointAfter !== null ? [(string)$endpointAfter] : []);
+            if ($why !== null) {
+                $e['monitor6'] = $why;
+            } else {
+                $monitor6 = (string)wgct_canon_ip($req['monitor6']);
+            }
+        }
+    }
+
     /* IPv6 objects: the gateway, the IPv6 NAT, the peer's allowed IPs */
     if ($v6Change === 'off') {
         if ($t['gw6'] !== null) {
@@ -549,12 +585,16 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
         $need['tunnel'] = true;
     } elseif ($v6Change === 'on' && !isset($e['ipv6'])) {
-        $plan['gateways']['add'][] = [
-            'disabled' => '0', 'name' => $name6, 'descr' => "{$name6} (follows {$t['gw4']})", 'interface' => $opt, 'ipprotocol' => 'inet6',
-            'gateway' => $next6, 'monitor' => '', 'defaultgw' => '0', 'fargw' => '1', 'monitor_disable' => '1', 'force_down' => '1',
-        ];
-        $c[] = "gateway {$name6} {$next6} on {$opt}, starts forced down (the health mirror releases it)";
-        $need['tunnel'] = true;
+        if ($monitor6 === null) {
+            $e['monitor6'] ??= 'required when turning IPv6 on: an IPv6 address pinged through the tunnel';
+        } else {
+            $plan['gateways']['add'][] = array_merge([
+                'disabled' => '0', 'name' => $name6, 'interface' => $opt, 'ipprotocol' => 'inet6',
+                'gateway' => $next6, 'defaultgw' => '0', 'fargw' => '1', 'force_down' => '1',
+            ], wgct_gw6_monitor_fields($name6, $monitor6, $snap['gateway_fields'][(string)$t['gw4']] ?? []));
+            $c[] = "gateway {$name6} {$next6} on {$opt}, monitor {$monitor6}, starts forced down (the health mirror releases it)";
+            $need['tunnel'] = true;
+        }
     }
     if ($v6Change !== 'none' && !isset($e['ipv6'])) {
         $allowed = wgct_split_csv($peerNow['tunneladdress']);
@@ -566,6 +606,14 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $plan['peer']['tunneladdress'] = implode(',', $allowedAfter);
             $c[] = "peer {$label}: allowed IPs " . implode(',', $allowed) . ' -> ' . implode(',', $allowedAfter);
         }
+    }
+
+    if ($monitor6 !== null && $v6Change === 'none' && $t['gw6'] !== null) {
+        $plan['gateways']['update'][$t['gw6']] = wgct_gw6_monitor_fields($t['gw6'], $monitor6, $snap['gateway_fields'][(string)$t['gw4']] ?? []);
+        $need['routes'] = true;
+        $c[] = "gateway {$t['gw6']}: monitor " . ($t['monitor6'] !== '' ? $t['monitor6'] : '(none)') . " -> {$monitor6}"
+            . " (its host route is the plugin's; thresholds from {$t['gw4']})";
+        $c[] = 'NOTE routing is reconfigured: every gateway monitor restarts, and the health mirror waits one settle window before releasing anything';
     }
 
     /* monitor (R2, as Create checks it; the tunnel's own monitor is no conflict) */
@@ -811,8 +859,8 @@ function wgct_edit_selftest(): int {
     $key = fn (string $c): string => base64_encode(str_repeat($c, 32));
     $has = fn (array $lines, string $needle): bool => array_filter($lines, fn (string $l): bool => str_contains($l, $needle)) !== [];
     $u = '00000000-0000-4000-8000-000000000001';
-    $none = ['uuid' => 'i-a', 'wan' => null, 'monitor' => null, 'mtu' => null, 'ipv6' => null, 'unique' => null, 'nat' => ['inet' => null, 'inet6' => null]];
-    $keepA = ['uuid' => 'i-a', 'wan' => 'WAN_A', 'monitor' => '203.0.113.9', 'mtu' => 1420, 'ipv6' => true, 'unique' => true,
+    $none = ['uuid' => 'i-a', 'wan' => null, 'monitor' => null, 'monitor6' => null, 'mtu' => null, 'ipv6' => null, 'unique' => null, 'nat' => ['inet' => null, 'inet6' => null]];
+    $keepA = ['uuid' => 'i-a', 'wan' => 'WAN_A', 'monitor' => '203.0.113.9', 'monitor6' => '2001:db8:ffff::9', 'mtu' => 1420, 'ipv6' => true, 'unique' => true,
               'nat' => ['inet' => ['opt3', 'TailscaleNetworks'], 'inet6' => ['opt3']]];
     $plan = fn (array $req, ?array $swap = null, ?array $s = null, array $refs = []): array => wgct_plan_edit($s ?? $snap, $refs, $req, $swap);
     /* tun_b's current config, with public overrides */
@@ -835,7 +883,7 @@ function wgct_edit_selftest(): int {
                             'ipv6' => '1', 'unique' => '0', 'nat4' => 'opt3,TailscaleNetworks', 'nat6' => ''], $u);
     wgct_check($t, 'edit request: the API form (every field, strings) => typed; an empty NAT list is an empty list, not "keep"',
         $r['errors'] === [] && $r['text'] === ''
-        && $r['req'] === ['uuid' => $u, 'wan' => 'WAN_A', 'monitor' => '203.0.113.9', 'mtu' => 1420, 'ipv6' => true, 'unique' => false,
+        && $r['req'] === ['uuid' => $u, 'wan' => 'WAN_A', 'monitor' => '203.0.113.9', 'monitor6' => null, 'mtu' => 1420, 'ipv6' => true, 'unique' => false,
                           'nat' => ['inet' => ['opt3', 'TailscaleNetworks'], 'inet6' => []]]);
     $r = wgct_edit_request(['monitor' => '203.0.113.20', 'wan' => ''], $u);
     wgct_check($t, 'edit request: absent keys, and an empty WAN, keep the current value (null)',
@@ -980,15 +1028,66 @@ function wgct_edit_selftest(): int {
         str_contains($p['errors']['ipv6'] ?? '', 'gateway group g6 uses gateway tun_a-ipv6'));
     wgct_check($t, 'edit: IPv6 on without a replacement config => refused on ipv6',
         isset($plan(['uuid' => 'i-b', 'ipv6' => true] + $none)['errors']['ipv6']));
-    $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
+    $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'monitor6' => '2001:db8:ffff::32', 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
         $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
     $g6 = $p['gateways']['add'][0] ?? [];
     wgct_check($t, 'edit: IPv6 on with a config that has an IPv6 address => fd00::2:1 (the site convention), a forced-down tun_b-ipv6 at fd00::2:2, ::/0, the IPv6 NAT; keys and route untouched',
         $p['errors'] === [] && $p['mode'] === 'tunnel' && $p['instance'] === ['tunneladdress' => '10.2.0.2/32,fd00::2:1/128']
         && $p['peer'] === ['tunneladdress' => '0.0.0.0/0,::/0'] && ($g6['name'] ?? '') === 'tun_b-ipv6' && ($g6['gateway'] ?? '') === 'fd00::2:2'
-        && ($g6['force_down'] ?? '') === '1' && ($g6['interface'] ?? '') === 'opt12' && count($p['nat']['add']) === 1
+        && ($g6['force_down'] ?? '') === '1' && ($g6['interface'] ?? '') === 'opt12'
+        && ($g6['monitor'] ?? '') === '2001:db8:ffff::32' && ($g6['monitor_noroute'] ?? '') === '1' && ($g6['monitor_disable'] ?? '') === '0' && count($p['nat']['add']) === 1
         && $p['nat']['add'][0]['ipprotocol'] === 'inet6' && $p['swap_keys'] === false
         && $p['routes'] === ['add' => [], 'update' => [], 'delete' => []] && $p['replay'] === ['tun_b', 'tun_b-ipv6']);
+
+    /* ---- the IPv6 monitor (spec 3.7) ---- */
+    $r0 = wgct_edit_request(['monitor6' => ''], $u);
+    $r1 = wgct_edit_request(['monitor6' => ' 2001:db8:ffff::30 '], $u);
+    $r2 = wgct_edit_request(['monitor6' => 7], $u);
+    wgct_check($t, 'edit monitor6: (a) empty means unchanged; a value is trimmed; a non-string is a field error',
+        $r0['errors'] === [] && $r0['req']['monitor6'] === null && $r1['req']['monitor6'] === '2001:db8:ffff::30'
+        && isset($r2['errors']['monitor6']));
+    $p = $plan(['monitor6' => '2001:db8:ffff::30'] + $keepA);
+    wgct_check($t, 'edit monitor6: (b) a new monitor writes the monitored shape with the IPv4 thresholds; routes apply; every monitor restarts',
+        $p['errors'] === [] && $p['mode'] === 'routes'
+        && ($p['gateways']['update']['tun_a-ipv6'] ?? null) === wgct_gw6_monitor_fields('tun_a-ipv6', '2001:db8:ffff::30', $snap['gateway_fields']['tun_a'])
+        && $has($p['changes'], 'every gateway monitor restarts') && in_array('tun_a-ipv6', $p['replay'], true));
+    $p = $plan(['monitor6' => '2001:DB8:FFFF:0::9'] + $keepA);
+    wgct_check($t, 'edit monitor6: (c) the current monitor, spelled differently, on a sound gateway => nothing to do',
+        $p['errors'] === [] && $p['mode'] === 'none' && $emptyWrites($p));
+    $s = $snap;
+    $s['core']['gateways']['tun_a-ipv6']['monitor_noroute'] = false;
+    $p = $plan($keepA, null, $s);
+    wgct_check($t, 'edit monitor6: (d) the current monitor on a gateway core would route => re-saved (the repair)',
+        $p['errors'] === [] && ($p['gateways']['update']['tun_a-ipv6']['monitor_noroute'] ?? '') === '1' && $p['mode'] === 'routes');
+    $s = $snap;
+    $s['core']['ipv6_routes'] = false;
+    wgct_check($t, 'edit monitor6: (e) the current monitor while only the routes switch is off => nothing to do (Edit cannot fix it)',
+        $plan($keepA, null, $s)['mode'] === 'none');
+    $p = $plan(['nat' => ['inet' => ['opt3'], 'inet6' => ['opt3']]] + $keepA);
+    wgct_check($t, 'edit monitor6: (f) a NAT-only GUI edit of a monitored tunnel stays a filter reload and leaves the IPv6 gateway alone',
+        $p['errors'] === [] && $p['mode'] === 'filter' && $p['gateways']['update'] === []);
+    $s = $snap;
+    $s['core']['gateways']['WAN_A6']['monitor'] = '2001:db8:ffff::31';
+    wgct_check($t, 'edit monitor6: (g) another gateway\'s monitor => refused on monitor6',
+        str_contains($plan(['monitor6' => '2001:db8:ffff::31'] + $keepA, null, $s)['errors']['monitor6'] ?? '', 'the monitor of WAN_A6'));
+    $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
+        $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
+    wgct_check($t, 'edit monitor6: (h) turning IPv6 on without a monitor => refused on monitor6, no gateway added',
+        str_contains($p['errors']['monitor6'] ?? '', 'required when turning IPv6 on') && $p['gateways']['add'] === []);
+    wgct_check($t, 'edit monitor6: (i) a monitor for a tunnel whose IPv6 stays off => refused',
+        str_contains($plan(['uuid' => 'i-b', 'monitor6' => '2001:db8:ffff::33'] + $none)['errors']['monitor6'] ?? '', 'IPv6 is off'));
+    $s = $snap;
+    $s['local6'] = null;
+    wgct_check($t, 'edit monitor6: (j) the firewall\'s addresses unreadable => a new monitor is refused with a retry',
+        str_contains($plan(['monitor6' => '2001:db8:ffff::30'] + $keepA, null, $s)['errors']['monitor6'] ?? '', 'could not read'));
+    wgct_check($t, 'edit monitor6: (k) ... while the current monitor needs no check at all',
+        $plan($keepA, null, $s)['errors'] === []);
+    $pa = wgct_edit_prefill($snap, 'i-a');
+    $pb = wgct_edit_prefill($snap, 'i-b');
+    wgct_check($t, 'edit monitor6: (l) the prefill carries the current IPv6 monitor, empty without one',
+        ($pa['form']['monitor6'] ?? null) === '2001:db8:ffff::9' && ($pb['form']['monitor6'] ?? null) === '');
+    wgct_check($t, 'edit monitor6: (m) turning IPv6 off from the GUI (current monitor sent along) is not refused on monitor6',
+        !isset($plan(['ipv6' => false] + $keepA)['errors']['monitor6']));
 
     /* ---- server swap ---- */
     $p = $plan(['uuid' => 'i-b'] + $none, $swapB(['peer_pubkey' => $key('L'), 'has_psk' => true], $key('K'), false));

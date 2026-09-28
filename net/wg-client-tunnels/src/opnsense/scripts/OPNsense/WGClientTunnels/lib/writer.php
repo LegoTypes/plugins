@@ -569,11 +569,14 @@ function wgct_sentinel_commit(bool $dry): array {
  *
  * @param array  $raw  the API form's edit.* or the CLI's JSON
  * @param string $uuid the managed instance
- * @return array{errors: array<string, string>, req: array, swap: ?array{public: array, own_pubkey: string}, secret: array{privkey: string, psk: string}, notes: list<string>}
+ * @return array{errors: array<string, string>, req: array, swap: ?array{public: array, own_pubkey: string}, secret: array{privkey: string, psk: string}, notes: list<string>, local6: ?array}
  */
 function wgct_edit_prepare(#[\SensitiveParameter] array $raw, string $uuid): array {
     $in = wgct_edit_request($raw, $uuid);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => []];
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => [], 'local6' => []];
+    if ($prep['errors'] === [] && $prep['req']['monitor6'] !== null) {
+        $prep['local6'] = wgct_local6_snapshot();
+    }
     if (trim($in['text']) === '') {
         return $prep;
     }
@@ -741,6 +744,7 @@ function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $g
     $uuid = $prep['req']['uuid'];
     $result = wgct_action_commit(function () use ($prep, $dry, $gatewayHeld, $uuid): array {
         $snap = wgct_action_snapshot();
+        $snap['local6'] = $prep['local6'];
         $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
         $fail = fn (array $errors): array => ['save' => false, 'result' => wgct_result([
             'errors' => $errors, 'changes' => $plan['changes'], 'dry' => $dry, 'uuid' => $uuid,
@@ -781,6 +785,7 @@ function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $g
  */
 function wgct_edit_mode_unlocked(#[\SensitiveParameter] array $prep): string {
     $snap = wgct_action_snapshot();
+    $snap['local6'] = $prep['local6'];
     $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
     return $plan['errors'] === [] ? $plan['mode'] : 'none';
 }
