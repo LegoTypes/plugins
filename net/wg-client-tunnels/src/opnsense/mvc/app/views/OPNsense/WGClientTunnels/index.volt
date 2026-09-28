@@ -554,7 +554,9 @@
          * config's, else the tunnel's own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN
          * move is how a tunnel bound through a gateway of the other family is repaired (spec 3.8), so an IPv6
          * endpoint bound by a /128 via an IPv4 gateway is offered the IPv6 gateways. A family with no saved
-         * gateway gets one disabled hint option in its place (wansHint), never an empty list. First comes the
+         * gateway gets one disabled hint option in its place (wansHint), never an empty list -- except under the
+         * unbound placeholder, which already keeps the list non-empty and shares the hint's empty value (two
+         * options of one value would let the later, disabled hint win the selection). First comes the
          * unbound placeholder when the tunnel has no bound WAN (Rebind is what binds one), or, when the pasted
          * config's family differs from the bound gateway's saved family AND also changes the endpoint address
          * (else the planner infers nothing -- matching its own "on an endpoint change" rule), a placeholder for
@@ -578,7 +580,8 @@
                     ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
                     : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"});
             }
-            wans = wans.concat(wansHint(family || f.endpoint_family || 'inet'));
+            var endpointFamily = family || f.endpoint_family || 'inet';
+            wans = wans.concat(f.wan ? wansHint(endpointFamily) : wansFor(endpointFamily));
             if (f.wan && !wans.some(function (w) { return w.value === f.wan; })) {
                 wans.push({value: f.wan, label: f.wan});
             }
