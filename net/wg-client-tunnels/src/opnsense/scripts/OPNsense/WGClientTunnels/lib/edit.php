@@ -1082,6 +1082,8 @@ function wgct_edit_selftest(): int {
         str_contains($plan(['monitor6' => '2001:db8:ffff::30'] + $keepA, null, $s)['errors']['monitor6'] ?? '', 'could not read'));
     wgct_check($t, 'edit monitor6: (k) ... while the current monitor needs no check at all',
         $plan($keepA, null, $s)['errors'] === []);
+    wgct_check($t, 'edit monitor6: (k2) ... and an Edit that sends no monitor at all',
+        $plan(['uuid' => 'i-b'] + $none, null, $s)['errors'] === []);
     $pa = wgct_edit_prefill($snap, 'i-a');
     $pb = wgct_edit_prefill($snap, 'i-b');
     wgct_check($t, 'edit monitor6: (l) the prefill carries the current IPv6 monitor, empty without one',
