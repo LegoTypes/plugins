@@ -53,6 +53,17 @@ Features:
 Plugin Changelog
 ================
 
+3.2
+
+* IPv6 endpoints: a tunnel may connect to its server over IPv6, bound by a
+  /128 route to a WAN's IPv6 gateway, with the same WAN pin, underlay and
+  Create, Edit, swap, Rebind and Remove handling as an IPv4 endpoint. Save
+  an automatic DHCPv6 gateway once on System > Gateways to bind to it.
+* Measure probes IPv6 paths from a global WAN address (80 bytes of overhead).
+* A tunnel held down on a WAN gateway with monitoring disabled is released
+  once the gateway is enabled again.
+* Create refuses an endpoint that is some gateway's monitor address.
+
 3.1
 
 * Edit a managed tunnel from the Tunnels tab or tunnel.php edit (JSON on
