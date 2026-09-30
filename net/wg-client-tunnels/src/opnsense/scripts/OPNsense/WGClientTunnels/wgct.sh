@@ -329,6 +329,8 @@ case "$1" in
         "${PHP}" "${GUARD}"
         # Then keep the rendered pins and MSS anchor current (freshness.php).
         "${PHP}" "${FRESHNESS}"
+        # Then report, once, a core update that changed an internal the plugin copies.
+        "${PHP}" "${SCRIPTS}/core_contract.php"
         # The minute cron alone restarts a missing IPv6 monitor (monitor_repair.php):
         # never the hooks, where the address is still tentative or the gateway lock held.
         if [ "$2" = "--repair" ]; then
