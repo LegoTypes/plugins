@@ -21,6 +21,7 @@ require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/repair.php';
+openlog('wgct', LOG_PID, LOG_USER);
 
 $stateDir = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
