@@ -163,5 +163,26 @@ say 'state|on' "$(line lo91 91 $M1)"; run
 check "22 status prints only core's running line" '[ "$("$W" status | grep -c .)" = 1 ] && [ "$("$W" status)" = "wgclienttunnels is running" ]'
 check "23 routes_status prints one JSON object naming the tunnel" '[ "$("$W" routes_status | "$T/json_iface")" = lo91 ]'
 
+cat > "$T/recon" <<'EOF'
+#!/bin/sh
+echo run >> "$WGCT_TEST_DIR/runs"
+sleep 2
+EOF
+chmod +x "$T/recon"
+export WGCT_RECONCILE_CMD="$T/recon"
+: > "$T/runs"
+t0=$(date +%s)
+"$W" request_reconcile; "$W" request_reconcile; "$W" request_reconcile
+t1=$(date +%s)
+check "24 request_reconcile returns without waiting for the reconcile" '[ $((t1 - t0)) -le 1 ]'
+sleep 6
+check "25 a burst of requests runs the reconcile once or twice, never once per request" '[ "$(grep -c . "$T/runs")" -ge 1 ] && [ "$(grep -c . "$T/runs")" -le 2 ]'
+: > "$T/runs"
+"$W" request_reconcile; sleep 1; "$W" request_reconcile
+sleep 6
+check "26 a request made while a reconcile runs gets its own run after it" '[ "$(grep -c . "$T/runs")" = 2 ]'
+check "27 no waiter is left running" '! pgrep -f "_reconcile_queued" > /dev/null'
+unset WGCT_RECONCILE_CMD
+
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]
