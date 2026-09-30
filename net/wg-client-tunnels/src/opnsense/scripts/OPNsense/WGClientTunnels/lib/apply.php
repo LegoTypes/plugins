@@ -1118,5 +1118,16 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'contract: a match on a fresh state logs nothing', count($logged) === 2);
     array_map('unlink', glob("$dir/*"));
     rmdir($dir);
+
+    $cmd = wgct_log_command(LOG_ERR, '[wgct-x] boom');
+    wgct_check($t, 'log: a line goes to logger under the program name core\'s WireGuard log matches, at its level',
+        str_starts_with($cmd, '/usr/bin/logger -t wireguard -p user.err -- '));
+    wgct_check($t, 'log: the message is one shell-quoted argument, never expanded',
+        str_ends_with(wgct_log_command(LOG_NOTICE, "[wgct-x] it's \$(id)"), ' -- ' . escapeshellarg("[wgct-x] it's \$(id)")));
+    wgct_check($t, 'log: newlines fold into "; " so a message stays one line',
+        str_ends_with(wgct_log_command(LOG_NOTICE, "[wgct-x] first\n  second\r\nthird"), escapeshellarg('[wgct-x] first; second; third')));
+    wgct_check($t, 'log: an unknown priority logs at notice', str_contains(wgct_log_command(99, 'x'), ' -p user.notice '));
+    wgct_check($t, 'log: warning and info map to their names',
+        str_contains(wgct_log_command(LOG_WARNING, 'x'), ' -p user.warning ') && str_contains(wgct_log_command(LOG_INFO, 'x'), ' -p user.info '));
     return wgct_tally_report('apply', $t);
 }

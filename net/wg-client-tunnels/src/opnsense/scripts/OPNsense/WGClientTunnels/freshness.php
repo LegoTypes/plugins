@@ -17,8 +17,9 @@
  *   - pins differ, there is no rendered record, the render otherwise failed,
  *     the main ruleset failed to load since the last render, or pf is missing
  *     labels the rendered pins produce -> ask configd for a filter reload,
- *     DETACHED: this may run inside configd's own config_changed action, and
- *     a synchronous configctl there could re-enter configd. The hook
+ *     DETACHED: this may run inside a configd action (the monitor hook's
+ *     reconcile runs within routing configure), and a synchronous
+ *     configctl there could re-enter configd. The hook
  *     re-renders during that reload.
  * Repeated reload requests for the same wanted pins are rate-limited with
  * exponential back-off, and a persistently failing anchor load, pf
@@ -37,12 +38,11 @@
 $wgctLib = __DIR__ . '/lib/render.php';
 $wgctTunnelsLib = __DIR__ . '/lib/tunnels.php';
 if (!is_readable($wgctLib) || !is_readable($wgctTunnelsLib)) {
-    syslog(LOG_ERR, '[wgct-render] freshness: plugin library missing');
+    exec('/usr/bin/logger -t wireguard -p user.err -- ' . escapeshellarg('[wgct-render] freshness: plugin library missing') . ' > /dev/null 2>&1');
     exit(1);
 }
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 require_once $wgctLib;
-openlog('wgct', LOG_PID, LOG_USER);
 
 /* Where filter.inc leaves the error from a failed `pfctl -f /tmp/rules.debug`
  * before it restores the old ruleset (see filter.inc, ~line 399). */
@@ -56,7 +56,7 @@ try {
          * released when the process exits: two overlapping reconciles must
          * not interleave, or a run that derived before another one wrote
          * rendered.json could load its older MSS lines afterwards. Bounded,
-         * because this can run inside configd's config_changed action; a
+         * because this can run inside a configd action (the monitor hook); a
          * run that cannot get the lock leaves the work to the run holding
          * it. --dry only reads, so it never waits. */
         $lock = wgct_poll_lock(
@@ -65,7 +65,7 @@ try {
             WGCT_FRESHNESS_LOCK_POLL_MS
         );
         if ($lock === null) {
-            syslog(LOG_NOTICE, '[wgct-render] freshness: another run holds the lock; skipped');
+            wgct_log(LOG_NOTICE, '[wgct-render] freshness: another run holds the lock; skipped');
             exit(0);
         }
     }
@@ -145,7 +145,7 @@ try {
         $wasNotified = (bool)($reloadState['notified'] ?? false);
         $nowNotified = (bool)($plan['state']['notified'] ?? false);
         if (!$wasNotified && $nowNotified) {
-            syslog(LOG_NOTICE, '[wgct-render] ' . $plan['reason']);
+            wgct_log(LOG_NOTICE, '[wgct-render] ' . $plan['reason']);
         }
     }
 
@@ -159,10 +159,10 @@ try {
         $logPlan = wgct_anchor_log_plan($anchorFailHash, $success, $wanted['mss']);
         $newAnchorFailHash = $logPlan['fail_hash'];
         if ($logPlan['log_error']) {
-            syslog(LOG_ERR, '[wgct-render] MSS anchor load failed (see syslog)');
+            wgct_log(LOG_ERR, '[wgct-render] MSS anchor load failed (the line before names the reason)');
         }
         if ($logPlan['log_recovery']) {
-            syslog(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
+            wgct_log(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
         if ($success && $rendered !== null) {
             /* Re-read just before writing and compare the whole record, not
@@ -189,7 +189,7 @@ try {
         $logPlan = wgct_anchor_log_plan($anchorFailHash, true, $wanted['mss']);
         $newAnchorFailHash = $logPlan['fail_hash'];
         if ($logPlan['log_recovery']) {
-            syslog(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
+            wgct_log(LOG_NOTICE, '[wgct-render] MSS anchor reloaded (' . count($wanted['mss']) . ' lines)');
         }
     }
 
@@ -198,12 +198,12 @@ try {
         exec('/usr/sbin/daemon -f /usr/local/sbin/configctl filter reload', $out, $rc);
         if ($rc === 0) {
             $newReloadState = $plan['state'];
-            syslog(LOG_NOTICE, '[wgct-render] ' . $plan['reason'] . '; filter reload requested');
+            wgct_log(LOG_NOTICE, '[wgct-render] ' . $plan['reason'] . '; filter reload requested');
         } else {
             /* Do not record a request that never actually went out -- leave
              * the previous reload state untouched so the rate limit is
              * measured from the last request that actually succeeded. */
-            syslog(LOG_ERR, '[wgct-render] filter reload request failed (exit ' . $rc . ')');
+            wgct_log(LOG_ERR, '[wgct-render] filter reload request failed (exit ' . $rc . ')');
         }
     } else {
         $newReloadState = $plan['state'];
@@ -232,7 +232,7 @@ try {
     try {
         wgct_report_freshness_outcome($message);
     } catch (\Throwable $reportError) {
-        syslog(LOG_ERR, '[wgct-render] ' . $message);
+        wgct_log(LOG_ERR, '[wgct-render] ' . $message);
     }
     exit(1);
 }

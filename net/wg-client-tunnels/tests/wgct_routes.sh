@@ -182,6 +182,13 @@ check "25 a burst of requests runs the reconcile once or twice, never once per r
 sleep 6
 check "26 a request made while a reconcile runs gets its own run after it" '[ "$(grep -c . "$T/runs")" = 2 ]'
 check "27 no waiter is left running" '! pgrep -f "_reconcile_queued" > /dev/null'
+: > "$T/log"; : > "$T/runs"
+/usr/local/bin/flock "$WGCT_STATE_DIR/reconcile.lock" sleep 4 & h=$!
+sleep 1
+WGCT_RECONCILE_WAIT=1 "$T/wgct_stub.sh" request_reconcile
+sleep 5
+kill $h 2>/dev/null
+check "28 a queued reconcile that waits out its time logs that it gave up, and does not run" 'grep -q "queued reconcile skipped" "$T/log" && [ ! -s "$T/runs" ]'
 unset WGCT_RECONCILE_CMD
 
 echo "routes: $pass/$((pass + fail)) passed"

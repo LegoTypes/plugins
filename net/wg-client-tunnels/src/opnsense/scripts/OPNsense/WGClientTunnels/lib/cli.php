@@ -123,7 +123,7 @@ function wgct_cli_main(array $args): int {
         }
     } catch (\Throwable $e) {
         $msg = wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets);
-        syslog(LOG_ERR, '[' . WGCT_ACTION_LOG_TAG . "] {$cmd} failed: {$msg}");
+        wgct_log(LOG_ERR, '[' . WGCT_ACTION_LOG_TAG . "] {$cmd} failed: {$msg}");
         /*
          * wgct_cli_uuid() and wgct_apply_mode_steps() (an unknown apply mode)
          * are the only things that throw InvalidArgumentException, and both

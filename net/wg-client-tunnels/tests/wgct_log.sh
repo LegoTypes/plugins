@@ -4,9 +4,9 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# Log routing test for the plugin's syslog destination. Root on the disposable test VM, with the
-# branch build of os-wg-client-tunnels installed; never on a firewall. It writes marked lines with
-# logger(1) and looks for them in the plugin log and the system log.
+# Log routing test: the plugin logs to core's WireGuard log. Root on the disposable test VM, with the branch
+# build of os-wg-client-tunnels installed; never on a firewall. It logs marked lines the plugin's ways and
+# looks for them in the WireGuard log and the system log.
 
 set -u
 pass=0
@@ -19,16 +19,25 @@ check() {
     fi
 }
 tag="wgct-logtest-$$"
-L=/var/log/wgclienttunnels
-logger -t wgct "$tag shell"
-logger -t config "[wgct-logtest] $tag core-ident"
-logger -p user.info -t wgct "$tag info"
+S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
+L=/var/log/wireguard
+T=$(mktemp -d /tmp/wgct-log.XXXXXX)
+# a plugin line from a process whose ident is core's (as in the filter hook or a controller), and an info line
+/usr/local/bin/php -d log_errors=0 -r 'require "'$S'/lib/tunnels.php"; openlog("config", 0, LOG_USER);
+    wgct_log(LOG_NOTICE, "[wgct-logtest] '$tag' core-ident"); wgct_log(LOG_INFO, "[wgct-logtest] '$tag' info");'
+# a wgct.sh line: a stub helper reports the routes off, which the non-quiet route set logs
+printf '#!/bin/sh\necho "state|off"\n' > "$T/helper"
+chmod +x "$T/helper"
+WGCT_CONFIG_HELPER="$T/helper" WGCT_STATE_DIR="$T/state" "$S/wgct.sh" configure_routes
+# core's own line
 logger -t config "coretest-$tag"
 sleep 3
-check "1 a line from the wgct program lands in the plugin log" 'grep -qs "$tag shell" $L/*.log'
-check "2 a [wgct-] line under a core program name lands in the plugin log" 'grep -qs "$tag core-ident" $L/*.log'
-check "3 neither is in the system log" '! grep -qs -e "$tag shell" -e "$tag core-ident" /var/log/system/*.log'
-check "4 info-level lines are kept" 'grep -qs "$tag info" $L/*.log'
+check "1 a plugin line from a process with a core ident lands in the WireGuard log" 'grep -qs "$tag core-ident" $L/*.log'
+check "2 info-level lines are kept" 'grep -qs "$tag info" $L/*.log'
+check "3 a wgct.sh line lands in the WireGuard log with its [wgct-routes] prefix" 'grep -hs "IPv6 routes are off" $L/*.log | tail -1 | grep -q "wireguard.*\[wgct-routes\] IPv6 routes are off"'
+check "4 none of them is in the system log" '! grep -qs -e "$tag core-ident" -e "$tag info" /var/log/system/*.log'
 check "5 core's own lines stay in the system log" 'grep -qs "coretest-$tag" /var/log/system/*.log && ! grep -qs "coretest-$tag" $L/*.log'
+check "6 nothing lands in a log of the plugin's own" '! grep -qs "$tag" /var/log/wgclienttunnels/*.log'
+rm -rf "$T"
 echo "log: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]

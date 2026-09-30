@@ -17,6 +17,5 @@ require_once 'util.inc';
 require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once __DIR__ . '/lib/cli.php';
-openlog('wgct', LOG_PID, LOG_USER);
 
 exit(wgct_cli_main(array_slice($argv ?? [], 1)));

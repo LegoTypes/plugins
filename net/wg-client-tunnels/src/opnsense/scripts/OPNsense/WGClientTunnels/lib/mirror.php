@@ -30,7 +30,7 @@ require_once __DIR__ . '/tunnels.php';
 const SETTLE_FALLBACK_SECONDS = 60;
 
 function logMsg($tag, $msg) {
-    syslog(LOG_NOTICE, "[$tag] $msg");
+    wgct_log(LOG_NOTICE, "[$tag] $msg");
 }
 
 /**
