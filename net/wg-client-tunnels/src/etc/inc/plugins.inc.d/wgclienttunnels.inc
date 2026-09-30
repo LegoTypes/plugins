@@ -31,7 +31,7 @@ function wgclienttunnels_services()
     $services = [];
 
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-    if ((string)$mdl->enabled === '1') {
+    if ($mdl->enabled->isEqual('1')) {
         $services[] = [
             'description' => gettext('WireGuard Upstream Tunnels'),
             'configd' => [
@@ -78,7 +78,7 @@ function wgclienttunnels_configure()
 function wgclienttunnels_configure_do($verbose = false)
 {
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-    if ((string)$mdl->enabled !== '1') {
+    if (!$mdl->enabled->isEqual('1')) {
         return;
     }
 

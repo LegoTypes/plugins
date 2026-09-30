@@ -24,7 +24,7 @@ require_once __DIR__ . '/lib/repair.php';
 
 $stateDir = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-if ((string)$mdl->enabled !== '1') {
+if (!$mdl->enabled->isEqual('1')) {
     exit(0);
 }
 $log = fn (string $msg): bool => syslog(LOG_NOTICE, "[wgct-monitor] {$msg}");
