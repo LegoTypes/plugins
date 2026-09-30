@@ -13,6 +13,8 @@
 #       the same as start, silent unless it repairs something; then
 #       default_guard.php and freshness.php; with --repair (the minute cron
 #       only) monitor_repair.php, which restarts a missing IPv6 monitor
+#   request_reconcile
+#       the config syshook's entry: queue a reconcile and return at once
 #   stop     remove what start added
 #   status   the service line core's service framework reads
 #   routes_status
@@ -331,6 +333,24 @@ case "$1" in
         # never the hooks, where the address is still tentative or the gateway lock held.
         if [ "$2" = "--repair" ]; then
             "${PHP}" "${SCRIPTS}/monitor_repair.php"
+        fi
+        ;;
+    request_reconcile)
+        # The config syshook: mark a reconcile wanted and return at once, so core's config-event
+        # handler is never held up. Each request queues a detached waiter on reconcile.lock; a waiter
+        # that finds the mark cleared by an earlier run exits, so a burst costs one or two reconciles
+        # and a request made during a run still gets a run that sees it.
+        mkdir -p "${STATE_DIR}"
+        : > "${STATE_DIR}/reconcile.pending"
+        /usr/sbin/daemon -f "${FLOCK}" -w 120 -o "${STATE_DIR}/reconcile.lock" "$0" _reconcile_queued
+        ;;
+    _reconcile_queued)
+        [ -f "${STATE_DIR}/reconcile.pending" ] || exit 0
+        rm -f "${STATE_DIR}/reconcile.pending"
+        if [ -n "${WGCT_RECONCILE_CMD:-}" ]; then
+            "${WGCT_RECONCILE_CMD}"
+        else
+            "$0" reconcile
         fi
         ;;
     _routes)
