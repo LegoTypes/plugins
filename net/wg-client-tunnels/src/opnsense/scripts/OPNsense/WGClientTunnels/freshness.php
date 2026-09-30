@@ -42,6 +42,7 @@ if (!is_readable($wgctLib) || !is_readable($wgctTunnelsLib)) {
 }
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 require_once $wgctLib;
+openlog('wgct', LOG_PID, LOG_USER);
 
 /* Where filter.inc leaves the error from a failed `pfctl -f /tmp/rules.debug`
  * before it restores the old ruleset (see filter.inc, ~line 399). */

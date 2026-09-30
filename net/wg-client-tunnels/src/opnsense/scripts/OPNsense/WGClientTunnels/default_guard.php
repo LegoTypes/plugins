@@ -39,6 +39,7 @@
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
+openlog('wgct', LOG_PID, LOG_USER);
 
 const GUARD_TAG = 'wgct-guard';
 

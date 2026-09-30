@@ -47,6 +47,11 @@ function wgclienttunnels_services()
     return $services;
 }
 
+function wgclienttunnels_syslog()
+{
+    return ['wgclienttunnels' => ['facility' => ['wgct']]];
+}
+
 /**
  * Register route reconciliation on the events that affect our host routes.
  *
