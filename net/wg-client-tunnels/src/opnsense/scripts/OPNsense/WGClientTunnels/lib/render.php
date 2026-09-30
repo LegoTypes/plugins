@@ -88,7 +88,7 @@ function wgct_load_mss_anchor(array $lines, bool $quiet = false): bool {
     fclose($pipes[2]);
     $rc = proc_close($proc);
     if ($rc !== 0 && !$quiet) {
-        syslog(LOG_ERR, '[wgct-render] loading anchor ' . WGCT_MSS_ANCHOR . ' failed: ' . trim((string)$err));
+        wgct_log(LOG_ERR, '[wgct-render] loading anchor ' . WGCT_MSS_ANCHOR . ' failed: ' . trim((string)$err));
     }
     return $rc === 0;
 }
@@ -185,16 +185,16 @@ function wgct_write_file_atomic(string $path, string $data): bool {
     @mkdir($dir, 0755, true);
     $tmp = tempnam($dir, pathinfo($path, PATHINFO_FILENAME));
     if ($tmp === false) {
-        syslog(LOG_ERR, '[wgct-render] could not create a temp file in ' . $dir);
+        wgct_log(LOG_ERR, '[wgct-render] could not create a temp file in ' . $dir);
         return false;
     }
     if (file_put_contents($tmp, $data) === false) {
-        syslog(LOG_ERR, '[wgct-render] could not write ' . $tmp);
+        wgct_log(LOG_ERR, '[wgct-render] could not write ' . $tmp);
         @unlink($tmp);
         return false;
     }
     if (!rename($tmp, $path)) {
-        syslog(LOG_ERR, '[wgct-render] could not rename ' . $tmp . ' to ' . $path);
+        wgct_log(LOG_ERR, '[wgct-render] could not rename ' . $tmp . ' to ' . $path);
         @unlink($tmp);
         return false;
     }
@@ -211,7 +211,7 @@ function wgct_write_file_atomic(string $path, string $data): bool {
 function wgct_write_rendered(array $r): bool {
     $json = json_encode($r);
     if ($json === false) {
-        syslog(LOG_ERR, '[wgct-render] could not encode the rendered record: ' . json_last_error_msg());
+        wgct_log(LOG_ERR, '[wgct-render] could not encode the rendered record: ' . json_last_error_msg());
         return false;
     }
     return wgct_write_file_atomic(WGCT_RENDERED_FILE, $json);
@@ -344,7 +344,7 @@ function wgct_write_freshness_state(?array $s): bool {
     }
     $json = json_encode($s);
     if ($json === false) {
-        syslog(LOG_ERR, '[wgct-render] could not encode the freshness state: ' . json_last_error_msg());
+        wgct_log(LOG_ERR, '[wgct-render] could not encode the freshness state: ' . json_last_error_msg());
         return false;
     }
     return wgct_write_file_atomic(WGCT_FRESHNESS_STATE_FILE, $json);
@@ -353,7 +353,7 @@ function wgct_write_freshness_state(?array $s): bool {
 /**
  * Poll for an exclusive flock on $path: retry LOCK_EX|LOCK_NB every $pollMs
  * for up to $timeoutMs rather than blocking without bound. Shared by
- * freshness.php (which can run inside configd's config_changed action) and
+ * freshness.php (which can run inside a configd action, via the monitor hook) and
  * the gateway lock in lib/apply.php (which waits at most 120 s, ruling 22).
  * The lock is held for as long as the returned object is referenced; the
  * process exiting releases it.
@@ -418,10 +418,10 @@ function wgct_report_freshness_outcome(?string $error): void {
     $prior = wgct_read_freshness_error_hash();
     $plan = wgct_failure_log_plan($prior, $error !== null ? md5($error) : null);
     if ($plan['log_error']) {
-        syslog(LOG_ERR, '[wgct-render] ' . $error);
+        wgct_log(LOG_ERR, '[wgct-render] ' . $error);
     }
     if ($plan['log_recovery']) {
-        syslog(LOG_NOTICE, '[wgct-render] freshness recovered');
+        wgct_log(LOG_NOTICE, '[wgct-render] freshness recovered');
     }
     if ($plan['fail_hash'] !== $prior) {
         wgct_write_freshness_error_hash($plan['fail_hash']);
@@ -698,13 +698,13 @@ function wgct_render_firewall(
     } catch (\Throwable $e) {
         $rendered = ['at' => time(), 'failed' => true, 'error' => $e->getMessage(), 'enabled' => false,
                      'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
-        syslog(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
+        wgct_log(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
     }
     if ($apply) {
         try {
             $writer($rendered);
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, '[wgct-render] could not write ' . WGCT_RENDERED_FILE . ': ' . $e->getMessage());
+            wgct_log(LOG_ERR, '[wgct-render] could not write ' . WGCT_RENDERED_FILE . ': ' . $e->getMessage());
         }
     }
 }

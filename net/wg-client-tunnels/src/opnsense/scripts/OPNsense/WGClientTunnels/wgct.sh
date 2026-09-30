@@ -11,8 +11,9 @@
 #       to its IPv6 next hop and the host route to its IPv6 monitor
 #   reconcile [--repair]
 #       the same as start, silent unless it repairs something; then
-#       default_guard.php and freshness.php; with --repair (the minute cron
-#       only) monitor_repair.php, which restarts a missing IPv6 monitor
+#       default_guard.php, freshness.php and core_contract.php; with --repair
+#       (the minute cron only) monitor_repair.php, which restarts a missing
+#       IPv6 monitor
 #   request_reconcile
 #       the config syshook's entry: queue a reconcile and return at once
 #   stop     remove what start added
@@ -36,10 +37,11 @@ GUARD="${SCRIPTS}/default_guard.php"
 FRESHNESS="${SCRIPTS}/freshness.php"
 PHP="/usr/local/bin/php"
 FLOCK="/usr/local/bin/flock"
-LOGGER_TAG="wgct"
+# core's WireGuard log takes the program name "wireguard"; the prefix tells these lines from core's
+LOGGER_TAG="wireguard"
 
 log_msg() {
-    logger -t "${LOGGER_TAG}" "$1"
+    logger -t "${LOGGER_TAG}" "[wgct-routes] $1"
 }
 
 # The route protocol on stdout. PHP diagnostics go to stderr, so a notice can
@@ -344,7 +346,15 @@ case "$1" in
         # and a request made during a run still gets a run that sees it.
         mkdir -p "${STATE_DIR}"
         : > "${STATE_DIR}/reconcile.pending"
-        /usr/sbin/daemon -f "${FLOCK}" -w 120 -o "${STATE_DIR}/reconcile.lock" "$0" _reconcile_queued
+        /usr/sbin/daemon -f "$0" _reconcile_wait
+        ;;
+    _reconcile_wait)
+        # A reconcile running past the wait leaves the mark for the next request or the minute cron.
+        wait="${WGCT_RECONCILE_WAIT:-120}"
+        "${FLOCK}" -E 75 -w "${wait}" -o "${STATE_DIR}/reconcile.lock" "$0" _reconcile_queued
+        if [ $? -eq 75 ]; then
+            log_msg "queued reconcile skipped: another reconcile held reconcile.lock for ${wait} s; the minute reconcile will run it"
+        fi
         ;;
     _reconcile_queued)
         [ -f "${STATE_DIR}/reconcile.pending" ] || exit 0

@@ -47,11 +47,6 @@ function wgclienttunnels_services()
     return $services;
 }
 
-function wgclienttunnels_syslog()
-{
-    return ['wgclienttunnels' => ['facility' => ['wgct']]];
-}
-
 /**
  * Register route reconciliation on the events that affect our host routes.
  *
@@ -123,7 +118,7 @@ function wgclienttunnels_firewall($fw)
 {
     $lib = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/render.php';
     if (!is_readable($lib) || !is_readable(dirname($lib) . '/tunnels.php')) {
-        syslog(LOG_ERR, '[wgct-render] plugin library missing; rules not rendered');
+        exec('/usr/bin/logger -t wireguard -p user.err -- ' . escapeshellarg('[wgct-render] plugin library missing; rules not rendered') . ' > /dev/null 2>&1');
         wgclienttunnels_forget_render();
         return;
     }
@@ -131,7 +126,7 @@ function wgclienttunnels_firewall($fw)
         require_once $lib;
         wgct_render_firewall($fw);
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, '[wgct-render] hook failed: ' . $e->getMessage());
+        exec('/usr/bin/logger -t wireguard -p user.err -- ' . escapeshellarg('[wgct-render] hook failed: ' . str_replace("\n", '; ', $e->getMessage())) . ' > /dev/null 2>&1');
         wgclienttunnels_forget_render();
     }
 }

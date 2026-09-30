@@ -21,14 +21,16 @@ require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/repair.php';
-openlog('wgct', LOG_PID, LOG_USER);
 
 $stateDir = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     exit(0);
 }
-$log = fn (string $msg): bool => syslog(LOG_NOTICE, "[wgct-monitor] {$msg}");
+$log = function (string $msg): bool {
+    wgct_log(LOG_NOTICE, "[wgct-monitor] {$msg}");
+    return true;
+};
 /* one tick at a time: a tick whose replay runs long must not overlap the next on the state file */
 try {
     $self = wgct_poll_lock("{$stateDir}/monitor_repair.lock", 0, 50);

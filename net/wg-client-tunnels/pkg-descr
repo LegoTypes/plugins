@@ -57,6 +57,16 @@ Features:
 Plugin Changelog
 ================
 
+3.5
+
+* Logs to core's WireGuard log (VPN > WireGuard > Log File) under the
+  program name wireguard, with [wgct-*] prefixes; the separate
+  Upstream tunnels log page and its syslog destination are gone
+* A queued reconcile that waits more than two minutes logs that it gave
+  up (the minute reconcile runs it)
+* The core-contract check is silent while the plugin is disabled and
+  runs one at a time
+
 3.4
 
 * Its own log, VPN > WireGuard > Upstream tunnels log, read with core's

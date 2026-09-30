@@ -39,7 +39,7 @@
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
-openlog('wgct', LOG_PID, LOG_USER);
+require_once __DIR__ . '/lib/tunnels.php';
 
 const GUARD_TAG = 'wgct-guard';
 
@@ -162,7 +162,7 @@ foreach (['inet', 'inet6'] as $family) {
         continue;
     }
     if (!$guardOn) {
-        syslog(LOG_WARNING, sprintf(
+        wgct_log(LOG_WARNING, sprintf(
             '[%s] %s default route via %s on %s: %s is not a default gateway, left in place because the guard is off',
             GUARD_TAG,
             $family,
@@ -173,7 +173,7 @@ foreach (['inet', 'inet6'] as $family) {
         continue;
     }
     exec(sprintf('/sbin/route -q -n delete -%s default', $family === 'inet6' ? 'inet6' : 'inet'));
-    syslog(LOG_WARNING, sprintf(
+    wgct_log(LOG_WARNING, sprintf(
         '[%s] removed %s default route via %s on %s: %s is not a default gateway',
         GUARD_TAG,
         $family,
