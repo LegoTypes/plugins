@@ -53,15 +53,15 @@ const WGCT_FRESHNESS_ERROR_FILE = '/var/run/wgclienttunnels/freshness.err';
  */
 function wgct_wanted_render(): array {
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-    $enabled = (string)$mdl->enabled === '1';
+    $enabled = $mdl->enabled->isEqual('1');
     if (!$enabled) {
         return ['enabled' => false, 'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     }
     $derived = wgct_derive(wgct_core_snapshot(), wgct_split_csv((string)$mdl->managed));
     return [
         'enabled' => true,
-        'pins' => wgct_pin_set($derived, (string)$mdl->wan_pins === '1', (string)$mdl->inner_source === '1'),
-        'mss' => wgct_mss_lines($derived, (string)$mdl->mss_clamp === '1'),
+        'pins' => wgct_pin_set($derived, $mdl->wan_pins->isEqual('1'), $mdl->inner_source->isEqual('1')),
+        'mss' => wgct_mss_lines($derived, $mdl->mss_clamp->isEqual('1')),
     ];
 }
 

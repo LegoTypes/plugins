@@ -279,7 +279,7 @@ function wgct_collect_config() {
         }
     }
     return [
-        'enabled' => (string)$mdl->enabled === '1' && (string)$mdl->health_mirror === '1',
+        'enabled' => $mdl->enabled->isEqual('1') && $mdl->health_mirror->isEqual('1'),
         'gateways' => $core['gateways'],
         'underlays' => $inputs['underlays'],
         'pairs' => $inputs['pairs'],

@@ -25,7 +25,7 @@ function wgct_tunnel_view(): array {
     $core = wgct_core_snapshot();
     $managed = wgct_split_csv((string)$mdl->managed);
     $derived = wgct_derive($core, $managed);
-    $mssClamp = (string)$mdl->mss_clamp === '1';
+    $mssClamp = $mdl->mss_clamp->isEqual('1');
     $pending = wgct_read_apply_pending();
     $tunnels = [];
     foreach ($derived['tunnels'] as $t) {
@@ -39,7 +39,7 @@ function wgct_tunnel_view(): array {
     }
     $global = $derived['global'];
     $renderLib = __DIR__ . '/render.php';
-    if ((string)$mdl->enabled === '1' && is_readable($renderLib)) {
+    if ($mdl->enabled->isEqual('1') && is_readable($renderLib)) {
         require_once $renderLib;
         $rendered = wgct_read_rendered();
         if ($rendered === null || $rendered['failed']) {
