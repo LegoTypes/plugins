@@ -29,6 +29,9 @@ require_once __DIR__ . '/render.php';
 require_once __DIR__ . '/selftest.php';
 
 const WGCT_GATEWAY_LOCK_FILE = '/tmp/filter_reload_gateway.lock';
+/* core files the contract check reads (wgct_core_contract) */
+const WGCT_CORE_ACTIONS_INTERFACE = '/usr/local/opnsense/service/conf/actions.d/actions_interface.conf';
+const WGCT_CORE_ROUTING_SCRIPT = '/usr/local/etc/rc.routing_configure';
 /* as long as the replay action's `flock -w 120` waits (ruling 22) */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
 const WGCT_ACTION_LOG_TAG = 'wgct-action';
@@ -856,6 +859,55 @@ function wgct_apply_only(string $uuid, ?string $mode = null): array {
 }
 
 /**
+ * What no longer matches in core among the internals the plugin copies: replay_alarm and the
+ * config-write order reuse core's routes.alarm lock and command.
+ *
+ * @return list<string> one line per mismatch; empty when core matches
+ */
+function wgct_core_contract(string $actions = WGCT_CORE_ACTIONS_INTERFACE, string $routing = WGCT_CORE_ROUTING_SCRIPT): array {
+    $problems = [];
+    $text = is_readable($actions) ? (string)file_get_contents($actions) : null;
+    if ($text === null) {
+        $problems[] = "{$actions} cannot be read";
+    } elseif (!preg_match('/^\[routes\.alarm\]\s*$(.*?)(?=^\[|\z)/ms', $text, $section)
+        || !preg_match('/^command:(.*)$/m', $section[1], $command)) {
+        $problems[] = "{$actions} has no [routes.alarm] command";
+    } else {
+        if (!str_contains($command[1], WGCT_GATEWAY_LOCK_FILE)) {
+            $problems[] = '[routes.alarm] no longer takes ' . WGCT_GATEWAY_LOCK_FILE;
+        }
+        if (!str_contains($command[1], 'rc.routing_configure alarm')) {
+            $problems[] = '[routes.alarm] no longer runs rc.routing_configure alarm';
+        }
+    }
+    if (!is_file($routing)) {
+        $problems[] = "{$routing} is missing";
+    }
+    return $problems;
+}
+
+/**
+ * Log a contract result once per change: a drift when it first appears or changes, and the return
+ * to a match. The last result is kept in $file.
+ *
+ * @param list<string>                $problems wgct_core_contract()
+ * @param callable(int, string): mixed $log     syslog-shaped
+ */
+function wgct_core_contract_log(array $problems, string $file, callable $log): void {
+    $now = implode("\n", $problems);
+    $last = is_file($file) ? (string)file_get_contents($file) : '';
+    if ($now === $last) {
+        return;
+    }
+    if ($problems !== []) {
+        $log(LOG_WARNING, '[wgct-contract] core changed what the plugin copies: ' . implode('; ', $problems));
+    } else {
+        $log(LOG_NOTICE, '[wgct-contract] core matches again');
+    }
+    file_put_contents($file, $now);
+}
+
+/**
  * Self-tests for the pure parts of the apply. No configd, no locks.
  *
  * @return int exit code, 0 when every case passes
@@ -1027,5 +1079,44 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'apply: commands that never save get no footer',
         wgct_failure_footer('list', '') === '' && wgct_failure_footer('status', '') === ''
         && wgct_failure_footer('reconcile', '') === '' && wgct_failure_footer('measure-mtu', '') === '');
+
+    $dir = sys_get_temp_dir() . '/wgct-contract-' . getmypid();
+    mkdir($dir);
+    $routing = "$dir/rc.routing_configure";
+    file_put_contents($routing, "#!/bin/sh\n");
+    $good = "[routes.configure]\ncommand:/usr/local/etc/rc.routing_configure\ntype:script\n\n"
+        . "[routes.alarm]\ncommand:/usr/local/bin/flock -n -E 0 -o /tmp/filter_reload_gateway.lock "
+        . "/usr/local/etc/rc.routing_configure alarm\nparameters: %s\ntype:script\n\n[routes.other]\ncommand:x\n";
+    file_put_contents("$dir/ok.conf", $good);
+    wgct_check($t, 'contract: core as of 26.7 matches', wgct_core_contract("$dir/ok.conf", $routing) === []);
+    file_put_contents("$dir/lock.conf", str_replace('/tmp/filter_reload_gateway.lock', '/var/run/gw.lock', $good));
+    $p = wgct_core_contract("$dir/lock.conf", $routing);
+    wgct_check($t, 'contract: a renamed gateway lock is named', count($p) === 1 && str_contains($p[0], WGCT_GATEWAY_LOCK_FILE));
+    file_put_contents("$dir/cmd.conf", str_replace('rc.routing_configure alarm', 'rc.routing_alarm', $good));
+    $p = wgct_core_contract("$dir/cmd.conf", $routing);
+    wgct_check($t, 'contract: a changed alarm command is named', count($p) === 1 && str_contains($p[0], 'rc.routing_configure alarm'));
+    file_put_contents("$dir/none.conf", "[routes.configure]\ncommand:x\n");
+    $p = wgct_core_contract("$dir/none.conf", $routing);
+    wgct_check($t, 'contract: a missing [routes.alarm] section is named', count($p) === 1 && str_contains($p[0], '[routes.alarm]'));
+    $p = wgct_core_contract("$dir/absent.conf", $routing);
+    wgct_check($t, 'contract: an unreadable actions file is a finding, not a warning', count($p) === 1 && str_contains($p[0], 'absent.conf'));
+    $p = wgct_core_contract("$dir/ok.conf", "$dir/gone");
+    wgct_check($t, 'contract: a missing rc.routing_configure is named', count($p) === 1 && str_contains($p[0], 'gone'));
+
+    $logged = [];
+    $log = function (int $prio, string $msg) use (&$logged): void {
+        $logged[] = $msg;
+    };
+    $state = "$dir/logged";
+    wgct_core_contract_log(['x changed'], $state, $log);
+    wgct_core_contract_log(['x changed'], $state, $log);
+    wgct_check($t, 'contract: a drift is logged once, not every reconcile', count($logged) === 1 && str_contains($logged[0], 'x changed'));
+    wgct_core_contract_log([], $state, $log);
+    wgct_core_contract_log([], $state, $log);
+    wgct_check($t, 'contract: the return to a match is logged once', count($logged) === 2 && str_contains($logged[1], 'matches again'));
+    wgct_core_contract_log([], "$dir/fresh", $log);
+    wgct_check($t, 'contract: a match on a fresh state logs nothing', count($logged) === 2);
+    array_map('unlink', glob("$dir/*"));
+    rmdir($dir);
     return wgct_tally_report('apply', $t);
 }
