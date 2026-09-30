@@ -49,6 +49,11 @@ function wgct_tunnel_view(): array {
             );
         }
     }
+    if ($mdl->enabled->isEqual('1')) {
+        foreach (wgct_core_contract() as $problem) {
+            $global[] = wgct_finding('core-contract', $problem);
+        }
+    }
     $unmanaged = [];
     foreach ($core['instances'] as $uuid => $inst) {
         if (in_array((string)$uuid, $managed, true)) {
