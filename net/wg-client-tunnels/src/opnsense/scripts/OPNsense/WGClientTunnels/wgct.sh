@@ -14,7 +14,9 @@
 #       default_guard.php and freshness.php; with --repair (the minute cron
 #       only) monitor_repair.php, which restarts a missing IPv6 monitor
 #   stop     remove what start added
-#   status   the service line the dashboard reads, then per-tunnel JSON
+#   status   the service line core's service framework reads
+#   routes_status
+#       per-tunnel IPv6 route and monitor state as JSON
 #   _routes [quiet] | _cleanup
 #       the route set and its removal; run only under routes.lock (below)
 #
@@ -257,17 +259,21 @@ dpinger_state() {
     fi
 }
 
-# The first line must contain "is running" or "not running" for the OPNsense
-# service framework (ApiMutableServiceControllerBase) to detect the service
-# state on the dashboard widget.
+# The service line core's service framework reads (ApiMutableServiceControllerBase::statusAction looks
+# for "is running" / "not running"), and nothing else.
 do_status() {
-    local out first=1 kind dev addr nexthop gw4 gw6 monitor route_ok ipv4_status v6 m_route m_running status
-    out=$(parse_config)
     if [ -f "${STATE_DIR}/enabled" ]; then
         echo "wgclienttunnels is running"
     else
         echo "wgclienttunnels is not running"
     fi
+}
+
+# Per-tunnel IPv6 route and monitor state as one JSON object, for the operator
+# (configctl wgclienttunnels routes_status).
+do_routes_status() {
+    local out first=1 kind dev addr nexthop gw4 gw6 monitor route_ok ipv4_status v6 m_route m_running status
+    out=$(parse_config)
     printf '{"gateways":['
     while IFS='|' read -r kind dev addr nexthop gw4 gw6 monitor; do
         case "${kind}" in
@@ -336,8 +342,11 @@ case "$1" in
     status)
         do_status
         ;;
+    routes_status)
+        do_routes_status
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|status}"
+        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|request_reconcile|status|routes_status}"
         exit 1
         ;;
 esac
