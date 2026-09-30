@@ -124,7 +124,7 @@ if (in_array('--selftest', $argv ?? [], true)) {
 
 $dry = in_array('--dry', $argv ?? [], true);
 $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
-$guardOn = (string)$mdl->enabled === '1' && (string)$mdl->default_guard === '1';
+$guardOn = $mdl->enabled->isEqual('1') && $mdl->default_guard->isEqual('1');
 
 /*
  * The switch never skips classification: it only decides whether a forbidden
