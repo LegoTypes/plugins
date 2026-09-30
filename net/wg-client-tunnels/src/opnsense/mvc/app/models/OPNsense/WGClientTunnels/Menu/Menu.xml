@@ -2,6 +2,7 @@
     <VPN>
         <WireGuard>
             <UpstreamTunnels order="45" VisibleName="Upstream tunnels" url="/ui/wgclienttunnels"/>
+            <UpstreamTunnelsLog order="46" VisibleName="Upstream tunnels log" url="/ui/diagnostics/log/core/wgclienttunnels"/>
         </WireGuard>
     </VPN>
 </menu>

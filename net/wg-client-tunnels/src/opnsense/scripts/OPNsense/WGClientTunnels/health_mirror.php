@@ -56,6 +56,7 @@
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 require_once __DIR__ . '/lib/mirror.php';
+openlog('wgct', LOG_PID, LOG_USER);
 
 $logTag = 'wgct-health';
 
