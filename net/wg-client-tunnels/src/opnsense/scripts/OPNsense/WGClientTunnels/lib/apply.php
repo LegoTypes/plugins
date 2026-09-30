@@ -325,7 +325,7 @@ function wgct_configd_json(string $action, array $params, int $timeout): array {
     if (!is_array($data)) {
         return ['ok' => false, 'errors' => [
             "no reply from the backend within {$timeout} s (timeout or configd error); "
-            . 'the action may still be running — reload the list and check the system log',
+            . 'the action may still be running — reload the list and check ' . WGCT_LOG_PAGE,
         ]];
     }
     if (isset($data['errors']) && is_array($data['errors'])) {
