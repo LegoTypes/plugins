@@ -21,6 +21,9 @@ require_once __DIR__ . '/addr.php';
 /* WireGuard's MTU when neither the instance nor the interface sets one. */
 const WGCT_DEFAULT_MTU = 1420;
 
+/* where the plugin logs since 3.4 (its own syslog destination); the hints below send the operator there */
+const WGCT_LOG_PAGE = 'VPN > WireGuard > Upstream tunnels log';
+
 /* finding code => [blocking, where it is fixed] (spec section 3.4) */
 const WGCT_FINDINGS = [
     'instance-missing' => [true, 'the managed WireGuard instance was deleted; Remove in the tunnel list (tunnel.php remove) drops it from the managed list'],
@@ -41,9 +44,9 @@ const WGCT_FINDINGS = [
     'ipv6-unmonitored' => [false, 'Edit the tunnel: set an IPv6 monitor'],
     'ipv6-monitor-config' => [false, 'Edit the tunnel and save its IPv6 monitor again (it resets the monitor route setting and copies the IPv4 thresholds)'],
     'sentinel-missing' => [false, 'Settings > Check default-route exclusion (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways that keep the tunnels out of the default route'],
-    'render-failed' => [false, 'Firewall > Log Files > General: the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
+    'render-failed' => [false, WGCT_LOG_PAGE . ': the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
-    'core-contract' => [false, 'Plugin log (VPN > WireGuard > Upstream tunnels log): a core update changed the gateway lock or the routing alarm command the plugin copies, so its alarm replay may not match core; install a plugin update that matches this core'],
+    'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed the gateway lock or the routing alarm command the plugin copies, so its alarm replay may not match core; install a plugin update that matches this core'],
 ];
 
 /*

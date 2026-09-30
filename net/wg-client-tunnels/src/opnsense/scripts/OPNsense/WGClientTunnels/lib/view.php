@@ -327,5 +327,10 @@ function wgct_view_selftest(): int {
     wgct_check($t, 'view: an IPv4-only tunnel shows only its IPv4 monitor; the column is searchable',
         wgct_monitors_text(['gw4' => 'tun_a', 'monitor' => '203.0.113.9', 'gw6' => null, 'monitor6' => '']) === 'v4 203.0.113.9'
         && in_array('monitors_text', WGCT_GRID_SEARCH_FIELDS, true));
+    $hints = array_map(fn (array $f): string => $f[1], WGCT_FINDINGS);
+    wgct_check($t, 'view: no finding sends the operator to the system log, where the plugin no longer logs',
+        array_filter($hints, fn (string $h): bool => stripos($h, 'system log') !== false || str_contains($h, 'Log Files > General')) === []);
+    wgct_check($t, 'view: the render-failed and core-contract hints name the plugin log page',
+        str_contains(WGCT_FINDINGS['render-failed'][1], WGCT_LOG_PAGE) && str_contains(WGCT_FINDINGS['core-contract'][1], WGCT_LOG_PAGE));
     return wgct_tally_report('view', $t);
 }

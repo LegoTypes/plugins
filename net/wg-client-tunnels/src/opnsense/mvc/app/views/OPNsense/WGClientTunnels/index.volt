@@ -209,7 +209,7 @@
                  * failure gets a plainer message instead of a misleading "Apply again". */
                 body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
                     ? "{{ lang._('Saved; the apply did not complete. Apply again, or use the Apply button in the tunnel row.') }}"
-                    : "{{ lang._('Saved; the follow-up step above did not complete. Check the list and the system log.') }}"
+                    : "{{ lang._('Saved; the follow-up step above did not complete. Check the list and VPN > WireGuard > Upstream tunnels log.') }}"
                 ));
             }
             /* the caller has already reloaded the lists when the reply arrived: they are current behind
