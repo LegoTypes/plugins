@@ -21,8 +21,27 @@ require_once __DIR__ . '/addr.php';
 /* WireGuard's MTU when neither the instance nor the interface sets one. */
 const WGCT_DEFAULT_MTU = 1420;
 
-/* where the plugin logs since 3.4 (its own syslog destination); the hints below send the operator there */
-const WGCT_LOG_PAGE = 'VPN > WireGuard > Upstream tunnels log';
+/* where the plugin logs: core's WireGuard log, which takes the program name "wireguard" (wgct_log) */
+const WGCT_LOG_PAGE = 'VPN > WireGuard > Log File';
+
+/**
+ * The logger(1) command that logs one plugin line to core's WireGuard log. Core's filter matches the
+ * program name "wireguard" and cannot be extended by a plugin; logger sets that name without touching the
+ * calling process's ident, which openlog() would do to core processes this runs in (the filter hook, the
+ * controllers). Newlines fold into "; " so a message stays one line.
+ */
+function wgct_log_command(int $priority, string $message): string {
+    $levels = [
+        LOG_EMERG => 'emerg', LOG_ALERT => 'alert', LOG_CRIT => 'crit', LOG_ERR => 'err',
+        LOG_WARNING => 'warning', LOG_NOTICE => 'notice', LOG_INFO => 'info', LOG_DEBUG => 'debug',
+    ];
+    $line = trim((string)preg_replace('/\s*\R\s*/', '; ', $message));
+    return '/usr/bin/logger -t wireguard -p user.' . ($levels[$priority] ?? 'notice') . ' -- ' . escapeshellarg($line);
+}
+
+function wgct_log(int $priority, string $message): void {
+    exec(wgct_log_command($priority, $message) . ' > /dev/null 2>&1');
+}
 
 /* finding code => [blocking, where it is fixed] (spec section 3.4) */
 const WGCT_FINDINGS = [

@@ -157,7 +157,7 @@ class TunnelsController extends ApiControllerBase
                 return $created;
             });
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, '[wgct-action] create failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
+            wgct_log(LOG_ERR, '[wgct-action] create failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
             return ['result' => 'failed', 'uuid' => $uuid, 'errors' => [
                 'Create failed; ' . WGCT_LOG_PAGE . ' has the reason (never the key). ' . wgct_failure_footer('create', $uuid)
                 . ' A saved tunnel shows the apply-pending finding and an Apply button once the list is reloaded.',
@@ -232,7 +232,7 @@ class TunnelsController extends ApiControllerBase
                 $result = $routing ? wgct_gateway_locked_commit($commit) : $commit();
             }
         } catch (\Throwable $e) {
-            syslog(LOG_ERR, '[wgct-action] edit failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
+            wgct_log(LOG_ERR, '[wgct-action] edit failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
             return ['result' => 'failed', 'saved' => $saved, 'errors' => [
                 'Edit failed; ' . WGCT_LOG_PAGE . ' has the reason (never the key). ' . wgct_failure_footer('edit', $uuid),
             ]];

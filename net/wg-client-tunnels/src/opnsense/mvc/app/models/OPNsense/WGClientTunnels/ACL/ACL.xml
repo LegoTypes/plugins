@@ -4,8 +4,6 @@
         <patterns>
             <pattern>ui/wgclienttunnels/*</pattern>
             <pattern>api/wgclienttunnels/*</pattern>
-            <pattern>ui/diagnostics/log/core/wgclienttunnels</pattern>
-            <pattern>api/diagnostics/log/core/wgclienttunnels/*</pattern>
         </patterns>
     </page-vpn-wgclienttunnels>
 </acl>
