@@ -67,25 +67,4 @@ class ServiceController extends ApiMutableServiceControllerBase
         }
         return wgct_configd_json($dry ? 'wgclienttunnels ensure_sentinel_dry' : 'wgclienttunnels ensure_sentinel', [], 300);
     }
-
-    /**
-     * Extend the base status with gateway detail from the status script.
-     */
-    public function statusAction()
-    {
-        $result = parent::statusAction();
-
-        $backend = new Backend();
-        $response = $backend->configdRun('wgclienttunnels status');
-        // The status script outputs a "is running" line followed by JSON;
-        // extract the JSON portion.
-        if (preg_match('/(\{.*\})/s', $response, $matches)) {
-            $data = json_decode($matches[1], true);
-            if ($data !== null) {
-                $result['gateways'] = $data['gateways'] ?? [];
-            }
-        }
-
-        return $result;
-    }
 }

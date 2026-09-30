@@ -152,5 +152,16 @@ check "20 once it succeeds the route is added, logged, and the failure note clea
 check "21 a failing route delete in stop is logged as a failure, not as a removed monitor route" '[ "$(dev_of $M4)" = lo91 ] && grep -q "route delete for monitor $M4 on lo91 failed: .*Network is unreachable" "$T/log" && ! grep -q "monitor route $M4" "$T/log"'
 rm -f "$T/route.fail"
 
+cat > "$T/json_iface" <<'EOF'
+#!/usr/local/bin/php
+<?php
+$j = json_decode(stream_get_contents(STDIN), true);
+echo is_array($j) ? ($j['gateways'][0]['interface'] ?? 'no-gateway') : 'not-json';
+EOF
+chmod +x "$T/json_iface"
+say 'state|on' "$(line lo91 91 $M1)"; run
+check "22 status prints only core's running line" '[ "$("$W" status | grep -c .)" = 1 ] && [ "$("$W" status)" = "wgclienttunnels is running" ]'
+check "23 routes_status prints one JSON object naming the tunnel" '[ "$("$W" routes_status | "$T/json_iface")" = lo91 ]'
+
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]
