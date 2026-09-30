@@ -57,6 +57,17 @@ Features:
 Plugin Changelog
 ================
 
+3.4
+
+* Its own log, VPN > WireGuard > Upstream tunnels log, read with core's
+  log viewer; the plugin's lines leave the system log
+* The service status answers core's service framework directly; the
+  per-tunnel route JSON is configctl wgclienttunnels routes_status
+* The config-change hook queues its reconcile and returns at once, so a
+  save made during a reconcile is never missed
+* core-contract finding when a core update changes the gateway lock or
+  routing alarm command the plugin copies
+
 3.3
 
 * Each tunnel's IPv6 gateway has its own monitor, pinged through the
