@@ -175,11 +175,14 @@ if (empty($plan['changes'])) {
  *      again from fresh models, including the held set, so a GUI save made
  *      while this run waited is kept. The force_down values and the held set
  *      are saved together, once.
- *   4. Unlock, then apply and replay the alarm the reconfigure drops.
+ *   4. Unlock, then apply and replay the alarms the hold dropped: our own
+ *      and any other gateway's whose status changed meanwhile.
  *
  * If the gateway lock itself cannot be taken, leave the change for the next
  * tick rather than save a force_down we would not apply.
  */
+/* status before the lock, so an alarm routes.alarm drops while we hold it can be replayed after */
+$before = wgct_gateway_status();
 $gwLock = fopen('/tmp/filter_reload_gateway.lock', 'ce');
 if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
     if ($gwLock !== false) {
@@ -211,5 +214,5 @@ if (!empty($plan['changes'])) {
 flock($gwLock, LOCK_UN);
 fclose($gwLock);
 if (!empty($plan['changes'])) {
-    wgct_replay_alarm($plan['changes'], $logTag);
+    wgct_mirror_replay($plan['changes'], $before, $logTag);
 }
