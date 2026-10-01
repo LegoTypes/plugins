@@ -207,6 +207,74 @@ function wgct_replay_alarm(array $expected, $logTag) {
 }
 
 /**
+ * Which gateways to replay the routes alarm for once the lock is released
+ * (spec 4.6 step 6): the action's own, plus every gateway whose status
+ * changed while the lock was held. Pure.
+ *
+ * @param list<string>               $ours      gateway names the action wrote
+ * @param array<string, string>|null $before    gateway status taken before the lock
+ * @param array<string, string>|null $after     gateway status taken after release
+ * @param array<string, bool>        $forceDown name => force_down in config now
+ * @return array<string, bool> name => expected force_down, sorted by name
+ */
+function wgct_replay_set(array $ours, ?array $before, ?array $after, array $forceDown): array {
+    $set = [];
+    foreach ($ours as $name) {
+        if (isset($forceDown[$name])) {
+            $set[$name] = $forceDown[$name];
+        }
+    }
+    if ($before !== null && $after !== null) {
+        foreach ($after as $name => $status) {
+            if (isset($forceDown[$name]) && ($before[$name] ?? null) !== $status) {
+                $set[(string)$name] = $forceDown[$name];
+            }
+        }
+    }
+    ksort($set);
+    return $set;
+}
+
+/**
+ * The mirror's replay set (spec 4.6 step 6, as for every gateway-locked action): the force_down
+ * changes it applied, as written, plus every gateway whose status changed while it held the gateway
+ * lock -- routes.alarm dropped those alarms, and gateway_watcher never raises them again. Pure.
+ *
+ * @param array<string, bool>        $changes  name => force_down the mirror wrote
+ * @param array<string, string>|null $before   gateway status taken before the lock
+ * @param array<string, string>|null $after    gateway status taken after release
+ * @param array<string, array>       $gateways config rows by name, each with 'force_down'
+ * @return array<string, bool> name => expected force_down, sorted by name
+ */
+function wgct_mirror_replay_set(array $changes, ?array $before, ?array $after, array $gateways): array {
+    $forceDown = [];
+    foreach ($gateways as $name => $row) {
+        $forceDown[(string)$name] = !empty($row['force_down']);
+    }
+    $set = wgct_replay_set([], $before, $after, $forceDown);
+    foreach ($changes as $name => $down) {
+        $set[(string)$name] = (bool)$down;
+    }
+    ksort($set);
+    return $set;
+}
+
+/**
+ * After the mirror released the gateway lock: replay its own changes and any alarm dropped while it
+ * held the lock (wgct_mirror_replay_set()).
+ *
+ * @param array<string, bool>        $changes name => force_down the mirror wrote
+ * @param array<string, string>|null $before  gateway status taken before the lock
+ */
+function wgct_mirror_replay(array $changes, ?array $before, $logTag): void {
+    OPNsense\Core\Config::getInstance()->forceReload();
+    $set = wgct_mirror_replay_set($changes, $before, wgct_gateway_status(), wgct_collect_config()['gateways']);
+    if ($set !== []) {
+        wgct_replay_alarm($set, $logTag);
+    }
+}
+
+/**
  * Loss watermarks for a gateway, normalised. Empty/zero losshigh means the
  * gateway has no loss alarm, so only a fully-dead path counts as down.
  *
@@ -710,6 +778,29 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] held: names map to sorted uuids, unknown names drop\n", $ok ? 'PASS' : 'FAIL');
+
+    $rows = [
+        'WAN_A' => ['force_down' => false], 'WAN_B' => ['force_down' => false],
+        'tun_a' => ['force_down' => true], 'tun_b' => ['force_down' => false],
+    ];
+    $ok = wgct_mirror_replay_set(['tun_a' => true], ['WAN_A' => 'none', 'WAN_B' => 'none', 'tun_a' => 'none'],
+            ['WAN_A' => 'down', 'WAN_B' => 'none', 'tun_a' => 'force_down'], $rows)
+        === ['WAN_A' => false, 'tun_a' => true];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] replay: a gateway whose status changed while the mirror held the lock is replayed with its own changes\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_mirror_replay_set(['tun_a' => true], ['WAN_A' => 'none', 'tun_a' => 'none'],
+            ['WAN_A' => 'none', 'tun_a' => 'force_down'], $rows) === ['tun_a' => true];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] replay: with nothing else changed, only the mirror's own changes are replayed\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_mirror_replay_set(['tun_b' => false, 'tun_a' => true], null, ['WAN_A' => 'down'], $rows)
+        === ['tun_a' => true, 'tun_b' => false];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] replay: without a before-status the mirror's own changes are still replayed, as written\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
