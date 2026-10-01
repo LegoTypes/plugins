@@ -57,6 +57,13 @@ Features:
 Plugin Changelog
 ================
 
+3.5_1
+
+* The health mirror also replays the alarm of any other gateway whose
+  status changed while it held the gateway lock (a WAN going down during
+  a mirror reconfigure was dropped by routes.alarm and never raised again,
+  so routing did not follow it); Create, Edit and Rebind already did
+
 3.5
 
 * Logs to core's WireGuard log (VPN > WireGuard > Log File) under the

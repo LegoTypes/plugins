@@ -531,35 +531,6 @@ function wgct_run_steps(array $steps): array {
 }
 
 /**
- * Which gateways to replay the routes alarm for once the lock is released
- * (spec 4.6 step 6): the action's own, plus every gateway whose status
- * changed while the lock was held. Pure.
- *
- * @param list<string>               $ours      gateway names the action wrote
- * @param array<string, string>|null $before    gateway status taken before the lock
- * @param array<string, string>|null $after     gateway status taken after release
- * @param array<string, bool>        $forceDown name => force_down in config now
- * @return array<string, bool> name => expected force_down, sorted by name
- */
-function wgct_replay_set(array $ours, ?array $before, ?array $after, array $forceDown): array {
-    $set = [];
-    foreach ($ours as $name) {
-        if (isset($forceDown[$name])) {
-            $set[$name] = $forceDown[$name];
-        }
-    }
-    if ($before !== null && $after !== null) {
-        foreach ($after as $name => $status) {
-            if (isset($forceDown[$name]) && ($before[$name] ?? null) !== $status) {
-                $set[(string)$name] = $forceDown[$name];
-            }
-        }
-    }
-    ksort($set);
-    return $set;
-}
-
-/**
  * The todo key for a kernel route that has no static route of its own (Edit's
  * old monitor host route): rc.routing_configure consumes every
  * /tmp/delete_route_*.todo, so any 36-character key works. Derived from the
