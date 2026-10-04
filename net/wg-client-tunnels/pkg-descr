@@ -57,6 +57,16 @@ Features:
 Plugin Changelog
 ================
 
+3.5_2
+
+* The inner-source block lets only the tunnel's own address leave it,
+  not any of the firewall's: every tunnel's address is the firewall's, so
+  a packet NATed for one tunnel could leave by another (e.g. after a
+  gateway failover), and a provider that learns the client address from
+  traffic could then send all of that tunnel's replies to the other
+  tunnel's address. The rule's label now names its source, so an upgrade
+  reloads the filter by itself
+
 3.5_1
 
 * The health mirror also replays the alarm of any other gateway whose

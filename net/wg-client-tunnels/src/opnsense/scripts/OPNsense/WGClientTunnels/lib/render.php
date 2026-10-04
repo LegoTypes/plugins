@@ -1170,6 +1170,16 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] live_observation: one of two rendered labels absent from pf, empty anchor => 0 rules, 1 missing\n", $ok ? 'PASS' : 'FAIL');
 
+    /* pf still enforcing the inner-source rule as 3.5_1 rendered it (from ! (self), labelled by interface only):
+     * the label differs, so freshness sees the current rule missing and reloads the filter after an upgrade */
+    $oldInnerLines = [$ruleLines[0], $ruleLines[1],
+        'block drop out log quick on wg1 inet6 from ! (self) to any label "' . md5('wgct-pin-inner-' . $pins['inner'][0]) . '"'];
+    $obs = wgct_live_observation([], $oldInnerLines, $pins);
+    $ok = $obs === ['anchor_count' => 0, 'missing_labels' => 1];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] live_observation: pf holds the 3.5_1 inner-source rule => its replacement counts as missing\n", $ok ? 'PASS' : 'FAIL');
+
     $obs = wgct_live_observation([], [], $emptyPins);
     $ok = $obs === ['anchor_count' => 0, 'missing_labels' => 0];
     $fail += $ok ? 0 : 1;
