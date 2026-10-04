@@ -41,6 +41,13 @@ Features:
     a gateway is never released in the middle of an outage
   - replays the gateway alarm its own reconfigure would otherwise drop,
     so firewall rules and states follow the change
+- IPv6 prime (after each health mirror tick, whatever the health mirror
+  switch): when a tunnel's IPv6 gateway is down while its WireGuard
+  session is up, sends one TCP connection from the tunnel's IPv6 address
+  to its monitor, so a provider that learns the address to answer from
+  such traffic (pings never teach it) learns the right one; backs off
+  from 2 to 30 minutes, starts over with each new session, and logs each
+  attempt and the recovery
 - Default-route guard: removes a default route that points through a
   tunnel or other non-default gateway, for IPv4 and IPv6, working
   together with address-less sentinel gateways that keep tunnels out of
@@ -48,14 +55,25 @@ Features:
 - Firewall enforcement rendered from each tunnel's core configuration:
   - pins each tunnel's endpoint to the WAN it is bound to, and blocks
     it everywhere when that WAN is unusable
-  - blocks traffic leaving a tunnel from any source but the firewall
-    itself, so only NAT-ed traffic enters it
+  - blocks traffic leaving a tunnel from any source but that tunnel's
+    own address, so only traffic NAT-ed to it enters it
   - clamps TCP MSS in both directions from each tunnel's MTU, so an
     MTU change on the WireGuard page takes effect without other edits
 - Leaves disabled gateways and an operator's manual force-down alone
 
 Plugin Changelog
 ================
+
+3.6
+
+* IPv6 prime: when a tunnel's IPv6 gateway is down while its WireGuard
+  session is up (a handshake within 180 s), one TCP connection from the
+  tunnel's IPv6 address to its IPv6 monitor teaches a provider that
+  answers every reply to an address it learns from traffic. Without it,
+  a fresh session (e.g. after a power failure) left the IPv6 gateway down
+  for good: a down gateway gets no LAN traffic, and the monitor's pings
+  never teach the provider. Runs after each health mirror tick, backs off
+  from 2 to 30 minutes, and logs to the WireGuard log as [wgct-prime]
 
 3.5_2
 
