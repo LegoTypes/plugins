@@ -336,10 +336,11 @@ function wgct_cli_selftest(): int {
     require_once __DIR__ . '/render.php';
     require_once __DIR__ . '/edit.php';
     require_once __DIR__ . '/repair.php';
+    require_once __DIR__ . '/prime.php';
     $codes = [
         wgct_addr_selftest(), wgct_cli_own_selftest(), wgct_tunnels_selftest(), wgct_render_selftest(), wgct_wgconf_selftest(),
         wgct_refs_selftest(), wgct_actions_selftest(), wgct_mtu_selftest(), wgct_apply_selftest(),
-        wgct_view_selftest(), wgct_edit_selftest(), wgct_repair_selftest(),
+        wgct_view_selftest(), wgct_edit_selftest(), wgct_repair_selftest(), wgct_prime_selftest(),
     ];
     return max($codes) === 0 ? 0 : 1;
 }
