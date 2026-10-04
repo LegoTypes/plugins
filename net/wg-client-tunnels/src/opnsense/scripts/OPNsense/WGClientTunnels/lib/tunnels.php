@@ -736,11 +736,16 @@ function wgct_pin_rules(array $pinSet) {
         ];
     }
     foreach ($pinSet['inner'] as $opt) {
+        /* only the tunnel's own addresses, not (self): every tunnel's address is the firewall's, so (self) let one
+         * tunnel's NATed source out of another, and a provider that learns the client address from traffic then
+         * sends that tunnel's replies to the wrong address.
+         * The label names the source too, so pf still holding an older form reads as missing to freshness. */
+        $from = $opt . 'ip';
         $rules[] = [
             'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
-            'interface' => $opt, 'ipprotocol' => 'inet46', 'from' => '(self)', 'from_not' => true,
-            'label' => md5('wgct-pin-inner-' . $opt),
-            'descr' => 'WireGuard Upstream Tunnels: only firewall-sourced (NATed) traffic may enter the tunnel',
+            'interface' => $opt, 'ipprotocol' => 'inet46', 'from' => $from, 'from_not' => true,
+            'label' => md5('wgct-pin-inner-' . $opt . '-' . $from),
+            'descr' => "WireGuard Upstream Tunnels: only traffic NATed to this tunnel's own address may enter it",
         ];
     }
     return $rules;
@@ -1147,8 +1152,8 @@ function wgct_tunnels_selftest() {
         && preg_match($labelRe, $wanRule['label']) === 1 && $wanRule['label'] === md5('wgct-pin-wan-opt1-inet')
         && $innerRule['type'] === 'block' && $innerRule['direction'] === 'out' && $innerRule['quick'] === true && $innerRule['log'] === true
         && $innerRule['interface'] === 'opt11' && $innerRule['ipprotocol'] === 'inet46'
-        && $innerRule['from'] === '(self)' && $innerRule['from_not'] === true
-        && preg_match($labelRe, $innerRule['label']) === 1 && $innerRule['label'] === md5('wgct-pin-inner-opt11');
+        && $innerRule['from'] === 'opt11ip' && $innerRule['from_not'] === true
+        && preg_match($labelRe, $innerRule['label']) === 1 && $innerRule['label'] === md5('wgct-pin-inner-opt11-opt11ip');
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] render: filter rule confs for the WAN pin and the inner-source block\n", $ok ? 'PASS' : 'FAIL');
 

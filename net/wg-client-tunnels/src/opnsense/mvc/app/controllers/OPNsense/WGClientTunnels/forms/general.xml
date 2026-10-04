@@ -37,7 +37,7 @@
         <id>wgclienttunnels.inner_source</id>
         <label>Only NATed traffic into tunnels</label>
         <type>checkbox</type>
-        <help>Block any packet entering a tunnel from an address that is not the firewall's own, i.e. traffic outbound NAT did not translate. Normally enabled; off removes these firewall rules.</help>
+        <help>Block any packet entering a tunnel from any address but that tunnel's own, i.e. traffic outbound NAT did not translate to it. Normally enabled; off removes these firewall rules.</help>
     </field>
     <field>
         <id>wgclienttunnels.mss_clamp</id>
