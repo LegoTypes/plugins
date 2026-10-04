@@ -1,9 +1,13 @@
 # WireGuard tunnel health mirror: holds each tunnel down while its bound WAN is
 # down, and each IPv6 tunnel gateway down while its own IPv4 tunnel is unhealthy.
-* * * * *	root	/usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php
-* * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php
-* * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php
-* * * * *	root	sleep 45 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php
+# After each tick, prime.php sends one TCP connect from a tunnel's IPv6 address
+# when its IPv6 gateway is down while its WireGuard session is up (a handshake
+# within 180 s): the provider learns the address to answer from such traffic,
+# and dpinger's pings never teach it.
+* * * * *	root	/usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
+* * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
+* * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
+* * * * *	root	sleep 45 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
 
 # Route reconciliation safety net. The event hooks in plugins.inc.d cover the
 # known ways the gateway host routes get dropped; this catches anything that
