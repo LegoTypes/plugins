@@ -16,6 +16,7 @@ declare(strict_types=1);
  *   evaluate.php holds                 JSON status for the page
  *   evaluate.php status                the running line ApiMutableServiceControllerBase expects
  *   evaluate.php release               release every held gateway
+ *   evaluate.php start|stop            regenerate cron (the minute job exists only while enabled), then evaluate | release
  */
 
 const WF_STATE = '/var/db/wanfailover/state.json';
@@ -46,6 +47,10 @@ if ($mode === 'status') {
     $on = (new \OPNsense\WanFailover\WanFailover())->enabled->isEqual('1');
     echo $on ? "wanfailover is running\n" : "wanfailover is not running\n";
     exit(0);
+}
+if ($mode === 'start' || $mode === 'stop') {
+    (new \OPNsense\Core\Backend())->configdRun('cron restart');
+    $mode = $mode === 'stop' ? 'release' : 'evaluate';
 }
 if ($mode === '--snapshot') {
     $snap = wf_snapshot();
