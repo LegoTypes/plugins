@@ -18,6 +18,13 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.2
+
+* Failback delay (default 10 minutes): connections move back to a
+  recovered WAN only after it has read clean that long; any loss restarts
+  the wait, and a WAN held again never gets them back. Fail back now
+  (button or configctl wanfailover failback_now) ends the wait
+
 1.1
 
 * Failback recognises a gateway group rendered as a pool that names one

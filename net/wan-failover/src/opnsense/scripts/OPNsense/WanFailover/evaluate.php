@@ -18,6 +18,8 @@ declare(strict_types=1);
  *                                      the minute job is installed
  *   evaluate.php release               release every held gateway (the page's button); waits for a running
  *                                      evaluation and fails if it cannot
+ *   evaluate.php failback-now          end the failback delay for every pending failback, then evaluate; waits for
+ *                                      a running evaluation like release
  *   evaluate.php start|stop            regenerate cron (the minute job exists only while enabled), then evaluate | release
  * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core.
  */
@@ -51,7 +53,7 @@ function wf_main(string $mode, array $args): int
 {
     if ($mode === '--plan-from') {
         $snap = json_decode((string)file_get_contents($args[1] ?? ''), true, 64, JSON_THROW_ON_ERROR);
-        $snap += ['release' => null];
+        $snap += ['release' => null, 'failback_now' => false, 'failback_delay' => 0];
         $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
         echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
         return 0;
@@ -89,7 +91,9 @@ function wf_main(string $mode, array $args): int
             $rows[] = ['name' => $n, 'held' => in_array($n, $snap['held'], true), 'simulated' => in_array($n, $s['dry_held'], true),
                        'force_down' => $w['force_down'],
                        'status' => $w['status'], 'loss' => $w['loss'], 'judgement' => $j['value'] ?? null,
-                       'since' => $j['since'] ?? null, 'failback_pending' => isset($s['pending_failbacks'][$n])];
+                       'since' => $j['since'] ?? null, 'failback_pending' => isset($s['pending_failbacks'][$n]),
+                       'failback' => isset($s['pending_failbacks'][$n])
+                           ? wf_failback_wait($s['pending_failbacks'][$n], $snap['now'], $snap['failback_delay']) : null];
         }
         echo json_encode(['enabled' => $snap['enabled'], 'dry' => $snap['dry'], 'wans' => $rows,
                           'unresolved' => $snap['unresolved'], 'contract' => $snap['contract'],
@@ -103,15 +107,16 @@ function wf_main(string $mode, array $args): int
     }
     $lock = fopen(WF_LOCK_DIR . '/evaluate.lock', 'ce');
     $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
-    /* a release (the page's button, or stop on disable) waits for an evaluation in flight instead of
-     * silently doing nothing; a routine evaluation just leaves it to the one running */
-    for ($i = 0; !$locked && $lock !== false && $mode === 'release' && $i < WF_RELEASE_WAIT_SECONDS; $i++) {
+    /* a release (the page's button, or stop on disable) and fail back now wait for an evaluation in
+     * flight instead of silently doing nothing; a routine evaluation just leaves it to the one running */
+    $waits = $mode === 'release' || $mode === 'failback-now';
+    for ($i = 0; !$locked && $lock !== false && $waits && $i < WF_RELEASE_WAIT_SECONDS; $i++) {
         sleep(1);
         $locked = flock($lock, LOCK_EX | LOCK_NB);
     }
     if (!$locked) {
-        if ($mode === 'release') {
-            wf_log('release: an evaluation kept the lock for ' . WF_RELEASE_WAIT_SECONDS . ' s; nothing released', LOG_WARNING);
+        if ($waits) {
+            wf_log("{$mode}: an evaluation kept the lock for " . WF_RELEASE_WAIT_SECONDS . ' s; nothing done', LOG_WARNING);
             return 1;
         }
         return 0;
@@ -139,6 +144,8 @@ function wf_main(string $mode, array $args): int
         $snap['enabled'] = false;
     } elseif ($mode === 'release') {
         $snap['release'] = 'requested';
+    } elseif ($mode === 'failback-now') {
+        $snap['failback_now'] = true;
     }
     if (!$snap['enabled']) {
         $snap['tailscale_restart'] = false;

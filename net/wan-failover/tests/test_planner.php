@@ -32,7 +32,8 @@ function wf_t_snap(int $now, array $primary, array $wan2, array $extra = []): ar
     return array_merge(['now' => $now, 'boot_id' => 'b1', 'enabled' => true, 'failback' => true,
         'default_gw' => '203.0.113.1@igc1', 'wans' => $wans, 'unresolved' => [], 'held' => [], 'held_stale' => [],
         'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
-        'contract' => ['judging' => [], 'command' => []], 'dry' => false, 'release' => null], $extra);
+        'contract' => ['judging' => [], 'command' => []], 'dry' => false, 'release' => null,
+        'failback_delay' => 0, 'failback_now' => false], $extra);
 }
 
 /** What apply leaves behind when every step succeeds. */
@@ -212,5 +213,47 @@ wf_register_suite('planner', function (): int {
     $s['last_held'] = ['WAN2'];
     $r = wf_plan(wf_t_snap(12300, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['held' => ['WAN2'], 'release' => 'dry']), $s);
     wf_check($t, 'dry turned on while really holding: the real hold is released', $r['plan']['release'] === ['WAN2'] && $r['plan']['held_after'] === []);
+    /* failback delay: the recovered WAN must read clean for failback_delay seconds before its flows move back */
+    $d = ['failback_delay' => 600];
+    $s = wf_state_new('b1');
+    $s['last_held'] = ['WAN2'];
+    $r = wf_plan(wf_t_snap(13000, [], ['loss' => 0.0, 'force_down' => true, 'status' => 'force_down'], $d + ['held' => ['WAN2']]), $s);
+    wf_check($t, 'delay: the release queues the failback without running it', $r['plan']['release'] === ['WAN2']
+        && $r['plan']['failback'] === [] && isset($r['state']['pending_failbacks']['WAN2']));
+    $s0 = wf_t_applied($r['state'], $r['plan']);
+    $r = wf_plan(wf_t_snap(13300, [], [], $d), $s0);
+    wf_check($t, 'delay: 300 s of clean readings is not enough', $r['plan']['failback'] === []);
+    wf_check($t, 'delay: the status shows 300 s left', wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13300, 600)
+        === ['state' => 'counting', 'left' => 300]);
+    $r = wf_plan(wf_t_snap(13600, [], [], $d), $r['state']);
+    wf_check($t, 'delay: 600 s of clean readings runs the failback', isset($r['plan']['failback']['WAN2']));
+    wf_check($t, 'delay: the status shows it moving', wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13600, 600)['state'] === 'moving');
+    $r = wf_plan(wf_t_snap(14201, [], [], $d), $r['state']);
+    wf_check($t, 'delay: a due failback expires 600 s after it became due, not after it was queued',
+        $r['plan']['failback'] === [] && in_array('failback-expired WAN2', $r['plan']['log'], true));
+
+    $r = wf_plan(wf_t_snap(13300, [], ['loss' => 3.0], $d), $s0);
+    wf_check($t, 'delay: a marginal reading restarts the countdown', $r['plan']['failback'] === []
+        && wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13300, 600) === ['state' => 'waiting', 'left' => 600]);
+    $r = wf_plan(wf_t_snap(13400, [], [], $d), $r['state']);
+    $r = wf_plan(wf_t_snap(13900, [], [], $d), $r['state']);
+    wf_check($t, 'delay: the restarted countdown is not done after 500 s', $r['plan']['failback'] === []);
+    $r = wf_plan(wf_t_snap(14000, [], [], $d), $r['state']);
+    wf_check($t, 'delay: done 600 s after the restart', isset($r['plan']['failback']['WAN2']));
+
+    $r = wf_plan(wf_t_snap(13300, [], ['loss' => 30.0], $d), $s0);
+    wf_check($t, 'delay: held again during the delay drops the failback', $r['plan']['hold'] === ['WAN2']
+        && $r['state']['pending_failbacks'] === [] && $r['plan']['failback'] === []);
+
+    $r = wf_plan(wf_t_snap(13100, [], [], $d + ['failback_now' => true]), $s0);
+    wf_check($t, 'fail back now ends the delay', isset($r['plan']['failback']['WAN2'])
+        && in_array('failback-now: the delay ended for WAN2', $r['plan']['log'], true));
+    $r = wf_plan(wf_t_snap(13100, [], [], $d + ['failback_now' => true]), wf_state_new('b1'));
+    wf_check($t, 'fail back now with nothing pending says so', in_array('failback-now: no failback is pending', $r['plan']['log'], true));
+
+    $s = wf_state_new('b1');
+    $s['pending_failbacks']['WAN2'] = ['since' => 13000];
+    $r = wf_plan(wf_t_snap(13010, [], [], $d), $s);
+    wf_check($t, 'a failback queued by 1.1 (no countdown recorded) runs as it would have', isset($r['plan']['failback']['WAN2']));
     return wf_tally_report('planner', $t);
 });
