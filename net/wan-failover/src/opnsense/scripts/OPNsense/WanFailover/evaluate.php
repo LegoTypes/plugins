@@ -150,7 +150,7 @@ function wf_main(string $mode, array $args): int
         $dry = false;
     }
 
-    $r = wf_plan($dry ? wf_dry_view($snap, $state['dry_held']) : $snap, $state);
+    $r = $dry ? wf_plan(wf_dry_view($snap, $state['dry_held']), $state) : wf_plan($snap, wf_dry_exit($state, $snap));
     $plan = $r['plan'];
     $state = $r['state'];
     foreach (array_merge($plan['log'], $plan['alerts']) as $line) {
@@ -173,7 +173,6 @@ function wf_main(string $mode, array $args): int
         }
         wf_state_save(WF_STATE, wf_dry_after($state, $plan));
     } else {
-        $state['dry_held'] = [];
         $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets, $snap['uuid_by_name']))['state'];
     }
 
