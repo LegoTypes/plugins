@@ -74,6 +74,11 @@ function wf_parse_states(string $text): array
 }
 
 /**
+ * A rule's route-to is one target, "route-to (<if> <gw>)", or a pool, "route-to { (<if> <gw>), ... }".
+ * Core lists a gateway group member once per unit of its weight, so a pool can name a single target
+ * several times: that routes to the target as surely as the plain form. Only a pool of different
+ * targets is balanced.
+ *
  * @return array<string, list<array{gw: ?string, if: ?string, balanced: bool}>> label => renderings
  */
 function wf_parse_rules(string $text): array
@@ -83,12 +88,18 @@ function wf_parse_rules(string $text): array
         if (preg_match('/^@\d+ /', $line) !== 1 || preg_match('/label "([^"]+)"/', $line, $lm) !== 1) {
             continue;
         }
-        $r = ['gw' => null, 'if' => null, 'balanced' => str_contains($line, 'route-to {')];
-        if (!$r['balanced'] && preg_match('/route-to \((\S+) (\S+)\)/', $line, $m) === 1) {
-            $r['if'] = $m[1];
-            $r['gw'] = $m[2];
+        $targets = [];
+        if (preg_match('/route-to \{([^}]*)\}/', $line, $pool) === 1) {
+            preg_match_all('/\((\S+) (\S+)\)/', $pool[1], $members, PREG_SET_ORDER);
+            foreach ($members as $m) {
+                $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
+            }
+        } elseif (preg_match('/route-to \((\S+) (\S+)\)/', $line, $m) === 1) {
+            $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
         }
-        $out[$lm[1]][] = $r;
+        $single = count($targets) === 1 ? reset($targets) : null;
+        $out[$lm[1]][] = ['gw' => $single === null ? null : $single[1], 'if' => $single === null ? null : $single[0],
+                          'balanced' => count($targets) > 1];
     }
     return $out;
 }

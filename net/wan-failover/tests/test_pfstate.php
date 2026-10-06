@@ -64,6 +64,9 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, 'load-balanced route-to is flagged, gw null', $rules['55555555-5555-4555-8555-555555555555'][0]['balanced'] === true
         && $rules['55555555-5555-4555-8555-555555555555'][0]['gw'] === null);
     wf_check($t, 'empty rules output', wf_parse_rules('') === []);
+    $pool = wf_parse_rules('@2901 pass in quick on vlan0.20 route-to { (igc2 172.16.12.1), (igc2 172.16.12.1) } round-robin inet proto tcp from <secondary_first_hosts:3> to ! (self:13) flags S/SA keep state label "77777777-7777-4777-8777-777777777777"');
+    wf_check($t, 'a pool listing one target several times (gateway weight) routes to that target, not balanced',
+        $pool['77777777-7777-4777-8777-777777777777'] === [['gw' => '172.16.12.1', 'if' => 'igc2', 'balanced' => false]]);
 
     $raw = (string)file_get_contents(__DIR__ . '/fixtures/states.txt');
     wf_check($t, 'self-check passes on the real format', wf_pf_selfcheck($raw, $states));

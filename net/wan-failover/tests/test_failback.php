@@ -61,6 +61,12 @@ wf_register_suite('failback', function (): int {
     wf_check($t, 'a rendering to the same gateway address on another interface is not on the recovering WAN', !$g['ready']
         && $g['stale_labels'] === ['22222222-2222-4222-8222-222222222222']);
 
+    $weighted = $rules;
+    $weighted['22222222-2222-4222-8222-222222222222'] = wf_parse_rules('@2310 pass in quick on vlan0.20 route-to { (igc2 172.16.12.1), (igc2 172.16.12.1) } round-robin inet proto tcp from <secondary_first_hosts:2> to ! (self) flags S/SA keep state label "22222222-2222-4222-8222-222222222222"')['22222222-2222-4222-8222-222222222222'];
+    $g = wf_failback_gate('WAN2', $flows, $pref, $weighted, $gwIp, 'PRIMARY_WAN', false, $pinned);
+    wf_check($t, 'WAN2 recovery with the group rendered as a weighted pool of WAN2 alone: ready, WAN2-first pair killed',
+        $g['ready'] && $ids($g) === ['c0000000000000c2', 'c0000000000000c1']);
+
     $amb = [['anchor' => $states[1], 'partner' => null, 'kind' => 'ambiguous', 'current' => 'WAN2']];
     $g = wf_failback_gate('PRIMARY_WAN', $amb, $pref, $rules, $gwIp, 'PRIMARY_WAN', true, $pinned);
     wf_check($t, 'ambiguous flows are spared', $g['kills'] === [] && $g['spared'] === 1);
