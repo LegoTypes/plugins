@@ -24,9 +24,10 @@ function wf_boot_time(): int
     return wf_parse_boottime((string)shell_exec('/sbin/sysctl -n kern.boottime'));
 }
 
+/* product::__call() returns the value only when it is non-empty, so booting() is true or null */
 function wf_booting(): bool
 {
-    return product::getInstance()->booting();
+    return product::getInstance()->booting() === true;
 }
 
 function wf_route_get(string $dst): array

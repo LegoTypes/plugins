@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian (Bill Flood)
+# All rights reserved.
+# BSD 2-Clause License
+#
+# Gateway alarm hook: core runs it under the gateway lock. It never writes config: it asks configd for
+# an evaluation, detached, and returns at once (spec 3.7).
+
+/usr/local/sbin/configctl -d wanfailover evaluate > /dev/null 2>&1
+exit 0

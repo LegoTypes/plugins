@@ -1,0 +1,32 @@
+<form>
+    <field>
+        <id>wanfailover.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Hold a WAN down while its loss exceeds the gateway's own threshold and another WAN is usable, keep it down until a full monitor window shows no loss, move connections both ways, and restart Tailscale on a real default-route change. Off releases every hold at once.</help>
+    </field>
+    <field>
+        <id>wanfailover.dry</id>
+        <label>Dry run</label>
+        <type>checkbox</type>
+        <help>Decide and log only: nothing is held, killed or restarted. Use it to watch what the plugin would do before letting it act.</help>
+    </field>
+    <field>
+        <id>wanfailover.wans</id>
+        <label>WAN gateways</label>
+        <type>select_multiple</type>
+        <help>The IPv4 gateways to manage, normally the two WANs. Only saved gateways are listed; save an automatic gateway once on System: Gateways: Configuration to select it.</help>
+    </field>
+    <field>
+        <id>wanfailover.failback</id>
+        <label>Move connections back</label>
+        <type>checkbox</type>
+        <help>When a WAN recovers, end the connections that prefer it (by their rule's gateway or gateway group tier, otherwise the default route) so they reconnect through it, once the firewall already routes them there.</help>
+    </field>
+    <field>
+        <id>wanfailover.tailscale_restart</id>
+        <label>Restart Tailscale</label>
+        <type>checkbox</type>
+        <help>Restart tailscaled when the IPv4 default route moves to another gateway and stays there, so it reconnects on the new path.</help>
+    </field>
+</form>

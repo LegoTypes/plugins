@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian (Bill Flood)
+# All rights reserved.
+# BSD 2-Clause License
+#
+# Early-boot release (spec 3.11): before rc.bootup configures interfaces, routing and dpinger, release
+# every hold. boot.php never fails the boot.
+
+/usr/local/opnsense/scripts/OPNsense/WanFailover/boot.php > /dev/null 2>&1
+exit 0

@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian (Bill Flood)
+# All rights reserved.
+# BSD 2-Clause License
+#
+# Config-change hook: a config revert or restore can change force_down or the held list without
+# reconfiguring routing; an evaluation notices and re-syncs (spec 3.8, review R3-8). Detached and
+# idempotent, so the plugin's own saves do not loop.
+
+/usr/local/sbin/configctl -d wanfailover evaluate > /dev/null 2>&1
+exit 0
