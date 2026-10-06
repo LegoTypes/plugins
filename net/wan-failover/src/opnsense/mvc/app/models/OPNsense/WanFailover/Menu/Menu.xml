@@ -1,0 +1,8 @@
+<menu>
+    <System>
+        <Gateways>
+            <WanFailover order="40" VisibleName="WAN Failover" url="/ui/wanfailover"/>
+            <WanFailoverLog order="45" VisibleName="WAN Failover Log" url="/ui/diagnostics/log/core/wanfailover"/>
+        </Gateways>
+    </System>
+</menu>

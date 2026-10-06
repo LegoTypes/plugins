@@ -1,0 +1,49 @@
+<model>
+    <mount>//OPNsense/WanFailover</mount>
+    <version>1.0.0</version>
+    <description>WAN failover settings</description>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <dry type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </dry>
+        <wans type="ModelRelationField">
+            <Model>
+                <gateways>
+                    <source>OPNsense.Routing.Gateways</source>
+                    <items>gateway_item</items>
+                    <display>name</display>
+                    <filters>
+                        <ipprotocol>/^inet$/</ipprotocol>
+                    </filters>
+                </gateways>
+            </Model>
+            <Multiple>Y</Multiple>
+            <ValidationMessage>Select saved IPv4 gateways.</ValidationMessage>
+        </wans>
+        <failback type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </failback>
+        <tailscale_restart type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </tailscale_restart>
+        <!-- gateways this plugin holds down (force_down); written only by the engine, in the same
+             config save as the force_down it explains -->
+        <held type="ModelRelationField">
+            <Model>
+                <gateways>
+                    <source>OPNsense.Routing.Gateways</source>
+                    <items>gateway_item</items>
+                    <display>name</display>
+                </gateways>
+            </Model>
+            <Multiple>Y</Multiple>
+        </held>
+    </items>
+</model>
