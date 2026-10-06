@@ -47,8 +47,16 @@ function wf_trace(string $dir, array $record): void
     }
     file_put_contents($dir . '/trace-' . date('Ymd') . '.jsonl', json_encode($record, JSON_UNESCAPED_SLASHES) . "\n",
         FILE_APPEND | LOCK_EX);
+}
+
+/**
+ * Remove trace files older than the keep window; runs on every evaluation, so the last files go even
+ * after tracing stopped.
+ */
+function wf_trace_prune(string $dir, int $now, int $keepDays): void
+{
     foreach (glob($dir . '/trace-*.jsonl') ?: [] as $f) {
-        if (filemtime($f) < time() - WF_TRACE_KEEP_DAYS * 86400) {
+        if (filemtime($f) < $now - $keepDays * 86400) {
             unlink($f);
         }
     }

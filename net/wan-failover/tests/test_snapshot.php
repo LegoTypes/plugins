@@ -15,7 +15,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parser
 
 wf_register_suite('snapshot', function (): int {
     $t = ['fail' => 0, 'total' => 0];
-    $up = "igc2: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tinet 192.168.12.148 netmask 0xffffff00 broadcast 192.168.12.255\n\tmedia: Ethernet autoselect (1000baseT <full-duplex>)\n\tstatus: active\n";
+    $up = "igc2: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tinet 172.16.12.148 netmask 0xffffff00 broadcast 172.16.12.255\n\tmedia: Ethernet autoselect (1000baseT <full-duplex>)\n\tstatus: active\n";
     $nc = "igc1: flags=8843<UP,BROADCAST> metric 0 mtu 1500\n\tmedia: Ethernet autoselect\n\tstatus: no carrier\n";
     wf_check($t, 'ifconfig: active with an address', wf_parse_ifconfig($up) === ['carrier' => true, 'has_ipv4' => true]);
     wf_check($t, 'ifconfig: no carrier, no address', wf_parse_ifconfig($nc) === ['carrier' => false, 'has_ipv4' => false]);
@@ -30,5 +30,9 @@ wf_register_suite('snapshot', function (): int {
     wf_check($t, 'kern.boot_id unreadable is empty', wf_parse_boot_id('') === '' && wf_parse_boot_id("sysctl: unknown oid 'kern.boot_id'\n") === '');
     $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'PRIMARY_WAN', 'u2' => 'WAN2']);
     wf_check($t, 'UUIDs resolve to names; unknown ones are reported; empty ignored', $r['names'] === ['PRIMARY_WAN'] && $r['unresolved'] === ['u9']);
+    wf_check($t, 'ps pid/etimes output', wf_parse_ps_etimes("  77297    56\n 81140 3600\n") === [77297 => 56, 81140 => 3600]
+        && wf_parse_ps_etimes('') === []);
+    wf_check($t, 'core rank: position of each managed WAN in core\'s gateway order', wf_core_rank(['Null4', 'WAN2', 'X', 'PRIMARY_WAN'], ['PRIMARY_WAN', 'WAN2'])
+        === ['PRIMARY_WAN' => 1, 'WAN2' => 0]);
     return wf_tally_report('snapshot', $t);
 });

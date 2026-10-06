@@ -22,21 +22,22 @@ const WF_CLEAN = 'clean';
 const WF_UNKNOWN = 'unknown';
 
 /**
- * dpinger_status() prints "~" when stddev and loss are both exactly 0, so "~" on a dpinger that has run
- * a whole time_period is a perfect link, not a missing reading (review R3-10).
+ * dpinger_status() prints "~" when average, deviation and loss are all 0: a perfect link, or no data at
+ * all (sends failing). Core then reports the gateway down in the second case, so "~" on a dpinger that
+ * has run a whole time_period counts as 0% loss only while core does not call it down (review R3-10).
  *
- * @param array{loss: ?float, tilde: bool, sock_age: ?int, time_period: int} $w
+ * @param array{loss: ?float, tilde: bool, status: string, sock_age: ?int, time_period: int} $w
  */
 function wf_effective_loss(array $w): ?float
 {
     if ($w['loss'] !== null) {
         return $w['loss'];
     }
-    return $w['tilde'] && $w['sock_age'] !== null && $w['sock_age'] >= $w['time_period'] ? 0.0 : null;
+    return $w['tilde'] && $w['status'] !== 'down' && $w['sock_age'] !== null && $w['sock_age'] >= $w['time_period'] ? 0.0 : null;
 }
 
 /**
- * @param array{loss: ?float, tilde: bool, sock_age: ?int, time_period: int} $w
+ * @param array{loss: ?float, tilde: bool, status: string, sock_age: ?int, time_period: int} $w
  */
 function wf_settled(array $w): bool
 {
@@ -44,7 +45,7 @@ function wf_settled(array $w): bool
 }
 
 /**
- * @param array{disabled: bool, manual_down: bool, present: bool, tilde: bool, carrier: bool, has_ipv4: bool,
+ * @param array{disabled: bool, manual_down: bool, present: bool, status: string, tilde: bool, carrier: bool, has_ipv4: bool,
  *              loss: ?float, sock_age: ?int, losslow: float, losshigh: float,
  *              time_period: int, interval: int, loss_interval: int} $w
  */

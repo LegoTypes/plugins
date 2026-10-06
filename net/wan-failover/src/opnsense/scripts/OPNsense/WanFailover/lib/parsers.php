@@ -25,7 +25,7 @@ function wf_parse_ifconfig(string $out): array
 }
 
 /**
- * @return array{destination: ?string, gateway: ?string}
+ * @return array{destination: ?string, gateway: ?string, interface: ?string}
  */
 function wf_parse_route_get(string $out): array
 {
@@ -49,6 +49,42 @@ function wf_route_get_target(array $route): ?string
 function wf_parse_boot_id(string $out): string
 {
     return preg_match('/Dump:0x([0-9a-f]+)/', $out, $m) === 1 ? $m[1] : '';
+}
+
+/**
+ * `ps -o pid= -o etimes=`: seconds since each process started. Monotonic, unlike a file's mtime against
+ * time(), so a clock step does not make a young dpinger window look settled.
+ *
+ * @return array<int, int> pid => elapsed seconds
+ */
+function wf_parse_ps_etimes(string $out): array
+{
+    $ages = [];
+    foreach (preg_split('/\R/', trim($out)) ?: [] as $line) {
+        if (preg_match('/^\s*(\d+)\s+(\d+)\s*$/', $line, $m) === 1) {
+            $ages[(int)$m[1]] = (int)$m[2];
+        }
+    }
+    return $ages;
+}
+
+/**
+ * Each managed WAN's place in core's gateway order (Gateways::getGateways(): upstream flag, then
+ * priority, then sequence), which is the order core picks the default gateway in.
+ *
+ * @param list<string> $coreOrder every gateway name, in core's order
+ * @param list<string> $wans the managed WANs
+ * @return array<string, int>
+ */
+function wf_core_rank(array $coreOrder, array $wans): array
+{
+    $managed = array_values(array_filter($coreOrder, fn (string $n): bool => in_array($n, $wans, true)));
+    $rank = [];
+    foreach ($wans as $n) {
+        $i = array_search($n, $managed, true);
+        $rank[$n] = $i === false ? count($managed) : $i;
+    }
+    return $rank;
 }
 
 /**

@@ -18,8 +18,8 @@ wf_register_suite('failback', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $states = wf_parse_states((string)file_get_contents(__DIR__ . '/fixtures/states.txt'));
     $rules = wf_parse_rules((string)file_get_contents(__DIR__ . '/fixtures/rules.txt'));
-    $flows = wf_flows($states, ['203.0.113.1@igc1' => 'PRIMARY_WAN', '192.168.12.1@igc2' => 'WAN2']);
-    $gwIp = ['PRIMARY_WAN' => '203.0.113.1@igc1', 'WAN2' => '192.168.12.1@igc2'];
+    $flows = wf_flows($states, ['203.0.113.1@igc1' => 'PRIMARY_WAN', '172.16.12.1@igc2' => 'WAN2']);
+    $gwIp = ['PRIMARY_WAN' => '203.0.113.1@igc1', 'WAN2' => '172.16.12.1@igc2'];
     $pinned = ['198.51.100.200' => true];
     $pref = [
         '22222222-2222-4222-8222-222222222222' => ['WAN2'],
@@ -29,7 +29,7 @@ wf_register_suite('failback', function (): int {
 
     $g = wf_failback_gate('PRIMARY_WAN', $flows, $pref, $rules, $gwIp, 'PRIMARY_WAN', true, $pinned);
     wf_check($t, 'PRIMARY recovery with default on PRIMARY: ready', $g['ready'] && $g['default_ok']);
-    wf_check($t, 'kills unifi pair, default-route pair, firewall DoT flow (anchor first, then partner)', $ids($g) === [
+    wf_check($t, 'kills exit-node pair, default-route pair, firewall DoT flow (anchor first, then partner)', $ids($g) === [
         '33f6d16a00000000', '32f6d16a00000000', '50000000000000b2', '50000000000000b1', '60000000000000c1']);
     wf_check($t, 'spares WAN2-first, pinned, flows already on PRIMARY', $g['spared'] === 4);
 
@@ -47,16 +47,16 @@ wf_register_suite('failback', function (): int {
 
     $split = $pref + ['11111111-1111-4111-8111-111111111111' => ['PRIMARY_WAN']];
     $g = wf_failback_gate('PRIMARY_WAN', $flows, $split, $rules, $gwIp, 'PRIMARY_WAN', true, $pinned);
-    wf_check($t, 'after the unifi split, rule 1111 rendered without route-to is stale', !$g['ready']
+    wf_check($t, 'after the exit-node rule split, rule 1111 rendered without route-to is stale', !$g['ready']
         && in_array('11111111-1111-4111-8111-111111111111', $g['stale_labels'], true)
         && !in_array('32f6d16a00000000', $ids($g), true));
     $moved = $rules;
     $moved['11111111-1111-4111-8111-111111111111'] = [['gw' => '203.0.113.1', 'if' => 'igc1', 'balanced' => false]];
     $g = wf_failback_gate('PRIMARY_WAN', $flows, $split, $moved, $gwIp, 'PRIMARY_WAN', true, $pinned);
-    wf_check($t, 'after the split, once rendered to PRIMARY: unifi pair killed', $g['ready'] && in_array('32f6d16a00000000', $ids($g), true));
+    wf_check($t, 'after the split, once rendered to PRIMARY: exit-node pair killed', $g['ready'] && in_array('32f6d16a00000000', $ids($g), true));
 
     $wrongIf = $rules;
-    $wrongIf['22222222-2222-4222-8222-222222222222'][1] = ['gw' => '192.168.12.1', 'if' => 'igc1', 'balanced' => false];
+    $wrongIf['22222222-2222-4222-8222-222222222222'][1] = ['gw' => '172.16.12.1', 'if' => 'igc1', 'balanced' => false];
     $g = wf_failback_gate('WAN2', $flows, $pref, $wrongIf, $gwIp, 'PRIMARY_WAN', false, $pinned);
     wf_check($t, 'a rendering to the same gateway address on another interface is not on the recovering WAN', !$g['ready']
         && $g['stale_labels'] === ['22222222-2222-4222-8222-222222222222']);

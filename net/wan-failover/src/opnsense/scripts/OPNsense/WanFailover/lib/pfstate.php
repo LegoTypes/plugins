@@ -144,20 +144,74 @@ function wf_flows(array $states, array $wanTargets): array
 }
 
 /**
- * pf output format drift check (spec 3.12): the raw text holds states, or route-to tokens, that the
- * parser did not recover.
+ * pf output format drift check (spec 3.12). A live firewall always has states (dpinger's own probes at
+ * least), every rule-created state carries an rlabel and every state an id, so any of these coming back
+ * empty means pfctl failed or its format moved, not that there is nothing to do.
  *
- * @param list<array{route_to_gw: ?string}> $states wf_parse_states($raw)
+ * @param list<array{rlabel: ?string, id: ?string, route_to_gw: ?string}> $states wf_parse_states($raw)
  */
 function wf_pf_selfcheck(string $raw, array $states): bool
 {
-    $headers = preg_match_all('/^\S+ \S+ \S+.* (<-|->) \S+/m', $raw);
-    if ($headers > 0 && $states === []) {
+    if ($states === []) {
         return false;
     }
     /* a route target prints as "<gateway>@<interface>" at the end of a state's detail line, whatever
      * the token before it is called */
     $gwTokens = preg_match_all('/\s\S+@[a-z][a-z0-9_.]*\s*$/m', $raw);
     $parsed = count(array_filter($states, fn (array $s): bool => $s['route_to_gw'] !== null));
-    return !($gwTokens > 0 && $parsed === 0);
+    if ($gwTokens > 0 && $parsed === 0) {
+        return false;
+    }
+    return array_filter($states, fn (array $s): bool => $s['rlabel'] !== null) !== []
+        && array_filter($states, fn (array $s): bool => $s['id'] !== null) !== [];
+}
+
+/**
+ * The gateways of a group's first tier that has any: core numbers tiers 1-5 and keeps an empty tier
+ * as [''].
+ *
+ * @param array<int, list<string>> $tiers
+ * @return list<string>
+ */
+function wf_first_tier(array $tiers): array
+{
+    ksort($tiers);
+    foreach ($tiers as $members) {
+        $named = array_values(array_filter($members, fn (string $m): bool => $m !== ''));
+        if ($named !== []) {
+            return $named;
+        }
+    }
+    return [];
+}
+
+/**
+ * Destinations of local flows that a host route pins to their WAN. Each host is looked up once; past
+ * the cap a host is not looked up and is treated as pinned, so it is spared rather than killed.
+ *
+ * @param list<array{anchor: array{dst: string}, kind: string}> $flows
+ * @param callable(string, array): bool $isPinned host, its flow => a host route pins it
+ * @return array<string, true>
+ */
+function wf_pinned_hosts(array $flows, callable $isPinned, int $cap): array
+{
+    $pinned = [];
+    $seen = [];
+    $looked = 0;
+    foreach ($flows as $f) {
+        $host = wf_addr_host($f['anchor']['dst']);
+        if ($f['kind'] !== 'local' || isset($seen[$host])) {
+            continue;
+        }
+        $seen[$host] = true;
+        if ($looked >= $cap) {
+            $pinned[$host] = true;
+            continue;
+        }
+        $looked++;
+        if ($isPinned($host, $f)) {
+            $pinned[$host] = true;
+        }
+    }
+    return $pinned;
 }

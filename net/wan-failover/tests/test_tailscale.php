@@ -16,7 +16,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/tailsc
 wf_register_suite('tailscale', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $A = '203.0.113.1';
-    $B = '192.168.12.1';
+    $B = '172.16.12.1';
 
     $r = wf_tailscale_decide(wf_ts_new(), $A, 1000, 90, 300);
     wf_check($t, 'first observation records the default, no restart', !$r['restart'] && $r['ts']['default_gw'] === $A);

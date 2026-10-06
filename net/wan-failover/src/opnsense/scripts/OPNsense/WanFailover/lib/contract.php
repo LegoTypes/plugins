@@ -70,18 +70,22 @@ function wf_contract_tailscale(?string $tailscaleActions): array
  * @param array<string, string>|null $statusRow the same gateway's dpinger_status() row
  * @return list<string>
  */
-function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound): array
+function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound, bool $monitored): array
 {
     $p = [];
+    if ($routeOut === null || preg_match('/^\s*(gateway|destination):\s*\S+/m', $routeOut) !== 1) {
+        $p[] = 'route -n get output no longer parses';
+    }
+    /* a disabled or unmonitored gateway has no dpinger instance, status row or socket by design */
+    if (!$monitored) {
+        return $p;
+    }
     $missing = $instanceRow === null ? WF_INSTANCE_KEYS : array_values(array_diff(WF_INSTANCE_KEYS, array_keys($instanceRow)));
     if ($missing !== []) {
         $p[] = 'dpinger_instances() rows lack ' . implode(', ', $missing);
     }
     if ($statusRow === null || !array_key_exists('status', $statusRow) || !array_key_exists('loss', $statusRow)) {
         $p[] = 'dpinger_status() rows lack status or loss';
-    }
-    if ($routeOut === null || preg_match('/^\s*(gateway|destination):\s*\S+/m', $routeOut) !== 1) {
-        $p[] = 'route -n get output no longer parses';
     }
     if (!$socketFound) {
         $p[] = 'no dpinger socket at /var/run/dpinger_<name>.sock for a monitored WAN';

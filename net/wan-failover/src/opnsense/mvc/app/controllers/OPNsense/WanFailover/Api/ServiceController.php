@@ -38,6 +38,15 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected static $internalServiceName = 'wanfailover';
 
     /**
+     * Apply while enabled reloads (one evaluation) instead of stop + start: stop releases every hold, so a
+     * restart on each Apply would put a held, lossy WAN back in service. Disable still runs stop.
+     */
+    protected function reconfigureForceRestart()
+    {
+        return false;
+    }
+
+    /**
      * Status for the page: per-WAN readings, held flags, pending failbacks, core-contract findings.
      */
     public function holdsAction(): array

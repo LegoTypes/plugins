@@ -20,14 +20,34 @@ const WF_STATE_VERSION = 3;
  * @return array{version: int, boot_id: string, installed_at: ?int, last_now: ?int, judgements: array<string, array>,
  *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
- *               contract_last: string, contract_judging_since: ?int, boot_note: ?string}
+ *               contract_last: string, contract_judging_since: ?int, boot_note: ?string, dry_held: list<string>,
+ *               said: array<string, string>}
  */
 function wf_state_new(string $bootId): array
 {
     return ['version' => WF_STATE_VERSION, 'boot_id' => $bootId, 'installed_at' => null, 'last_now' => null,
             'judgements' => [], 'no_rehold' => [], 'pending_failbacks' => [], 'ts' => wf_ts_new(),
             'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => '',
-            'contract_judging_since' => null, 'boot_note' => null];
+            'contract_judging_since' => null, 'boot_note' => null, 'dry_held' => [], 'said' => []];
+}
+
+/**
+ * A recurring condition is logged once when it appears or changes, and forgotten when it clears.
+ *
+ * @param array<string, string> $said the state's said map
+ * @return ?string the line to log now, if any
+ */
+function wf_once(array &$said, string $key, ?string $line): ?string
+{
+    if ($line === null) {
+        unset($said[$key]);
+        return null;
+    }
+    if (($said[$key] ?? null) === $line) {
+        return null;
+    }
+    $said[$key] = $line;
+    return $line;
 }
 
 /**
@@ -43,8 +63,13 @@ function wf_state_load(string $path, string $bootId): array
     } catch (JsonException) {
         return ['state' => wf_state_new($bootId), 'corrupt' => true];
     }
-    if (!is_array($data) || ($data['version'] ?? null) !== WF_STATE_VERSION) {
+    if (!is_array($data) || !is_int($data['version'] ?? null)) {
         return ['state' => wf_state_new($bootId), 'corrupt' => true];
+    }
+    /* another version (an upgrade): start fresh in this boot; ownership lives in config, so nothing is
+     * released and held gateways stay held until they read loss-free */
+    if ($data['version'] !== WF_STATE_VERSION) {
+        return ['state' => wf_state_new($bootId), 'corrupt' => false];
     }
     return ['state' => array_merge(wf_state_new($bootId), $data), 'corrupt' => false];
 }

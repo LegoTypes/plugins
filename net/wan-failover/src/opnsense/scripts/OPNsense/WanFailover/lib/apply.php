@@ -22,10 +22,16 @@ require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/log.php';
 
 /**
- * @param array $plan  see the Task 9 interface
+ * @param array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool,
+ *               redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_gateways: list<string>,
+ *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
+ *               acting: bool, stopped: bool} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
- * @param array{now: int, tailscale_restart: bool, wans: array<string, array{gateway_ip: string}>} $snap
- * @param array $io    see the Task 11 interface
+ * @param array{now: int, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
+ * @param array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
+ *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
+ *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
+ *             sleep: callable(int): int, log: callable(string): void, crash_point: callable(string): void} $io
  * @return array{state: array, ok: bool}
  */
 function wf_apply(array $plan, array $state, array $snap, array $io): array
@@ -57,7 +63,8 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
                 $written = ($io['write'])($changes, $plan['held_after']);
                 ($io['crash_point'])('after-save');
             }
-            if ($written) {
+            /* a write that only prunes the held list changes no gateway: no reconfigure, no dpinger restarts */
+            if ($written && ($changes !== [] || $plan['foreign'] !== [])) {
                 ($io['configd'])('interface routes configure', []);
             }
         } finally {
@@ -128,10 +135,18 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             $pf = ($io['pf'])();
             $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         }
+        $killed = 0;
+        $failed = 0;
         foreach ($g['kills'] as $k) {
-            ($io['configd'])('filter kill state', [$k['id'], $k['creatorid']]);
+            $out = ($io['configd'])('filter kill state', [$k['id'], $k['creatorid']]);
+            if (preg_match('/killed (\d+) states?/', $out, $m) === 1) {
+                $killed += (int)$m[1];
+            } else {
+                $failed++;
+            }
         }
-        $log(sprintf('failback-kill %s: %d states killed, %d flows spared%s', $n, count($g['kills']), $g['spared'],
+        $log(sprintf('failback-kill %s: %d states killed%s, %d flows spared%s', $n, $killed,
+            $failed > 0 ? " ({$failed} of " . count($g['kills']) . ' kills failed)' : '', $g['spared'],
             $g['ready'] ? '' : '; still pending (stale: ' . implode(',', $g['stale_labels'])
                 . ($g['default_ok'] ? '' : '; default not yet moved') . ')'));
         if ($g['ready']) {
@@ -147,8 +162,10 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         $state['ts'] = $d['ts'];
         if ($d['restart']) {
             $log("tailscale-restart: default now {$d['ts']['default_gw']}: " . trim(($io['configd'])('tailscale restart', [])));
-        } elseif (str_starts_with($d['reason'], 'defer')) {
-            $log("tailscale {$d['reason']}");
+        }
+        $line = wf_once($state['said'], 'ts_defer', str_starts_with($d['reason'], 'defer') ? "tailscale {$d['reason']}" : null);
+        if ($line !== null) {
+            $log($line);
         }
     }
     ($io['save_state'])($state);
@@ -157,43 +174,56 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
 
 /**
  * The one config writer: force_down on the changed gateways and the plugin's held list, in one locked
- * save without a config backup.
+ * save without a config backup. It never throws: a failure is logged and the change waits for the next
+ * tick. A write that only releases skips model validation, so a gateway field that fails validation
+ * (after a firmware update tightened a rule, say) can never pin a hold; the plugin itself only touches
+ * force_down and its held list.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param list<string> $heldAfterUuids gateway UUIDs the plugin holds after this write
  */
 function wf_write_holds(array $changes, array $heldAfterUuids): bool
 {
-    $cfg = \OPNsense\Core\Config::getInstance();
-    $cfg->lock();
+    $releaseOnly = !in_array(true, $changes, true);
     try {
-        $gateways = new \OPNsense\Routing\Gateways();
-        $found = 0;
-        foreach ($gateways->gateway_item->iterateItems() as $gw) {
-            $name = $gw->name->getValue();
-            if (array_key_exists($name, $changes)) {
-                $gw->force_down = $changes[$name] ? '1' : '0';
-                $found++;
+        $cfg = \OPNsense\Core\Config::getInstance();
+        $cfg->lock();
+        try {
+            $gateways = new \OPNsense\Routing\Gateways();
+            $found = 0;
+            foreach ($gateways->gateway_item->iterateItems() as $gw) {
+                $name = $gw->name->getValue();
+                if (array_key_exists($name, $changes)) {
+                    $gw->force_down = $changes[$name] ? '1' : '0';
+                    $found++;
+                }
             }
+            if ($found !== count($changes)) {
+                wf_log('config write: ' . (count($changes) - $found) . ' gateway(s) to change no longer exist', LOG_WARNING);
+                return false;
+            }
+            $mdl = new \OPNsense\WanFailover\WanFailover();
+            $mdl->held = implode(',', $heldAfterUuids);
+            $gateways->serializeToConfig(false, $releaseOnly);
+            $mdl->serializeToConfig(false, $releaseOnly);
+            $cfg->save(null, false);
+            return true;
+        } finally {
+            $cfg->unlock();
         }
-        if ($found !== count($changes)) {
-            return false;
-        }
-        $mdl = new \OPNsense\WanFailover\WanFailover();
-        $mdl->held = implode(',', $heldAfterUuids);
-        $gateways->serializeToConfig();
-        $mdl->serializeToConfig();
-        $cfg->save(null, false);
-        return true;
-    } finally {
-        $cfg->unlock();
+    } catch (\Throwable $e) {
+        wf_log('config write failed: ' . $e->getMessage(), LOG_ERR);
+        return false;
     }
 }
 
 /**
  * @param array<string, string> $wanTargets WAN name => route target
  * @param array<string, string> $uuidByName gateway name => UUID
- * @return array the Task 11 $io shape
+ * @return array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
+ *                 gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
+ *                 pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
+ *                 sleep: callable(int): int, log: callable(string): void, crash_point: callable(string): void}
  */
 function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): array
 {
@@ -227,9 +257,13 @@ function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): ar
         'status' => fn (): array => array_map(fn (array $s): string => (string)$s['status'], dpinger_status()),
         'pf' => fn (): array => wf_snapshot_pf($wanTargets),
         'live_default' => fn (): ?string => wf_live_default(),
-        'save_state' => fn (array $s) => wf_state_save($statePath, $s),
+        'save_state' => function (array $s) use ($statePath): void {
+            wf_state_save($statePath, $s);
+        },
         'sleep' => fn (int $s): int => sleep($s),
-        'log' => fn (string $m) => wf_log($m),
+        'log' => function (string $m): void {
+            wf_log($m);
+        },
         'crash_point' => function (string $p): void {
             if (getenv('WF_TEST_CRASH_AT') === $p) {
                 wf_log("test crash at {$p}", LOG_WARNING);
