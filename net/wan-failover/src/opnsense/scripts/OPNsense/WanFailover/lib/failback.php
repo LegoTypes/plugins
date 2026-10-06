@@ -11,7 +11,7 @@ declare(strict_types=1);
  * its rule's gateway (tier 1 of a group), else the live default route. A
  * pending failback for WAN R kills flows that prefer R but sit elsewhere --
  * only once every rendering of their rule routes to R, and, when R is the
- * top-priority usable WAN, only once the live default is R.
+ * usable WAN core ranks first, only once the live default is R.
  */
 
 require_once __DIR__ . '/pfstate.php';
