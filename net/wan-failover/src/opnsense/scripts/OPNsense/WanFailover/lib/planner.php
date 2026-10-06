@@ -84,7 +84,9 @@ function wf_plan(array $snap, array $state): array
     $prune = $rec['manual_released'] !== [] || $snap['held_stale'] !== [];
     $notInWans = array_values(array_diff($owned, array_keys($snap['wans'])));
     if ($releaseAll !== null) {
-        $log[] = "releasing every held gateway: {$releaseAll}";
+        if ($owned !== []) {
+            $log[] = "releasing every held gateway: {$releaseAll}";
+        }
         return wf_plan_result([], $owned, [], $prune, $rec, [], null, $alerts, $log, true, $state, $snap);
     }
 
