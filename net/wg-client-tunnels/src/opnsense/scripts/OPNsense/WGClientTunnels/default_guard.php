@@ -19,10 +19,11 @@
  * or by any path that bypasses the election), because system_routing_configure()
  * never deletes a stale default on its own.
  *
- * Positive match only: the default route is removed only when its gateway is
- * identified as a configured non-default gateway on that interface. A default
- * through anything unrecognised is left alone, so this can never remove a
- * native WAN default it merely failed to recognise.
+ * Positive match only: the default route is removed only when its next hop
+ * (address and interface) belongs to configured non-default gateways alone. A
+ * default through anything unrecognised, or through a next hop a default
+ * gateway shares, is left alone, so this can never remove a native WAN default
+ * it merely failed to recognise.
  *
  * Runs from wgct.sh reconcile: the plugin's "monitor" hook (end of every
  * routing reconfigure), the once-a-minute cron, and the config-save syshook
@@ -55,28 +56,37 @@ function guard_norm_addr($addr) {
 
 /**
  * The configured gateway a default route points at, if it is one that must
- * never be the default.
+ * never be the default. A route names a next hop (address and interface), not
+ * a gateway, and several gateways may share one -- a second gateway on a WAN's
+ * own address, say. The route is forbidden only when every gateway on that next
+ * hop is a non-default one: a default gateway among them owns it.
  *
  * @param array  $gateways getGateways() rows
  * @param string $family   inet|inet6
  * @param string $routeGw  route's gateway address
  * @param string $routeIf  route's interface
- * @return string|null gateway name, or null when it is not a forbidden gateway
+ * @return string|null name of the first non-default gateway on that next hop,
+ *                     or null when the route is allowed
  */
 function guard_forbidden_match(array $gateways, $family, $routeGw, $routeIf) {
     $want = guard_norm_addr($routeGw);
     if ($want === '') {
         return null;
     }
+    $forbidden = null;
     foreach ($gateways as $gw) {
-        if (($gw['ipprotocol'] ?? '') !== $family || !empty($gw['is_loopback']) || !empty($gw['defaultgw'])) {
+        if (($gw['ipprotocol'] ?? '') !== $family || !empty($gw['is_loopback'])) {
             continue;
         }
-        if (($gw['if'] ?? '') === $routeIf && guard_norm_addr($gw['gateway'] ?? '') === $want) {
-            return (string)$gw['name'];
+        if (($gw['if'] ?? '') !== $routeIf || guard_norm_addr($gw['gateway'] ?? '') !== $want) {
+            continue;
         }
+        if (!empty($gw['defaultgw'])) {
+            return null;
+        }
+        $forbidden = $forbidden ?? (string)$gw['name'];
     }
-    return null;
+    return $forbidden;
 }
 
 /**
@@ -113,13 +123,33 @@ if (in_array('--selftest', $argv ?? [], true)) {
         ['not an address => keep',              'inet',  'link#5',           'lo0',  null],
         ['loopback reject route => keep',       'inet6', '::1',              'lo0',  null],
     ];
+    /* two gateways on one next hop (seen on the test VM 2026-10-06: a second gateway on the WAN's own
+     * address and interface): a default gateway among them makes the route allowed, whatever the order */
+    $nonDefault = ['name' => 'WAN_B', 'ipprotocol' => 'inet', 'gateway' => '192.0.2.1', 'if' => 'hn1', 'defaultgw' => false];
+    $default = ['name' => 'WAN_DHCP', 'ipprotocol' => 'inet', 'gateway' => '192.0.2.1', 'if' => 'hn1', 'defaultgw' => true];
+    $other = ['name' => 'WAN_C', 'ipprotocol' => 'inet', 'gateway' => '192.0.2.1', 'if' => 'hn1', 'defaultgw' => false];
+    $shared = [
+        // description, gateways, expected match
+        ['shared next hop, non-default listed first => keep', [$nonDefault, $default], null],
+        ['shared next hop, default listed first => keep',     [$default, $nonDefault], null],
+        ['shared next hop, only non-default gateways => match the first', [$nonDefault, $other], 'WAN_B'],
+        ['same address, default on another interface => match', [$nonDefault, ['if' => 'hn2'] + $default], 'WAN_B'],
+        ['same address, default in the other family => match',
+            [$nonDefault, ['ipprotocol' => 'inet6'] + $default], 'WAN_B'],
+    ];
     $fail = 0;
     foreach ($cases as [$desc, $fam, $rgw, $rif, $exp]) {
         $got = guard_forbidden_match($gws, $fam, $rgw, $rif);
         $fail += $got === $exp ? 0 : 1;
         printf("[%s] %s\n", $got === $exp ? 'PASS' : 'FAIL', $desc);
     }
-    printf("%d/%d passed\n", count($cases) - $fail, count($cases));
+    foreach ($shared as [$desc, $sgws, $exp]) {
+        $got = guard_forbidden_match($sgws, 'inet', '192.0.2.1', 'hn1');
+        $fail += $got === $exp ? 0 : 1;
+        printf("[%s] %s\n", $got === $exp ? 'PASS' : 'FAIL', $desc);
+    }
+    $total = count($cases) + count($shared);
+    printf("%d/%d passed\n", $total - $fail, $total);
     exit($fail === 0 ? 0 : 1);
 }
 

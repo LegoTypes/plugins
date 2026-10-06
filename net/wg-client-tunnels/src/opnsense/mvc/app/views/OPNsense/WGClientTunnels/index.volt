@@ -887,14 +887,18 @@
             },
             onAction: function () { refreshAll(); }
         });
-        /* Settings: each switch's help (forms/general.xml, the one source) shown in its row's third column,
-         * readable and always visible, instead of behind the row's info icon */
+        /* Settings: forms/general.xml gives each switch a <brief>, always shown in its row's wide third column,
+         * and a <help>, core's full help. Core renders the full help as a hidden block under the (narrow)
+         * checkbox; it moves, intact, under the brief, so core's "full help" toggle shows and hides it as on any
+         * other page. The rows' info icons go: the brief is always visible and the toggle covers the rest. */
         $('#frm_general [data-for^="help_for_"]').each(function () {
             var help = $(this);
-            help.closest('tr').children('td').eq(2).prepend($('<div class="wgct-help"/>').append(help.children('small').contents()));
-            help.remove();
+            var id = help.attr('data-for').substring('help_for_'.length);
+            var cell = help.closest('tr').children('td').eq(2);
+            cell.prepend(help.detach());
+            cell.prepend($('<div class="wgct-brief"/>').append($('#wgct-briefs [data-wgct-brief-for="' + id + '"]').contents()));
         });
-        $('#frm_general a.showhelp').replaceWith(function () { return $('<i class="fa fa-info-circle fa-fw text-muted"/>'); });
+        $('#frm_general .control-label > a.showhelp, #frm_general .control-label > i.fa-info-circle').remove();
         /* the sentinel's repair belongs with the switch for the other half of the default-route exclusion */
         $('#wgclienttunnels\\.default_guard').closest('tr').children('td').eq(2).append($('#wgct-exclusion-wrap').detach().show());
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
@@ -978,9 +982,22 @@
     </table>
 </div>
 
+{# each Settings switch's brief help (forms/general.xml <brief>), placed in its row by the script above #}
+<div id="wgct-briefs" style="display: none;">
+{% for section in generalForm['sections'] %}
+{% for field in section['children'] %}
+{% if field['brief'] is defined %}
+    <div data-wgct-brief-for="{{ field['id'] }}">{{ lang._(field['brief']) }}</div>
+{% endif %}
+{% endfor %}
+{% endfor %}
+</div>
 <div id="wgct-exclusion-wrap" style="display: none; margin-top: 0.5em;">
     <button class="btn btn-default btn-xs" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Check default-route exclusion') }}</button>
-    <div class="wgct-help" style="margin-top: 0.25em;">{{ lang._('The other half of the exclusion: creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing anything; with nothing to change, it says so.') }}</div>
+    {# full help, like the switches': core's "full help" toggle shows it once this sits inside the form #}
+    <div class="hidden" data-for="help_for_wgct_sentinel" style="margin-top: 0.25em;">
+        <small>{{ lang._('The other half of the exclusion: creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing anything; with nothing to change, it says so.') }}</small>
+    </div>
 </div>
 <span id="wgct-measure-wrap" style="display: none;">
     <button type="button" class="btn btn-default btn-xs" id="wgct-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
