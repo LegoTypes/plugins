@@ -114,6 +114,9 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '12b: disabled -> every held gateway released, nothing planned', $r['plan']['release'] === ['WAN2']
         && $r['plan']['hold'] === [] && $r['plan']['stopped']);
 
+    $r = wf_plan(wf_t_snap(9050, [], [], ['enabled' => false]), wf_state_new(1));
+    wf_check($t, 'disabled with nothing held logs nothing and plans nothing', $r['plan']['log'] === [] && !$r['plan']['acting']);
+
     $r = wf_plan(wf_t_snap(9100, [], ['force_down' => true, 'status' => 'force_down'],
         ['held' => ['WAN2'], 'contract' => ['judging' => ['dpinger_instances() rows lack current_losslow'], 'command' => []]]), $s);
     wf_check($t, '12e: judging drift -> release all and stop', $r['plan']['release'] === ['WAN2'] && $r['plan']['stopped']);
