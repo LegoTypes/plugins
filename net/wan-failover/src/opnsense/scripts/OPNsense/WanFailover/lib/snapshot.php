@@ -53,7 +53,7 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  * @return array{now: int, boot_time: int, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>,
  *               held_stale: list<string>, force_down: array<string, bool>, uuid_by_name: array<string, string>,
- *               contract: array{judging: list<string>, command: list<string>}}
+ *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
  */
 function wf_snapshot(): array
 {
@@ -114,16 +114,19 @@ function wf_snapshot(): array
     $read = fn (string $f): ?string => is_readable($f) ? (string)file_get_contents($f) : null;
     $a = '/usr/local/opnsense/service/conf/actions.d/';
     $command = wf_contract_commands($read($a . 'actions_interface.conf'), $read($a . 'actions_filter.conf'),
-        $read($a . 'actions_tailscale.conf'), $read('/usr/local/etc/rc'));
+        $read('/usr/local/etc/rc'));
+    $tsActions = $read($a . 'actions_tailscale.conf');
+    $tailscale = wf_contract_tailscale($tsActions);
     return [
         'now' => $now, 'boot_time' => wf_boot_time(),
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
-        'failback' => $mdl->failback->isEqual('1'), 'tailscale_restart' => $mdl->tailscale_restart->isEqual('1'),
+        'failback' => $mdl->failback->isEqual('1'),
+        'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
         'default_gw' => wf_parse_route_get($defaultOut)['gateway'],
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'held' => $heldRes['names'], 'held_stale' => $heldRes['unresolved'],
         'force_down' => $forceDown, 'uuid_by_name' => array_flip($nameByUuid),
-        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command],
+        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale],
     ];
 }
 

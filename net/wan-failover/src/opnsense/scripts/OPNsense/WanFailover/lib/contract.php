@@ -12,6 +12,8 @@ declare(strict_types=1);
  * internals; a drift blocks new holds only. Pure: callers pass the file contents.
  */
 
+require_once __DIR__ . '/constants.php';
+
 const WF_GATEWAY_LOCK = '/tmp/filter_reload_gateway.lock';
 const WF_INSTANCE_KEYS = ['current_losslow', 'current_losshigh', 'current_time_period', 'current_interval', 'current_loss_interval'];
 
@@ -23,7 +25,7 @@ function wf_ini_section(string $text, string $name): ?string
 /**
  * @return list<string>
  */
-function wf_contract_commands(?string $interfaceActions, ?string $filterActions, ?string $tailscaleActions, ?string $rc): array
+function wf_contract_commands(?string $interfaceActions, ?string $filterActions, ?string $rc): array
 {
     $p = [];
     $alarm = $interfaceActions === null ? null : wf_ini_section($interfaceActions, 'routes.alarm');
@@ -41,15 +43,26 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
             $p[] = '[kill.state] or [kill.gateway_states] changed';
         }
     }
-    if ($tailscaleActions === null || wf_ini_section($tailscaleActions, 'restart') === null) {
-        $p[] = 'actions_tailscale.conf [restart] missing or unreadable';
-    }
     $early = $rc === null ? false : strpos($rc, 'rc.syshook early');
     $bootup = $rc === null ? false : strpos($rc, 'rc.bootup');
     if ($early === false || $bootup === false || $early > $bootup) {
         $p[] = '/usr/local/etc/rc no longer runs rc.syshook early before rc.bootup';
     }
     return $p;
+}
+
+/**
+ * Tailscale is optional: no actions file means it is not installed, and a missing [restart] only turns
+ * Tailscale restarts off; neither touches holds.
+ *
+ * @return list<string>
+ */
+function wf_contract_tailscale(?string $tailscaleActions): array
+{
+    if ($tailscaleActions === null || wf_ini_section($tailscaleActions, 'restart') !== null) {
+        return [];
+    }
+    return ['actions_tailscale.conf has no [restart]'];
 }
 
 /**
@@ -79,12 +92,12 @@ function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $ro
 /**
  * Log a drift once when it appears or changes, and once when it clears.
  *
- * @param array{judging: list<string>, command: list<string>} $contract
+ * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>} $contract
  * @return array{line: ?string, prio: int, last: string}
  */
 function wf_contract_log(array $contract, string $last): array
 {
-    $all = array_merge($contract['judging'], $contract['command']);
+    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? []);
     $now = implode("\n", $all);
     if ($now === $last) {
         return ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
@@ -92,7 +105,8 @@ function wf_contract_log(array $contract, string $last): array
     if ($all === []) {
         return ['line' => 'core-contract: core matches again', 'prio' => LOG_NOTICE, 'last' => $now];
     }
-    $effect = $contract['judging'] !== [] ? 'releasing every hold and stopping' : 'no new holds';
+    $effect = $contract['judging'] !== [] ? 'releasing every hold if it persists for ' . WF_UNKNOWN_MAX_SECONDS . ' s'
+        : ($contract['command'] !== [] ? 'no new holds' : 'Tailscale restarts off');
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }
