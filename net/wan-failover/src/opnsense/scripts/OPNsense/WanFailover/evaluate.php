@@ -54,7 +54,7 @@ if ($mode === 'start' || $mode === 'stop') {
 }
 if ($mode === '--snapshot') {
     $snap = wf_snapshot();
-    $snap['pf'] = wf_snapshot_pf(array_map(fn (array $w): string => $w['gateway_ip'], $snap['wans']));
+    $snap['pf'] = wf_snapshot_pf(array_map(fn (array $w): string => $w['route_target'], $snap['wans']));
     file_put_contents($args[1] ?? '/tmp/wanfailover.snapshot.json', json_encode($snap, JSON_PRETTY_PRINT) . "\n");
     exit(0);
 }
@@ -105,7 +105,7 @@ if ($cl['line'] !== null) {
     wf_log($cl['line'], $cl['prio']);
 }
 $state['contract_last'] = $cl['last'];
-$wanGwIp = array_map(fn (array $w): string => $w['gateway_ip'], $snap['wans']);
+$wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
 
 if ($mode === 'release') {
     $snap['enabled'] = false;
@@ -123,8 +123,8 @@ foreach (array_merge($plan['log'], $plan['alerts']) as $line) {
 
 if ($snap['dry'] && $snap['enabled']) {
     foreach ($plan['failback'] as $n => $fb) {
-        $pf = wf_snapshot_pf($wanGwIp);
-        $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanGwIp, $pf['default'], $fb['top'], $pf['pinned']);
+        $pf = wf_snapshot_pf($wanTargets);
+        $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         wf_log(sprintf('[dry] failback %s would kill %d states, spare %d flows%s', $n, count($g['kills']), $g['spared'],
             $g['ready'] ? '' : ' (not ready)'));
         unset($state['pending_failbacks'][$n]);
@@ -138,7 +138,7 @@ if ($snap['dry'] && $snap['enabled']) {
     $state['last_held'] = $snap['held'];
     wf_state_save(WF_STATE, $state);
 } else {
-    $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanGwIp, $snap['uuid_by_name']))['state'];
+    $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets, $snap['uuid_by_name']))['state'];
 }
 
 if ($plan['hold'] !== [] || $plan['release'] !== [] || $plan['alerts'] !== [] || $cl['line'] !== null) {
@@ -148,7 +148,7 @@ if ($plan['hold'] !== [] || $plan['release'] !== [] || $plan['alerts'] !== [] ||
 if ($snap['enabled'] && $snap['now'] - (int)($state['installed_at'] ?? $snap['now']) < WF_TRACE_DAYS * 86400) {
     $record = ['snap' => $snap, 'plan' => $plan, 'judgements' => $state['judgements']];
     if ($plan['acting']) {
-        $pf = wf_snapshot_pf($wanGwIp);
+        $pf = wf_snapshot_pf($wanTargets);
         $record['pf'] = ['raw_states' => $pf['raw_states'], 'raw_rules' => $pf['raw_rules'], 'default' => $pf['default']];
     }
     wf_trace(WF_TRACE, $record);

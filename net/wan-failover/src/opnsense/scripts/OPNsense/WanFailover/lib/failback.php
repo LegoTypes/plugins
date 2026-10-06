@@ -41,11 +41,11 @@ function wf_preferred(array $flow, array $rulePref, ?string $liveDefault, array 
  * @param list<array{anchor: array{dst: string, id: ?string, creatorid: ?string}, partner: ?array{rlabel: ?string, id: ?string, creatorid: ?string}, kind: string, current: string}> $flows
  * @param array<string, list<string>> $rulePref
  * @param array<string, list<array{gw: ?string, if: ?string, balanced: bool}>> $renderings
- * @param array<string, string> $wanGwIp
+ * @param array<string, string> $wanTargets WAN name => route target
  * @param array<string, true> $pinned
  * @return array{ready: bool, kills: list<array{id: string, creatorid: string}>, stale_labels: list<string>, default_ok: bool, spared: int}
  */
-function wf_failback_gate(string $recovering, array $flows, array $rulePref, array $renderings, array $wanGwIp,
+function wf_failback_gate(string $recovering, array $flows, array $rulePref, array $renderings, array $wanTargets,
                           ?string $liveDefault, bool $recoveringIsTop, array $pinned): array
 {
     $defaultOk = !$recoveringIsTop || $liveDefault === $recovering;
@@ -60,7 +60,8 @@ function wf_failback_gate(string $recovering, array $flows, array $rulePref, arr
         $label = $f['kind'] === 'forwarded' ? ($f['partner']['rlabel'] ?? null) : null;
         if ($label !== null && ($rulePref[$label] ?? []) !== []) {
             $r = $renderings[$label] ?? [];
-            $onRecovering = array_filter($r, fn (array $x): bool => $x['gw'] === $wanGwIp[$recovering]);
+            $onRecovering = array_filter($r, fn (array $x): bool => $x['gw'] !== null && $x['if'] !== null
+                && wf_route_target($x['gw'], $x['if']) === $wanTargets[$recovering]);
             if ($r === [] || count($onRecovering) !== count($r)) {
                 $stale[$label] = true;
                 continue;

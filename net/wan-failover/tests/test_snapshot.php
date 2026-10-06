@@ -22,8 +22,10 @@ wf_register_suite('snapshot', function (): int {
     $wg = "wg1: flags=10080c1<UP,RUNNING,NOARP,MULTICAST,LOWER_UP> metric 0 mtu 1420\n\tinet 10.2.0.2 netmask 0xffffffff\n\tgroups: wg wireguard\n";
     wf_check($t, 'ifconfig: an interface that prints no status line (wg, pppoe) is not taken for carrier loss', wf_parse_ifconfig($wg) === ['carrier' => true, 'has_ipv4' => true]);
     wf_check($t, 'route get default', wf_parse_route_get("   route to: default\ndestination: default\n    gateway: 203.0.113.1\n  interface: igc1\n")
-        === ['destination' => 'default', 'gateway' => '203.0.113.1']);
-    wf_check($t, 'route get with no route', wf_parse_route_get("route: route has not been found\n") === ['destination' => null, 'gateway' => null]);
+        === ['destination' => 'default', 'gateway' => '203.0.113.1', 'interface' => 'igc1']);
+    wf_check($t, 'route get with no route', wf_parse_route_get("route: route has not been found\n") === ['destination' => null, 'gateway' => null, 'interface' => null]);
+    wf_check($t, 'route target of a route get', wf_route_get_target(['destination' => 'default', 'gateway' => '203.0.113.1', 'interface' => 'igc1']) === '203.0.113.1@igc1'
+        && wf_route_get_target(['destination' => null, 'gateway' => null, 'interface' => null]) === null);
     wf_check($t, 'kern.boottime', wf_parse_boottime('{ sec = 1791072586, usec = 85313 } Sat Oct  3 17:09:46 2026') === 1791072586);
     wf_check($t, 'kern.boottime unparseable is 0', wf_parse_boottime('') === 0);
     $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'PRIMARY_WAN', 'u2' => 'WAN2']);

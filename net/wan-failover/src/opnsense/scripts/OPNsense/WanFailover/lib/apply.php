@@ -108,7 +108,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         $state['apply_pending'] = [];
     }
 
-    $wanGwIp = array_map(fn (array $w): string => $w['gateway_ip'], $snap['wans']);
+    $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
     foreach ($plan['failback'] as $n => $fb) {
         $before = ($io['status'])();
         if (!($io['gw_lock'])()) {
@@ -121,12 +121,12 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             $log("failback {$n}: pf state format did not parse (core contract); failback suspended");
             continue;
         }
-        $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanGwIp, $pf['default'], $fb['top'], $pf['pinned']);
+        $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         if (!$g['ready']) {
             $extra = array_keys(array_diff_assoc(($io['status'])(), $before));
             ($io['configd'])('wanfailover replay_alarm', [implode(',', array_values(array_unique(array_merge([$n], $extra))))]);
             $pf = ($io['pf'])();
-            $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanGwIp, $pf['default'], $fb['top'], $pf['pinned']);
+            $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         }
         foreach ($g['kills'] as $k) {
             ($io['configd'])('filter kill state', [$k['id'], $k['creatorid']]);
@@ -191,11 +191,11 @@ function wf_write_holds(array $changes, array $heldAfterUuids): bool
 }
 
 /**
- * @param array<string, string> $wanGwIp WAN name => gateway ip
+ * @param array<string, string> $wanTargets WAN name => route target
  * @param array<string, string> $uuidByName gateway name => UUID
  * @return array the Task 11 $io shape
  */
-function wf_live_io(string $statePath, array $wanGwIp, array $uuidByName): array
+function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): array
 {
     $lock = null;
     return [
@@ -225,7 +225,7 @@ function wf_live_io(string $statePath, array $wanGwIp, array $uuidByName): array
             $lock = null;
         },
         'status' => fn (): array => array_map(fn (array $s): string => (string)$s['status'], dpinger_status()),
-        'pf' => fn (): array => wf_snapshot_pf($wanGwIp),
+        'pf' => fn (): array => wf_snapshot_pf($wanTargets),
         'live_default' => fn (): ?string => wf_live_default(),
         'save_state' => fn (array $s) => wf_state_save($statePath, $s),
         'sleep' => fn (int $s): int => sleep($s),
