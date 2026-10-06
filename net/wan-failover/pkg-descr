@@ -1,0 +1,23 @@
+WAN Failover Plugin
+
+Decides when an IPv4 WAN leaves service and when it comes back, moves
+connections to the right WAN both ways, and restarts Tailscale only when
+the default route actually changed.
+
+- A WAN whose dpinger loss exceeds the gateway's own threshold, or that is
+  hard down, is held with force_down while another WAN is usable; once
+  held it returns only when a settled window shows no loss at all
+- Never both: a hold needs a usable alternative and is released at once
+  on positive evidence that the alternative failed
+- A reboot releases every hold before routing starts
+- A new hold kills that WAN's states; when a WAN recovers, flows that
+  prefer it move back once their rule and the default route point there
+- Ownership (which gateways it holds) is saved with force_down in one
+  config write, so a config backup carries both
+
+Plugin Changelog
+================
+
+1.0
+
+* Initial release
