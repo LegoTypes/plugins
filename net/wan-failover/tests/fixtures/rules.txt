@@ -1,0 +1,6 @@
+@188 pass out route-to (igc1 203.0.113.1) inet from (igc1:1) to ! (igc1:network:1) flags S/SA keep state allow-opts label "dddddddddddddddddddddddddddddddd"
+@190 pass out route-to (igc2 192.168.12.1) inet from (igc2:1) to ! (igc2:network:1) flags S/SA keep state allow-opts label "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+@2310 pass in quick on vlan0.65 route-to (igc2 192.168.12.1) inet proto tcp from <wan2_first_hosts:2> to ! (self) flags S/SA keep state label "22222222-2222-4222-8222-222222222222"
+@2311 pass in quick on vlan0.65 route-to (igc2 192.168.12.1) inet proto udp from <wan2_first_hosts:2> to ! (self) keep state label "22222222-2222-4222-8222-222222222222"
+@2487 pass in quick on vlan0.777 inet proto udp from <tailscale_exit_proton_host:1> to ! <LocalNetworks:7> keep state label "11111111-1111-4111-8111-111111111111"
+@2490 pass in quick on vlan0.777 route-to { (igc1 203.0.113.1), (igc2 192.168.12.1) } round-robin inet proto tcp from any to any keep state label "55555555-5555-4555-8555-555555555555"
