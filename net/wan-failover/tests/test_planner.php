@@ -133,5 +133,10 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(['wans' => ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1)]]
         + wf_t_snap(9400, [], ['force_down' => true, 'status' => 'force_down'], ['held' => ['WAN2'], 'force_down' => ['PRIMARY_WAN' => false, 'WAN2' => true]]), $s);
     wf_check($t, 'a held gateway removed from wans is released', $r['plan']['release'] === ['WAN2'] && $r['plan']['held_after'] === []);
+    $s = wf_state_new(1);
+    $s['boot_note'] = 'boot: released WAN2';
+    $r = wf_plan(wf_t_snap(9500, [], []), $s);
+    wf_check($t, 'the early hook\'s note (syslog is not running yet at that point) is logged once by the first evaluation',
+        in_array('boot: released WAN2', $r['plan']['log'], true) && $r['state']['boot_note'] === null);
     return wf_tally_report('planner', $t);
 });

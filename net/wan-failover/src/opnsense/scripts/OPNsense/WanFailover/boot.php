@@ -35,10 +35,11 @@ try {
     $names = wf_resolve_uuids($heldUuids, $nameByUuid)['names'];
     if ($heldUuids === []) {
         wf_state_save(WF_STATE, wf_boot_reset($state, $bootTime));
-        wf_log('boot: nothing held; state reset');
     } elseif (wf_write_holds(array_fill_keys($names, false), [])) {
-        wf_state_save(WF_STATE, wf_boot_reset($state, $bootTime));
-        wf_log('boot: released ' . (implode(',', $names) ?: 'stale held entries'));
+        /* syslog is not running yet: the first evaluation logs this note */
+        $reset = wf_boot_reset($state, $bootTime);
+        $reset['boot_note'] = 'boot: released ' . (implode(',', $names) ?: 'stale held entries');
+        wf_state_save(WF_STATE, $reset);
     } else {
         wf_log('boot: config write failed; the first evaluation releases the holds', LOG_WARNING);
     }

@@ -44,6 +44,11 @@ function wf_plan(array $snap, array $state): array
     }
     $state['last_now'] = $now;
     $state['installed_at'] = $state['installed_at'] ?? $now;
+    /* the early hook runs before syslog starts, so it leaves its outcome here */
+    if (($state['boot_note'] ?? null) !== null) {
+        $log[] = $state['boot_note'];
+        $state['boot_note'] = null;
+    }
 
     $releaseAll = null;
     if ($state['boot_time'] !== $snap['boot_time']) {
