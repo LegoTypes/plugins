@@ -74,9 +74,18 @@ function wf_plan(array $snap, array $state): array
         }
     }
 
+    /* A judging drift counts only once it has persisted: a reconfigure in flight briefly removes dpinger
+     * sockets and the default route, and the engine's own holds cause reconfigures. Until then it only
+     * blocks new holds, like a command drift. */
+    $judgingDrift = $snap['contract']['judging'] !== [];
+    if ($judgingDrift) {
+        $state['contract_judging_since'] = $state['contract_judging_since'] ?? $now;
+    } else {
+        $state['contract_judging_since'] = null;
+    }
     if (!$snap['enabled']) {
         $releaseAll = 'plugin disabled';
-    } elseif ($snap['contract']['judging'] !== []) {
+    } elseif ($judgingDrift && $now - $state['contract_judging_since'] >= WF_UNKNOWN_MAX_SECONDS) {
         $releaseAll = 'core contract broken: WANs cannot be read';
     }
 
@@ -124,7 +133,7 @@ function wf_plan(array $snap, array $state): array
     $h = wf_plan_holds($wans, $now, WF_FRESH_SECONDS);
     $log = array_merge($log, $h['log']);
     $hold = $h['hold'];
-    if ($snap['contract']['command'] !== [] && $hold !== []) {
+    if (($snap['contract']['command'] !== [] || $judgingDrift) && $hold !== []) {
         $log[] = 'core contract drift: not starting holds on ' . implode(',', $hold);
         $hold = [];
     }

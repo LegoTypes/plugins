@@ -117,9 +117,13 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(9050, [], [], ['enabled' => false]), wf_state_new(1));
     wf_check($t, 'disabled with nothing held logs nothing and plans nothing', $r['plan']['log'] === [] && !$r['plan']['acting']);
 
-    $r = wf_plan(wf_t_snap(9100, [], ['force_down' => true, 'status' => 'force_down'],
-        ['held' => ['WAN2'], 'contract' => ['judging' => ['dpinger_instances() rows lack current_losslow'], 'command' => []]]), $s);
-    wf_check($t, '12e: judging drift -> release all and stop', $r['plan']['release'] === ['WAN2'] && $r['plan']['stopped']);
+    $drift = ['held' => ['WAN2'], 'contract' => ['judging' => ['dpinger_instances() rows lack current_losslow'], 'command' => []]];
+    $r = wf_plan(wf_t_snap(9100, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], $drift), $s);
+    wf_check($t, '12e: a judging drift that has not persisted (a reconfigure in flight) releases nothing', $r['plan']['release'] === [] && !$r['plan']['stopped']);
+    $r = wf_plan(wf_t_snap(9281, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], $drift), $r['state']);
+    wf_check($t, '12e: a judging drift persisting past unknown_max_seconds -> release all and stop', $r['plan']['release'] === ['WAN2'] && $r['plan']['stopped']);
+    $r2 = wf_plan(wf_t_snap(9300, [], ['loss' => 30.0], ['contract' => ['judging' => ['x'], 'command' => []]]), wf_state_new(1));
+    wf_check($t, '12e: a fresh judging drift blocks new holds', $r2['plan']['hold'] === []);
     $r = wf_plan(wf_t_snap(9200, [], ['loss' => 30.0], ['contract' => ['judging' => [], 'command' => ['[kill.state] changed']]]), wf_state_new(1));
     wf_check($t, '12e: command drift -> no new hold', $r['plan']['hold'] === [] && !$r['plan']['stopped']);
 
