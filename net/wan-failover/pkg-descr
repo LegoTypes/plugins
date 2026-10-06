@@ -18,6 +18,12 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.1
+
+* Failback recognises a gateway group rendered as a pool that names one
+  gateway several times (its weight); it was taken for a balanced rule,
+  so flows preferring that gateway never moved back
+
 1.0
 
 * Initial release
