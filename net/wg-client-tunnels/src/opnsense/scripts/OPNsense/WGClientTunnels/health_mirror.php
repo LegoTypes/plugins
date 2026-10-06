@@ -33,17 +33,22 @@
  * lives in the plugin model's `held` field as gateway UUIDs, and is saved in
  * the same Config::lock()/save() write as the force_down values it explains.
  *
- * Settle guard: a dpinger that has just started reports 0% loss because it has
- * no samples yet, not because the path is healthy. Every routing reconfigure
- * restarts all dpingers -- including the reconfigure this script itself triggers
- * when it changes a gateway -- so without this the mirror releases gateways in
- * the middle of an outage and forces them down again on the next tick. While a
- * gateway's dpinger socket is younger than the settle window, a healthy reading
- * is ignored: it can still trip a gateway DOWN, never bring one back UP. The
- * window is the gateway's own time_period (SETTLE_FALLBACK_SECONDS if unset);
- * --settle=N overrides it and --settle=0 disables the guard. It applies to the
- * WAN reading in pass 1 and the tunnel reading in pass 2. A bound WAN gateway
- * with monitoring disabled counts as settled at once: it has no dpinger to wait for.
+ * Settle guard: a dpinger that has just started has no samples yet, so what it
+ * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing about
+ * the path. Every routing reconfigure restarts all dpingers -- any gateway Apply,
+ * and the reconfigure this script itself triggers when it changes a gateway -- so
+ * without this the mirror releases gateways in the middle of an outage, or holds a
+ * healthy WAN's tunnels down (seen on the firewall 2026-10-06: a gateway Apply
+ * took WAN2's tunnels down for 1 min 45 s), and each change restarts the dpingers
+ * again. While a gateway's dpinger socket is younger than the settle window, or
+ * absent, its reading changes nothing: the previous decision stands. A WAN that
+ * is disabled or forced down in configuration still holds its tunnels at once;
+ * that is not a reading. A real outage that coincides with a restart is acted on
+ * once the window has passed. The window is the gateway's own time_period
+ * (SETTLE_FALLBACK_SECONDS if unset); --settle=N overrides it and --settle=0
+ * disables the guard. It applies to the WAN reading in pass 1 and the tunnel
+ * reading in pass 2. A bound WAN gateway with monitoring disabled counts as
+ * settled at once: it has no dpinger to wait for.
  *
  * --dry reports every decision against live config and live gateway status
  * without writing or reconfiguring anything. --selftest exercises the decision

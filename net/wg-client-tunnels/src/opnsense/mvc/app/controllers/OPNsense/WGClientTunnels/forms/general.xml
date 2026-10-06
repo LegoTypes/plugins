@@ -1,4 +1,8 @@
 <form>
+    <!--
+        Each switch has two texts. <brief> is shown at all times in the row (index.volt places it);
+        <help> is core's full help, hidden until the form's "full help" toggle is on.
+    -->
     <field>
         <type>header</type>
         <label>Settings</label>
@@ -7,42 +11,49 @@
         <id>wgclienttunnels.enabled</id>
         <label>Enable</label>
         <type>checkbox</type>
-        <help>Manage the tunnels listed below. Normally enabled. Off stops everything on this page and removes the tunnels' firewall pins and MSS clamp; the tunnels themselves keep running.</help>
+        <brief>Manage the tunnels listed below. Normally enabled.</brief>
+        <help>Off stops everything on this page and removes the tunnels' firewall pins and MSS clamp; the tunnels themselves keep running.</help>
     </field>
     <field>
         <id>wgclienttunnels.health_mirror</id>
         <label>Health mirror</label>
         <type>checkbox</type>
-        <help>Hold each tunnel down while its bound WAN is down, and each IPv6 tunnel gateway down while its IPv4 tunnel is unhealthy (the IPv6 gateway's own monitor decides the rest). Normally enabled.</help>
+        <brief>Hold each tunnel down while its WAN is down. Normally enabled.</brief>
+        <help>Each tunnel is held down while the WAN its endpoint route binds it to is down, and each IPv6 tunnel gateway while its IPv4 tunnel is unhealthy (the IPv6 gateway's own monitor decides the rest). Every gateway change restarts the gateway monitors, and a restarted monitor reads up or down before it has measured anything, so a reading only counts once the monitor has run for the gateway's averaging period; until then the last decision stands. A WAN that is disabled or forced down acts at once.</help>
     </field>
     <field>
         <id>wgclienttunnels.ipv6_routes</id>
         <label>IPv6 addresses and routes</label>
         <type>checkbox</type>
-        <help>Keep each tunnel's IPv6 address, next-hop route and IPv6 monitor route in place (core adds no IPv6 far-gateway route). Off stops maintaining them; a tunnel restart then leaves its IPv6 gateway without routes, unmeasured and reading down. Normally enabled when any tunnel has IPv6.</help>
+        <brief>Keep each tunnel's IPv6 address and routes in place. Normally enabled when any tunnel has IPv6.</brief>
+        <help>Maintains each tunnel's IPv6 address, next-hop route and IPv6 monitor route (core adds no IPv6 far-gateway route). Off stops maintaining them; a tunnel restart then leaves its IPv6 gateway without routes, unmeasured and reading down.</help>
     </field>
     <field>
         <id>wgclienttunnels.default_guard</id>
         <label>Default-route guard</label>
         <type>checkbox</type>
-        <help>Normally enabled if the router is using one or more WANs as route defaults. Removes a default route that points through a tunnel or any other non-default gateway, for both address families.</help>
+        <brief>Keep tunnels from carrying the default route. Normally enabled when the router uses its WANs as defaults.</brief>
+        <help>Removes a default route, in either address family, whose next hop belongs only to a tunnel or another gateway not marked as an upstream (default) gateway. A next hop that an upstream gateway shares is left alone.</help>
     </field>
     <field>
         <id>wgclienttunnels.wan_pins</id>
         <label>WAN pins</label>
         <type>checkbox</type>
-        <help>Block each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Normally enabled; off removes these firewall rules.</help>
+        <brief>Keep each tunnel's handshakes on its own WAN. Normally enabled.</brief>
+        <help>Blocks each tunnel's handshakes from leaving by any WAN other than the one its endpoint route binds it to. Off removes these firewall rules.</help>
     </field>
     <field>
         <id>wgclienttunnels.inner_source</id>
         <label>Only NATed traffic into tunnels</label>
         <type>checkbox</type>
-        <help>Block any packet entering a tunnel from any address but that tunnel's own, i.e. traffic outbound NAT did not translate to it. Normally enabled; off removes these firewall rules.</help>
+        <brief>Let only traffic NATed to a tunnel enter it. Normally enabled.</brief>
+        <help>Blocks any packet entering a tunnel from any address but that tunnel's own, i.e. traffic outbound NAT did not translate to it. Off removes these firewall rules.</help>
     </field>
     <field>
         <id>wgclienttunnels.mss_clamp</id>
         <label>MSS clamp</label>
         <type>checkbox</type>
-        <help>Clamp TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), both directions. Normally enabled; it matters on WANs with a smaller path MTU, such as mobile ones.</help>
+        <brief>Clamp TCP MSS to each tunnel's MTU. Normally enabled.</brief>
+        <help>Clamps TCP MSS on each tunnel to its MTU (IPv4 MTU−40, IPv6 MTU−60), in both directions. It matters on WANs with a smaller path MTU, such as mobile ones.</help>
     </field>
 </form>

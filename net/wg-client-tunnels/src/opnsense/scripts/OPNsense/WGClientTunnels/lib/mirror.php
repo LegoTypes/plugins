@@ -58,10 +58,15 @@ function wgct_socket_age($sock) {
  * @param int      $lossLow     low watermark (recover at/below)
  * @param bool     $currentDown current force_down state (hysteresis memory)
  * @param bool     $settled     false while dpinger has not filled its averaging
- *                              window, which makes a healthy reading unreliable
+ *                              window, which makes any reading unreliable
  * @return bool    true => force_down
  */
 function wgct_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled = true) {
+    if (!$settled) {
+        // A just-restarted dpinger has no samples yet: it reads 0% or 100% (or has
+        // no socket at all) whatever the path is doing. Neither direction counts.
+        return $currentDown;
+    }
     if ($lossVal === null) {
         return true;                // no dpinger data => treat tunnel as down
     }
@@ -69,9 +74,7 @@ function wgct_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled 
         return true;                // at/above high watermark => down
     }
     if ($lossVal <= $lossLow) {
-        // A just-restarted dpinger reports 0% because it has no samples yet.
-        // Trust "down" from it, never "up": hold instead of releasing.
-        return $settled ? false : $currentDown;
+        return false;               // at/below low watermark => up
     }
     return $currentDown;            // between watermarks => hold (hysteresis)
 }
@@ -96,12 +99,16 @@ function wgct_wan_status_down($status) {
  * @return bool true => the tunnel must be held down
  */
 function wgct_decide_underlay(array $wan, $held) {
-    if ($wan['disabled'] || $wan['force_down'] || wgct_wan_status_down($wan['status'])) {
+    // Configuration, not a reading: a disabled or forced-down WAN holds its tunnels at once.
+    if ($wan['disabled'] || $wan['force_down'] || $wan['status'] === 'force_down') {
         return true;
     }
-    // WAN reads up. A dpinger restarted by the last reconfigure reads up with
-    // no samples, so only a settled reading may release a held tunnel.
-    return $wan['settled'] ? false : $held;
+    // Every routing reconfigure restarts all dpingers, and a fresh one reads down or up
+    // before it has samples. Until the WAN's reading has settled, the decision stands.
+    if (!$wan['settled']) {
+        return $held;
+    }
+    return wgct_wan_status_down($wan['status']);
 }
 
 /**
@@ -613,7 +620,7 @@ function wgct_selftest() {
     $fail = 0;
     $total = 0;
 
-    /* ---- wgct_decide_down / wgct_decide_underlay (unchanged cases) ---- */
+    /* ---- wgct_decide_down / wgct_decide_underlay ---- */
     $cases = [
         // description, lossVal, high, low, currentDown, settled, expectedDown
         ['no data => down',              null, 20,  10,  false, true,  true],
@@ -627,12 +634,15 @@ function wgct_selftest() {
         ['above high (30) => down',      30,   20,  10,  false, true,  true],
         ['no threshold: 50% => up',      50,   100, 100, false, true,  false],
         ['no threshold: 100% => down',   100,  100, 100, false, true,  true],
-        // Settle guard: a fresh dpinger may trip down, but may not release.
-        ['unsettled 0%, was down => dn', 0,    20,  10,  true,  false, true],
-        ['unsettled 0%, was up => up',   0,    20,  10,  false, false, false],
-        ['unsettled 100% => down',       100,  20,  10,  false, false, true],
-        ['unsettled no data => down',    null, 20,  10,  false, false, true],
-        ['unsettled in band => hold',    15,   20,  10,  true,  false, true],
+        // Settle guard: a fresh dpinger's reading decides nothing, either way (it reads
+        // 0% or 100% before it has samples); the previous decision stands.
+        ['unsettled 0%, was down => dn',      0,    20,  10,  true,  false, true],
+        ['unsettled 0%, was up => up',        0,    20,  10,  false, false, false],
+        ['unsettled 100%, was up => up',      100,  20,  10,  false, false, false],
+        ['unsettled 100%, was down => dn',    100,  20,  10,  true,  false, true],
+        ['unsettled no data, was up => up',   null, 20,  10,  false, false, false],
+        ['unsettled no data, was down => dn', null, 20,  10,  true,  false, true],
+        ['unsettled in band => hold',         15,   20,  10,  true,  false, true],
     ];
     $up = ['disabled' => false, 'force_down' => false, 'status' => 'none', 'settled' => true];
     $underlayCases = [
@@ -648,6 +658,15 @@ function wgct_selftest() {
         ['WAN delay+loss => down',             ['status' => 'delay+loss'] + $up, false, true],
         ['WAN up, unsettled, held => hold',    ['settled' => false] + $up, true,  true],
         ['WAN up, unsettled, not held => up',  ['settled' => false] + $up, false, false],
+        // a fresh dpinger reads down before it has samples: the previous decision stands
+        ['WAN down, unsettled, not held => up',        ['status' => 'down', 'settled' => false] + $up, false, false],
+        ['WAN down, unsettled, held => hold',          ['status' => 'down', 'settled' => false] + $up, true,  true],
+        ['WAN loss, unsettled, not held => up',        ['status' => 'loss', 'settled' => false] + $up, false, false],
+        ['WAN absent, unsettled, not held => up',      ['status' => null, 'settled' => false] + $up, false, false],
+        // configuration is not a reading: it acts at once, settled or not
+        ['WAN disabled, unsettled => down',            ['disabled' => true, 'settled' => false] + $up, false, true],
+        ['WAN force_down, unsettled => down',          ['force_down' => true, 'settled' => false] + $up, false, true],
+        ['WAN status force_down, unsettled => down',   ['status' => 'force_down', 'settled' => false] + $up, false, true],
     ];
     foreach ($cases as $c) {
         [$desc, $lv, $hi, $lo, $cur, $settled, $exp] = $c;
@@ -725,9 +744,29 @@ function wgct_selftest() {
         ['IPv4 loss in band, IPv6 down => hold',
             $config(['tun_a-ipv6' => ['force_down' => true]]),
             $live(['loss' => ['tun_a' => 15]]), [], [], []],
-        ['no dpinger data for IPv4 => IPv6 down',
-            $config(), $live(['loss' => [], 'sock_age' => ['WAN_A' => 600]]), [],
+        ['no dpinger data for IPv4, settled socket => IPv6 down',
+            $config(), $live(['loss' => []]), [],
             ['tun_a-ipv6' => true], []],
+        ['no dpinger socket for IPv4 (restarting) => IPv6 unchanged',
+            $config(), $live(['loss' => [], 'sock_age' => ['WAN_A' => 600]]), [],
+            [], []],
+        /* 2026-10-06 14:28:15 on the firewall: a gateway Apply restarted every dpinger and the
+         * health mirror forced a healthy WAN's tunnels down on the fresh monitor's first reading */
+        ['every dpinger just restarted, WAN reads down => nothing changes',
+            $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'down'], 'loss' => ['WAN_A' => 100, 'tun_a' => 100],
+                              'sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), [],
+            [], []],
+        ['every dpinger just restarted, tunnel held, WAN reads up => still held',
+            $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), ['tun_a'],
+            [], ['tun_a']],
+        ['WAN forced down in config while every dpinger restarts => tunnel held at once, IPv6 follows',
+            $config(['WAN_A' => ['force_down' => true]]),
+            $live(['status' => ['WAN_A' => 'force_down', 'tun_a' => 'down'], 'sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), [],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a']],
+        ['WAN still down once settled => tunnel held',
+            $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none'], 'sock_age' => ['WAN_A' => 60, 'tun_a' => 600]]), [],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a']],
         ['unmonitored WAN back up (no dpinger socket) => release tunnel and IPv6',
             $config(['WAN_A' => ['monitor_disable' => true], 'tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
             $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
