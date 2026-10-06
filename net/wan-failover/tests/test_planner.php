@@ -201,6 +201,14 @@ wf_register_suite('planner', function (): int {
     wf_check($t, 'dry: loss-free -> released, failback rehearsed', $r['plan']['release'] === ['WAN2'] && $s['dry_held'] === []
         && isset($r['plan']['failback']['WAN2']));
     $s = wf_state_new('b1');
+    $s['dry_held'] = ['WAN2'];
+    $s['last_held'] = ['WAN2'];
+    $snap = wf_t_snap(12240, [], ['loss' => 30.0]);
+    $r = wf_plan($snap, wf_dry_exit($s, $snap));
+    wf_check($t, 'dry turned off: the simulated holds are dropped, not taken for a foreign config change; a bad WAN2 is held for real',
+        $r['plan']['foreign'] === [] && $r['plan']['hold'] === ['WAN2'] && $r['state']['dry_held'] === []
+        && array_filter($r['plan']['log'], fn (string $l): bool => str_contains($l, 'outside the engine')) === []);
+    $s = wf_state_new('b1');
     $s['last_held'] = ['WAN2'];
     $r = wf_plan(wf_t_snap(12300, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['held' => ['WAN2'], 'release' => 'dry']), $s);
     wf_check($t, 'dry turned on while really holding: the real hold is released', $r['plan']['release'] === ['WAN2'] && $r['plan']['held_after'] === []);

@@ -247,6 +247,21 @@ function wf_dry_after(array $state, array $plan): array
 }
 
 /**
+ * Leave dry run: drop the simulated holds and take the real held list as the last one written, so the
+ * first live plan does not read the difference as a foreign config change.
+ *
+ * @param array{held: list<string>} $snap the live snapshot
+ */
+function wf_dry_exit(array $state, array $snap): array
+{
+    if ($state['dry_held'] !== []) {
+        $state['last_held'] = $snap['held'];
+        $state['dry_held'] = [];
+    }
+    return $state;
+}
+
+/**
  * @param list<string> $hold
  * @param list<string> $release
  * @param list<string> $heldAfter
