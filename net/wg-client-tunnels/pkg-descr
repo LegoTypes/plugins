@@ -37,8 +37,10 @@ Features:
     the IPv4 gateway's loss thresholds with hysteresis; core's own monitor
     on the IPv6 gateway, pinged through the tunnel, takes it down when IPv6
     alone fails
-  - ignores a freshly restarted monitor's readings until they settle, so
-    a gateway is never released in the middle of an outage
+  - ignores a freshly restarted monitor's readings until they settle, in
+    both directions: a gateway is never released in the middle of an
+    outage, and a gateway change elsewhere never takes a healthy WAN's
+    tunnels down; a WAN disabled or forced down acts at once
   - replays the gateway alarm its own reconfigure would otherwise drop,
     so firewall rules and states follow the change
 - IPv6 prime (after each health mirror tick, whatever the health mirror
@@ -48,8 +50,8 @@ Features:
   such traffic (pings never teach it) learns the right one; backs off
   from 2 to 30 minutes, starts over with each new session, and logs each
   attempt and the recovery
-- Default-route guard: removes a default route that points through a
-  tunnel or other non-default gateway, for IPv4 and IPv6, working
+- Default-route guard: removes a default route whose next hop belongs
+  only to a tunnel or other non-default gateway, for IPv4 and IPv6, working
   together with address-less sentinel gateways that keep tunnels out of
   the default-gateway election
 - Firewall enforcement rendered from each tunnel's core configuration:
@@ -63,6 +65,24 @@ Features:
 
 Plugin Changelog
 ================
+
+3.7
+
+* Health mirror settle guard: a freshly restarted gateway monitor's
+  reading no longer counts in either direction until the monitor has run
+  for the gateway's averaging period; the last decision stands. Every
+  gateway change restarts all monitors, and a fresh monitor reads down
+  before it has samples, so a gateway Apply forced a healthy WAN's
+  tunnels down until the next settled reading (1 min 45 s on a live
+  firewall, with no tunnel left up while the other WAN was held). A WAN
+  disabled or forced down in configuration still acts at once
+* Default-route guard: a default route is removed only when every
+  gateway on its next hop (address and interface) is a non-default one;
+  a non-default gateway sharing a default gateway's next hop no longer
+  gets the native default deleted
+* Settings: each switch shows a short help line at all times and its
+  full help under it with the form's "full help" toggle (core's own);
+  the rows' inert info icons are gone
 
 3.6
 
