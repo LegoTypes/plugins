@@ -14,17 +14,17 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/tailscale.php';
 
-const WF_STATE_VERSION = 2;
+const WF_STATE_VERSION = 3;
 
 /**
- * @return array{version: int, boot_time: int, installed_at: ?int, last_now: ?int, judgements: array<string, array>,
+ * @return array{version: int, boot_id: string, installed_at: ?int, last_now: ?int, judgements: array<string, array>,
  *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
  *               contract_last: string, contract_judging_since: ?int, boot_note: ?string}
  */
-function wf_state_new(int $bootTime): array
+function wf_state_new(string $bootId): array
 {
-    return ['version' => WF_STATE_VERSION, 'boot_time' => $bootTime, 'installed_at' => null, 'last_now' => null,
+    return ['version' => WF_STATE_VERSION, 'boot_id' => $bootId, 'installed_at' => null, 'last_now' => null,
             'judgements' => [], 'no_rehold' => [], 'pending_failbacks' => [], 'ts' => wf_ts_new(),
             'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => '',
             'contract_judging_since' => null, 'boot_note' => null];
@@ -33,20 +33,20 @@ function wf_state_new(int $bootTime): array
 /**
  * @return array{state: array, corrupt: bool}
  */
-function wf_state_load(string $path, int $bootTime): array
+function wf_state_load(string $path, string $bootId): array
 {
     if (!is_file($path)) {
-        return ['state' => wf_state_new($bootTime), 'corrupt' => false];
+        return ['state' => wf_state_new($bootId), 'corrupt' => false];
     }
     try {
         $data = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
     } catch (JsonException) {
-        return ['state' => wf_state_new($bootTime), 'corrupt' => true];
+        return ['state' => wf_state_new($bootId), 'corrupt' => true];
     }
     if (!is_array($data) || ($data['version'] ?? null) !== WF_STATE_VERSION) {
-        return ['state' => wf_state_new($bootTime), 'corrupt' => true];
+        return ['state' => wf_state_new($bootId), 'corrupt' => true];
     }
-    return ['state' => array_merge(wf_state_new($bootTime), $data), 'corrupt' => false];
+    return ['state' => array_merge(wf_state_new($bootId), $data), 'corrupt' => false];
 }
 
 /**
@@ -115,9 +115,9 @@ function wf_reconcile(array $held, array $forceDown, array $applyPending, array 
  * @param array $state the shape returned by wf_state_new()
  * @return array the shape returned by wf_state_new()
  */
-function wf_boot_reset(array $state, int $bootTime): array
+function wf_boot_reset(array $state, string $bootId): array
 {
-    $new = wf_state_new($bootTime);
+    $new = wf_state_new($bootId);
     $new['installed_at'] = $state['installed_at'] ?? null;
     $new['unowned_alerted_at'] = $state['unowned_alerted_at'] ?? [];
     $new['contract_last'] = $state['contract_last'] ?? '';

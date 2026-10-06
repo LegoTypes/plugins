@@ -34,7 +34,7 @@ $mode = $args[0] ?? 'evaluate';
 
 if ($mode === '--plan-from') {
     $snap = json_decode((string)file_get_contents($args[1] ?? ''), true, 64, JSON_THROW_ON_ERROR);
-    $state = isset($args[2]) ? wf_state_load($args[2], (int)$snap['boot_time'])['state'] : wf_state_new((int)$snap['boot_time']);
+    $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
     echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
     exit(0);
 }
@@ -60,13 +60,13 @@ if ($mode === '--snapshot') {
 }
 if ($mode === '--dry') {
     $snap = wf_snapshot();
-    $state = wf_state_load(WF_STATE, $snap['boot_time'])['state'];
+    $state = wf_state_load(WF_STATE, $snap['boot_id'])['state'];
     echo json_encode(['snapshot' => $snap, 'plan' => wf_plan($snap, $state)['plan']], JSON_PRETTY_PRINT), "\n";
     exit(0);
 }
 if ($mode === 'holds') {
     $snap = wf_snapshot();
-    $loaded = wf_state_load(WF_STATE, $snap['boot_time']);
+    $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
     $s = $loaded['state'];
     $rows = [];
     foreach ($snap['wans'] as $n => $w) {
@@ -94,10 +94,10 @@ if (wf_booting()) {
 }
 
 $snap = wf_snapshot();
-$loaded = wf_state_load(WF_STATE, $snap['boot_time']);
+$loaded = wf_state_load(WF_STATE, $snap['boot_id']);
 if ($loaded['corrupt']) {
     wf_log('state file unreadable; starting from a fresh state', LOG_WARNING);
-    $loaded['state']['boot_time'] = -1;
+    $loaded['state']['boot_id'] = 'corrupt';
 }
 $state = $loaded['state'];
 $cl = wf_contract_log($snap['contract'], $state['contract_last']);

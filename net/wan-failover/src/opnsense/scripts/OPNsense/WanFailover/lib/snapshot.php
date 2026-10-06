@@ -19,9 +19,9 @@ require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/pfstate.php';
 require_once __DIR__ . '/contract.php';
 
-function wf_boot_time(): int
+function wf_boot_id(): string
 {
-    return wf_parse_boottime((string)shell_exec('/sbin/sysctl -n kern.boottime'));
+    return wf_parse_boot_id((string)shell_exec('/sbin/sysctl -x -n kern.boot_id 2>/dev/null'));
 }
 
 /* product::__call() returns the value only when it is non-empty, so booting() is true or null */
@@ -51,7 +51,7 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
 }
 
 /**
- * @return array{now: int, boot_time: int, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
+ * @return array{now: int, boot_id: string, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>,
  *               held_stale: list<string>, force_down: array<string, bool>, uuid_by_name: array<string, string>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
@@ -117,10 +117,14 @@ function wf_snapshot(): array
     $a = '/usr/local/opnsense/service/conf/actions.d/';
     $command = wf_contract_commands($read($a . 'actions_interface.conf'), $read($a . 'actions_filter.conf'),
         $read('/usr/local/etc/rc'));
+    $bootId = wf_boot_id();
+    if ($bootId === '') {
+        $command[] = 'kern.boot_id unreadable (a reboot the early hook missed would go unnoticed)';
+    }
     $tsActions = $read($a . 'actions_tailscale.conf');
     $tailscale = wf_contract_tailscale($tsActions);
     return [
-        'now' => $now, 'boot_time' => wf_boot_time(),
+        'now' => $now, 'boot_id' => $bootId,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
         'failback' => $mdl->failback->isEqual('1'),
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
