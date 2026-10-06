@@ -20,13 +20,14 @@ const WF_STATE_VERSION = 2;
  * @return array{version: int, boot_time: int, installed_at: ?int, last_now: ?int, judgements: array<string, array>,
  *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
- *               contract_last: string}
+ *               contract_last: string, contract_judging_since: ?int}
  */
 function wf_state_new(int $bootTime): array
 {
     return ['version' => WF_STATE_VERSION, 'boot_time' => $bootTime, 'installed_at' => null, 'last_now' => null,
             'judgements' => [], 'no_rehold' => [], 'pending_failbacks' => [], 'ts' => wf_ts_new(),
-            'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => ''];
+            'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => '',
+            'contract_judging_since' => null];
 }
 
 /**

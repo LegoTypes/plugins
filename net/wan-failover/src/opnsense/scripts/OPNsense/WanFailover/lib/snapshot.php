@@ -73,6 +73,9 @@ function wf_snapshot(): array
     $status = dpinger_status();
     $instances = dpinger_instances(true);
     $defaultOut = (string)shell_exec('/sbin/route -n get -inet default 2>/dev/null');
+    /* the route-format check probes the loopback route, which always exists; the default route can be
+     * missing for a moment while routing is reconfigured, which is not a format drift */
+    $loopbackOut = (string)shell_exec('/sbin/route -n get -inet 127.0.0.1 2>/dev/null');
     $wans = [];
     $judging = [];
     foreach ($wansRes['names'] as $name) {
@@ -87,7 +90,7 @@ function wf_snapshot(): array
         $sockFound = file_exists($sock);
         $link = wf_parse_ifconfig((string)shell_exec('/sbin/ifconfig ' . escapeshellarg((string)($g['if'] ?? '')) . ' 2>/dev/null'));
         $monitored = empty($g['monitor_disable']) && empty($g['disabled']);
-        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $defaultOut, $sockFound || !$monitored));
+        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound || !$monitored));
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
             'gateway_ip' => (string)($g['gateway'] ?? ''),
