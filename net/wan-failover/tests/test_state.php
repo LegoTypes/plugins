@@ -37,29 +37,29 @@ wf_register_suite('state', function (): int {
     $r = wf_reconcile(['GONE'], $fd, [], ['GONE']);
     wf_check($t, 'a held name with no gateway in config is neither owned nor manual', $r['owned'] === [] && $r['manual_released'] === []);
 
-    $s = wf_state_new(500);
+    $s = wf_state_new('b500');
     $s['installed_at'] = 400;
     $s['judgements']['WAN2'] = ['value' => 'bad'];
     $s['apply_pending'] = ['WAN2' => 'hold'];
     $s['last_held'] = ['WAN2'];
-    $b = wf_boot_reset($s, 900);
+    $b = wf_boot_reset($s, 'b900');
     wf_check($t, 'boot reset clears judgements, apply_pending, last_held; keeps installed_at', $b['judgements'] === []
-        && $b['apply_pending'] === [] && $b['last_held'] === [] && $b['installed_at'] === 400 && $b['boot_time'] === 900);
+        && $b['apply_pending'] === [] && $b['last_held'] === [] && $b['installed_at'] === 400 && $b['boot_id'] === 'b900');
 
     $dir = sys_get_temp_dir() . '/wf-test-' . getmypid();
     $path = "{$dir}/state.json";
     wf_state_save($path, $s);
-    $l = wf_state_load($path, 500);
+    $l = wf_state_load($path, 'b500');
     wf_check($t, 'save creates the directory and round-trips', !$l['corrupt'] && $l['state']['apply_pending'] === ['WAN2' => 'hold']);
-    file_put_contents($path, '{"version":2,"judgements":');
-    $l = wf_state_load($path, 500);
+    file_put_contents($path, '{"version":3,"judgements":');
+    $l = wf_state_load($path, 'b500');
     wf_check($t, 'RF2: truncated file loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['judgements'] === []);
-    file_put_contents($path, '{"version":1,"holds":{}}');
-    $l = wf_state_load($path, 500);
-    wf_check($t, 'an older state version loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['version'] === 2);
+    file_put_contents($path, '{"version":2,"boot_time":1791270672}');
+    $l = wf_state_load($path, 'b500');
+    wf_check($t, 'an older state version (boot_time identity) loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['version'] === 3);
     unlink($path);
-    $l = wf_state_load($path, 500);
-    wf_check($t, 'missing file loads fresh, not corrupt', !$l['corrupt'] && $l['state']['boot_time'] === 500);
+    $l = wf_state_load($path, 'b500');
+    wf_check($t, 'missing file loads fresh, not corrupt', !$l['corrupt'] && $l['state']['boot_id'] === 'b500');
     @rmdir($dir);
     return wf_tally_report('state', $t);
 });

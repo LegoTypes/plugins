@@ -77,7 +77,7 @@ wf_register_suite('apply', function (): int {
     $snap = ['now' => 1000, 'tailscale_restart' => false,
              'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@igc1'],
                        'WAN2' => ['gateway_ip' => '192.168.12.1', 'route_target' => '192.168.12.1@igc2']]];
-    $state = wf_state_new(1);
+    $state = wf_state_new('b1');
     $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'write' => true, 'kill_gateways' => ['192.168.12.1']]);
 
     $f = wf_t_io();
@@ -127,7 +127,7 @@ wf_register_suite('apply', function (): int {
     $pfStale = ['flows' => $flows, 'renderings' => $rules, 'pinned' => ['198.51.100.200' => true], 'rule_pref' => $pref,
                 'default' => 'WAN2', 'selfcheck' => true, 'raw_states' => '', 'raw_rules' => ''];
     $pfMoved = array_merge($pfStale, ['default' => 'PRIMARY_WAN']);
-    $fb = wf_state_new(1);
+    $fb = wf_state_new('b1');
     $fb['pending_failbacks']['PRIMARY_WAN'] = ['since' => 990];
     $f = wf_t_io([], true, true, [$pfStale, $pfMoved]);
     $r = wf_apply(wf_t_plan(['failback' => ['PRIMARY_WAN' => ['top' => true]]]), $fb, $snap, $f['io']);
@@ -142,7 +142,7 @@ wf_register_suite('apply', function (): int {
         count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'configd filter kill state'))) === 0
         && isset($r['state']['pending_failbacks']['PRIMARY_WAN']));
 
-    $ts = wf_state_new(1);
+    $ts = wf_state_new('b1');
     $ts['ts'] = ['default_gw' => '192.168.12.1@igc2', 'restarted_at' => null, 'cur_default' => '192.168.12.1@igc2', 'cur_since' => 1,
                  'lost' => false, 'expected_default' => null];
     $f = wf_t_io([], true, true, [], '203.0.113.1@igc1');

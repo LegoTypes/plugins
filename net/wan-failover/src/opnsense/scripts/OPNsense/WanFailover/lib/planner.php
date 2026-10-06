@@ -51,8 +51,8 @@ function wf_plan(array $snap, array $state): array
     }
 
     $releaseAll = null;
-    if ($state['boot_time'] !== $snap['boot_time']) {
-        $state = wf_boot_reset($state, $snap['boot_time']);
+    if ($state['boot_id'] !== $snap['boot_id']) {
+        $state = wf_boot_reset($state, $snap['boot_id']);
         $state['last_now'] = $now;
         $state['last_held'] = $snap['held'];
         $releaseAll = 'boot the early hook did not handle';

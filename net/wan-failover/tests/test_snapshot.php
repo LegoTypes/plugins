@@ -26,8 +26,8 @@ wf_register_suite('snapshot', function (): int {
     wf_check($t, 'route get with no route', wf_parse_route_get("route: route has not been found\n") === ['destination' => null, 'gateway' => null, 'interface' => null]);
     wf_check($t, 'route target of a route get', wf_route_get_target(['destination' => 'default', 'gateway' => '203.0.113.1', 'interface' => 'igc1']) === '203.0.113.1@igc1'
         && wf_route_get_target(['destination' => null, 'gateway' => null, 'interface' => null]) === null);
-    wf_check($t, 'kern.boottime', wf_parse_boottime('{ sec = 1791072586, usec = 85313 } Sat Oct  3 17:09:46 2026') === 1791072586);
-    wf_check($t, 'kern.boottime unparseable is 0', wf_parse_boottime('') === 0);
+    wf_check($t, 'kern.boot_id from sysctl -x', wf_parse_boot_id("Format: Length:16 Dump:0x4c8609698ad1a11cdc00cf6eb7d954e1\n") === '4c8609698ad1a11cdc00cf6eb7d954e1');
+    wf_check($t, 'kern.boot_id unreadable is empty', wf_parse_boot_id('') === '' && wf_parse_boot_id("sysctl: unknown oid 'kern.boot_id'\n") === '');
     $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'PRIMARY_WAN', 'u2' => 'WAN2']);
     wf_check($t, 'UUIDs resolve to names; unknown ones are reported; empty ignored', $r['names'] === ['PRIMARY_WAN'] && $r['unresolved'] === ['u9']);
     return wf_tally_report('snapshot', $t);

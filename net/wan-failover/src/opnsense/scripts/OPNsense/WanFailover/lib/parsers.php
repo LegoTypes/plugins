@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Pure parsers for the live snapshot: ifconfig, route get, kern.boottime, UUID resolution.
+ * Pure parsers for the live snapshot: ifconfig, route get, kern.boot_id, UUID resolution.
  */
 
 require_once __DIR__ . '/pfstate.php';
@@ -42,9 +42,13 @@ function wf_route_get_target(array $route): ?string
     return $route['gateway'] === null || $route['interface'] === null ? null : wf_route_target($route['gateway'], $route['interface']);
 }
 
-function wf_parse_boottime(string $out): int
+/**
+ * kern.boot_id is a random value drawn at each boot. Unlike kern.boottime (wall clock minus uptime), it
+ * does not move when the clock is stepped, so it tells a reboot from a clock adjustment.
+ */
+function wf_parse_boot_id(string $out): string
 {
-    return preg_match('/sec = (\d+)/', $out, $m) === 1 ? (int)$m[1] : 0;
+    return preg_match('/Dump:0x([0-9a-f]+)/', $out, $m) === 1 ? $m[1] : '';
 }
 
 /**
