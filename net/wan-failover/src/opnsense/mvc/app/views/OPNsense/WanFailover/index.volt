@@ -30,6 +30,7 @@
                 $.each(data.unresolved || [], function (i, u) { notes.push("{{ lang._('A selected gateway no longer exists:') }} " + plain(u)); });
                 $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (all holds released):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
+                $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });
                 $('#wanfailover-notes').text(notes.join(' '));
                 $('#wanfailover-notes').toggle(notes.length > 0);
             });
