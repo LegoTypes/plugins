@@ -56,10 +56,20 @@ wf_register_suite('state', function (): int {
     wf_check($t, 'RF2: truncated file loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['judgements'] === []);
     file_put_contents($path, '{"version":2,"boot_time":1791270672}');
     $l = wf_state_load($path, 'b500');
-    wf_check($t, 'an older state version (boot_time identity) loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['version'] === 3);
+    wf_check($t, 'another state version loads fresh with the live boot id, not flagged corrupt (no release on upgrade)',
+        !$l['corrupt'] && $l['state']['version'] === 3 && $l['state']['boot_id'] === 'b500');
     unlink($path);
     $l = wf_state_load($path, 'b500');
     wf_check($t, 'missing file loads fresh, not corrupt', !$l['corrupt'] && $l['state']['boot_id'] === 'b500');
     @rmdir($dir);
+    $tdir = sys_get_temp_dir() . '/wf-trace-' . getmypid();
+    mkdir($tdir);
+    touch("{$tdir}/trace-20260901.jsonl", 1000);
+    touch("{$tdir}/trace-20260930.jsonl", 1000 + 6 * 86400);
+    wf_trace_prune($tdir, 1000 + 8 * 86400, 7);
+    wf_check($t, 'trace prune removes files older than the keep window, keeps newer ones',
+        !is_file("{$tdir}/trace-20260901.jsonl") && is_file("{$tdir}/trace-20260930.jsonl"));
+    unlink("{$tdir}/trace-20260930.jsonl");
+    rmdir($tdir);
     return wf_tally_report('state', $t);
 });

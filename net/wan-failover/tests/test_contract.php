@@ -38,13 +38,13 @@ wf_register_suite('contract', function (): int {
             'current_interval' => '1', 'current_loss_interval' => '4'];
     $status = ['status' => 'none', 'loss' => '0.0 %'];
     $route = "   route to: default\ndestination: default\n    gateway: 203.0.113.1\n";
-    wf_check($t, 'all judging dependencies match', wf_contract_judging($row, $status, $route, true) === []);
+    wf_check($t, 'all judging dependencies match', wf_contract_judging($row, $status, $route, true, true) === []);
     $short = $row;
     unset($short['current_losslow']);
-    wf_check($t, 'a missing current_losslow is reported', count(wf_contract_judging($short, $status, $route, true)) === 1);
-    wf_check($t, 'a status row without loss is reported', count(wf_contract_judging($row, ['status' => 'none'], $route, true)) === 1);
-    wf_check($t, 'unparseable route output is reported', count(wf_contract_judging($row, $status, "garbage\n", true)) === 1);
-    wf_check($t, 'no dpinger socket where expected is reported', count(wf_contract_judging($row, $status, $route, false)) === 1);
+    wf_check($t, 'a missing current_losslow is reported', count(wf_contract_judging($short, $status, $route, true, true)) === 1);
+    wf_check($t, 'a status row without loss is reported', count(wf_contract_judging($row, ['status' => 'none'], $route, true, true)) === 1);
+    wf_check($t, 'unparseable route output is reported', count(wf_contract_judging($row, $status, "garbage\n", true, true)) === 1);
+    wf_check($t, 'no dpinger socket where expected is reported', count(wf_contract_judging($row, $status, $route, false, true)) === 1);
 
     $ok = ['judging' => [], 'command' => []];
     $bad = ['judging' => [], 'command' => ['x changed']];
@@ -58,5 +58,8 @@ wf_register_suite('contract', function (): int {
     wf_check($t, 'log: a Tailscale-only drift says only Tailscale restarts are off', $r4['line'] !== null && str_contains($r4['line'], 'Tailscale restarts off'));
     $r3 = wf_contract_log($ok, $r['last']);
     wf_check($t, 'log: the return to a match is logged', $r3['line'] !== null && str_contains($r3['line'], 'matches again'));
+    wf_check($t, 'a disabled or unmonitored WAN has no dpinger rows or socket; not a drift',
+        wf_contract_judging(null, null, $route, false, false) === []);
+    wf_check($t, 'an unmonitored WAN still checks the route format', count(wf_contract_judging(null, null, "garbage\n", false, false)) === 1);
     return wf_tally_report('contract', $t);
 });

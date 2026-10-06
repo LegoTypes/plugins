@@ -13,11 +13,11 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/judge.php';
 
-/** @return array{disabled: bool, manual_down: bool, present: bool, tilde: bool, carrier: bool, has_ipv4: bool, loss: ?float, sock_age: ?int, losslow: float, losshigh: float, time_period: int, interval: int, loss_interval: int} */
+/** @return array{disabled: bool, manual_down: bool, present: bool, status: string, tilde: bool, carrier: bool, has_ipv4: bool, loss: ?float, sock_age: ?int, losslow: float, losshigh: float, time_period: int, interval: int, loss_interval: int} */
 function wf_t_w(array $over = []): array
 {
     return array_merge([
-        'disabled' => false, 'manual_down' => false, 'present' => true, 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
+        'disabled' => false, 'manual_down' => false, 'present' => true, 'status' => 'none', 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
         'loss' => 0.0, 'sock_age' => 300, 'losslow' => 10.0, 'losshigh' => 20.0,
         'time_period' => 60, 'interval' => 1, 'loss_interval' => 4,
     ], $over);
@@ -60,5 +60,8 @@ wf_register_suite('judge', function (): int {
     $j6 = wf_judge($j5, WF_MARGINAL, true, 2.0, 1100, 180);
     wf_check($t, 'marginal after bad keeps recovering set', $j6['value'] === WF_MARGINAL && $j6['recovering']);
     wf_check($t, 'wf_up: clean and marginal are up', wf_up($j) && wf_up($j6) && !wf_up($j5));
+    wf_check($t, 'a settled "~" while core reports the gateway down is no data, not a perfect link',
+        wf_effective_loss(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down'])) === null
+        && wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down']), $d) === WF_UNKNOWN);
     return wf_tally_report('judge', $t);
 });

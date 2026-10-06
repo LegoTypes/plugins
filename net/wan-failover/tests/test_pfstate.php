@@ -42,7 +42,7 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, '7 anchors: ICMP, IPv6, tunnel pin and in-states excluded', count($flows) === 7);
     $kinds = array_count_values(array_column($flows, 'kind'));
     wf_check($t, '5 forwarded, 2 local', ($kinds['forwarded'] ?? 0) === 5 && ($kinds['local'] ?? 0) === 2);
-    wf_check($t, 'unifi pair is forwarded on WAN2 with its in-state partner', $flows[0]['kind'] === 'forwarded'
+    wf_check($t, 'exit-node pair is forwarded on WAN2 with its in-state partner', $flows[0]['kind'] === 'forwarded'
         && $flows[0]['current'] === 'WAN2' && $flows[0]['partner']['rlabel'] === '11111111-1111-4111-8111-111111111111');
     wf_check($t, 'no anchor is an in-state', count(array_filter($flows, fn (array $f): bool => $f['anchor']['dir'] !== 'out')) === 0);
 
@@ -71,6 +71,18 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, 'self-check fails when route-to tokens no longer parse', !wf_pf_selfcheck($renamed, wf_parse_states($renamed)));
     $headers = preg_replace('/^all /m', 'any ', $raw);
     wf_check($t, 'self-check fails when state headers no longer parse', !wf_pf_selfcheck($headers, wf_parse_states($headers)));
-    wf_check($t, 'self-check passes on an empty state table', wf_pf_selfcheck('', []));
+    wf_check($t, 'self-check fails on empty pfctl output (a live firewall always has states)', !wf_pf_selfcheck('', []));
+    $noLabel = str_replace('rlabel ', 'xlabel ', $raw);
+    wf_check($t, 'self-check fails when no state carries a parsed rlabel', !wf_pf_selfcheck($noLabel, wf_parse_states($noLabel)));
+    $noId = str_replace('id: ', 'ident: ', $raw);
+    wf_check($t, 'self-check fails when no state carries a parsed id', !wf_pf_selfcheck($noId, wf_parse_states($noId)));
+    wf_check($t, 'first tier: tiers in order, empty tiers skipped', wf_first_tier([3 => ['WAN_C'], 1 => [''], 2 => ['WAN_B', 'WAN_A']]) === ['WAN_B', 'WAN_A']
+        && wf_first_tier([1 => [''], 2 => []]) === []);
+    $looked = [];
+    $lookup = function (string $h, array $f) use (&$looked): bool { $looked[] = $h; return $h === '198.51.100.7'; };
+    $local = fn (string $dst): array => ['anchor' => ['dst' => $dst], 'partner' => null, 'kind' => 'local', 'current' => 'WAN2'];
+    $pins = wf_pinned_hosts([$local('198.51.100.7:53'), $local('198.51.100.8:53'), $local('198.51.100.9:53'), $local('198.51.100.7:853')], $lookup, 2);
+    wf_check($t, 'pinned: looked-up hosts by route, hosts past the cap spared as pinned, each host looked up once',
+        $pins === ['198.51.100.7' => true, '198.51.100.9' => true] && $looked === ['198.51.100.7', '198.51.100.8']);
     return wf_tally_report('pfstate', $t);
 });

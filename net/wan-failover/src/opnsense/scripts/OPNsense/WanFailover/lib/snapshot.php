@@ -51,7 +51,7 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
 }
 
 /**
- * @return array{now: int, boot_id: string, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
+ * @return array{now: int, boot_id: string, release: ?string, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>,
  *               held_stale: list<string>, force_down: array<string, bool>, uuid_by_name: array<string, string>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
@@ -77,6 +77,17 @@ function wf_snapshot(): array
     /* the route-format check probes the loopback route, which always exists; the default route can be
      * missing for a moment while routing is reconfigured, which is not a format drift */
     $loopbackOut = (string)shell_exec('/sbin/route -n get -inet 127.0.0.1 2>/dev/null');
+    /* a window's age is its dpinger's process age: monotonic, so a clock step cannot make it look settled */
+    $pids = [];
+    foreach ($wansRes['names'] as $name) {
+        $pidFile = "/var/run/dpinger_{$name}.pid";
+        $pid = is_readable($pidFile) ? (int)trim((string)file_get_contents($pidFile)) : 0;
+        if ($pid > 0) {
+            $pids[$name] = $pid;
+        }
+    }
+    $ages = $pids === [] ? [] : wf_parse_ps_etimes((string)shell_exec('/bin/ps -o pid= -o etimes= -p '
+        . escapeshellarg(implode(',', $pids)) . ' 2>/dev/null'));
     $wans = [];
     $judging = [];
     foreach ($wansRes['names'] as $name) {
@@ -91,12 +102,13 @@ function wf_snapshot(): array
         $sockFound = file_exists($sock);
         $link = wf_parse_ifconfig((string)shell_exec('/sbin/ifconfig ' . escapeshellarg((string)($g['if'] ?? '')) . ' 2>/dev/null'));
         $monitored = empty($g['monitor_disable']) && empty($g['disabled']);
-        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound || !$monitored));
+        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound, $monitored));
+        $age = isset($pids[$name]) ? ($ages[$pids[$name]] ?? null) : null;
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
             'gateway_ip' => (string)($g['gateway'] ?? ''),
             'route_target' => wf_route_target((string)($g['gateway'] ?? ''), (string)($g['if'] ?? '')),
-            'priority' => (int)($g['priority'] ?? 255),
+            'rank' => 0,
             'disabled' => !empty($g['disabled']),
             'force_down' => !empty($g['force_down']),
             'status' => (string)($st['status'] ?? 'none'),
@@ -105,13 +117,16 @@ function wf_snapshot(): array
             'carrier' => $link['carrier'],
             'has_ipv4' => $link['has_ipv4'],
             'loss' => $lossStr === '~' ? null : (float)$lossStr,
-            'sock_age' => $sockFound ? max(0, $now - (int)filemtime($sock)) : null,
+            'sock_age' => $sockFound ? $age : null,
             'losslow' => (float)($g['current_losslow'] ?? 10),
             'losshigh' => (float)($g['current_losshigh'] ?? 20),
             'time_period' => (int)($g['current_time_period'] ?? 60),
             'interval' => (int)($g['current_interval'] ?? 1),
             'loss_interval' => (int)($g['current_loss_interval'] ?? 4),
         ];
+    }
+    foreach (wf_core_rank(array_map('strval', array_keys($all)), array_keys($wans)) as $name => $rank) {
+        $wans[$name]['rank'] = $rank;
     }
     $read = fn (string $f): ?string => is_readable($f) ? (string)file_get_contents($f) : null;
     $a = '/usr/local/opnsense/service/conf/actions.d/';
@@ -124,7 +139,7 @@ function wf_snapshot(): array
     $tsActions = $read($a . 'actions_tailscale.conf');
     $tailscale = wf_contract_tailscale($tsActions);
     return [
-        'now' => $now, 'boot_id' => $bootId,
+        'now' => $now, 'boot_id' => $bootId, 'release' => null,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
         'failback' => $mdl->failback->isEqual('1'),
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
@@ -147,20 +162,11 @@ function wf_snapshot_pf(array $wanTargets): array
     $rawRules = (string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null');
     $states = wf_parse_states($rawStates);
     $flows = wf_flows($states, array_flip($wanTargets));
-    $pinned = [];
-    $looked = [];
-    foreach ($flows as $f) {
-        $host = wf_addr_host($f['anchor']['dst']);
-        if ($f['kind'] !== 'local' || isset($looked[$host]) || count($looked) >= 200) {
-            continue;
-        }
-        $looked[$host] = true;
+    $pinned = wf_pinned_hosts($flows, function (string $host, array $f): bool {
         $r = wf_route_get($host);
-        if ($r['destination'] !== null && $r['destination'] !== 'default'
-            && wf_route_get_target($r) === wf_route_target((string)$f['anchor']['route_to_gw'], (string)$f['anchor']['route_to_if'])) {
-            $pinned[$host] = true;
-        }
-    }
+        return $r['destination'] !== null && $r['destination'] !== 'default'
+            && wf_route_get_target($r) === wf_route_target((string)$f['anchor']['route_to_gw'], (string)$f['anchor']['route_to_if']);
+    }, 200);
     $groups = (new \OPNsense\Routing\GatewayGroups())->getGroupsConfig();
     $pref = [];
     foreach ((new \OPNsense\Firewall\Filter())->rules->rule->iterateItems() as $uuid => $rule) {
@@ -168,10 +174,7 @@ function wf_snapshot_pf(array $wanTargets): array
         if ($gw === '') {
             $pref[(string)$uuid] = [];
         } elseif (isset($groups[$gw])) {
-            $tiers = $groups[$gw]['tiers'];
-            ksort($tiers);
-            $first = reset($tiers);
-            $pref[(string)$uuid] = is_array($first) ? array_values($first) : [];
+            $pref[(string)$uuid] = wf_first_tier($groups[$gw]['tiers']);
         } else {
             $pref[(string)$uuid] = [$gw];
         }

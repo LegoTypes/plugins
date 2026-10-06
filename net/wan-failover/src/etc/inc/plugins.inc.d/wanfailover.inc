@@ -34,7 +34,13 @@ function wanfailover_syslog()
 function wanfailover_cron()
 {
     $jobs = [];
-    if ((new \OPNsense\WanFailover\WanFailover())->enabled->isEqual('1')) {
+    try {
+        $enabled = (new \OPNsense\WanFailover\WanFailover())->enabled->isEqual('1');
+    } catch (\Throwable $e) {
+        syslog(LOG_ERR, 'wanfailover: cannot read its settings for cron: ' . $e->getMessage());
+        $enabled = false;
+    }
+    if ($enabled) {
         /* every minute; generate_cron_job() defaults the minute to 0, so pass '*' */
         $jobs[]['autocron'] = ['/usr/local/sbin/configctl wanfailover evaluate', '*'];
     }

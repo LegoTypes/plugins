@@ -48,7 +48,7 @@ function wf_fresh_alternative(array $a, bool $heldNow, int $now, int $freshSecon
 
 /**
  * @param array<string, array{reading: string, judgement: array, held: bool, manual_down: bool, disabled: bool,
- *                            core_down: bool, raw_loss: ?float, losslow: float, priority: int, no_rehold: bool}> $wans
+ *                            core_down: bool, raw_loss: ?float, losslow: float, rank: int, no_rehold: bool}> $wans
  * @return array{release: list<string>, hold: list<string>, log: list<string>}
  */
 function wf_plan_holds(array $wans, int $now, int $freshSeconds): array
@@ -80,7 +80,8 @@ function wf_plan_holds(array $wans, int $now, int $freshSeconds): array
     }
 
     $order = array_keys($wans);
-    usort($order, fn (string $a, string $b): int => [$wans[$a]['priority'], $a] <=> [$wans[$b]['priority'], $b]);
+    /* rank is the WAN's place in core's default-gateway order (upstream flag, priority, sequence) */
+    usort($order, fn (string $a, string $b): int => $wans[$a]['rank'] <=> $wans[$b]['rank']);
     $hold = [];
     foreach ($order as $name) {
         $w = $wans[$name];

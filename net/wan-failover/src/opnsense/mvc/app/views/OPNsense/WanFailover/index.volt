@@ -19,16 +19,18 @@
                 $.each(data.wans || [], function (i, w) {
                     body.append($('<tr/>')
                         .append($('<td/>').text(plain(w.name)))
-                        .append($('<td/>').text(w.held ? "{{ lang._('held') }}" : (w.force_down ? "{{ lang._('forced down (not by this plugin)') }}" : "{{ lang._('in service') }}")))
+                        .append($('<td/>').text(w.held ? "{{ lang._('held') }}" : (w.simulated ? "{{ lang._('held (dry run, simulated)') }}" : (w.force_down ? "{{ lang._('forced down (not by this plugin)') }}" : "{{ lang._('in service') }}"))))
                         .append($('<td/>').text(plain(w.status)))
                         .append($('<td/>').text(w.loss === null ? '~' : w.loss + ' %'))
                         .append($('<td/>').text(plain(w.judgement || '')))
                         .append($('<td/>').text(w.failback_pending ? "{{ lang._('pending') }}" : '')));
                 });
                 var notes = [];
-                if (data.dry) { notes.push("{{ lang._('Dry run: decisions are logged, nothing is changed.') }}"); }
+                if (data.dry) { notes.push("{{ lang._('Dry run: holds are simulated and logged; nothing is held, killed or restarted.') }}"); }
+                if (data.enabled && (data.wans || []).length < 2) { notes.push("{{ lang._('Fewer than two WAN gateways selected: nothing can be held.') }}"); }
+                if (data.state_corrupt) { notes.push("{{ lang._('The runtime state was unreadable and started fresh.') }}"); }
                 $.each(data.unresolved || [], function (i, u) { notes.push("{{ lang._('A selected gateway no longer exists:') }} " + plain(u)); });
-                $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (all holds released):') }} " + plain(p)); });
+                $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds; all holds released if it lasts 3 minutes):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
                 $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });
                 $('#wanfailover-notes').text(notes.join(' '));

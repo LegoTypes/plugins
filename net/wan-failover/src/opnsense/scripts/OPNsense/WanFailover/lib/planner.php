@@ -19,7 +19,7 @@ require_once __DIR__ . '/holds.php';
 require_once __DIR__ . '/state.php';
 
 /**
- * @param array $snap  see the Task 9 interface (built by snapshot.php)
+ * @param array $snap  the shape returned by wf_snapshot() (snapshot.php)
  * @param array $state the shape returned by wf_state_new()
  * @return array{plan: array, state: array}
  */
@@ -41,6 +41,7 @@ function wf_plan(array $snap, array $state): array
         }
         $state['ts']['cur_since'] = $state['ts']['cur_since'] === null ? null : $now;
         $state['ts']['restarted_at'] = null;
+        $state['unowned_alerted_at'] = [];
     }
     $state['last_now'] = $now;
     $state['installed_at'] = $state['installed_at'] ?? $now;
@@ -50,8 +51,11 @@ function wf_plan(array $snap, array $state): array
         $state['boot_note'] = null;
     }
 
+    /* an unreadable boot id (reported as a command drift) proves nothing either way */
     $releaseAll = null;
-    if ($state['boot_id'] !== $snap['boot_id']) {
+    if ($snap['boot_id'] !== '' && $state['boot_id'] === '') {
+        $state['boot_id'] = $snap['boot_id'];
+    } elseif ($snap['boot_id'] !== '' && $state['boot_id'] !== $snap['boot_id']) {
         $state = wf_boot_reset($state, $snap['boot_id']);
         $state['last_now'] = $now;
         $state['last_held'] = $snap['held'];
@@ -64,8 +68,10 @@ function wf_plan(array $snap, array $state): array
     foreach ($rec['manual_released'] as $n) {
         $state['no_rehold'][$n] = true;
     }
-    foreach ($snap['unresolved'] as $uuid) {
-        $log[] = "wans entry {$uuid} references no saved IPv4 gateway; ignored";
+    $line = wf_once($state['said'], 'unresolved', $snap['unresolved'] === [] ? null
+        : 'wans entries ' . implode(', ', $snap['unresolved']) . ' reference no saved IPv4 gateway; ignored');
+    if ($line !== null) {
+        $log[] = $line;
     }
     foreach (array_keys($state['judgements']) as $n) {
         if (!isset($snap['wans'][$n])) {
@@ -90,6 +96,14 @@ function wf_plan(array $snap, array $state): array
     }
     if (!$snap['enabled']) {
         $releaseAll = 'plugin disabled';
+    } elseif ($snap['release'] === 'requested') {
+        $releaseAll = 'release requested';
+        /* like a manual release: not re-held until the WAN reads clean or marginal */
+        foreach ($rec['owned'] as $n) {
+            $state['no_rehold'][$n] = true;
+        }
+    } elseif ($snap['release'] === 'dry') {
+        $releaseAll = 'dry run turned on; holds are only simulated from now on';
     } elseif ($judgingDrift && $now - $state['contract_judging_since'] >= WF_UNKNOWN_MAX_SECONDS) {
         $releaseAll = 'core contract broken: WANs cannot be read';
     }
@@ -131,20 +145,28 @@ function wf_plan(array $snap, array $state): array
         }
         $wans[$name] = ['reading' => $reading, 'judgement' => $j, 'held' => $held, 'manual_down' => $manual,
                         'disabled' => $w['disabled'], 'core_down' => $w['status'] === 'down' && $settled,
-                        'raw_loss' => $loss, 'losslow' => $w['losslow'], 'priority' => $w['priority'],
+                        'raw_loss' => $loss, 'losslow' => $w['losslow'], 'rank' => $w['rank'],
                         'no_rehold' => isset($state['no_rehold'][$name])];
     }
 
     $h = wf_plan_holds($wans, $now, WF_FRESH_SECONDS);
     $log = array_merge($log, $h['log']);
     $hold = $h['hold'];
-    if (($snap['contract']['command'] !== [] || $judgingDrift) && $hold !== []) {
-        $log[] = 'core contract drift: not starting holds on ' . implode(',', $hold);
+    $blocked = ($snap['contract']['command'] !== [] || $judgingDrift) && $hold !== [];
+    $line = wf_once($state['said'], 'drift_block', $blocked ? 'core contract drift: not starting holds on ' . implode(',', $hold) : null);
+    if ($line !== null) {
+        $log[] = $line;
+    }
+    if ($blocked) {
         $hold = [];
     }
     $release = array_values(array_unique(array_merge($h['release'], $notInWans)));
     $heldAfter = array_values(array_unique(array_merge(array_diff($owned, $release), $hold)));
 
+    if (!$snap['failback'] && $state['pending_failbacks'] !== []) {
+        $log[] = 'move connections back is off: pending failbacks dropped (' . implode(',', array_keys($state['pending_failbacks'])) . ')';
+        $state['pending_failbacks'] = [];
+    }
     if ($snap['failback']) {
         foreach ($wans as $n => $w) {
             $j = $state['judgements'][$n];
@@ -168,7 +190,7 @@ function wf_plan(array $snap, array $state): array
     foreach (array_keys($state['pending_failbacks']) as $n) {
         $top = true;
         foreach ($wans as $o => $ow) {
-            if ($o !== $n && wf_usable($ow, in_array($o, $heldAfter, true)) && $ow['priority'] < $wans[$n]['priority']) {
+            if ($o !== $n && wf_usable($ow, in_array($o, $heldAfter, true)) && $ow['rank'] < $wans[$n]['rank']) {
                 $top = false;
             }
         }
@@ -183,13 +205,45 @@ function wf_plan(array $snap, array $state): array
                 || $wans[$n]['reading'] === WF_UNAVAILABLE) {
                 continue;
             }
-            if ($best === null || $w['priority'] < $snap['wans'][$best]['priority']) {
+            if ($best === null || $w['rank'] < $snap['wans'][$best]['rank']) {
                 $best = $n;
             }
         }
         $expected = $best === null ? null : $snap['wans'][$best]['route_target'];
     }
     return wf_plan_result($hold, $release, $heldAfter, $prune, $rec, $failback, $expected, $alerts, $log, false, $state, $snap);
+}
+
+/**
+ * Dry run simulates ownership: the planner sees the simulated holds as held and force_down, exactly as
+ * a live hold would look, so a dry run decides each change once and rehearses hysteresis and failback.
+ *
+ * @param list<string> $dryHeld the state's simulated holds
+ */
+function wf_dry_view(array $snap, array $dryHeld): array
+{
+    $held = array_values(array_filter($dryHeld, fn (string $n): bool => isset($snap['wans'][$n])));
+    $snap['held'] = $held;
+    $snap['held_stale'] = [];
+    foreach ($held as $n) {
+        $snap['force_down'][$n] = true;
+        $snap['wans'][$n]['force_down'] = true;
+        $snap['wans'][$n]['status'] = 'force_down';
+    }
+    return $snap;
+}
+
+/**
+ * Record a dry plan as if it had been applied.
+ *
+ * @param array{held_after: list<string>} $plan
+ */
+function wf_dry_after(array $state, array $plan): array
+{
+    $state['dry_held'] = $plan['held_after'];
+    $state['last_held'] = $plan['held_after'];
+    $state['apply_pending'] = [];
+    return $state;
 }
 
 /**

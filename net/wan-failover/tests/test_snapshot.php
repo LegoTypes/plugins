@@ -30,5 +30,9 @@ wf_register_suite('snapshot', function (): int {
     wf_check($t, 'kern.boot_id unreadable is empty', wf_parse_boot_id('') === '' && wf_parse_boot_id("sysctl: unknown oid 'kern.boot_id'\n") === '');
     $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'PRIMARY_WAN', 'u2' => 'WAN2']);
     wf_check($t, 'UUIDs resolve to names; unknown ones are reported; empty ignored', $r['names'] === ['PRIMARY_WAN'] && $r['unresolved'] === ['u9']);
+    wf_check($t, 'ps pid/etimes output', wf_parse_ps_etimes("  77297    56\n 81140 3600\n") === [77297 => 56, 81140 => 3600]
+        && wf_parse_ps_etimes('') === []);
+    wf_check($t, 'core rank: position of each managed WAN in core\'s gateway order', wf_core_rank(['Null4', 'WAN2', 'X', 'PRIMARY_WAN'], ['PRIMARY_WAN', 'WAN2'])
+        === ['PRIMARY_WAN' => 1, 'WAN2' => 0]);
     return wf_tally_report('snapshot', $t);
 });
