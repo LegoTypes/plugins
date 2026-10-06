@@ -104,11 +104,20 @@ function wf_addr_host(string $addr): string
 }
 
 /**
- * @param list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, route_to_gw: ?string}> $states
- * @param array<string, string> $wanGws gateway ip => WAN name
+ * A WAN's identity in pf and the routing table: "<gateway>@<interface>", as pf prints a route target.
+ * The gateway address alone is ambiguous when two WANs share one (two modems both at 192.168.1.1).
+ */
+function wf_route_target(string $gateway, string $interface): string
+{
+    return $gateway . '@' . $interface;
+}
+
+/**
+ * @param list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, route_to_gw: ?string, route_to_if: ?string}> $states
+ * @param array<string, string> $wanTargets route target => WAN name
  * @return list<array{anchor: array, partner: ?array, kind: string, current: string}>
  */
-function wf_flows(array $states, array $wanGws): array
+function wf_flows(array $states, array $wanTargets): array
 {
     $incoming = [];
     foreach ($states as $s) {
@@ -118,8 +127,8 @@ function wf_flows(array $states, array $wanGws): array
     }
     $flows = [];
     foreach ($states as $s) {
-        if ($s['dir'] !== 'out' || $s['route_to_gw'] === null || !isset($wanGws[$s['route_to_gw']])
-            || in_array($s['proto'], WF_ICMP_PROTOS, true)) {
+        $target = $s['route_to_gw'] === null || $s['route_to_if'] === null ? null : wf_route_target($s['route_to_gw'], $s['route_to_if']);
+        if ($s['dir'] !== 'out' || $target === null || !isset($wanTargets[$target]) || in_array($s['proto'], WF_ICMP_PROTOS, true)) {
             continue;
         }
         $matches = $incoming[$s['proto'] . '|' . $s['orig_src'] . '|' . $s['dst']] ?? [];
@@ -129,7 +138,7 @@ function wf_flows(array $states, array $wanGws): array
             default => 'ambiguous',
         };
         $flows[] = ['anchor' => $s, 'partner' => $kind === 'forwarded' ? $matches[0] : null,
-                    'kind' => $kind, 'current' => $wanGws[$s['route_to_gw']]];
+                    'kind' => $kind, 'current' => $wanTargets[$target]];
     }
     return $flows;
 }

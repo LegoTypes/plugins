@@ -75,7 +75,8 @@ function wf_t_plan(array $over = []): array
 wf_register_suite('apply', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $snap = ['now' => 1000, 'tailscale_restart' => false,
-             'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1'], 'WAN2' => ['gateway_ip' => '192.168.12.1']]];
+             'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@igc1'],
+                       'WAN2' => ['gateway_ip' => '192.168.12.1', 'route_target' => '192.168.12.1@igc2']]];
     $state = wf_state_new(1);
     $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'write' => true, 'kill_gateways' => ['192.168.12.1']]);
 
@@ -121,7 +122,7 @@ wf_register_suite('apply', function (): int {
 
     $states = wf_parse_states((string)file_get_contents(__DIR__ . '/fixtures/states.txt'));
     $rules = wf_parse_rules((string)file_get_contents(__DIR__ . '/fixtures/rules.txt'));
-    $flows = wf_flows($states, ['203.0.113.1' => 'PRIMARY_WAN', '192.168.12.1' => 'WAN2']);
+    $flows = wf_flows($states, ['203.0.113.1@igc1' => 'PRIMARY_WAN', '192.168.12.1@igc2' => 'WAN2']);
     $pref = ['22222222-2222-4222-8222-222222222222' => ['WAN2'], '33333333-3333-4333-8333-333333333333' => []];
     $pfStale = ['flows' => $flows, 'renderings' => $rules, 'pinned' => ['198.51.100.200' => true], 'rule_pref' => $pref,
                 'default' => 'WAN2', 'selfcheck' => true, 'raw_states' => '', 'raw_rules' => ''];
@@ -142,11 +143,11 @@ wf_register_suite('apply', function (): int {
         && isset($r['state']['pending_failbacks']['PRIMARY_WAN']));
 
     $ts = wf_state_new(1);
-    $ts['ts'] = ['default_gw' => '192.168.12.1', 'restarted_at' => null, 'cur_default' => '192.168.12.1', 'cur_since' => 1,
+    $ts['ts'] = ['default_gw' => '192.168.12.1@igc2', 'restarted_at' => null, 'cur_default' => '192.168.12.1@igc2', 'cur_since' => 1,
                  'lost' => false, 'expected_default' => null];
-    $f = wf_t_io([], true, true, [], '203.0.113.1');
-    $r = wf_apply(wf_t_plan(['expected_default' => '203.0.113.1', 'acting' => false]), $ts, array_merge($snap, ['tailscale_restart' => true]), $f['io']);
+    $f = wf_t_io([], true, true, [], '203.0.113.1@igc1');
+    $r = wf_apply(wf_t_plan(['expected_default' => '203.0.113.1@igc1', 'acting' => false]), $ts, array_merge($snap, ['tailscale_restart' => true]), $f['io']);
     wf_check($t, 'tailscale: planned default change restarts through configd', in_array('configd tailscale restart', $f['calls']->getArrayCopy(), true)
-        && $r['state']['ts']['default_gw'] === '203.0.113.1');
+        && $r['state']['ts']['default_gw'] === '203.0.113.1@igc1');
     return wf_tally_report('apply', $t);
 });

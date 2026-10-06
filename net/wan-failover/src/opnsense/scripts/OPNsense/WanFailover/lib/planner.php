@@ -187,7 +187,7 @@ function wf_plan(array $snap, array $state): array
                 $best = $n;
             }
         }
-        $expected = $best === null ? null : $snap['wans'][$best]['gateway_ip'];
+        $expected = $best === null ? null : $snap['wans'][$best]['route_target'];
     }
     return wf_plan_result($hold, $release, $heldAfter, $prune, $rec, $failback, $expected, $alerts, $log, false, $state, $snap);
 }

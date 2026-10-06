@@ -27,8 +27,8 @@ function wf_t_wan(string $uuid, string $gw, int $prio, array $over = []): array
 /** @return array<string, mixed> */
 function wf_t_snap(int $now, array $primary, array $wan2, array $extra = []): array
 {
-    $wans = ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary),
-             'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '192.168.12.1', 2, $wan2)];
+    $wans = ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary + ['route_target' => '203.0.113.1@igc1']),
+             'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '192.168.12.1', 2, $wan2 + ['route_target' => '192.168.12.1@igc2'])];
     return array_merge(['now' => $now, 'boot_time' => 1, 'enabled' => true, 'failback' => true,
         'default_gw' => '203.0.113.1', 'wans' => $wans, 'unresolved' => [], 'held' => [], 'held_stale' => [],
         'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
@@ -49,7 +49,7 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(1000, [], ['loss' => 30.0]), wf_state_new(1));
     wf_check($t, '1: hold WAN2, kill its gateway, default expected on PRIMARY', $r['plan']['hold'] === ['WAN2']
         && $r['plan']['held_after'] === ['WAN2'] && $r['plan']['write'] && $r['plan']['kill_gateways'] === ['192.168.12.1']
-        && $r['plan']['expected_default'] === '203.0.113.1');
+        && $r['plan']['expected_default'] === '203.0.113.1@igc1');
     $s = wf_t_applied($r['state'], $r['plan']);
 
     $held = ['held' => ['WAN2']];

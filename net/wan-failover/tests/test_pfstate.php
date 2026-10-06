@@ -16,7 +16,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/pfstat
 /** @return array<string, string> gateway ip => WAN name */
 function wf_t_gws(): array
 {
-    return ['203.0.113.1' => 'PRIMARY_WAN', '192.168.12.1' => 'WAN2'];
+    return ['203.0.113.1@igc1' => 'PRIMARY_WAN', '192.168.12.1@igc2' => 'WAN2'];
 }
 
 wf_register_suite('pfstate', function (): int {
@@ -50,6 +50,12 @@ wf_register_suite('pfstate', function (): int {
     $amb = wf_flows($dup, wf_t_gws());
     wf_check($t, 'two matching in-states make the flow ambiguous', count($amb) === 1 && $amb[0]['kind'] === 'ambiguous' && $amb[0]['partner'] === null);
     wf_check($t, 'no states, no flows', wf_flows([], wf_t_gws()) === []);
+    $other = $states[1];
+    $other['route_to_if'] = 'igc1';
+    $shared = wf_flows([$states[1], $other], ['192.168.12.1@igc1' => 'WAN_A', '192.168.12.1@igc2' => 'WAN_B']);
+    wf_check($t, 'WANs sharing a gateway address are told apart by interface', count($shared) === 2
+        && $shared[0]['current'] === 'WAN_B' && $shared[1]['current'] === 'WAN_A');
+    wf_check($t, 'wf_route_target joins gateway and interface as pf prints it', wf_route_target('192.168.12.1', 'igc2') === '192.168.12.1@igc2');
 
     $rules = wf_parse_rules((string)file_get_contents(__DIR__ . '/fixtures/rules.txt'));
     wf_check($t, 'automatic WAN2 out rule renders route-to igc2', $rules['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'] === [['gw' => '192.168.12.1', 'if' => 'igc2', 'balanced' => false]]);

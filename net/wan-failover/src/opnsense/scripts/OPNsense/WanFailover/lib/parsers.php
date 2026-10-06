@@ -10,6 +10,8 @@ declare(strict_types=1);
  * Pure parsers for the live snapshot: ifconfig, route get, kern.boottime, UUID resolution.
  */
 
+require_once __DIR__ . '/pfstate.php';
+
 /**
  * Only an explicit "status: no carrier" is carrier loss: wg, pppoe and similar interfaces print no
  * status line at all.
@@ -28,7 +30,16 @@ function wf_parse_ifconfig(string $out): array
 function wf_parse_route_get(string $out): array
 {
     return ['destination' => preg_match('/^\s*destination:\s*(\S+)/m', $out, $d) === 1 ? $d[1] : null,
-            'gateway' => preg_match('/^\s*gateway:\s*(\S+)/m', $out, $g) === 1 ? $g[1] : null];
+            'gateway' => preg_match('/^\s*gateway:\s*(\S+)/m', $out, $g) === 1 ? $g[1] : null,
+            'interface' => preg_match('/^\s*interface:\s*(\S+)/m', $out, $i) === 1 ? $i[1] : null];
+}
+
+/**
+ * @param array{destination: ?string, gateway: ?string, interface: ?string} $route wf_parse_route_get()
+ */
+function wf_route_get_target(array $route): ?string
+{
+    return $route['gateway'] === null || $route['interface'] === null ? null : wf_route_target($route['gateway'], $route['interface']);
 }
 
 function wf_parse_boottime(string $out): int

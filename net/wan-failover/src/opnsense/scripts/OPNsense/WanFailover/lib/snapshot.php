@@ -35,9 +35,10 @@ function wf_route_get(string $dst): array
     return wf_parse_route_get((string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($dst) . ' 2>/dev/null'));
 }
 
+/** The live IPv4 default route as a route target (gateway@interface), or null without one. */
 function wf_live_default(): ?string
 {
-    return wf_route_get('default')['gateway'];
+    return wf_route_get_target(wf_route_get('default'));
 }
 
 /**
@@ -94,6 +95,7 @@ function wf_snapshot(): array
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
             'gateway_ip' => (string)($g['gateway'] ?? ''),
+            'route_target' => wf_route_target((string)($g['gateway'] ?? ''), (string)($g['if'] ?? '')),
             'priority' => (int)($g['priority'] ?? 255),
             'disabled' => !empty($g['disabled']),
             'force_down' => !empty($g['force_down']),
@@ -122,7 +124,7 @@ function wf_snapshot(): array
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
         'failback' => $mdl->failback->isEqual('1'),
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
-        'default_gw' => wf_parse_route_get($defaultOut)['gateway'],
+        'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'held' => $heldRes['names'], 'held_stale' => $heldRes['unresolved'],
         'force_down' => $forceDown, 'uuid_by_name' => array_flip($nameByUuid),
@@ -131,16 +133,16 @@ function wf_snapshot(): array
 }
 
 /**
- * @param array<string, string> $wanGwIp WAN name => gateway ip
+ * @param array<string, string> $wanTargets WAN name => route target
  * @return array{flows: list<array>, renderings: array<string, list<array>>, pinned: array<string, true>,
  *               rule_pref: array<string, list<string>>, default: ?string, selfcheck: bool, raw_states: string, raw_rules: string}
  */
-function wf_snapshot_pf(array $wanGwIp): array
+function wf_snapshot_pf(array $wanTargets): array
 {
     $rawStates = (string)shell_exec('/sbin/pfctl -vvss 2>/dev/null');
     $rawRules = (string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null');
     $states = wf_parse_states($rawStates);
-    $flows = wf_flows($states, array_flip($wanGwIp));
+    $flows = wf_flows($states, array_flip($wanTargets));
     $pinned = [];
     $looked = [];
     foreach ($flows as $f) {
@@ -150,7 +152,8 @@ function wf_snapshot_pf(array $wanGwIp): array
         }
         $looked[$host] = true;
         $r = wf_route_get($host);
-        if ($r['destination'] !== null && $r['destination'] !== 'default' && $r['gateway'] === $f['anchor']['route_to_gw']) {
+        if ($r['destination'] !== null && $r['destination'] !== 'default'
+            && wf_route_get_target($r) === wf_route_target((string)$f['anchor']['route_to_gw'], (string)$f['anchor']['route_to_if'])) {
             $pinned[$host] = true;
         }
     }
@@ -169,7 +172,7 @@ function wf_snapshot_pf(array $wanGwIp): array
             $pref[(string)$uuid] = [$gw];
         }
     }
-    $default = array_search(wf_live_default(), $wanGwIp, true);
+    $default = array_search(wf_live_default(), $wanTargets, true);
     return ['flows' => $flows, 'renderings' => wf_parse_rules($rawRules), 'pinned' => $pinned, 'rule_pref' => $pref,
             'default' => $default === false ? null : $default, 'selfcheck' => wf_pf_selfcheck($rawStates, $states),
             'raw_states' => $rawStates, 'raw_rules' => $rawRules];
