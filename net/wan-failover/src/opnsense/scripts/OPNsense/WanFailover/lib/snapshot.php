@@ -51,7 +51,8 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
 }
 
 /**
- * @return array{now: int, boot_id: string, release: ?string, enabled: bool, dry: bool, failback: bool, tailscale_restart: bool,
+ * @return array{now: int, boot_id: string, release: ?string, failback_now: bool, enabled: bool, dry: bool, failback: bool,
+ *               failback_delay: int, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>,
  *               held_stale: list<string>, force_down: array<string, bool>, uuid_by_name: array<string, string>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
@@ -141,7 +142,8 @@ function wf_snapshot(): array
     return [
         'now' => $now, 'boot_id' => $bootId, 'release' => null,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
-        'failback' => $mdl->failback->isEqual('1'),
+        'failback' => $mdl->failback->isEqual('1'), 'failback_delay' => (int)$mdl->failback_delay->getValue() * 60,
+        'failback_now' => false,
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
         'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],

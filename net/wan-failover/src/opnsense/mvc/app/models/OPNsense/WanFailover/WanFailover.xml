@@ -29,6 +29,13 @@
             <Default>1</Default>
             <Required>Y</Required>
         </failback>
+        <failback_delay type="IntegerField">
+            <Default>10</Default>
+            <Required>Y</Required>
+            <MinimumValue>0</MinimumValue>
+            <MaximumValue>120</MaximumValue>
+            <ValidationMessage>Enter whole minutes from 0 to 120.</ValidationMessage>
+        </failback_delay>
         <tailscale_restart type="BooleanField">
             <Default>1</Default>
             <Required>Y</Required>

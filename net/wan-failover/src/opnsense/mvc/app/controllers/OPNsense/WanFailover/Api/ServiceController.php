@@ -67,4 +67,17 @@ class ServiceController extends ApiMutableServiceControllerBase
         $result = trim((new Backend())->configdRun('wanfailover release'));
         return ['status' => $result === 'OK' ? 'ok' : 'failed'];
     }
+
+    /**
+     * End the failback delay for every pending failback, now.
+     */
+    public function failbacknowAction(): array
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        $this->throwReadOnly();
+        $result = trim((new Backend())->configdRun('wanfailover failback_now'));
+        return ['status' => $result === 'OK' ? 'ok' : 'failed'];
+    }
 }

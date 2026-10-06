@@ -24,6 +24,12 @@
         <help>When a WAN recovers, end the connections that prefer it (by their rule's gateway or gateway group tier, otherwise the default route) so they reconnect through it, once the firewall already routes them there.</help>
     </field>
     <field>
+        <id>wanfailover.failback_delay</id>
+        <label>Failback delay (minutes)</label>
+        <type>text</type>
+        <help>How long a recovered WAN must read clean, with no loss at all, before connections move back to it. Any loss restarts the wait, and a WAN that is held again never gets them back. 0 moves them as soon as the WAN is released. Fail back now ends the wait.</help>
+    </field>
+    <field>
         <id>wanfailover.tailscale_restart</id>
         <label>Restart Tailscale</label>
         <type>checkbox</type>

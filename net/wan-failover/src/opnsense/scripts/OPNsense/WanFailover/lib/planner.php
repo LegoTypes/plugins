@@ -36,8 +36,9 @@ function wf_plan(array $snap, array $state): array
             $state['judgements'][$n]['last_settled_at'] = null;
             $state['judgements'][$n]['unknown_since'] = $j['unknown_since'] === null ? null : $now;
         }
-        foreach (array_keys($state['pending_failbacks']) as $n) {
-            $state['pending_failbacks'][$n]['since'] = $now;
+        foreach ($state['pending_failbacks'] as $n => $p) {
+            $state['pending_failbacks'][$n] = ['since' => $now, 'clean_since' => ($p['clean_since'] ?? null) === null ? null : $now,
+                                               'due' => ($p['due'] ?? null) === null ? null : $now];
         }
         $state['ts']['cur_since'] = $state['ts']['cur_since'] === null ? null : $now;
         $state['ts']['restarted_at'] = null;
@@ -171,23 +172,59 @@ function wf_plan(array $snap, array $state): array
         foreach ($wans as $n => $w) {
             $j = $state['judgements'][$n];
             if ($j['value'] === WF_CLEAN && $j['recovering'] && wf_usable($w, in_array($n, $heldAfter, true))) {
-                $state['pending_failbacks'][$n] = ['since' => $now];
+                $state['pending_failbacks'][$n] = ['since' => $now, 'clean_since' => $now,
+                                                   'due' => $snap['failback_delay'] === 0 ? $now : null];
                 $state['judgements'][$n]['recovering'] = false;
-                $log[] = "failback-pending {$n}";
+                $log[] = "failback-pending {$n}" . ($snap['failback_delay'] === 0 ? '' : sprintf(' (after %d min of clean readings)', intdiv($snap['failback_delay'], 60)));
+            }
+        }
+    }
+    if ($snap['failback_now']) {
+        if ($state['pending_failbacks'] === []) {
+            $log[] = 'failback-now: no failback is pending';
+        }
+        foreach ($state['pending_failbacks'] as $n => $p) {
+            if (($p['due'] ?? null) === null) {
+                $state['pending_failbacks'][$n]['due'] = $now;
+                $log[] = "failback-now: the delay ended for {$n}";
             }
         }
     }
     foreach ($state['pending_failbacks'] as $n => $p) {
+        /* a failback queued by 1.1 records only since: it was due at once */
+        $p += ['clean_since' => $p['since'], 'due' => $p['since']];
         if (!wf_usable($wans[$n], in_array($n, $heldAfter, true))) {
             unset($state['pending_failbacks'][$n]);
             $log[] = "failback for {$n} dropped: no longer usable";
-        } elseif ($now - $p['since'] > WF_FAILBACK_MAX_SECONDS) {
+            continue;
+        }
+        if ($p['due'] === null) {
+            /* the countdown runs only while every reading is clean; anything else restarts it */
+            if ($state['judgements'][$n]['value'] !== WF_CLEAN) {
+                if ($p['clean_since'] !== null) {
+                    $log[] = "failback-delay {$n} restarted: reading {$wans[$n]['reading']}";
+                }
+                $p['clean_since'] = null;
+            } else {
+                $p['clean_since'] = $p['clean_since'] ?? $now;
+                if ($now - $p['clean_since'] >= $snap['failback_delay']) {
+                    $p['due'] = $now;
+                    $log[] = "failback-due {$n}: clean for " . intdiv($snap['failback_delay'], 60) . ' min';
+                }
+            }
+        }
+        if ($p['due'] !== null && $now - $p['due'] > WF_FAILBACK_MAX_SECONDS) {
             unset($state['pending_failbacks'][$n]);
             $log[] = "failback-expired {$n}";
+            continue;
         }
+        $state['pending_failbacks'][$n] = $p;
     }
     $failback = [];
-    foreach (array_keys($state['pending_failbacks']) as $n) {
+    foreach ($state['pending_failbacks'] as $n => $p) {
+        if ($p['due'] === null) {
+            continue;
+        }
         $top = true;
         foreach ($wans as $o => $ow) {
             if ($o !== $n && wf_usable($ow, in_array($o, $heldAfter, true)) && $ow['rank'] < $wans[$n]['rank']) {
@@ -212,6 +249,25 @@ function wf_plan(array $snap, array $state): array
         $expected = $best === null ? null : $snap['wans'][$best]['route_target'];
     }
     return wf_plan_result($hold, $release, $heldAfter, $prune, $rec, $failback, $expected, $alerts, $log, false, $state, $snap);
+}
+
+/**
+ * Where a pending failback stands, for the status page: moving (due), counting (clean, with the seconds
+ * left) or waiting (for a clean reading to start the countdown, which then takes the whole delay).
+ *
+ * @param array{since: int, clean_since?: ?int, due?: ?int} $p
+ * @return array{state: string, left: int}
+ */
+function wf_failback_wait(array $p, int $now, int $delay): array
+{
+    $p += ['clean_since' => $p['since'], 'due' => $p['since']];
+    if ($p['due'] !== null) {
+        return ['state' => 'moving', 'left' => 0];
+    }
+    if ($p['clean_since'] === null) {
+        return ['state' => 'waiting', 'left' => $delay];
+    }
+    return ['state' => 'counting', 'left' => max(0, $delay - ($now - $p['clean_since']))];
 }
 
 /**

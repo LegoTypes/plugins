@@ -18,7 +18,7 @@ const WF_STATE_VERSION = 3;
 
 /**
  * @return array{version: int, boot_id: string, installed_at: ?int, last_now: ?int, judgements: array<string, array>,
- *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int}>, ts: array,
+ *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int, clean_since: ?int, due: ?int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
  *               contract_last: string, contract_judging_since: ?int, boot_note: ?string, dry_held: list<string>,
  *               said: array<string, string>}

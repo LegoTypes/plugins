@@ -9,6 +9,13 @@
         function plain(s) {
             return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
         }
+        function failbackText(f) {
+            if (!f) { return ''; }
+            if (f.state === 'moving') { return "{{ lang._('moving connections back') }}"; }
+            var mins = Math.ceil(f.left / 60);
+            if (f.state === 'waiting') { return "{{ lang._('pending: waiting for a clean reading, then') }} " + mins + " {{ lang._('min') }}"; }
+            return "{{ lang._('pending:') }} " + mins + " {{ lang._('min left') }}";
+        }
         function refreshHolds() {
             ajaxGet('/api/wanfailover/service/holds', {}, function (data) {
                 var body = $('#wanfailover-holds tbody').empty();
@@ -23,7 +30,7 @@
                         .append($('<td/>').text(plain(w.status)))
                         .append($('<td/>').text(w.loss === null ? '~' : w.loss + ' %'))
                         .append($('<td/>').text(plain(w.judgement || '')))
-                        .append($('<td/>').text(w.failback_pending ? "{{ lang._('pending') }}" : '')));
+                        .append($('<td/>').text(failbackText(w.failback))));
                 });
                 var notes = [];
                 if (data.dry) { notes.push("{{ lang._('Dry run: holds are simulated and logged; nothing is held, killed or restarted.') }}"); }
@@ -51,6 +58,7 @@
             onAction: function () { refreshHolds(); }
         });
         $('#releaseAct').SimpleActionButton({onAction: function () { refreshHolds(); }});
+        $('#failbackNowAct').SimpleActionButton({onAction: function () { refreshHolds(); }});
         refreshHolds();
     });
 </script>
@@ -74,5 +82,6 @@
         <tbody></tbody>
     </table>
     <button class="btn btn-default" id="releaseAct" data-endpoint="/api/wanfailover/service/release" data-label="{{ lang._('Release holds') }}" type="button"></button>
+    <button class="btn btn-default" id="failbackNowAct" data-endpoint="/api/wanfailover/service/failbacknow" data-label="{{ lang._('Fail back now') }}" type="button"></button>
 </div>
 {{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/wanfailover/service/reconfigure'}) }}
