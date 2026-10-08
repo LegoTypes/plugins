@@ -18,6 +18,21 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.3
+
+* A WAN whose link is down (no carrier or no IPv4 address) has no gateway
+  monitor, by design: core stops it with the address. That no longer
+  reads as core changing underneath the plugin, which blocked new holds
+  and, after 180 s, released every hold; with a flapping WAN released,
+  core kept electing it and installed no IPv4 default route at all.
+  Such a WAN is held as unavailable, and the hold stays while the link
+  is down
+* A DHCP WAN loses its gateway address with its link, and its hold ran
+  the state kill without an address (pfctl usage error, nothing killed):
+  connections stayed pinned to the dead WAN. The kill now uses the last
+  gateway address the WAN had, and is skipped and logged when none was
+  ever seen
+
 1.2
 
 * Failback delay (default 10 minutes): connections move back to a

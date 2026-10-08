@@ -103,7 +103,8 @@ function wf_snapshot(): array
         $sockFound = file_exists($sock);
         $link = wf_parse_ifconfig((string)shell_exec('/sbin/ifconfig ' . escapeshellarg((string)($g['if'] ?? '')) . ' 2>/dev/null'));
         $monitored = empty($g['monitor_disable']) && empty($g['disabled']);
-        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound, $monitored));
+        $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound,
+            wf_dpinger_expected($monitored, $link)));
         $age = isset($pids[$name]) ? ($ages[$pids[$name]] ?? null) : null;
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
