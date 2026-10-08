@@ -21,14 +21,18 @@ const WF_STATE_VERSION = 3;
  *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int, clean_since: ?int, due: ?int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
  *               contract_last: string, contract_judging_since: ?int, boot_note: ?string, dry_held: list<string>,
- *               said: array<string, string>}
+ *               said: array<string, string>, gateway_ips: array<string, string>}
+ *
+ * gateway_ips holds each WAN's last known gateway address: a DHCP WAN loses its address with its link, while
+ * the states it carried still route to the old one. A field added later merges in from these defaults, so it
+ * needs no version change.
  */
 function wf_state_new(string $bootId): array
 {
     return ['version' => WF_STATE_VERSION, 'boot_id' => $bootId, 'installed_at' => null, 'last_now' => null,
             'judgements' => [], 'no_rehold' => [], 'pending_failbacks' => [], 'ts' => wf_ts_new(),
             'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => '',
-            'contract_judging_since' => null, 'boot_note' => null, 'dry_held' => [], 'said' => []];
+            'contract_judging_since' => null, 'boot_note' => null, 'dry_held' => [], 'said' => [], 'gateway_ips' => []];
 }
 
 /**

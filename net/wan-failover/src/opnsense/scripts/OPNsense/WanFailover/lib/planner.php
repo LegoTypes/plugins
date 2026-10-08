@@ -46,6 +46,11 @@ function wf_plan(array $snap, array $state): array
     }
     $state['last_now'] = $now;
     $state['installed_at'] = $state['installed_at'] ?? $now;
+    foreach ($snap['wans'] as $n => $w) {
+        if (filter_var($w['gateway_ip'], FILTER_VALIDATE_IP) !== false) {
+            $state['gateway_ips'][$n] = $w['gateway_ip'];
+        }
+    }
     /* the early hook runs before syslog starts, so it leaves its outcome here */
     if (($state['boot_note'] ?? null) !== null) {
         $log[] = $state['boot_note'];
@@ -332,9 +337,17 @@ function wf_plan_result(array $hold, array $release, array $heldAfter, bool $pru
 {
     $killGateways = [];
     foreach (array_values(array_unique(array_merge($hold, $rec['redo_apply']))) as $n) {
-        if (isset($snap['wans'][$n])) {
-            $killGateways[] = $snap['wans'][$n]['gateway_ip'];
+        if (!isset($snap['wans'][$n])) {
+            continue;
         }
+        /* a DHCP WAN that lost its link has no address now; its states still route to the last one */
+        $gw = filter_var($snap['wans'][$n]['gateway_ip'], FILTER_VALIDATE_IP) !== false
+            ? $snap['wans'][$n]['gateway_ip'] : ($state['gateway_ips'][$n] ?? '');
+        if ($gw === '') {
+            $log[] = "kill states for {$n} skipped: no gateway address known";
+            continue;
+        }
+        $killGateways[] = $gw;
     }
     $write = $hold !== [] || $release !== [] || $prune;
     $plan = ['hold' => $hold, 'release' => $release, 'held_after' => $heldAfter, 'held_now' => $snap['held'], 'write' => $write,

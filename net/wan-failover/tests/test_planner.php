@@ -255,5 +255,20 @@ wf_register_suite('planner', function (): int {
     $s['pending_failbacks']['WAN2'] = ['since' => 13000];
     $r = wf_plan(wf_t_snap(13010, [], [], $d), $s);
     wf_check($t, 'a failback queued by 1.1 (no countdown recorded) runs as it would have', isset($r['plan']['failback']['WAN2']));
+
+    /* a DHCP WAN that loses its link loses its gateway address with it (VM 2026-10-08: the hold ran
+     * "filter kill gateway_states" with an empty address); its states still route-to the old address */
+    $lost = ['carrier' => false, 'has_ipv4' => false, 'present' => false, 'loss' => null, 'sock_age' => null, 'gateway_ip' => ''];
+    $r = wf_plan(wf_t_snap(14000, [], []), wf_state_new('b1'));
+    $r = wf_plan(wf_t_snap(14060, $lost, []), $r['state']);
+    wf_check($t, 'a WAN that lost its gateway address is held and its states killed by the last address it had',
+        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_gateways'] === ['203.0.113.1']);
+    $r = wf_plan(wf_t_snap(14000, $lost, []), wf_state_new('b1'));
+    wf_check($t, 'with no address ever seen, the kill is skipped and logged, never run without an address',
+        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_gateways'] === []
+        && in_array('kill states for PRIMARY_WAN skipped: no gateway address known', $r['plan']['log'], true));
+    $r = wf_plan(wf_t_snap(14000, ['gateway_ip' => 'dynamic'] + $lost, []), wf_state_new('b1'));
+    wf_check($t, 'a gateway value that is no address (an unresolved dynamic gateway) is neither learned nor used for a kill',
+        $r['plan']['kill_gateways'] === [] && !isset($r['state']['gateway_ips']['PRIMARY_WAN']));
     return wf_tally_report('planner', $t);
 });

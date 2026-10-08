@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contract.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parsers.php';
 
 const WF_T_IFACE = "[routes.configure]\ncommand:/usr/local/etc/rc.routing_configure\n\n[routes.alarm]\ncommand:/usr/local/bin/flock -n -E 0 -o /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm\nparameters: %s\ntype:script\n";
 const WF_T_FILTER = "[kill.state]\ncommand:/sbin/pfctl\nparameters: -k id -k %s/%s 2>&1\n\n[kill.gateway_states]\ncommand:/sbin/pfctl\nparameters: -k gateway -k %s 2>&1\n";
@@ -61,5 +62,20 @@ wf_register_suite('contract', function (): int {
     wf_check($t, 'a disabled or unmonitored WAN has no dpinger rows or socket; not a drift',
         wf_contract_judging(null, null, $route, false, false) === []);
     wf_check($t, 'an unmonitored WAN still checks the route format', count(wf_contract_judging(null, null, "garbage\n", false, false)) === 1);
+
+    /* Core runs a WAN's dpinger only while its interface has carrier and an IPv4 address (2026-10-07 on the
+     * firewall: igc1 flapped, lost its address, the socket went with it, and the plugin read that as core
+     * drift, released every hold and blocked new ones while core installed no IPv4 default at all). */
+    $active = ['carrier' => true, 'has_ipv4' => true];
+    wf_check($t, 'dpinger expected: monitored WAN with carrier and an address', wf_dpinger_expected(true, $active));
+    wf_check($t, 'dpinger not expected: no carrier', !wf_dpinger_expected(true, ['carrier' => false, 'has_ipv4' => false]));
+    wf_check($t, 'dpinger not expected: carrier but no IPv4 address (DHCP not answered yet)', !wf_dpinger_expected(true, ['carrier' => true, 'has_ipv4' => false]));
+    wf_check($t, 'dpinger not expected: unmonitored or disabled WAN', !wf_dpinger_expected(false, $active));
+    $noCarrier = "igc1: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n\tmedia: Ethernet autoselect\n\tstatus: no carrier\n";
+    wf_check($t, 'a WAN that lost carrier and its address has no socket, rows aside: not a drift (the 2026-10-07 flap)',
+        wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($noCarrier))) === []);
+    $upNoSocket = "igc1: flags=8843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tinet 203.0.113.167 netmask 0xfffffe00 broadcast 255.255.255.255\n\tstatus: active\n";
+    wf_check($t, 'a WAN with carrier and an address but no socket is still a drift',
+        count(wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($upNoSocket)))) === 1);
     return wf_tally_report('contract', $t);
 });

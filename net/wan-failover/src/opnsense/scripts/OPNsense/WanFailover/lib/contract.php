@@ -66,18 +66,33 @@ function wf_contract_tailscale(?string $tailscaleActions): array
 }
 
 /**
+ * Does core run a dpinger for this WAN right now? Only for a monitored, enabled gateway whose interface
+ * has carrier and an IPv4 address: dpinger binds the interface's address, and core stops it when the
+ * link or the address goes (2026-10-07: a flapping igc1 lost both, and its missing socket was taken for
+ * core drift). The judge reads such a WAN as unavailable; the contract must not read it as drift.
+ *
+ * @param array{carrier: bool, has_ipv4: bool} $link wf_parse_ifconfig()
+ */
+function wf_dpinger_expected(bool $monitored, array $link): bool
+{
+    return $monitored && $link['carrier'] && $link['has_ipv4'];
+}
+
+/**
  * @param array<string, string|int|float>|null $instanceRow one dpinger_instances() row
  * @param array<string, string>|null $statusRow the same gateway's dpinger_status() row
+ * @param bool $dpingerExpected wf_dpinger_expected(): core runs a dpinger for this WAN
  * @return list<string>
  */
-function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound, bool $monitored): array
+function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound, bool $dpingerExpected): array
 {
     $p = [];
     if ($routeOut === null || preg_match('/^\s*(gateway|destination):\s*\S+/m', $routeOut) !== 1) {
         $p[] = 'route -n get output no longer parses';
     }
-    /* a disabled or unmonitored gateway has no dpinger instance, status row or socket by design */
-    if (!$monitored) {
+    /* without a dpinger (an unmonitored or disabled gateway, or a WAN without carrier or an address) there is
+     * no instance, status row or socket to check, by design */
+    if (!$dpingerExpected) {
         return $p;
     }
     $missing = $instanceRow === null ? WF_INSTANCE_KEYS : array_values(array_diff(WF_INSTANCE_KEYS, array_keys($instanceRow)));
