@@ -1,0 +1,46 @@
+<model>
+    <mount>//OPNsense/UnboundUpstream</mount>
+    <version>1.0.0</version>
+    <description>Unbound upstream via gateway group settings</description>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <dry_run type="BooleanField">
+            <Default>1</Default>
+            <Required>Y</Required>
+        </dry_run>
+        <!-- stores the group's UUID; the snapshot resolves it to the group name. Required when enabled:
+             checked in the model class -->
+        <gateway_group type="ModelRelationField">
+            <Model>
+                <groups>
+                    <source>OPNsense.Routing.GatewayGroups</source>
+                    <items>gateway_group</items>
+                    <display>name</display>
+                </groups>
+            </Model>
+            <ValidationMessage>Select a saved gateway group.</ValidationMessage>
+        </gateway_group>
+        <resolver type="NetworkField">
+            <NetMaskAllowed>N</NetMaskAllowed>
+            <AddressFamily>ipv4</AddressFamily>
+            <ValidationMessage>Enter a single IPv4 address, for example 10.2.0.1.</ValidationMessage>
+        </resolver>
+        <failback_delay type="IntegerField">
+            <Default>120</Default>
+            <Required>Y</Required>
+            <MinimumValue>60</MinimumValue>
+            <MaximumValue>3600</MaximumValue>
+            <ValidationMessage>Enter whole seconds from 60 to 3600.</ValidationMessage>
+        </failback_delay>
+        <!-- not a HostnameField: it refuses the root name "." that is the default -->
+        <probe_name type="TextField">
+            <Default>.</Default>
+            <Required>Y</Required>
+            <Mask>/^(\.|([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.?)$/</Mask>
+            <ValidationMessage>Enter a host name to probe the resolver with, or "." for the root.</ValidationMessage>
+        </probe_name>
+    </items>
+</model>

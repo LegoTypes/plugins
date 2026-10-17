@@ -1,0 +1,11 @@
+<acl>
+    <page-services-unboundupstream>
+        <name>Services: Unbound DNS: Upstream via Gateway</name>
+        <patterns>
+            <pattern>ui/unboundupstream/*</pattern>
+            <pattern>api/unboundupstream/*</pattern>
+            <pattern>ui/diagnostics/log/core/unboundupstream*</pattern>
+            <pattern>api/diagnostics/log/core/unboundupstream*</pattern>
+        </patterns>
+    </page-services-unboundupstream>
+</acl>
