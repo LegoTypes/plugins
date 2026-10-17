@@ -61,7 +61,8 @@ function uu_status_unusable(string $status, string $trigger): bool
 }
 
 /**
- * Probes dpinger has counted in its window, as os-wan-failover counts them, times the loss share.
+ * Probes lost in dpinger's window: counted probes times the loss share. dpinger prints loss to 0.1 %, so the
+ * product is rounded to a whole probe (16 of 36 prints as 44.4 %); the float returned always holds a whole number.
  *
  * @param array{name: string, interface: string, if: string, next_hop: string, disabled: bool, force_down: bool,
  *              monitor_disable: bool, monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int} $m
@@ -74,7 +75,7 @@ function uu_lost_probes(array $m, array $p): float
         return 0.0;
     }
     $counted = intdiv(max(0, $p['sock_age'] - $m['loss_interval']), max(1, $m['interval']));
-    return $loss / 100.0 * $counted;
+    return round($loss / 100.0 * $counted);
 }
 
 /**
