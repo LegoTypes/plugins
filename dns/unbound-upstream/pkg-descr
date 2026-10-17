@@ -1,0 +1,21 @@
+Unbound Upstream via Gateway Plugin
+
+Forwards Unbound's root zone to a resolver that is reached through a
+gateway group, using the group's best member, and switches to another
+member when the best one changes. The resolver is reached by a host route
+and a firewall rule the plugin adds for it, so its queries leave through
+that member's tunnel and never the WAN.
+
+- When no member is usable or the resolver stops answering, the root zone
+  returns to Unbound's own forwarders (or to recursion), without flushing
+  the cache; a recovered member is used again only after a failback delay
+- Plan and log only (dry run) is the default; nothing changes in Unbound
+  or the routing table until it is turned off
+- Never writes the configuration at run time: the only writer is Save
+
+Plugin Changelog
+================
+
+1.0
+
+* Initial release
