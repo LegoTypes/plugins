@@ -81,5 +81,10 @@ uu_register_suite('zone', function (): int {
     $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-tls-upstream: no\n  forward-addr: 192.0.2.53\n"]);
     uu_check($t, 'forward-tls-upstream: no is not tls', $z['shape'] === 'one' && !$z['tls']);
 
+    $z = uu_root_zone(["server: # c\n  do-not-query-localhost: no\nforward-zone: # c\n  name: \".\"  # c\n"
+        . "  forward-addr: 192.0.2.53\n"]);
+    uu_check($t, 'a comment after a clause header does not hide the zone',
+        $z['shape'] === 'one' && $z['addrs'] === ['192.0.2.53'] && $z['problems'] === []);
+
     return uu_tally_report('zone', $t);
 });

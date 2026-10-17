@@ -40,8 +40,8 @@ function uu_zone_split_line(string $line): ?array
         $end = strpos($value, $value[0], 1);
         $value = $end === false ? substr($value, 1) : substr($value, 1, $end - 1);
     } else {
-        // a comment starts at a '#' after whitespace; "addr#authname" has none
-        $value = preg_replace('/\s+#.*$/', '', $value) ?? $value;
+        // a comment starts at a '#' that begins the value or follows whitespace; "addr#authname" has neither
+        $value = preg_replace('/(^|\s)#.*$/', '', $value) ?? $value;
         $value = trim($value);
     }
     return [$option, $value];
