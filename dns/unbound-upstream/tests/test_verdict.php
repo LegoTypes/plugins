@@ -55,11 +55,13 @@ uu_register_suite('verdict', function (): int {
     uu_check($t, 'young 100 % for 9 s → none',
         uu_member_down($a, uu_test_probe('down', '100.0 %', 13), 'downloss', false) === null);
     uu_check($t, 'young 16 lost → lost 16 of losshigh; 15 lost → none',
-        uu_member_down($a, uu_test_probe('loss', '44.5 %', 40), 'downloss', false) === 'lost 16 of losshigh'
-        && uu_member_down($a, uu_test_probe('loss', '41.7 %', 40), 'downloss', false) === null);
+        uu_member_down($a, uu_test_probe('loss', '44.4 %', 40), 'downloss', false) === 'lost 16 of losshigh'
+        && uu_member_down($a, uu_test_probe('loss', '41.6 %', 40), 'downloss', false) === null);
     uu_check($t, 'lost probes: counted = (age - loss_interval) / interval',
         abs(uu_lost_probes($a, uu_test_probe('loss', '50.0 %', 24)) - 10.0) < 1e-9
         && uu_lost_probes($a, uu_test_probe('loss', '50.0 %', 2)) === 0.0
+        && uu_lost_probes($a, uu_test_probe('loss', '44.4 %', 40)) === 16.0
+        && uu_lost_probes($a, uu_test_probe('loss', '41.6 %', 40)) === 15.0
         && uu_lost_probes($a, uu_test_probe('down', '~', 40)) === 0.0);
     uu_check($t, 'cached down while loss ~ → cached down',
         uu_member_down($a, uu_test_probe('down', '~', null, 'down'), 'downloss', false) === 'cached down');
@@ -98,7 +100,8 @@ uu_register_suite('verdict', function (): int {
         && !uu_usable_settled($a, uu_test_probe('none', '0.0 %', 30), 'downloss')
         && !uu_usable_settled($a, uu_test_probe('none', '~', null, 'none'), 'downloss')
         && !uu_usable_settled($a, uu_test_probe('none', '~', null), 'downloss')
-        && !uu_usable_settled($forced, uu_test_probe('none', '0.0 %', 90), 'downloss'));
+        && !uu_usable_settled($forced, uu_test_probe('none', '0.0 %', 90), 'downloss')
+        && !uu_usable_settled($off, uu_test_probe('none', '0.0 %', 90), 'downloss'));
 
     return uu_tally_report('verdict', $t);
 });
