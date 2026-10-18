@@ -148,6 +148,8 @@ class UnboundUpstream extends BaseModel
             if ($net === false || $bits < 0 || $bits > 32) {
                 continue; /* an IPv6 route, or one the Route model refuses */
             }
+            /* the same arithmetic as uu_ipv4_in_network() in the scripts' lib/snapshot.php, which the model does not
+             * load (it would pull the scripts tree into every page that saves this model) */
             $mask = $bits === 0 ? 0 : (-1 << (32 - $bits)) & 0xFFFFFFFF;
             if (($long & $mask) === ($net & $mask)) {
                 $messages->appendMessage(new Message(

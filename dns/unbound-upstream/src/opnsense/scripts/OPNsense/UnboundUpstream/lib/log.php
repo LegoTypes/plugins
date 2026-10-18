@@ -153,7 +153,7 @@ function uu_status_route_flags(string $out): array
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}},
+ *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
  *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param string $pfOut `pfctl -vsr`
  * @param string $routeOut `route -n get -inet <resolver>`

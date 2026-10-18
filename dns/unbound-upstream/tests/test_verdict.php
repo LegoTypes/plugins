@@ -57,6 +57,11 @@ uu_register_suite('verdict', function (): int {
     uu_check($t, 'young 16 lost → lost 16 of losshigh; 15 lost → none',
         uu_member_down($a, uu_test_probe('loss', '44.4 %', 40), 'downloss', false) === 'lost 16 of losshigh'
         && uu_member_down($a, uu_test_probe('loss', '41.6 %', 40), 'downloss', false) === null);
+    $zero = $a;
+    $zero['losshigh'] = 0;
+    uu_check($t, 'losshigh 0: a young window with no loss is no verdict; one lost probe is',
+        uu_member_down($zero, uu_test_probe('none', '0.0 %', 20), 'downloss', false) === null
+        && uu_member_down($zero, uu_test_probe('loss', '6.3 %', 20), 'downloss', false) === 'lost 1 of losshigh');
     uu_check($t, 'lost probes: counted = (age - loss_interval) / interval',
         abs(uu_lost_probes($a, uu_test_probe('loss', '50.0 %', 24)) - 10.0) < 1e-9
         && uu_lost_probes($a, uu_test_probe('loss', '50.0 %', 2)) === 0.0

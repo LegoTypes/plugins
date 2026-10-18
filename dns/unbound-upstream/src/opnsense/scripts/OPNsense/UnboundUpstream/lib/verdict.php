@@ -112,7 +112,8 @@ function uu_member_down(array $m, array $p, string $trigger, bool $named): ?stri
     if ($loss !== null && $loss >= 100.0 && $counted * $interval >= UU_DEAD_MIN_SECONDS) {
         return 'all lost ' . UU_DEAD_MIN_SECONDS . ' s';
     }
-    $needed = (int)ceil($m['losshigh'] / 100.0 * $m['time_period'] / $interval);
+    /* at least one lost probe: a losshigh of 0 would otherwise make every young window a verdict */
+    $needed = max(1, (int)ceil($m['losshigh'] / 100.0 * $m['time_period'] / $interval));
     if (uu_lost_probes($m, $p) + 1e-9 >= $needed) {
         return 'lost ' . $needed . ' of losshigh';
     }

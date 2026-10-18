@@ -158,24 +158,51 @@ function uu_with_lock(callable $fn): int
 }
 
 /**
- * One evaluation: snapshot, plan, apply, the blocked-count line, save. stop, and every evaluation while the
- * removal marker exists, plans as if disabled. The settings are read under the lock, so an evaluation that waited
- * for it acts on the last Save.
+ * One evaluation. stop, and every evaluation while the removal marker exists, plans as if disabled. The settings
+ * are read under the lock, so an evaluation that waited for it acts on the last Save. When the state records a
+ * resolver address other than the setting's (a Save changed it, ruling R31), that address's route and forwarders
+ * are undone first by a stop for it; if that does not finish, the new address waits for the next evaluation.
  *
  * @param list<string> $named
  */
 function uu_evaluate(bool $stopping, array $named): int
 {
     $settings = uu_settings();
-    $s = uu_snapshot($settings, $named);
-    $st = uu_state_load(UU_STATE_PATH);
-    $s = uu_route_adopt($s, $st['route_installed']);
-    if (!$stopping && $s['settings']['enabled'] && is_file(UU_REMOVING_PATH)) {
+    if (!$stopping && $settings['enabled'] && is_file(UU_REMOVING_PATH)) {
         /* every minute after a deinstall that stopped partway: worth the noise */
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
         $stopping = true;
     }
+    $old = uu_state_load(UU_STATE_PATH)['resolver'];
+    if ($old !== null && $old !== $settings['resolver']) {
+        uu_log("resolver changed from $old to {$settings['resolver']}: undoing the route and forwarders of $old "
+            . 'first');
+        $previous = $settings;
+        $previous['resolver'] = $old;
+        uu_evaluate_once($previous, [], true);
+        if (uu_state_load(UU_STATE_PATH)['resolver'] === $old) {
+            uu_log("the route or forwarders of $old could not be undone: {$settings['resolver']} waits for the next "
+                . 'evaluation', LOG_ERR);
+            return 1;
+        }
+    }
+    uu_evaluate_once($settings, $named, $stopping);
+    return 0;
+}
+
+/**
+ * Snapshot, plan, apply, the blocked-count line, save, for one set of settings.
+ *
+ * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
+ *     probe_name: string} $settings
+ * @param list<string> $named
+ */
+function uu_evaluate_once(array $settings, array $named, bool $stopping): void
+{
+    $s = uu_snapshot($settings, $named);
+    $st = uu_state_load(UU_STATE_PATH);
+    $s = uu_route_adopt($s, $st['route_installed']);
     if ($stopping) {
         $s['settings']['enabled'] = false;
     }
@@ -193,7 +220,6 @@ function uu_evaluate(bool $stopping, array $named): int
     }
     $st['blocked'] = $blocked;
     uu_state_save(UU_STATE_PATH, $st);
-    return 0;
 }
 
 /**
