@@ -35,13 +35,13 @@ uu_register_suite('state', function (): int {
     $path = $dir . '/run/state.json';
 
     $new = uu_state_new();
-    uu_check($t, 'new state: version 3, fallback, no member, no timers, no failures, not silent, no switch',
-        UU_STATE_VERSION === 3 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
+    uu_check($t, 'new state: version 4, fallback, no member, no timers, no failures, not silent, no switch',
+        UU_STATE_VERSION === 4 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
         && $new['member'] === null && $new['timers'] === [] && $new['control_failures'] === 0
         && $new['control_silent_since'] === null && $new['last_switch'] === null);
-    uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count',
+    uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count, no route installed',
         $new['checks'] === ['direct' => null, 'unbound' => null] && $new['tls_applied'] === null
-        && $new['blocked'] === null);
+        && $new['blocked'] === null && $new['route_installed'] === null);
 
     uu_check($t, 'missing file loads as a new state', uu_state_load($path) === $new);
 
@@ -57,6 +57,7 @@ uu_register_suite('state', function (): int {
                     'unbound' => ['ok' => false, 'at' => 1760000002, 'member' => 'wg-a']];
     $s['tls_applied'] = false;
     $s['blocked'] = 12;
+    $s['route_installed'] = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
     uu_state_save($path, $s);
     uu_check($t, 'round trip returns the saved state', uu_state_load($path) === $s);
     uu_check($t, 'save creates the directory 0700',
@@ -137,12 +138,28 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'a current-version file without control_silent_since loads as a new state',
         uu_state_load($path) === $new);
 
+    $bad = $s;
+    $bad['route_installed']['kind'] = 'other';
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a route record of an unknown kind loads as a new state', uu_state_load($path) === $new);
+
+    $bad = $s;
+    unset($bad['route_installed']['if']);
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a route record without its device loads as a new state', uu_state_load($path) === $new);
+
     $old = $s;
-    unset($old['checks'], $old['tls_applied'], $old['blocked']);
+    unset($old['checks'], $old['tls_applied'], $old['blocked'], $old['route_installed']);
     $old['version'] = 2;
     file_put_contents($path, json_encode($old));
     uu_check($t, 'a version 2 file (no checks, tls_applied, blocked) loads as a new state',
         uu_state_load($path) === $new);
+
+    $old = $s;
+    unset($old['route_installed']);
+    $old['version'] = 3;
+    file_put_contents($path, json_encode($old));
+    uu_check($t, 'a version 3 file (no route_installed) loads as a new state', uu_state_load($path) === $new);
 
     $doc = json_decode((string)json_encode($s), true);
     uu_check($t, 'a decoded document of the State shape converts; any other is null',

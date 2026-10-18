@@ -181,6 +181,68 @@ function uu_route_ours(array $route, array $members): bool
 }
 
 /**
+ * Ruling R22: a live route equal to the one the plugin last installed (the state's route_installed) is the
+ * plugin's own even when no current member explains it, so a group renamed or deleted in tunnel mode lets
+ * fallback and stop replace or delete the plugin's stale route instead of reading it as foreign. evaluate.php
+ * applies it to every snapshot before planning; a route matching neither stays foreign.
+ *
+ * @param array{now: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
+ *         probe_name: string},
+ *     trigger: string, tiers: list<list<string>>,
+ *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
+ *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
+ *         loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
+ *         unmonitored_members: list<string>, foreign_route: bool,
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
+ * @param ?array{kind: string, next_hop: string, if: string} $installed
+ * @return array{now: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
+ *         probe_name: string},
+ *     trigger: string, tiers: list<list<string>>,
+ *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
+ *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
+ *         loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
+ *         unmonitored_members: list<string>, foreign_route: bool,
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
+ */
+function uu_route_adopt(array $s, ?array $installed): array
+{
+    $route = $s['route'];
+    if ($installed === null || !$route['present'] || $route['ours']) {
+        return $s;
+    }
+    $matches = $installed['kind'] === 'reject'
+        ? $route['reject'] && $route['interface'] === $installed['if']
+        : $installed['kind'] === 'member' && !$route['reject'] && $route['gateway'] !== ''
+            && $route['gateway'] === $installed['next_hop'] && $route['interface'] === $installed['if'];
+    if (!$matches) {
+        return $s;
+    }
+    $s['route']['ours'] = true;
+    $s['contract_input']['foreign_route'] = false;
+    return $s;
+}
+
+/**
  * The plugin's settings. The group is the NAME of the gateway group the stored UUID points at, '' when the
  * group is gone or none is chosen.
  *

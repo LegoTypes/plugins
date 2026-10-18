@@ -104,7 +104,8 @@ final class UuApplyRun
      *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
      *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
-     *         member: string}}, tls_applied: ?bool, blocked: ?int},
+     *         member: string}}, tls_applied: ?bool, blocked: ?int,
+     *         route_installed: ?array{kind: string, next_hop: string, if: string}},
      *     reasons: list<string>}
      */
     private array $p;
@@ -133,7 +134,8 @@ final class UuApplyRun
      *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
-     *     member: string}}, tls_applied: ?bool, blocked: ?int}
+     *     member: string}}, tls_applied: ?bool, blocked: ?int,
+     *     route_installed: ?array{kind: string, next_hop: string, if: string}}
      */
     private array $st;
     /** @var ?list<string> Unbound's live root as last read or set; null while unknown */
@@ -157,7 +159,8 @@ final class UuApplyRun
      *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
      *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
-     *         member: string}}, tls_applied: ?bool, blocked: ?int},
+     *         member: string}}, tls_applied: ?bool, blocked: ?int,
+     *         route_installed: ?array{kind: string, next_hop: string, if: string}},
      *     reasons: list<string>} $p
      * @param array{now: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -194,7 +197,8 @@ final class UuApplyRun
      *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
-     *     member: string}}, tls_applied: ?bool, blocked: ?int}
+     *     member: string}}, tls_applied: ?bool, blocked: ?int,
+     *     route_installed: ?array{kind: string, next_hop: string, if: string}}
      */
     public function run(): array
     {
@@ -457,6 +461,7 @@ final class UuApplyRun
         }
         $this->route = ['present' => true, 'gateway' => $m['next_hop'], 'interface' => $m['if'], 'reject' => false,
                         'ours' => true];
+        $this->st['route_installed'] = ['kind' => 'member', 'next_hop' => $m['next_hop'], 'if' => $m['if']];
         $this->log("route: {$this->resolver} via $name ({$m['next_hop']} on {$m['if']})");
         return true;
     }
@@ -475,6 +480,7 @@ final class UuApplyRun
             return;
         }
         $this->route = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
+        $this->st['route_installed'] = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
         $this->log("route: {$this->resolver} rejected locally");
     }
 
@@ -488,6 +494,7 @@ final class UuApplyRun
             return;
         }
         $this->route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+        $this->st['route_installed'] = null;
         $this->log("route: {$this->resolver} deleted");
     }
 
@@ -647,7 +654,8 @@ final class UuApplyRun
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *         member: string}}, tls_applied: ?bool, blocked: ?int},
+ *         member: string}}, tls_applied: ?bool, blocked: ?int,
+ *         route_installed: ?array{kind: string, next_hop: string, if: string}},
  *     reasons: list<string>} $p uu_plan()
  * @param array{now: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -667,7 +675,8 @@ final class UuApplyRun
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int}
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}}
  */
 function uu_apply(array $p, array $s, array $io): array
 {
@@ -698,7 +707,8 @@ function uu_apply(array $p, array $s, array $io): array
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *         member: string}}, tls_applied: ?bool, blocked: ?int},
+ *         member: string}}, tls_applied: ?bool, blocked: ?int,
+ *         route_installed: ?array{kind: string, next_hop: string, if: string}},
  *     reasons: list<string>} $p
  * @param array{now: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
