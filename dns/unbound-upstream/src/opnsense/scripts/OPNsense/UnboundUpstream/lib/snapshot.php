@@ -195,7 +195,7 @@ function uu_route_ours(array $route, array $members): bool
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -214,7 +214,7 @@ function uu_route_ours(array $route, array $members): bool
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -310,6 +310,7 @@ function uu_zone_texts(): array
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
+ * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
  * @return array{now: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
@@ -318,7 +319,7 @@ function uu_zone_texts(): array
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -329,7 +330,7 @@ function uu_zone_texts(): array
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
  */
-function uu_snapshot(array $settings, array $named): array
+function uu_snapshot(array $settings, array $named, ?string $stop): array
 {
     uu_load_core();
     $now = intdiv(hrtime(true), 1000000000);
@@ -459,6 +460,7 @@ function uu_snapshot(array $settings, array $named): array
         'members' => $members,
         'probes' => $probes,
         'named' => $named,
+        'stop' => $stop,
         'unbound' => [
             'enabled' => $unboundMdl->general->enabled->isEqual('1'),
             'pid_alive' => $pidAlive,

@@ -29,7 +29,7 @@ require_once __DIR__ . '/test_contract.php';
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -63,6 +63,7 @@ function uu_test_snapshot(): array
         'members' => ['wg-a' => $a, 'wg-b' => $b],
         'probes' => ['wg-a' => uu_test_probe('none', '0.0 %', 300), 'wg-b' => uu_test_probe('none', '0.0 %', 300)],
         'named' => [],
+        'stop' => null,
         'unbound' => ['enabled' => true, 'pid_alive' => true, 'control_ok' => true, 'live_root' => $zone['addrs']],
         'zone' => $zone,
         'route' => ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false],
@@ -83,7 +84,7 @@ function uu_test_snapshot(): array
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -101,7 +102,7 @@ function uu_test_snapshot(): array
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -441,7 +442,35 @@ uu_register_suite('planner', function (): int {
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $s['settings']['enabled'] = false;
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
-    uu_check($t, 'disabled setting → stop', $p['action'] === 'stop' && !$p['escalate_restart']);
+    uu_check($t, 'disabled setting → stop', $p['action'] === 'stop' && !$p['escalate_restart']
+        && uu_test_reason_has($p['reasons'], 'disabled in settings'));
+
+    /* each stop says why: a requested stop, a removal and a replaced resolver while enabled are not the setting */
+    $stops = [];
+    foreach ([UU_STOP_REQUEST, UU_STOP_REMOVE, UU_STOP_RESOLVER] as $cause) {
+        $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+        $s['stop'] = $cause;
+        $stops[$cause] = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    }
+    uu_check($t, 'stop causes while enabled → stop, each with its own reason and none "disabled in settings"',
+        array_map(fn (array $p): string => $p['action'], $stops) === [UU_STOP_REQUEST => 'stop',
+            UU_STOP_REMOVE => 'stop', UU_STOP_RESOLVER => 'stop']
+        && uu_test_reason_has($stops[UU_STOP_REQUEST]['reasons'], 'stopped on request')
+        && uu_test_reason_has($stops[UU_STOP_REMOVE]['reasons'], 'package is being removed')
+        && uu_test_reason_has($stops[UU_STOP_RESOLVER]['reasons'], 'resolver setting changed', '10.2.0.1')
+        && !in_array(true, array_map(fn (array $p): bool => uu_test_reason_has($p['reasons'], 'disabled in settings'),
+            $stops), true));
+    $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+    $s['settings']['enabled'] = false;
+    $s['stop'] = UU_STOP_REQUEST;
+    $save = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $s['stop'] = UU_STOP_REMOVE;
+    $remove = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    uu_check($t, 'requested stop while disabled (Save, enabled off) reads as the setting; removal says removal',
+        uu_test_reason_has($save['reasons'], 'disabled in settings')
+        && uu_test_reason_has($remove['reasons'], 'package is being removed'));
+    uu_check($t, 'no stop cause and enabled → no stop reason',
+        uu_plan_stop_reason(uu_test_snapshot()) === null);
 
     // Mode recovery (Review Focus 4).
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-b');

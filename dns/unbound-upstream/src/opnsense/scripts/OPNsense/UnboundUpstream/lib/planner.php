@@ -12,21 +12,23 @@ declare(strict_types=1);
  * Snapshot = array{now: int, settings: array{enabled: bool, dry_run: bool, group: string, resolver: string,
  *                  failback_delay: int, probe_name: string},
  *                  trigger: string, tiers: list<list<string>>, members: array<string, Member>,
- *                  probes: array<string, Probe>, named: list<string>,
+ *                  probes: array<string, Probe>, named: list<string>, stop: ?string,
  *                  unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *                  zone: Zone, route: array{present: bool, gateway: string, interface: string, reject: bool,
  *                  ours: bool}, fib_sync_ms: ?int, contract_input: ContractInput}
  *   now is monotonic seconds; tiers come from the group (best first) and are empty when the group is gone;
  *   members and probes are keyed by gateway name (Member and Probe: verdict.php); named lists the gateways the
- *   monitor hook passed; live_root is null when unbound-control did not answer; route is `route -n get
+ *   monitor hook passed; stop is why this run stops whatever the settings say (a UU_STOP_* cause), or null;
+ *   live_root is null when unbound-control did not answer; route is `route -n get
  *   <resolver>`, interface the device it leaves by (compared with Member.if) and ours whether the plugin made
  *   it; Zone is zone.php's; ContractInput is uu_contract()'s input (contract.php).
  * Plan     = array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *                  escalate_restart: bool, state: State, reasons: list<string>}
- *   action: 'stop' (disabled, or Unbound not running), 'skip' (control channel silent), 'tunnel' (apply tries
- *   candidates in order; the first is the target), 'fallback' (leave tunnel mode) or 'none'. candidates is always
- *   the full choice list, so apply can move on when the current member fails its resolver checks. reassert and
- *   route_repair are the section 3.4 reconcile and are only set with 'none'. state carries the mode and member
+ *   action: 'stop' (disabled, a stop cause, or Unbound not running), 'skip' (control channel silent), 'tunnel'
+ *   (apply tries candidates in order; the first is the target), 'fallback' (leave tunnel mode) or 'none'.
+ *   candidates is always the full choice list, so apply can move on when the current member fails its resolver
+ *   checks. reassert and route_repair are the section 3.4 reconcile and are only set with 'none'. state carries
+ *   the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch.
  */
@@ -121,6 +123,25 @@ function uu_plan_result(
 }
 
 /**
+ * Why this evaluation stops whatever else it reads, or null when it does not. A requested stop while disabled is
+ * a Save with enabled off, so it reads as the setting.
+ *
+ * @param array{settings: array{enabled: bool, resolver: string}, stop: ?string} $s
+ */
+function uu_plan_stop_reason(array $s): ?string
+{
+    $enabled = $s['settings']['enabled'];
+    return match (true) {
+        $s['stop'] === UU_STOP_REMOVE => 'the package is being removed',
+        $s['stop'] === UU_STOP_RESOLVER => "the resolver setting changed: undoing {$s['settings']['resolver']}",
+        !$enabled => 'disabled in settings',
+        $s['stop'] === UU_STOP_REQUEST => 'stopped on request (configctl unboundupstream stop)',
+        $s['stop'] !== null => "stopped ({$s['stop']})",
+        default => null,
+    };
+}
+
+/**
  * @param array{now: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
@@ -129,7 +150,7 @@ function uu_plan_result(
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -226,10 +247,11 @@ function uu_plan(array $s, array $st): array
     $candidates = uu_candidates($s['tiers'], $usable, $down, $st['timers'], $now, $s['settings']['failback_delay'],
         $current);
 
-    if (!$s['settings']['enabled']) {
+    $stopReason = uu_plan_stop_reason($s);
+    if ($stopReason !== null) {
         $st['control_failures'] = 0;
         $st['control_silent_since'] = null;
-        $reasons[] = 'disabled in settings';
+        $reasons[] = $stopReason;
         return uu_plan_result('stop', $candidates, false, false, false, $st, $reasons);
     }
     if (!$s['unbound']['enabled'] || !$s['unbound']['pid_alive']) {
