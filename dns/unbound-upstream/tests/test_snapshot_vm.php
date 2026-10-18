@@ -40,7 +40,8 @@ uu_register_suite('snapshot_vm', function (): int {
         && !$a['disabled'] && !$a['force_down'] && !$a['monitor_disable'] && $a['interface'] !== '');
     uu_check($t, 'probes for both members', array_keys($s['probes']) === ['wg-test-429', 'wg-test-529']
         && is_string($s['probes']['wg-test-429']['status']) && is_string($s['probes']['wg-test-429']['loss'])
-        && ($s['probes']['wg-test-429']['sock_age'] === null || $s['probes']['wg-test-429']['sock_age'] >= 0));
+        && is_int($s['probes']['wg-test-429']['sock_age']) && $s['probes']['wg-test-429']['sock_age'] >= 0
+        && is_int($s['probes']['wg-test-529']['sock_age']) && $s['probes']['wg-test-529']['sock_age'] >= 0);
     uu_check($t, 'named is what the caller passed', $s['named'] === [] && uu_snapshot($settings, ['wg-test-529'])['named'] === ['wg-test-529']);
     uu_check($t, 'unbound is running and its control channel answers with the live root',
         $s['unbound']['enabled'] && $s['unbound']['pid_alive'] && $s['unbound']['control_ok']
@@ -50,9 +51,9 @@ uu_register_suite('snapshot_vm', function (): int {
         $s['route'] === ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false]);
     uu_check($t, 'fib_sync_ms 1000', $s['fib_sync_ms'] === 1000);
     $c = $s['contract_input'];
-    uu_check($t, 'contract input: group found, two members, hooks and order fine',
+    uu_check($t, 'contract input: group found, two members, hooks fine, plugin not installed on the VM so order is a fault',
         $c['group_found'] === true && $c['members'] === 2 && $c['unbound_hooks_registered'] === true
-        && $c['unbound_sorts_first'] === true && $c['groups_have_tiers'] === true && $c['status_fields'] === true
+        && $c['unbound_sorts_first'] === false && $c['groups_have_tiers'] === true && $c['status_fields'] === true
         && $c['foreign_route'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);

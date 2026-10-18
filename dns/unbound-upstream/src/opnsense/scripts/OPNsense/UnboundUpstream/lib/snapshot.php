@@ -28,22 +28,23 @@ function uu_load_core(): void
 }
 
 /**
- * `route -n get <resolver>`. The default route is not a route of the resolver, so it is reported absent, as is
- * "not in table".
+ * `route -n get <resolver>`. Only a host route for the resolver itself counts: the answer's destination is the
+ * address asked for and carries HOST. A default or other covering route (an answer for another destination) and
+ * "not in table" are absent. A REJECT host route prints no gateway.
  *
  * @return array{present: bool, gateway: string, interface: string, reject: bool}
  */
 function uu_parse_route_get(string $out): array
 {
     $absent = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
-    if (preg_match('/^\s*destination:\s*(\S+)/m', $out, $d) !== 1) {
-        return $absent;
-    }
-    $mask = preg_match('/^\s*mask:\s*(\S+)/m', $out, $k) === 1 ? $k[1] : '';
-    if ($d[1] === 'default' || ($d[1] === '0.0.0.0' && in_array($mask, ['', '0.0.0.0', 'default'], true))) {
+    if (preg_match('/^\s*route to:\s*(\S+)/m', $out, $to) !== 1
+        || preg_match('/^\s*destination:\s*(\S+)/m', $out, $d) !== 1 || $d[1] !== $to[1]) {
         return $absent;
     }
     $flags = preg_match('/^\s*flags:\s*<([^>]*)>/m', $out, $f) === 1 ? explode(',', $f[1]) : [];
+    if (!in_array('HOST', $flags, true)) {
+        return $absent;
+    }
     return [
         'present' => true,
         'gateway' => preg_match('/^\s*gateway:\s*(\S+)/m', $out, $g) === 1 ? $g[1] : '',
@@ -136,8 +137,8 @@ function uu_ipv4_in_network(string $addr, string $network): bool
 }
 
 /**
- * Whether plugins_scan() visits unbound.inc before unboundupstream.inc. A plugin not installed yet is placed
- * where its file name sorts among the scanned ones.
+ * Whether plugins_scan() visits unbound.inc before unboundupstream.inc. Either missing is a fault: on an
+ * installed box unboundupstream.inc is always scanned.
  *
  * @param list<string> $scanned the plugin names plugins_scan() returns, in its order
  */
@@ -147,17 +148,14 @@ function uu_unbound_sorts_first(array $scanned): bool
         return false;
     }
     if (!in_array('unboundupstream', $scanned, true)) {
-        $files = array_map(fn (string $name): string => $name . '.inc', $scanned);
-        $files[] = 'unboundupstream.inc';
-        sort($files);
-        $scanned = array_map(fn (string $file): string => substr($file, 0, -4), $files);
+        return false;
     }
     return array_search('unbound', $scanned, true) < array_search('unboundupstream', $scanned, true);
 }
 
 /**
- * Whether the plugin made the resolver's route: the REJECT route to 127.0.0.1, or a route through a member's next
- * hop on that member's device.
+ * Whether the plugin made the resolver's route: the REJECT host route (route(8) prints it on lo0 with no gateway),
+ * or a route through a member's next hop on that member's device.
  *
  * @param array{present: bool, gateway: string, interface: string, reject: bool} $route
  * @param array<string, array{next_hop: string, if: string}> $members
@@ -168,7 +166,7 @@ function uu_route_ours(array $route, array $members): bool
         return false;
     }
     if ($route['reject']) {
-        return $route['gateway'] === '127.0.0.1';
+        return $route['interface'] === 'lo0';
     }
     if ($route['gateway'] === '') {
         return false;

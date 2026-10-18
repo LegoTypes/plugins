@@ -1,6 +1,5 @@
    route to: 10.2.0.1
 destination: 10.2.0.1
-       mask: 255.255.255.255
     gateway: 10.2.0.4
         fib: 0
   interface: wg1

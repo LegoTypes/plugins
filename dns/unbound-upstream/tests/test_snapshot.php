@@ -27,8 +27,9 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'route via a member: present, gateway and device as printed, no reject',
         $r === ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false]);
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_reject.txt'));
-    uu_check($t, 'REJECT route: present, gateway 127.0.0.1, reject',
-        $r === ['present' => true, 'gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true]);
+    uu_check($t, 'REJECT route (real output): present, no gateway, on lo0, reject',
+        $r === ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true]);
+    uu_check($t, 'the real REJECT route is ours', uu_route_ours($r, []));
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_absent.txt'));
     uu_check($t, 'not in table: absent', $r['present'] === false && !$r['reject']);
     uu_check($t, 'empty output: absent', uu_parse_route_get('')['present'] === false);
@@ -38,8 +39,10 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'the default route printed as "default" is absent too',
         uu_parse_route_get(uu_snapshot_fixture('route_get_default_word.txt'))['present'] === false);
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_connected.txt'));
-    uu_check($t, 'a connected network route: present, no gateway, device named',
-        $r === ['present' => true, 'gateway' => '', 'interface' => 'wg1', 'reject' => false]);
+    uu_check($t, 'a connected network route covering the resolver is not the resolver\'s host route: absent',
+        uu_parse_route_get(uu_snapshot_fixture('route_get_connected.txt'))['present'] === false);
+    uu_check($t, 'a 0.0.0.0/1 covering route is absent',
+        uu_parse_route_get(uu_snapshot_fixture('route_get_covering.txt'))['present'] === false);
 
     uu_check($t, 'forward: addresses in order',
         uu_parse_forward("192.0.2.53 198.51.100.53 2001:db8::53\n") === ['192.0.2.53', '198.51.100.53', '2001:db8::53']);
@@ -80,8 +83,8 @@ uu_register_suite('snapshot', function (): int {
 
     uu_check($t, 'hook order: unbound before unboundupstream',
         uu_unbound_sorts_first(['core', 'unbound', 'unboundupstream', 'wireguard']));
-    uu_check($t, 'hook order: not installed yet, file names sort unbound first',
-        uu_unbound_sorts_first(['core', 'unbound', 'wireguard']));
+    uu_check($t, 'hook order: unboundupstream not listed is a fault',
+        !uu_unbound_sorts_first(['core', 'unbound', 'wireguard']));
     uu_check($t, 'hook order: scan order putting unboundupstream first fails',
         !uu_unbound_sorts_first(['unboundupstream', 'unbound']));
     uu_check($t, 'hook order: no unbound plugin fails', !uu_unbound_sorts_first(['core', 'wireguard']));
@@ -95,12 +98,12 @@ uu_register_suite('snapshot', function (): int {
         !uu_route_ours(['interface' => 'wg9'] + $via, $members));
     uu_check($t, 'ours: a gateway no member has is not ours',
         !uu_route_ours(['gateway' => '10.9.9.9'] + $via, $members));
-    uu_check($t, 'ours: 127.0.0.1 with REJECT is the block route',
-        uu_route_ours(['gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true] + $via, $members));
-    uu_check($t, 'ours: 127.0.0.1 without REJECT is not ours',
+    uu_check($t, 'ours: a REJECT route on lo0 is the block route, whatever the gateway',
+        uu_route_ours(['gateway' => '', 'interface' => 'lo0', 'reject' => true] + $via, $members));
+    uu_check($t, 'ours: a REJECT route on another device is not ours',
+        !uu_route_ours(['gateway' => '', 'interface' => 'wg1', 'reject' => true] + $via, $members));
+    uu_check($t, 'ours: a route on lo0 without REJECT is not ours',
         !uu_route_ours(['gateway' => '127.0.0.1', 'interface' => 'lo0'] + $via, $members));
-    uu_check($t, 'ours: a REJECT route through another gateway is not ours',
-        !uu_route_ours(['reject' => true] + $via, $members));
     uu_check($t, 'ours: no route is not ours, and a connected route (no gateway) is not ours',
         !uu_route_ours(['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false], $members)
         && !uu_route_ours(['gateway' => ''] + $via, ['wg-a' => ['next_hop' => ''] + $a]));
