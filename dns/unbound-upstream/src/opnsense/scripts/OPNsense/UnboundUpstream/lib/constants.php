@@ -22,5 +22,3 @@ const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many ev
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
-const UU_CLOCK_BACK_SECONDS = 60;         /* a backwards wall-clock jump over this resets the failback timers */
-const UU_TIMER_STEP_MAX = 300;            /* the most one evaluation adds to a failback timer (forward clock steps) */
