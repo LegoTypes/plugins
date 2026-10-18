@@ -128,7 +128,9 @@ function uu_test_in_tunnel(array $s, string $member): array
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}}
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int}
  */
 function uu_test_plan_state(
     ?string $member,

@@ -15,6 +15,18 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/constants.php';
 
+/** The pf label of a member interface's pass rule; the status reads its counters by it. */
+function uu_label_pass(string $opt): string
+{
+    return md5('uu-pass-' . $opt);
+}
+
+/** The pf label of the block rule; the status reads the blocked packet count by it. */
+function uu_label_block(): string
+{
+    return md5('uu-block');
+}
+
 /**
  * One pass per distinct member interface, then the block. The pass is on the member's friendly interface name,
  * which core maps to the device, with the interface's own address as source so a query that Unbound sent from
@@ -36,13 +48,13 @@ function uu_rule_confs(string $resolver, array $members): array
         $confs[] = [
             'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt, 'ipprotocol' => 'inet',
             'protocol' => 'tcp/udp', 'from' => $opt . 'ip', 'to' => $resolver, 'to_port' => '53',
-            'disablereplyto' => true, 'label' => md5('uu-pass-' . $opt),
+            'disablereplyto' => true, 'label' => uu_label_pass($opt),
             'descr' => 'Unbound upstream: the resolver through this member',
         ];
     }
     $confs[] = [
         'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-        'to' => $resolver, 'label' => md5('uu-block'),
+        'to' => $resolver, 'label' => uu_label_block(),
         'descr' => 'Unbound upstream: the resolver never leaves by another interface',
     ];
     return $confs;

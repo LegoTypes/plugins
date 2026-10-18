@@ -90,14 +90,18 @@ function uu_plan_note(
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $st
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int} $st
  * @param list<string> $reasons
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
- *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}},
+ *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *         member: string}}, tls_applied: ?bool, blocked: ?int},
  *     reasons: list<string>}
  */
 function uu_plan_result(
@@ -136,13 +140,17 @@ function uu_plan_result(
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $st
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
- *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}},
+ *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *         member: string}}, tls_applied: ?bool, blocked: ?int},
  *     reasons: list<string>}
  */
 function uu_plan(array $s, array $st): array
