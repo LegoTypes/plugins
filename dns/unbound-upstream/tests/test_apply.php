@@ -429,6 +429,84 @@ uu_register_suite('apply', function (): int {
             'route change -host 10.2.0.1 127.0.0.1 -reject']
         && $st['mode'] === 'fallback' && $st['timers']['wg-a']['resolver_failed_until'] === null);
 
+    // The route the plugin installed (ruling R22): recognised by the state's record when no member matches.
+    $memberRecord = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
+    $rejectRecord = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
+    $s = uu_test_apply_snapshot();
+    $p = uu_plan($s, uu_test_plan_state(null, $usable));
+    $st = uu_apply($p, $s, uu_test_io($s, $all)['io']);
+    uu_check($t, 'a route add or change via a member is recorded in the state', $st['route_installed'] === $memberRecord);
+    $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $s['probes']['wg-a'] = $settledDown;
+    $s['probes']['wg-b'] = $settledDown;
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $st = uu_apply($p, $s, uu_test_io($s, $all)['io']);
+    uu_check($t, 'the reject route is recorded as kind reject on lo0', $st['route_installed'] === $rejectRecord);
+    $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $s['settings']['enabled'] = false;
+    $recorded = uu_test_plan_state('wg-a', $usable);
+    $recorded['route_installed'] = $memberRecord;
+    $p = uu_plan($s, $recorded);
+    $st = uu_apply($p, $s, uu_test_io($s, $all)['io']);
+    uu_check($t, 'a successful route delete clears the record', $st['route_installed'] === null);
+    $r = uu_test_io($s, $all, ['route_fail' => ['delete']]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'a failed route delete keeps the record', $st['route_installed'] === $memberRecord);
+
+    $gone = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $gone['tiers'] = [];
+    $gone['members'] = [];
+    $gone['probes'] = [];
+    $gone['route']['ours'] = false;
+    $gone['contract_input']['group_found'] = false;
+    $gone['contract_input']['members'] = 0;
+    $gone['contract_input']['foreign_route'] = true;
+    $adopted = uu_route_adopt($gone, $memberRecord);
+    uu_check($t, 'a live route equal to the recorded one is ours, and no longer a foreign-route contract failure',
+        $adopted['route']['ours'] && !$adopted['contract_input']['foreign_route']
+        && uu_route_adopt($gone, null) === $gone);
+    $p = uu_plan($adopted, $recorded);
+    $r = uu_test_io($adopted, $all);
+    $st = uu_apply($p, $adopted, $r['io']);
+    uu_check($t, 'group deleted in tunnel mode with our recorded route → fallback replaces it with the reject route',
+        $p['action'] === 'fallback' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject]
+        && $st['mode'] === 'fallback' && $st['route_installed'] === $rejectRecord);
+    $off = $adopted;
+    $off['settings']['enabled'] = false;
+    $p = uu_plan($off, $recorded);
+    $r = uu_test_io($off, $all);
+    $st = uu_apply($p, $off, $r['io']);
+    uu_check($t, 'group deleted in tunnel mode, then stop → our recorded route deleted',
+        $p['action'] === 'stop'
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route delete -host 10.2.0.1']
+        && $st['mode'] === 'fallback' && $st['route_installed'] === null);
+
+    $other = $memberRecord;
+    $other['next_hop'] = '10.2.0.9';
+    $foreign = uu_route_adopt($gone, $other);
+    $p = uu_plan($foreign, $recorded);
+    $r = uu_test_io($foreign, $all);
+    $st = uu_apply($p, $foreign, $r['io']);
+    uu_check($t, 'a route matching neither the record nor a member stays foreign and untouched',
+        $foreign === $gone && $p['action'] === 'fallback' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward']
+        && $st['route_installed'] === $memberRecord);
+    $off = $foreign;
+    $off['settings']['enabled'] = false;
+    $p = uu_plan($off, $recorded);
+    $r = uu_test_io($off, $all);
+    uu_apply($p, $off, $r['io']);
+    uu_check($t, 'stop never deletes that foreign route',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward']);
+    $rejectLive = $gone;
+    $rejectLive['route'] = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
+                            'ours' => false];
+    uu_check($t, 'a member route is not adopted by a reject record, nor a reject route by a member record',
+        uu_route_adopt($gone, $rejectRecord) === $gone && uu_route_adopt($rejectLive, $memberRecord) === $rejectLive
+        && uu_route_adopt($rejectLive, $rejectRecord)['route']['ours']);
+    $absent = $gone;
+    $absent['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    uu_check($t, 'no live route: nothing to adopt', uu_route_adopt($absent, $memberRecord) === $absent);
+
     // Per-evaluation checks while staying on wg-a.
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));

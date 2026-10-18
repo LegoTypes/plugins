@@ -11,18 +11,23 @@ declare(strict_types=1);
  *
  * State = array{version: int, mode: string, member: ?string, timers: Timers, control_failures: int,
  *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
- *               checks: array{direct: ?Check, unbound: ?Check}, tls_applied: ?bool, blocked: ?int}
+ *               checks: array{direct: ?Check, unbound: ?Check}, tls_applied: ?bool, blocked: ?int,
+ *               route_installed: ?RouteRecord}
  * Check = array{ok: bool, at: int, member: string}
+ * RouteRecord = array{kind: string, next_hop: string, if: string}  (kind 'member' or 'reject'; a reject route is
+ *               next_hop '' on lo0, as route(8) prints it)
  * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
  * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
  * wall-clock time, for display only. checks are the last direct and through-Unbound results (section 3.8),
  * tls_applied the TLS flag the plugin last gave forward_add (Unbound cannot print it back; null before the plugin
- * set the forwarders) and blocked the block rule's packet count at the last evaluation, so a rise is logged. A
- * file that cannot be read back exactly as written is discarded: the planner derives the mode from the live
- * forwarders and route, so a fresh state costs only the failback timers.
+ * set the forwarders) and blocked the block rule's packet count at the last evaluation, so a rise is logged.
+ * route_installed is the resolver route the plugin last added or changed (null after its delete), so the route
+ * stays the plugin's own when the group that explained it is renamed or deleted (ruling R22). A file that cannot
+ * be read back exactly as written is discarded: the planner derives the mode from the live forwarders and route,
+ * so a fresh state costs only the failback timers.
  */
 
-const UU_STATE_VERSION = 3;
+const UU_STATE_VERSION = 4;
 
 /**
  * @return array{version: int, mode: string, member: ?string,
@@ -30,7 +35,8 @@ const UU_STATE_VERSION = 3;
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int}
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}}
  */
 function uu_state_new(): array
 {
@@ -45,6 +51,7 @@ function uu_state_new(): array
         'checks' => ['direct' => null, 'unbound' => null],
         'tls_applied' => null,
         'blocked' => null,
+        'route_installed' => null,
     ];
 }
 
@@ -85,7 +92,7 @@ function uu_state_check_ok(array $checks, string $key): bool
  */
 function uu_state_valid(array $doc): bool
 {
-    if (count($doc) !== 10 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
+    if (count($doc) !== 11 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
         return false;
     }
     if (!in_array($doc['mode'] ?? null, ['tunnel', 'fallback'], true)) {
@@ -119,6 +126,16 @@ function uu_state_valid(array $doc): bool
     if (!array_key_exists('blocked', $doc) || ($doc['blocked'] !== null && !is_int($doc['blocked']))) {
         return false;
     }
+    if (!array_key_exists('route_installed', $doc)) {
+        return false;
+    }
+    $installed = $doc['route_installed'];
+    if ($installed !== null && !(is_array($installed) && count($installed) === 3
+        && in_array($installed['kind'] ?? null, ['member', 'reject'], true)
+        && isset($installed['next_hop']) && is_string($installed['next_hop'])
+        && isset($installed['if']) && is_string($installed['if']))) {
+        return false;
+    }
     if (!array_key_exists('last_switch', $doc)) {
         return false;
     }
@@ -143,7 +160,8 @@ function uu_state_valid(array $doc): bool
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int}
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}}
  */
 function uu_state_from_doc(array $doc): ?array
 {
@@ -183,6 +201,11 @@ function uu_state_from_doc(array $doc): ?array
     }
     $state['tls_applied'] = $doc['tls_applied'] === null ? null : (bool)$doc['tls_applied'];
     $state['blocked'] = $doc['blocked'] === null ? null : (int)$doc['blocked'];
+    if (is_array($doc['route_installed'])) {
+        $state['route_installed'] = ['kind' => (string)$doc['route_installed']['kind'],
+                                     'next_hop' => (string)$doc['route_installed']['next_hop'],
+                                     'if' => (string)$doc['route_installed']['if']];
+    }
     return $state;
 }
 
@@ -194,7 +217,8 @@ function uu_state_from_doc(array $doc): ?array
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int}
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}}
  */
 function uu_state_load(string $path): array
 {
@@ -215,7 +239,8 @@ function uu_state_load(string $path): array
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int} $state
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}} $state
  */
 function uu_state_save(string $path, array $state): void
 {

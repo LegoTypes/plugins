@@ -132,6 +132,7 @@ function uu_evaluate(bool $stopping, array $named): int
     $settings = uu_settings();
     $s = uu_snapshot($settings, $named);
     $st = uu_state_load(UU_STATE_PATH);
+    $s = uu_route_adopt($s, $st['route_installed']);
     if ($stopping) {
         $s['settings']['enabled'] = false;
     }
@@ -217,8 +218,9 @@ function uu_wait_control(array $s, string $mode): array
 function uu_status_main(): int
 {
     $settings = uu_settings();
-    $s = uu_snapshot($settings, []);
-    $p = uu_plan($s, uu_state_load(UU_STATE_PATH));
+    $st = uu_state_load(UU_STATE_PATH);
+    $s = uu_route_adopt(uu_snapshot($settings, []), $st['route_installed']);
+    $p = uu_plan($s, $st);
     $route = filter_var($settings['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false ? ''
         : (string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($settings['resolver']) . ' 2>/dev/null');
     $doc = uu_status_doc($s, $p, (string)shell_exec('/sbin/pfctl -vsr 2>/dev/null'), $route);
@@ -280,8 +282,9 @@ function uu_replay_main(string $path): int
         echo "the recorded state is not this version's shape: planning from a fresh state\n";
         $st = uu_state_new();
     }
-    $p = uu_plan($doc['snapshot'], $st);
-    uu_apply_preview($p, $doc['snapshot'], function (string $msg, int $prio): void {
+    $s = uu_route_adopt($doc['snapshot'], $st['route_installed']);
+    $p = uu_plan($s, $st);
+    uu_apply_preview($p, $s, function (string $msg, int $prio): void {
         echo $msg, "\n";
     });
     echo json_encode(['plan' => $p], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
