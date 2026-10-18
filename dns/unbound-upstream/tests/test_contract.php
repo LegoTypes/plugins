@@ -16,7 +16,11 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/co
 /**
  * A contract input that passes, with a restorable single root zone.
  *
- * @return array<string, mixed>
+ * @return array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
+ *     unmonitored_members: list<string>, foreign_route: bool,
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}
  */
 function uu_test_contract_input(): array
 {
