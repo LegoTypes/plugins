@@ -69,9 +69,10 @@ function wf_reading(array $w, int $deadMinSeconds): string
     }
     $interval = max(1, $w['interval']);
     $counted = intdiv(max(0, $w['sock_age'] - $w['loss_interval']), $interval);
-    $lost = $loss / 100.0 * $counted;
+    // lost probes are whole: dpinger prints loss rounded to 0.1 %, so 12 of 36 reads 33.3 % (11.988 probes)
+    $lost = (int)round($loss / 100.0 * $counted);
     $needed = (int)ceil($w['losshigh'] / 100.0 * $w['time_period'] / $interval);
-    return $lost + 1e-9 >= $needed ? WF_BAD : WF_UNKNOWN;
+    return $lost >= $needed ? WF_BAD : WF_UNKNOWN;
 }
 
 /**
