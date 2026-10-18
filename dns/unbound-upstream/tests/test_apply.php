@@ -344,11 +344,14 @@ uu_register_suite('apply', function (): int {
         uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq]
         && $st['mode'] === 'fallback' && $st['route_installed'] === ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0']
         && uu_test_logged($r['calls'], LOG_ERR, 'flush_requestlist failed'));
+    $wgARecord = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
+    $recordedWgA = uu_test_plan_state('wg-a', $usable);
+    $recordedWgA['route_installed'] = $wgARecord;
     $r = uu_test_io($s, $all, ['route_fail' => ['change', 'add']]);
-    $st = uu_apply($p, $s, $r['io']);
-    uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, its record unchanged, logged',
+    $st = uu_apply(uu_plan($s, $recordedWgA), $s, $r['io']);
+    uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, its record kept, logged',
         uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, 'route add -host 10.2.0.1 127.0.0.1 -reject']
-        && $st['mode'] === 'fallback' && $st['route_installed'] === $p['state']['route_installed']
+        && $st['mode'] === 'fallback' && $st['route_installed'] === $wgARecord
         && uu_test_logged($r['calls'], LOG_ERR, 'no reject route'));
 
     $gap = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
