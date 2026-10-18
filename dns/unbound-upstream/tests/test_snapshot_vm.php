@@ -51,9 +51,9 @@ uu_register_suite('snapshot_vm', function (): int {
         $s['route'] === ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false]);
     uu_check($t, 'fib_sync_ms 1000', $s['fib_sync_ms'] === 1000);
     $c = $s['contract_input'];
-    uu_check($t, 'contract input: group found, two members, hooks fine, plugin not installed on the VM so order is a fault',
+    uu_check($t, 'contract input: group found, two members, hooks fine, order is a fault only while the hook file is not overlaid',
         $c['group_found'] === true && $c['members'] === 2 && $c['unbound_hooks_registered'] === true
-        && $c['unbound_sorts_first'] === false && $c['groups_have_tiers'] === true && $c['status_fields'] === true
+        && $c['unbound_sorts_first'] === is_readable('/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc') && $c['groups_have_tiers'] === true && $c['status_fields'] === true
         && $c['foreign_route'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);

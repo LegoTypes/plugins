@@ -1,0 +1,38 @@
+<form>
+    <field>
+        <id>unboundupstream.enabled</id>
+        <label>Enable</label>
+        <type>checkbox</type>
+        <help>Send Unbound's root-zone queries to the resolver below through the gateway group's best member, and fall back to Unbound's own forwarders when no member is usable. Off returns Unbound to its own forwarders and removes the resolver's route.</help>
+    </field>
+    <field>
+        <id>unboundupstream.dry_run</id>
+        <label>Dry run</label>
+        <type>checkbox</type>
+        <help>Decide and log only: Unbound's forwarders and the resolver's route are left alone. The block and pass rules are still loaded.</help>
+    </field>
+    <field>
+        <id>unboundupstream.gateway_group</id>
+        <label>Gateway group</label>
+        <type>dropdown</type>
+        <help>The saved IPv4 gateway group whose members are the tunnels to the resolver. Every member must be monitored.</help>
+    </field>
+    <field>
+        <id>unboundupstream.resolver</id>
+        <label>Resolver</label>
+        <type>text</type>
+        <help>The resolver's address inside the tunnels, for example 10.2.0.1. It must not be a gateway monitor address or lie inside a static route.</help>
+    </field>
+    <field>
+        <id>unboundupstream.failback_delay</id>
+        <label>Failback delay (seconds)</label>
+        <type>text</type>
+        <help>How long a better member must stay usable before Unbound returns to it, from 60 to 3600 seconds. Use at least the longest monitor period of the members.</help>
+    </field>
+    <field>
+        <id>unboundupstream.probe_name</id>
+        <label>Probe name</label>
+        <type>text</type>
+        <help>The name used to check that the resolver answers; "." asks for the root.</help>
+    </field>
+</form>
