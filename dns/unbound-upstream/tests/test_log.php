@@ -28,6 +28,15 @@ uu_register_suite('log', function (): int {
         uu_pf_label_packets($pf) === ['02f4bab031b57d1e30553ce08e0ec131' => 3, $passA => 246, $block => 37]);
     uu_check($t, 'pfctl -vsr: empty output has no labels', uu_pf_label_packets('') === []);
 
+    $absent = uu_snapshot_fixture('pfctl_vsr_absent.txt');
+    uu_check($t, 'rules loaded: the block rule and every member pass rule are present',
+        uu_rules_loaded($pf, ['opt1']) && uu_rules_loaded($pf, ['opt1', '']));
+    uu_check($t, 'rules loaded: a member without a pass rule means not loaded', !uu_rules_loaded($pf, ['opt1', 'opt2']));
+    uu_check($t, 'rules loaded: a block rule alone is not enough, nor are other rules',
+        !uu_rules_loaded(preg_replace('/^pass out.*\n(  \[.*\n)+/m', '', $pf) ?? '', ['opt1']) && !uu_rules_loaded('', []));
+    uu_check($t, 'rules loaded: pfctl -vsr of a VM without the plugin rules is not loaded',
+        !uu_rules_loaded($absent, ['opt1']) && !uu_rules_loaded($absent, []));
+
     uu_check($t, 'blocked line: rule not loaded, or nothing blocked since it was → no line',
         uu_blocked_line(null, null) === null && uu_blocked_line(5, null) === null && uu_blocked_line(null, 0) === null
         && uu_blocked_line(7, 7) === null);

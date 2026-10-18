@@ -26,6 +26,19 @@ function uu_test_evaluations(): int
     return substr_count((string)@file_get_contents(UU_TEST_CONFIGD_LOG), '[unboundupstream evaluate] returned');
 }
 
+/** Wait up to 5 s for configd's log to show $needle more often than $before times. */
+function uu_test_wait_configd(string $needle, int $before): bool
+{
+    $deadline = hrtime(true) + 5000000000;
+    while (hrtime(true) < $deadline) {
+        if (substr_count((string)@file_get_contents(UU_TEST_CONFIGD_LOG), $needle) > $before) {
+            return true;
+        }
+        usleep(200000);
+    }
+    return false;
+}
+
 uu_register_suite('wiring', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     if (!is_executable('/usr/local/sbin/configctl') || !is_readable('/usr/local/etc/inc/plugins.inc')) {
@@ -65,6 +78,24 @@ uu_register_suite('wiring', function (): int {
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);
     uu_check($t, 'configctl state returns the status JSON', is_array($state) && isset($state['mode'], $state['members'])
         && $state['enabled'] === false);
+
+    /* core calls the monitor hook with no arguments at boot (rc.bootup), and plugins_configure clamps the declared
+     * two to what it has: the hook must take one argument, or none, without throwing */
+    $plain = 'unbound-upstream evaluation ()';
+    $before = substr_count((string)@file_get_contents(UU_TEST_CONFIGD_LOG), $plain);
+    $threw = false;
+    try {
+        unboundupstream_queue_monitor(false);
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    uu_check($t, 'the monitor hook with one argument does not throw and queues a plain evaluate',
+        !$threw && uu_test_wait_configd($plain, $before));
+    $named = 'unbound-upstream evaluation (wg-test-429,wg-test-529)';
+    $before = substr_count((string)@file_get_contents(UU_TEST_CONFIGD_LOG), $named);
+    unboundupstream_queue_monitor(false, ['wg-test-429', 'wg-test-529']);
+    uu_check($t, 'the monitor hook with names passes them to the action as one comma-joined parameter',
+        uu_test_wait_configd($named, $before));
 
     $before = uu_test_evaluations();
     shell_exec('/usr/local/sbin/pluginctl -c unbound_start > /dev/null 2>&1');

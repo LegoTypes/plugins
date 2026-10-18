@@ -44,6 +44,26 @@ function uu_logger(string $msg, string $level = 'notice'): void
 }
 
 /**
+ * Whether pf holds the plugin's rules: the block rule and a pass rule for every member interface that resolved
+ * (an empty interface name has no rule). A filter reload without the plugin's files drops them (section 3.6).
+ *
+ * @param list<string> $interfaces the members' interface names (opt1, ...)
+ */
+function uu_rules_loaded(string $pfOut, array $interfaces): bool
+{
+    $counts = uu_pf_label_packets($pfOut);
+    if (!isset($counts[uu_label_block()])) {
+        return false;
+    }
+    foreach ($interfaces as $opt) {
+        if ($opt !== '' && !isset($counts[uu_label_pass($opt)])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
  * `pfctl -vsr`: packets per rule label, summed over the rules one label expands to (a tcp/udp pass is two pf
  * rules). A labelled rule without a counter line counts 0, so its label still shows the rule is loaded.
  *
@@ -122,7 +142,7 @@ function uu_status_route_flags(string $out): array
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
@@ -180,12 +200,7 @@ function uu_status_doc(array $s, array $plan, string $pfOut, string $routeOut): 
     }
 
     $counts = uu_pf_label_packets($pfOut);
-    $loaded = isset($counts[uu_label_block()]);
-    foreach ($s['members'] as $m) {
-        if ($m['interface'] !== '' && !isset($counts[uu_label_pass($m['interface'])])) {
-            $loaded = false;
-        }
-    }
+    $loaded = uu_rules_loaded($pfOut, array_column($s['members'], 'interface'));
 
     return [
         'enabled' => $s['settings']['enabled'],

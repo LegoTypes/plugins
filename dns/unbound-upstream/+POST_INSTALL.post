@@ -1,0 +1,3 @@
+
+# An install or an upgrade (its deinstall dropped the rendered rules) loads the plugin's rules; no service starts.
+/usr/local/sbin/configctl filter reload || true

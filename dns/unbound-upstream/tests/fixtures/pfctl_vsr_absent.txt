@@ -1,0 +1,374 @@
+No ALTQ support in kernel
+ALTQ related functions disabled
+scrub in all fragment reassemble
+  [ Evaluations: 80581     Packets: 37991     Bytes: 8142306     States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+anchor "wgclienttunnels_mss" all
+  [ Evaluations: 953       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on ! wg1 inet from 10.2.0.2 to any
+  [ Evaluations: 953       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet from 10.2.0.2 to any
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on ! wg2 inet from 10.2.0.2 to any
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on ! hn0 inet from 192.168.1.0/24 to any
+  [ Evaluations: 101       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet from 192.168.1.1 to any
+  [ Evaluations: 101       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on ! hn1 inet from 172.28.176.0/20 to any
+  [ Evaluations: 101       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet from 172.28.180.167 to any
+  [ Evaluations: 101       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on hn0 inet6 from fe80::215:5dff:fe4e:ce03 to any
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log on hn1 inet6 from fe80::215:5dff:fe4e:ce04 to any
+  [ Evaluations: 8         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet all label "02f4bab031b57d1e30553ce08e0ec131"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet6 all label "02f4bab031b57d1e30553ce08e0ec131"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type unreach keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type toobig keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type timex keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type paramprob keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type neighbrsol keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp all icmp6-type neighbradv keep state label "7355b5da99f40893221b6c4140de1006"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type echoreq keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 848       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type echorep keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type routersol keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type routeradv keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type neighbrsol keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to fe80::/10 icmp6-type neighbradv keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type echoreq keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type echorep keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type routersol keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type routeradv keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type neighbrsol keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick inet6 proto ipv6-icmp from (self) to ff02::/16 icmp6-type neighbradv keep state label "80f90f0d4c5aba0c28d1c539e1e35766"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to fe80::/10 icmp6-type echoreq keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to fe80::/10 icmp6-type routersol keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to fe80::/10 icmp6-type routeradv keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to fe80::/10 icmp6-type neighbrsol keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to fe80::/10 icmp6-type neighbradv keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to ff02::/16 icmp6-type echoreq keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to ff02::/16 icmp6-type routersol keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to ff02::/16 icmp6-type routeradv keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to ff02::/16 icmp6-type neighbrsol keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from fe80::/10 to ff02::/16 icmp6-type neighbradv keep state label "8fa5de02f1ff8cdd29bedb63b24cc7e0"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from ff02::/16 to fe80::/10 icmp6-type echoreq keep state label "e29b1b607bd6cd916cf6b598c41805d3"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from ff02::/16 to fe80::/10 icmp6-type routersol keep state label "e29b1b607bd6cd916cf6b598c41805d3"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from ff02::/16 to fe80::/10 icmp6-type routeradv keep state label "e29b1b607bd6cd916cf6b598c41805d3"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from ff02::/16 to fe80::/10 icmp6-type neighbrsol keep state label "e29b1b607bd6cd916cf6b598c41805d3"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from ff02::/16 to fe80::/10 icmp6-type neighbradv keep state label "e29b1b607bd6cd916cf6b598c41805d3"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from :: to ff02::/16 icmp6-type echoreq keep state label "b242f2d3f6b4756fa468cfd0daa78cd4"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from :: to ff02::/16 icmp6-type routersol keep state label "b242f2d3f6b4756fa468cfd0daa78cd4"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from :: to ff02::/16 icmp6-type routeradv keep state label "b242f2d3f6b4756fa468cfd0daa78cd4"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from :: to ff02::/16 icmp6-type neighbrsol keep state label "b242f2d3f6b4756fa468cfd0daa78cd4"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick inet6 proto ipv6-icmp from :: to ff02::/16 icmp6-type neighbradv keep state label "b242f2d3f6b4756fa468cfd0daa78cd4"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet proto tcp from any port = 0 to any label "b477ac1c8f5237a59ee416b9d819ce58"
+  [ Evaluations: 953       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet proto udp from any port = 0 to any label "b477ac1c8f5237a59ee416b9d819ce58"
+  [ Evaluations: 6         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet6 proto tcp from any port = 0 to any label "b477ac1c8f5237a59ee416b9d819ce58"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet6 proto udp from any port = 0 to any label "b477ac1c8f5237a59ee416b9d819ce58"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet proto tcp from any to any port = 0 label "b454844853f2346167ad77449b79ad8e"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet proto udp from any to any port = 0 label "b454844853f2346167ad77449b79ad8e"
+  [ Evaluations: 6         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet6 proto tcp from any to any port = 0 label "b454844853f2346167ad77449b79ad8e"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick inet6 proto udp from any to any port = 0 label "b454844853f2346167ad77449b79ad8e"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick proto tcp from <sshlockout> to (self) port = ssh label "8b59cf89872747f657c42f9e93dd52e0"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick proto tcp from <sshlockout> to (self) port = https label "27ad7dee30c19305dc0187bf0e87cd4e"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick from <virusprot> to any label "add09fc915886757c300419fc2ecc1e6"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn1 inet6 proto udp from any to fe80::/10 port = dhcpv6-client keep state label "c6e8fd0e915a27c129dc70c00a278a98"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick on hn1 inet6 proto udp from fe80::/10 port = dhcpv6-client to fe80::/10 port = dhcpv6-server keep state label "2f2c37025cd02b5cd29fd330f8e48954"
+  [ Evaluations: 848       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick on hn1 inet6 proto udp from fe80::/10 port = dhcpv6-client to ff02::/16 port = dhcpv6-server keep state label "2f2c37025cd02b5cd29fd330f8e48954"
+  [ Evaluations: 10        Packets: 6         Bytes: 696         States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 6     ]
+pass in log quick on hn1 proto udp from any port = bootps to any port = bootpc keep state label "f994f615e00b8be0042263f86c79913f"
+  [ Evaluations: 850       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick on hn1 proto udp from any port = bootpc to any port = bootps keep state label "5cf7ab808da1fcbca1ddb9ba9b46b669"
+  [ Evaluations: 850       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet proto udp from any port = bootpc to 255.255.255.255 port = bootps keep state label "56d97e04b8ce723a8524bdda932fe056"
+  [ Evaluations: 105       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 proto udp from any port = bootpc to (self) port = bootps keep state label "ac5d6855f1bc6d537c949fd7ce458587"
+  [ Evaluations: 2         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick on hn0 proto udp from (self) port = bootps to any port = bootpc keep state label "4071f735e7cf9dcad8b9305970c17911"
+  [ Evaluations: 792       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet6 proto udp from fe80::/10 to fe80::/10 port = dhcpv6-client keep state label "600d48bc4d9a060084eea027fa54cfdc"
+  [ Evaluations: 2         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet6 proto udp from fe80::/10 to ff02::/16 port = dhcpv6-client keep state label "600d48bc4d9a060084eea027fa54cfdc"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet6 proto udp from fe80::/10 to ff02::/16 port = dhcpv6-server keep state label "0e8cdb22b7059277a934591353ae2214"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet6 proto udp from ff02::/16 to fe80::/10 port = dhcpv6-server keep state label "06e2b143a84862bc38acb6bac5090d14"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 inet6 proto udp from fe80::/10 to (self) port = dhcpv6-client keep state label "04bd2bc40ab1391b8ce89ff0fafd1e67"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log quick on hn0 inet6 proto udp from (self) port = dhcpv6-server to fe80::/10 keep state label "0926e497e454bfe83d715b0d85fdfe3a"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from <bogons> to any label "b7cd97a164650b538506fb551a0369e7"
+  [ Evaluations: 947       Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet6 from <bogonsv6> to any label "f140a48ddade668b9d6f5259669a1d5c"
+  [ Evaluations: 8         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from 10.0.0.0/8 to any label "150df0459832ccabf02dededaf17fb8c"
+  [ Evaluations: 8         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from 172.16.0.0/12 to any label "150df0459832ccabf02dededaf17fb8c"
+  [ Evaluations: 4         Packets: 4         Bytes: 284         States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from 192.168.0.0/16 to any label "150df0459832ccabf02dededaf17fb8c"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from 100.64.0.0/10 to any label "150df0459832ccabf02dededaf17fb8c"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet from 169.254.0.0/16 to any label "150df0459832ccabf02dededaf17fb8c"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet6 from fd00::/8 to any label "2ce493388926d4a0f67fc594338e9ace"
+  [ Evaluations: 4         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log quick on hn1 inet6 from fe80::/10 to any label "2ce493388926d4a0f67fc594338e9ace"
+  [ Evaluations: 4         Packets: 4         Bytes: 364         States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log all flags S/SA keep state allow-opts label "fae559338f65e11c53669fc3642c93c2"
+  [ Evaluations: 939       Packets: 232       Bytes: 25284       States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 116   ]
+pass in log quick on hn0 proto tcp from any to (self) port = ssh flags S/SA keep state label "60533d555322b9f6a009f71c1c471480"
+  [ Evaluations: 939       Packets: 16677     Bytes: 9189711     States: 1     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 95    ]
+pass in log quick on hn0 proto tcp from any to (self) port = http flags S/SA keep state label "01e83daa25c4483dee217a7ecd7c9a88"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in log quick on hn0 proto tcp from any to (self) port = https flags S/SA keep state label "3345e04986bd5750d23b77cbbb21271f"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out log route-to (hn1 172.28.176.1) inet from (hn1) to ! (hn1:network) flags S/SA keep state allow-opts label "bf573c563d98585e229506d49d30f260"
+  [ Evaluations: 844       Packets: 1486      Bytes: 108280      States: 3     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 726   ]
+pass in quick on hn0 inet from (hn0:network) to any flags S/SA keep state label "2a17f96a-cce7-4cc8-8d0c-f1ddcc9061b4"
+  [ Evaluations: 844       Packets: 8         Bytes: 568         States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 2     ]
+pass in quick on hn0 inet6 from (hn0:network) to any flags S/SA keep state label "0d1e1cd7-2a15-40f1-902c-c0f77436fad1"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in quick on hn0 inet6 from fe80::/10 to any flags S/SA keep state label "0d1e1cd7-2a15-40f1-902c-c0f77436fad1"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]

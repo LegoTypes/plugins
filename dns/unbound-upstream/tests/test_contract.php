@@ -18,7 +18,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/co
  *
  * @return array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *     unmonitored_members: list<string>, foreign_route: bool,
+ *     unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}
  */
@@ -33,6 +33,7 @@ function uu_test_contract_input(): array
         'resolver_in_static' => [],
         'unmonitored_members' => [],
         'foreign_route' => false,
+        'rules_loaded' => true,
         'zone' => ['shape' => 'one', 'addrs' => ['192.0.2.53@853#dns.example'], 'tls' => true, 'problems' => []],
         'fib_sync_ms' => 100,
         'cacheflush' => false,
@@ -54,6 +55,7 @@ uu_register_suite('contract', function (): int {
         ['groups_have_tiers', false, 'gateway groups lack tiers'],
         ['status_fields', false, 'gateway status lacks expected fields'],
         ['foreign_route', true, 'resolver route not ours'],
+        ['rules_loaded', false, 'firewall rules not loaded'],
         ['fib_sync_ms', null, 'fib sync delay unreadable'],
         ['group_found', false, 'group not found'],
         ['members', 0, 'group has no members'],
