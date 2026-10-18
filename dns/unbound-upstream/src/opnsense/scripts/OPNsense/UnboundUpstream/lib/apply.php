@@ -13,10 +13,12 @@ declare(strict_types=1);
  * Io = array{route: callable(string $verb, list<string> $args): bool, sleep_ms: callable(int $ms): void,
  *            probe_direct: callable(string $resolver, string $name): bool, probe_unbound: callable(string $name): bool,
  *            uc: callable(list<string> $args): ?string, restart_unbound: callable(): bool,
- *            log: callable(string $msg, int $prio): void}
+ *            log: callable(string $msg, int $prio): void, save: callable(array $state): void}
  *   route runs route(8) with the verb (add, change or delete); uc runs unbound-control and returns its output, null
  *   when it failed or timed out; each probe is one `drill -D <name> @<server> SOA` tried UU_PROBE_TRIES times and
- *   passes on NOERROR with the ad flag; log takes a syslog priority.
+ *   passes on NOERROR with the ad flag; log takes a syslog priority; save writes the State (state.php) the run has
+ *   reached, after every successful route or forwarder change and when an exception escapes (ruling R26), so the
+ *   route record of ruling R22 survives a failure partway through.
  *
  * Every path keeps these:
  *   - a route is changed in place (change, or add when absent), never deleted and added: in the gap the resolver
@@ -119,13 +121,14 @@ final class UuApplyRun
      *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
-     *     fib_sync_ms: ?int}
+     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}}
      */
     private array $s;
     /**
      * @var array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
      *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
-     *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void}
+     *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
+     *     save: callable(array): void}
      */
     private array $io;
     /**
@@ -145,6 +148,8 @@ final class UuApplyRun
     /** @var array{present: bool, gateway: string, interface: string, reject: bool, ours: bool} */
     private array $route;
     private bool $fibPending = false;
+    /** an unbound-control call of this run got no answer (timeout or no channel) */
+    private bool $silent = false;
     private bool $reasonsLogged = false;
     /** @var list<string> what this run found on the way, for the switch reason */
     private array $notes = [];
@@ -171,11 +176,12 @@ final class UuApplyRun
      *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
-     *     fib_sync_ms: ?int} $s
+     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
      * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
      *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
      *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool,
-     *     log: callable(string, int): void} $io
+     *     log: callable(string, int): void,
+     *     save: callable(array): void} $io
      */
     public function __construct(array $p, array $s, array $io)
     {
@@ -202,28 +208,42 @@ final class UuApplyRun
      */
     public function run(): array
     {
-        switch ($this->p['action']) {
-            case 'stop':
-                $this->stop();
-                break;
-            case 'skip':
-                $this->skip();
-                break;
-            case 'fallback':
-                $this->reasons();
-                $this->fallback();
-                break;
-            case 'tunnel':
-                $this->reasons();
-                $this->tryCandidates($this->p['candidates']);
-                break;
-            default:
-                $this->none();
+        try {
+            switch ($this->p['action']) {
+                case 'stop':
+                    $this->stop();
+                    break;
+                case 'skip':
+                    $this->skip();
+                    break;
+                case 'fallback':
+                    $this->reasons();
+                    $this->fallback();
+                    break;
+                case 'tunnel':
+                    $this->reasons();
+                    $this->tryCandidates($this->p['candidates']);
+                    break;
+                default:
+                    $this->none();
+            }
+        } catch (\Throwable $e) {
+            /* ruling R26: what this run changed (the route record above all) is saved before the failure escapes */
+            try {
+                $this->checkpoint();
+            } catch (\Throwable $saveError) {
+                $this->log('saving the state after a failure failed too: ' . $saveError->getMessage(), LOG_ERR);
+            }
+            throw $e;
         }
         return $this->st;
     }
 
-    /** Section 3.7: the configured forwarders back if Unbound is on the resolver, then the route deleted. */
+    /**
+     * Section 3.7: the configured forwarders back if Unbound may be on the resolver, then the route drained and
+     * deleted. A restore that failed only because the control channel is silent ends in a restart (ruling R24): a
+     * one-shot stop (Save with enabled off, deinstall) has no later evaluation to escalate from.
+     */
     private function stop(): void
     {
         $ours = $this->route['present'] && $this->route['ours'];
@@ -231,13 +251,79 @@ final class UuApplyRun
             return;
         }
         $this->reasons();
-        if (!$this->restore()) {
+        if (!$this->restore() && !$this->restartForStop()) {
             $this->log('stop: Unbound may still forward to the resolver, so its route stays (without it the '
                 . 'queries would follow the default route)', LOG_ERR);
             return;
         }
-        $this->routeDelete();
+        $this->drainAndDelete();
         $this->switchTo('fallback', null);
+    }
+
+    /**
+     * Restart Unbound when this run's restore met a silent control channel with Unbound running and cacheflush off
+     * (the restart then keeps the cache, section 3.4), and confirm through `forward`, polled for up to
+     * UU_CONTROL_WAIT_SECONDS, that Unbound came back on its configured root. True only when that is confirmed.
+     */
+    private function restartForStop(): bool
+    {
+        if (!$this->silent || !$this->s['unbound']['pid_alive']) {
+            return false;
+        }
+        if ($this->s['contract_input']['cacheflush']) {
+            $this->log("stop: Unbound's control channel is silent, and with cacheflush on a restart would wipe its "
+                . 'cache: no restart', LOG_ERR);
+            return false;
+        }
+        $this->log("stop: Unbound's control channel is silent, so only a restart brings back its configured root "
+            . 'zone (section 3.7): restarting Unbound', LOG_WARNING);
+        if (!($this->io['restart_unbound'])()) {
+            $this->log('stop: the Unbound restart failed', LOG_ERR);
+            return false;
+        }
+        for ($try = 0; $try < UU_CONTROL_WAIT_SECONDS; $try++) {
+            if ($try > 0) {
+                ($this->io['sleep_ms'])(1000);
+            }
+            $out = ($this->io['uc'])(['forward']);
+            $live = $out === null ? null : uu_parse_forward($out);
+            if ($live === null) {
+                continue;
+            }
+            $this->live = $live;
+            if (uu_apply_same($live, [$this->resolver])) {
+                $this->log('stop: Unbound restarted but still forwards to the resolver', LOG_ERR);
+                return false;
+            }
+            /* Unbound's own start applied the configured TLS flag, not the plugin */
+            $this->st['tls_applied'] = null;
+            $this->checkpoint();
+            $this->log('stop: Unbound restarted on its configured root zone (' . $this->liveText() . ')',
+                LOG_WARNING);
+            return true;
+        }
+        $this->log('stop: Unbound\'s control channel is still silent ' . UU_CONTROL_WAIT_SECONDS
+            . ' s after the restart', LOG_ERR);
+        return false;
+    }
+
+    /**
+     * Ruling R25: a member route goes to the reject route first and is held there for the drain, so retries Unbound
+     * still has in flight to the resolver fail locally instead of following the default route out a WAN once the
+     * route is gone and the filter reload has removed the block rule. A stopped Unbound has nothing in flight.
+     */
+    private function drainAndDelete(): void
+    {
+        if ($this->route['present'] && $this->route['ours'] && !$this->route['reject']
+            && $this->s['unbound']['pid_alive']) {
+            $this->routeReject();
+            if ($this->route['reject']) {
+                ($this->io['sleep_ms'])(($this->s['fib_sync_ms'] ?? 1000) + UU_FIB_SYNC_MARGIN_MS
+                    + UU_STOP_DRAIN_SECONDS * 1000);
+                $this->fibPending = false;
+            }
+        }
+        $this->routeDelete();
     }
 
     /** Control channel silent: nothing can be read or set; only the section 3.10 escalation acts. */
@@ -404,6 +490,7 @@ final class UuApplyRun
             $what = implode(' ', $zone['addrs']) . ($zone['tls'] ? ' with +t' : ' without +t');
         }
         $this->live = null;
+        $this->silent = false;
         if (!$this->ucOk($args)) {
             $this->log('unbound-control ' . implode(' ', $args) . ' failed', LOG_ERR);
             return false;
@@ -414,6 +501,7 @@ final class UuApplyRun
             return false;
         }
         $this->st['tls_applied'] = $zone['shape'] === 'one' && $zone['tls'];
+        $this->checkpoint();
         $this->log("forwarders: . -> $what (Unbound's configured root zone)");
         return true;
     }
@@ -430,6 +518,7 @@ final class UuApplyRun
                 return false;
             }
             $this->st['tls_applied'] = false;
+            $this->checkpoint();
             $this->log('forwarders: . -> ' . $this->resolver . ', plain DNS inside the tunnel (no +t)');
         }
         $this->flushInfra();
@@ -462,6 +551,7 @@ final class UuApplyRun
         $this->route = ['present' => true, 'gateway' => $m['next_hop'], 'interface' => $m['if'], 'reject' => false,
                         'ours' => true];
         $this->st['route_installed'] = ['kind' => 'member', 'next_hop' => $m['next_hop'], 'if' => $m['if']];
+        $this->checkpoint();
         $this->log("route: {$this->resolver} via $name ({$m['next_hop']} on {$m['if']})");
         return true;
     }
@@ -481,6 +571,7 @@ final class UuApplyRun
         }
         $this->route = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
         $this->st['route_installed'] = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
+        $this->checkpoint();
         $this->log("route: {$this->resolver} rejected locally");
     }
 
@@ -495,6 +586,7 @@ final class UuApplyRun
         }
         $this->route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
         $this->st['route_installed'] = null;
+        $this->checkpoint();
         $this->log("route: {$this->resolver} deleted");
     }
 
@@ -565,6 +657,7 @@ final class UuApplyRun
     private function confirm(array $want): bool
     {
         $out = ($this->io['uc'])(['forward']);
+        $this->silent = $this->silent || $out === null;
         $this->live = $out === null ? null : uu_parse_forward($out);
         return uu_apply_same($this->live, $want);
     }
@@ -575,6 +668,7 @@ final class UuApplyRun
     private function ucOk(array $args): bool
     {
         $out = ($this->io['uc'])($args);
+        $this->silent = $this->silent || $out === null;
         return $out !== null && trim($out) === 'ok';
     }
 
@@ -616,6 +710,7 @@ final class UuApplyRun
         $this->st['mode'] = $mode;
         $this->st['member'] = $member;
         $this->st['last_switch'] = ['at' => time(), 'from' => $from, 'to' => $to, 'reason' => $reason];
+        $this->checkpoint();
         $this->log("switch $from -> $to: $reason");
     }
 
@@ -628,6 +723,12 @@ final class UuApplyRun
         foreach ($this->p['reasons'] as $reason) {
             $this->log($reason, $prio);
         }
+    }
+
+    /** Save what the run has reached (ruling R26). */
+    private function checkpoint(): void
+    {
+        ($this->io['save'])($this->st);
     }
 
     private function note(string $text): void
@@ -666,10 +767,11 @@ final class UuApplyRun
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
- *     fib_sync_ms: ?int} $s the snapshot the plan was made from
+ *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s the snapshot the plan was made from
  * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
- *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void} $io
+ *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
+ *     save: callable(array): void} $io
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
@@ -684,6 +786,11 @@ function uu_apply(array $p, array $s, array $io): array
         return (new UuApplyRun($p, $s, $io))->run();
     }
     $changed = $p['state']['mode'] === 'tunnel' || ($s['route']['present'] && $s['route']['ours']);
+    if ($changed && $p['action'] === 'skip') {
+        /* ruling R24: through a silent channel nothing can be undone; the skip runs as planned, its escalation
+         * included, and the undo waits for the channel to answer */
+        return (new UuApplyRun($p, $s, $io))->run();
+    }
     if ($p['action'] === 'stop' || $changed) {
         if ($changed) {
             ($io['log'])('dry run: undoing the plugin\'s live changes first (forwarders and route), as stop does',
@@ -719,7 +826,7 @@ function uu_apply(array $p, array $s, array $io): array
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
- *     fib_sync_ms: ?int} $s
+ *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
  * @param callable(string, int): void $log
  */
 function uu_apply_preview(array $p, array $s, callable $log): void
@@ -735,7 +842,8 @@ function uu_apply_preview(array $p, array $s, callable $log): void
  * @param ?list<string> $live the snapshot's live root
  * @return array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
- *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void}
+ *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
+ *     save: callable(array): void}
  */
 function uu_dry_io(callable $log, ?array $live): array
 {
@@ -779,6 +887,9 @@ function uu_dry_io(callable $log, ?array $live): array
         'log' => function (string $msg, int $prio) use ($log): void {
             $log('[dry] ' . $msg, $prio);
         },
+        'save' => function (array $state): void {
+            /* a simulated run is never saved */
+        },
     ];
 }
 
@@ -801,11 +912,13 @@ function uu_drill(string $server, string $name): bool
  * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (section 3.1); a failing
  * route or unbound-control call logs its output here, where the output is known.
  *
+ * @param string $statePath where save writes the state (evaluate.php's UU_STATE_PATH)
  * @return array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
- *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void}
+ *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
+ *     save: callable(array): void}
  */
-function uu_live_io(): array
+function uu_live_io(string $statePath): array
 {
     return [
         'route' => function (string $verb, array $args): bool {
@@ -850,6 +963,9 @@ function uu_live_io(): array
         },
         'log' => function (string $msg, int $prio): void {
             uu_log($msg, $prio);
+        },
+        'save' => function (array $state) use ($statePath): void {
+            uu_state_save($statePath, $state);
         },
     ];
 }

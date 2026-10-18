@@ -138,7 +138,7 @@ function uu_evaluate(bool $stopping, array $named): int
     }
     $s = uu_wait_control($s, $st['mode']);
     $p = uu_plan($s, $st);
-    $st = uu_apply($p, $s, uu_live_io());
+    $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
 
     $blocked = null;
     if ($s['settings']['enabled']) {
