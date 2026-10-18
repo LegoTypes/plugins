@@ -21,5 +21,8 @@ const UU_CONTROL_CALL_TIMEOUT_SECONDS = 5; /* every unbound-control call has a t
 const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many evaluations before a restart */
 const UU_ESCALATE_MIN_SECONDS = 120;      /* and silent at least this long, so a fresh start is never restarted */
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
+const UU_STOP_DRAIN_SECONDS = 5;          /* stop holds the reject route this long before the delete, so Unbound's
+                                           * in-flight retries to the resolver fail locally; Task 12 measures the
+                                           * bound on the VM */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */

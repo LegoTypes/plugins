@@ -57,14 +57,20 @@ function uu_test_apply_snapshot(): array
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}} $s
  * @param ArrayObject<int, string> $all
  * @param array{direct?: array<string, list<bool>>, unbound?: list<bool>, uc_fail?: list<string>,
- *     forward_out?: string, route_fail?: list<string>, restart?: bool} $o
+ *     forward_out?: string, route_fail?: list<string>, restart?: bool, silent?: bool,
+ *     restart_live?: list<string>, throw_on?: string} $o
  *   direct: per device, successive direct probe results (true when absent or used up); unbound: successive
  *   through-Unbound results (true when used up); uc_fail and route_fail: commands or verbs that fail once each,
- *   in order; forward_out: what `forward` prints instead of the fake's live root
+ *   in order; forward_out: what `forward` prints instead of the fake's live root; silent: every unbound-control
+ *   call times out (null) until a restart that sets restart_live as the live root; throw_on: the Io function
+ *   that throws, after recording its call
  * @return array{io: array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
- *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void},
- *     calls: ArrayObject<int, string>}
+ *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
+ *     save: callable(array): void},
+ *     calls: ArrayObject<int, string>,
+ *     saved: ArrayObject<string, array{route_installed: ?array{kind: string, next_hop: string, if: string}}>}
+ *   saved holds the state the last save received under 'state'; saves are not in calls
  */
 function uu_test_io(array $s, ArrayObject $all, array $o = []): array
 {
@@ -81,6 +87,14 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
     $unbound = new ArrayObject($o['unbound'] ?? []);
     $ucFail = new ArrayObject($o['uc_fail'] ?? []);
     $routeFail = new ArrayObject($o['route_fail'] ?? []);
+    $silent = new ArrayObject(['silent' => $o['silent'] ?? false]);
+    $saved = new ArrayObject();
+    $throwOn = $o['throw_on'] ?? '';
+    $maybeThrow = function (string $fn) use ($throwOn): void {
+        if ($fn === $throwOn) {
+            throw new RuntimeException("test: $fn throws");
+        }
+    };
     $failOnce = function (ArrayObject $queue, string $what): bool {
         $list = $queue->getArrayCopy();
         $at = array_search($what, $list, true);
@@ -92,8 +106,9 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
         return true;
     };
     $io = [
-        'route' => function (string $verb, array $args) use ($record, $dev, $routeFail, $failOnce): bool {
+        'route' => function (string $verb, array $args) use ($record, $dev, $routeFail, $failOnce, $maybeThrow): bool {
             $record(trim("route $verb " . implode(' ', $args)));
+            $maybeThrow('route');
             if ($failOnce($routeFail, $verb)) {
                 return false;
             }
@@ -110,8 +125,9 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
         'sleep_ms' => function (int $ms) use ($record): void {
             $record("sleep $ms");
         },
-        'probe_direct' => function (string $resolver, string $name) use ($record, $dev, $direct): bool {
+        'probe_direct' => function (string $resolver, string $name) use ($record, $dev, $direct, $maybeThrow): bool {
             $record("probe_direct $resolver $name");
+            $maybeThrow('probe_direct');
             $results = $direct[$dev['dev']] ?? [];
             if ($results === []) {
                 return true;
@@ -130,8 +146,12 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             $unbound->exchangeArray($results);
             return $ok;
         },
-        'uc' => function (array $args) use ($record, $live, $ucFail, $failOnce, $o): ?string {
+        'uc' => function (array $args) use ($record, $live, $ucFail, $failOnce, $o, $silent, $maybeThrow): ?string {
             $record('uc ' . implode(' ', $args));
+            $maybeThrow('uc');
+            if ($silent['silent']) {
+                return null;
+            }
             $cmd = (string)($args[0] ?? '');
             if ($failOnce($ucFail, $cmd)) {
                 return 'error failed';
@@ -152,15 +172,22 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             }
             return "ok\n";
         },
-        'restart_unbound' => function () use ($record, $o): bool {
+        'restart_unbound' => function () use ($record, $o, $silent, $live): bool {
             $record('restart');
+            if (isset($o['restart_live'])) {
+                $silent['silent'] = false;
+                $live['live'] = $o['restart_live'];
+            }
             return $o['restart'] ?? true;
         },
         'log' => function (string $msg, int $prio) use ($record): void {
             $record("log $prio $msg");
         },
+        'save' => function (array $state) use ($saved): void {
+            $saved['state'] = $state;
+        },
     ];
-    return ['io' => $io, 'calls' => $calls];
+    return ['io' => $io, 'calls' => $calls, 'saved' => $saved];
 }
 
 /**
@@ -210,6 +237,7 @@ uu_register_suite('apply', function (): int {
     $toResolver = 'uc forward_add . 10.2.0.1';
     $restoreDot = 'uc forward_add +t . 192.0.2.53@853#dns.example 2001:db8::53@853#dns.example';
     $reject = 'route change -host 10.2.0.1 127.0.0.1 -reject';
+    $drain = 'sleep ' . (1000 + UU_FIB_SYNC_MARGIN_MS + UU_STOP_DRAIN_SECONDS * 1000);
     $settledDown = uu_test_probe('down', '100.0 %', 300);
     $before = time();
 
@@ -302,9 +330,11 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'stop with live root the resolver → forward_add +t then route delete; never a restart',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['member'] === null && $st['last_switch'] !== null
         && $st['last_switch']['to'] === 'fallback');
+    uu_check($t, 'stop drains: restore, reject route, then fib_sync + 500 ms + UU_STOP_DRAIN_SECONDS (6500 ms), then delete',
+        UU_STOP_DRAIN_SECONDS === 5 && $drain === 'sleep 6500');
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
@@ -364,7 +394,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'dry run turned on in tunnel mode → the plugin\'s live changes are undone for real (stop)',
-        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route delete -host 10.2.0.1']
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && uu_test_logged($r['calls'], LOG_NOTICE, 'dry run'));
 
     // Carry-forward obligations.
@@ -451,7 +481,8 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'a successful route delete clears the record', $st['route_installed'] === null);
     $r = uu_test_io($s, $all, ['route_fail' => ['delete']]);
     $st = uu_apply($p, $s, $r['io']);
-    uu_check($t, 'a failed route delete keeps the record', $st['route_installed'] === $memberRecord);
+    uu_check($t, 'a failed route delete keeps the record (of the reject route the drain put in place)',
+        $st['route_installed'] === $rejectRecord);
 
     $gone = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $gone['tiers'] = [];
@@ -478,7 +509,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $off, $r['io']);
     uu_check($t, 'group deleted in tunnel mode, then stop → our recorded route deleted',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null);
 
     $other = $memberRecord;
@@ -641,6 +672,74 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'a silent control channel without escalation → nothing but a warning',
         $p['action'] === 'skip' && !$p['escalate_restart'] && uu_test_acts($r['calls']) === []
         && uu_test_logged($r['calls'], LOG_WARNING, 'silent'));
+
+    // Stop with a silent control channel (ruling R24) and saving mid-apply (ruling R26).
+    $silentTunnel = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $silentTunnel['unbound']['control_ok'] = false;
+    $silentTunnel['unbound']['live_root'] = null;
+    $silentStop = $silentTunnel;
+    $silentStop['settings']['enabled'] = false;
+    $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53']]);
+    $st = uu_apply($p, $silentStop, $r['io']);
+    uu_check($t, 'stop in tunnel mode with a silent channel → restart, the configured root confirmed, then reject, drain, delete',
+        $p['action'] === 'stop'
+        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
+        && $st['mode'] === 'fallback' && $st['route_installed'] === null
+        && uu_test_logged($r['calls'], LOG_WARNING, 'restart'));
+    $r = uu_test_io($silentStop, $all, ['silent' => true]);
+    $st = uu_apply($p, $silentStop, $r['io']);
+    $after = array_slice(uu_test_acts($r['calls']), 2);
+    $polls = true;
+    foreach ($after as $i => $call) {
+        $polls = $polls && $call === ($i % 2 === 0 ? 'uc forward' : 'sleep 1000');
+    }
+    uu_check($t, 'still silent after the restart → polled for UU_CONTROL_WAIT_SECONDS, the route stays, still tunnel',
+        array_slice(uu_test_acts($r['calls']), 0, 2) === [$restoreDot, 'restart'] && $polls
+        && count(array_filter($after, fn (string $c): bool => $c === 'uc forward')) === UU_CONTROL_WAIT_SECONDS
+        && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a' && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
+    $flush = $silentStop;
+    $flush['contract_input']['cacheflush'] = true;
+    $p = uu_plan($flush, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($flush, $all, ['silent' => true, 'restart_live' => ['192.0.2.53']]);
+    $st = uu_apply($p, $flush, $r['io']);
+    uu_check($t, 'stop with a silent channel and cacheflush on → no restart, the route stays, logged as an error',
+        uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
+        && uu_test_logged($r['calls'], LOG_ERR, 'cacheflush'));
+    $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($silentStop, $all, ['uc_fail' => ['forward_add']]);
+    $st = uu_apply($p, $silentStop, $r['io']);
+    uu_check($t, 'stop whose restore Unbound refuses (an answer, not silence) → no restart', !in_array('restart', uu_test_acts($r['calls']), true));
+
+    $dryEscalate = $silentTunnel;
+    $dryEscalate['settings']['dry_run'] = true;
+    $p = uu_plan($dryEscalate, uu_test_plan_state('wg-a', $usable, 2, $now - 200));
+    $r = uu_test_io($dryEscalate, $all);
+    $st = uu_apply($p, $dryEscalate, $r['io']);
+    uu_check($t, 'dry run with an escalating skip → the restart runs for real, no stop',
+        $p['action'] === 'skip' && $p['escalate_restart'] && uu_test_acts($r['calls']) === ['restart']
+        && $st['mode'] === 'tunnel' && !uu_test_logged($r['calls'], LOG_NOTICE, 'undoing'));
+    $p = uu_plan($dryEscalate, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($dryEscalate, $all);
+    uu_apply($p, $dryEscalate, $r['io']);
+    uu_check($t, 'dry run with a silent channel and no escalation → no call, no stop',
+        $p['action'] === 'skip' && uu_test_acts($r['calls']) === []);
+
+    $s = uu_test_apply_snapshot();
+    $p = uu_plan($s, uu_test_plan_state(null, $usable));
+    $r = uu_test_io($s, $all, ['throw_on' => 'probe_direct']);
+    $thrown = false;
+    try {
+        uu_apply($p, $s, $r['io']);
+    } catch (RuntimeException $e) {
+        $thrown = $e->getMessage() === 'test: probe_direct throws';
+    }
+    uu_check($t, 'an Io that throws after a route change → the exception escapes and the saved state has the new route',
+        $thrown && isset($r['saved']['state']) && $r['saved']['state']['route_installed'] === $memberRecord);
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'the state is saved after each successful change (the last save is the returned state)',
+        isset($r['saved']['state']) && $r['saved']['state'] === $st);
 
     // Never planned, across every case above.
     $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'flush_requestlist', 'reload',
