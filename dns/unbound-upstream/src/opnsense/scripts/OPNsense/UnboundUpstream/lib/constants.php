@@ -26,3 +26,7 @@ const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this lo
                                            * of the flush (without it, retries ran up to 14.5 s) */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
+const UU_SYSLOG_IDENT = 'dnsupstream';   /* the program name every log line carries; syslog-ng's program() is an
+                                           * unanchored regex, so it must contain no other log's pattern (core's
+                                           * resolver log is program("unbound")); unboundupstream.inc's syslog and
+                                           * firewall hooks and the Syslog template repeat it */

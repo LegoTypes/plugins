@@ -103,7 +103,7 @@ function uu_wanted_render(): array
  * not replace core's syslog ident or drop its connection.
  *
  * @param ?callable(): array{enabled: bool, resolver: string, members: list<array{interface: string}>} $wanted
- * @param ?callable(string): void $log receives the message; default logs it to unboundupstream at local4.err
+ * @param ?callable(string): void $log receives the message; default logs it as UU_SYSLOG_IDENT at local4.err
  */
 function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = null, ?callable $log = null): void
 {
@@ -123,7 +123,7 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         if ($log !== null) {
             $log($msg);
         } else {
-            exec('/usr/bin/logger -t unboundupstream -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
+            exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
         }
     }
 }

@@ -18,14 +18,14 @@ require_once __DIR__ . '/contract.php';
 require_once __DIR__ . '/render.php';
 
 /**
- * Log from evaluate.php's own process as program unboundupstream at local4, which the plugin's syslog-ng filter
+ * Log from evaluate.php's own process as program UU_SYSLOG_IDENT at local4, which the plugin's syslog-ng filter
  * selects. Never from a hook: openlog() inside core's process would replace core's own syslog ident (uu_logger()).
  */
 function uu_log(string $msg, int $prio = LOG_NOTICE): void
 {
     static $open = false;
     if (!$open) {
-        openlog('unboundupstream', LOG_PID, LOG_LOCAL4);
+        openlog(UU_SYSLOG_IDENT, LOG_PID, LOG_LOCAL4);
         $open = true;
     }
     syslog($prio, str_replace(["\r", "\n"], '; ', $msg));
@@ -39,7 +39,7 @@ function uu_log(string $msg, int $prio = LOG_NOTICE): void
  */
 function uu_logger(string $msg, string $level = 'notice'): void
 {
-    exec('/usr/bin/logger -t unboundupstream -p ' . escapeshellarg('local4.' . $level) . ' -- '
+    exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p ' . escapeshellarg('local4.' . $level) . ' -- '
         . escapeshellarg(str_replace(["\r", "\n"], '; ', $msg)) . ' > /dev/null 2>&1');
 }
 
