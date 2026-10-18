@@ -35,10 +35,13 @@ uu_register_suite('state', function (): int {
     $path = $dir . '/run/state.json';
 
     $new = uu_state_new();
-    uu_check($t, 'new state: version 2, fallback, no member, no timers, no failures, not silent, no switch',
-        UU_STATE_VERSION === 2 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
+    uu_check($t, 'new state: version 3, fallback, no member, no timers, no failures, not silent, no switch',
+        UU_STATE_VERSION === 3 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
         && $new['member'] === null && $new['timers'] === [] && $new['control_failures'] === 0
         && $new['control_silent_since'] === null && $new['last_switch'] === null);
+    uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count',
+        $new['checks'] === ['direct' => null, 'unbound' => null] && $new['tls_applied'] === null
+        && $new['blocked'] === null);
 
     uu_check($t, 'missing file loads as a new state', uu_state_load($path) === $new);
 
@@ -50,6 +53,10 @@ uu_register_suite('state', function (): int {
     $s['control_failures'] = 2;
     $s['control_silent_since'] = 1300;
     $s['last_switch'] = ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'];
+    $s['checks'] = ['direct' => ['ok' => true, 'at' => 1760000001, 'member' => 'wg-a'],
+                    'unbound' => ['ok' => false, 'at' => 1760000002, 'member' => 'wg-a']];
+    $s['tls_applied'] = false;
+    $s['blocked'] = 12;
     uu_state_save($path, $s);
     uu_check($t, 'round trip returns the saved state', uu_state_load($path) === $s);
     uu_check($t, 'save creates the directory 0700',
@@ -99,6 +106,26 @@ uu_register_suite('state', function (): int {
     file_put_contents($path, json_encode($bad));
     uu_check($t, 'a wrongly typed control_silent_since loads as a new state', uu_state_load($path) === $new);
 
+    $bad = $s;
+    $bad['checks']['direct'] = ['ok' => 'yes', 'at' => 1, 'member' => 'wg-a'];
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a wrongly typed check loads as a new state', uu_state_load($path) === $new);
+
+    $bad = $s;
+    unset($bad['checks']['unbound']);
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'checks without the through-Unbound entry load as a new state', uu_state_load($path) === $new);
+
+    $bad = $s;
+    $bad['tls_applied'] = 1;
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a non-boolean tls_applied loads as a new state', uu_state_load($path) === $new);
+
+    $bad = $s;
+    $bad['blocked'] = '12';
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a non-integer blocked count loads as a new state', uu_state_load($path) === $new);
+
     $old = $s;
     unset($old['control_silent_since']);
     $old['version'] = 1;
@@ -109,6 +136,18 @@ uu_register_suite('state', function (): int {
     file_put_contents($path, json_encode($old));
     uu_check($t, 'a current-version file without control_silent_since loads as a new state',
         uu_state_load($path) === $new);
+
+    $old = $s;
+    unset($old['checks'], $old['tls_applied'], $old['blocked']);
+    $old['version'] = 2;
+    file_put_contents($path, json_encode($old));
+    uu_check($t, 'a version 2 file (no checks, tls_applied, blocked) loads as a new state',
+        uu_state_load($path) === $new);
+
+    $doc = json_decode((string)json_encode($s), true);
+    uu_check($t, 'a decoded document of the State shape converts; any other is null',
+        is_array($doc) && uu_state_from_doc($doc) === $s
+        && uu_state_from_doc(['version' => UU_STATE_VERSION]) === null);
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

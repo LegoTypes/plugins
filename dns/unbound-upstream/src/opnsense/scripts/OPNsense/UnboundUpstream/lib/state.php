@@ -10,20 +10,27 @@ declare(strict_types=1);
  * Runtime state under /var/run (spec 2026-10-17 section 3.3). Lost at boot on purpose: a boot starts in fallback.
  *
  * State = array{version: int, mode: string, member: ?string, timers: Timers, control_failures: int,
- *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}}
+ *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *               checks: array{direct: ?Check, unbound: ?Check}, tls_applied: ?bool, blocked: ?int}
+ * Check = array{ok: bool, at: int, member: string}
  * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
- * evaluations with a silent control channel) are monotonic seconds; last_switch.at is wall-clock time, for
- * display only. A file that cannot be read back exactly as written is discarded: the planner derives the
- * mode from the live forwarders and route, so a fresh state costs only the failback timers.
+ * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
+ * wall-clock time, for display only. checks are the last direct and through-Unbound results (section 3.8),
+ * tls_applied the TLS flag the plugin last gave forward_add (Unbound cannot print it back; null before the plugin
+ * set the forwarders) and blocked the block rule's packet count at the last evaluation, so a rise is logged. A
+ * file that cannot be read back exactly as written is discarded: the planner derives the mode from the live
+ * forwarders and route, so a fresh state costs only the failback timers.
  */
 
-const UU_STATE_VERSION = 2;
+const UU_STATE_VERSION = 3;
 
 /**
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}}
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int}
  */
 function uu_state_new(): array
 {
@@ -35,6 +42,9 @@ function uu_state_new(): array
         'control_failures' => 0,
         'control_silent_since' => null,
         'last_switch' => null,
+        'checks' => ['direct' => null, 'unbound' => null],
+        'tls_applied' => null,
+        'blocked' => null,
     ];
 }
 
@@ -52,13 +62,30 @@ function uu_state_timer_ok(array $timer): bool
 }
 
 /**
+ * A Check, or null, exactly.
+ *
+ * @param array<array-key, mixed> $checks
+ */
+function uu_state_check_ok(array $checks, string $key): bool
+{
+    if (!array_key_exists($key, $checks)) {
+        return false;
+    }
+    $check = $checks[$key];
+    return $check === null || (is_array($check) && count($check) === 3
+        && isset($check['ok']) && is_bool($check['ok'])
+        && isset($check['at']) && is_int($check['at'])
+        && isset($check['member']) && is_string($check['member']));
+}
+
+/**
  * Whether a decoded document has exactly the State shape.
  *
  * @param array<array-key, mixed> $doc
  */
 function uu_state_valid(array $doc): bool
 {
-    if (count($doc) !== 7 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
+    if (count($doc) !== 10 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
         return false;
     }
     if (!in_array($doc['mode'] ?? null, ['tunnel', 'fallback'], true)) {
@@ -82,6 +109,16 @@ function uu_state_valid(array $doc): bool
             return false;
         }
     }
+    if (!isset($doc['checks']) || !is_array($doc['checks']) || count($doc['checks']) !== 2
+        || !uu_state_check_ok($doc['checks'], 'direct') || !uu_state_check_ok($doc['checks'], 'unbound')) {
+        return false;
+    }
+    if (!array_key_exists('tls_applied', $doc) || ($doc['tls_applied'] !== null && !is_bool($doc['tls_applied']))) {
+        return false;
+    }
+    if (!array_key_exists('blocked', $doc) || ($doc['blocked'] !== null && !is_int($doc['blocked']))) {
+        return false;
+    }
     if (!array_key_exists('last_switch', $doc)) {
         return false;
     }
@@ -97,22 +134,21 @@ function uu_state_valid(array $doc): bool
 }
 
 /**
- * The saved state, or a new one when the file is missing, truncated, not this version or not this shape.
+ * A decoded document as a State, or null when it is not exactly this version's shape. Shared by the state file and
+ * evaluate.php's replay.
  *
- * @return array{version: int, mode: string, member: ?string,
+ * @param array<array-key, mixed> $doc
+ * @return ?array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}}
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int}
  */
-function uu_state_load(string $path): array
+function uu_state_from_doc(array $doc): ?array
 {
-    $text = @file_get_contents($path);
-    if ($text === false) {
-        return uu_state_new();
-    }
-    $doc = json_decode($text, true);
-    if (!is_array($doc) || !uu_state_valid($doc)) {
-        return uu_state_new();
+    if (!uu_state_valid($doc)) {
+        return null;
     }
     $state = uu_state_new();
     $state['mode'] = (string)$doc['mode'];
@@ -138,7 +174,36 @@ function uu_state_load(string $path): array
             'reason' => (string)$doc['last_switch']['reason'],
         ];
     }
+    foreach (['direct', 'unbound'] as $key) {
+        $check = $doc['checks'][$key];
+        if (is_array($check)) {
+            $state['checks'][$key] = ['ok' => (bool)$check['ok'], 'at' => (int)$check['at'],
+                                      'member' => (string)$check['member']];
+        }
+    }
+    $state['tls_applied'] = $doc['tls_applied'] === null ? null : (bool)$doc['tls_applied'];
+    $state['blocked'] = $doc['blocked'] === null ? null : (int)$doc['blocked'];
     return $state;
+}
+
+/**
+ * The saved state, or a new one when the file is missing, truncated, not this version or not this shape.
+ *
+ * @return array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int}
+ */
+function uu_state_load(string $path): array
+{
+    $text = @file_get_contents($path);
+    if ($text === false) {
+        return uu_state_new();
+    }
+    $doc = json_decode($text, true);
+    return (is_array($doc) ? uu_state_from_doc($doc) : null) ?? uu_state_new();
 }
 
 /**
@@ -148,7 +213,9 @@ function uu_state_load(string $path): array
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $state
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int} $state
  */
 function uu_state_save(string $path, array $state): void
 {

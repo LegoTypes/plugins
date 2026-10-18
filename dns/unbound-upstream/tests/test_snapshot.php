@@ -49,6 +49,9 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'forward: DoT form keeps port and name',
         uu_parse_forward("192.0.2.53@853#dns.example\n") === ['192.0.2.53@853#dns.example']);
     uu_check($t, 'forward: off is the empty list', uu_parse_forward("off\n") === []);
+    uu_check($t, 'forward: Unbound 1.26.1\'s real "off (using root hints)" (no root forward) is the empty list',
+        uu_parse_forward("off (using root hints)\n") === []);
+    uu_check($t, 'forward: other text after off is null', uu_parse_forward("off and on\n") === null);
     uu_check($t, 'forward: an error line is null',
         uu_parse_forward("error: connect: Connection refused for 127.0.0.1 port 8953\n") === null);
     uu_check($t, 'forward: empty output (timeout) is null', uu_parse_forward('') === null && uu_parse_forward("\n") === null);

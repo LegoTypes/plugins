@@ -54,8 +54,9 @@ function uu_parse_route_get(string $out): array
 }
 
 /**
- * `unbound-control forward`: a space-separated address list, "off" when nothing is forwarded (the empty list), or
- * an error or anything else (null: the channel did not answer).
+ * `unbound-control forward`: a space-separated address list, "off (using root hints)" when nothing is forwarded
+ * (the empty list; Unbound 1.26.1 prints it after `forward_remove .`), or an error or anything else (null: the
+ * channel did not answer).
  *
  * @return ?list<string>
  */
@@ -65,7 +66,7 @@ function uu_parse_forward(string $out): ?array
     if ($text === '') {
         return null;
     }
-    if ($text === 'off') {
+    if (preg_match('/^off(\s+\(using root hints\))?$/', $text) === 1) {
         return [];
     }
     $addrs = preg_split('/\s+/', $text) ?: [];
