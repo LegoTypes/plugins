@@ -32,9 +32,13 @@
  * `configctl -d unboundupstream evaluate` and returns; none can throw into core.
  */
 
+/**
+ * The log stays unboundupstream (its directory, menu entry and ACL); its program name is UU_SYSLOG_IDENT, which
+ * this file cannot load: core's resolver log filter, program("unbound"), would also select "unboundupstream".
+ */
 function unboundupstream_syslog()
 {
-    return ['unboundupstream' => ['facility' => ['unboundupstream']]];
+    return ['unboundupstream' => ['facility' => ['dnsupstream']]];
 }
 
 function unboundupstream_configure()
@@ -122,7 +126,7 @@ function unboundupstream_firewall($fw)
         require_once $lib;
         uu_render_firewall($fw);
     } catch (\Throwable $e) {
-        exec('/usr/bin/logger -t unboundupstream -p local4.err -- '
+        exec('/usr/bin/logger -t dnsupstream -p local4.err -- '
             . escapeshellarg('render hook failed: ' . str_replace("\n", '; ', $e->getMessage()))
             . ' > /dev/null 2>&1');
     }

@@ -10,10 +10,40 @@ declare(strict_types=1);
  * The plugin's wiring on the test VM (spec section 3.1): the hook table, the hook order, configd's answers and
  * the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
- * for stop's cron restart to remove, and runs one pluginctl unbound_start, which restarts Unbound.
+ * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, and writes two
+ * uu-wiring marker lines to the plugin's log.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/log.php';
+
+/** Every daily file of one log directory under /var/log, in order. */
+function uu_test_log_dir(string $name): string
+{
+    $text = '';
+    foreach (glob("/var/log/{$name}/{$name}_*.log") ?: [] as $file) {
+        $text .= is_readable($file) ? (string)file_get_contents($file) : '';
+    }
+    return $text;
+}
+
+/**
+ * The program() patterns of each filter in syslog-ng's rendered local configuration.
+ *
+ * @return array<string, list<string>> filter name => its program() patterns
+ */
+function uu_test_program_filters(string $conf): array
+{
+    $filters = [];
+    preg_match_all('/^filter\s+(\w+)\s*\{(.*?)\};/ms', $conf, $blocks, PREG_SET_ORDER);
+    foreach ($blocks as $block) {
+        preg_match_all('/program\("([^"]*)"\)/', $block[2], $programs);
+        if ($programs[1] !== []) {
+            $filters[$block[1]] = $programs[1];
+        }
+    }
+    return $filters;
+}
 
 /**
  * configd's log, every daily file: latest.log can still point at an earlier day's file (syslog-ng moves it on the
@@ -72,8 +102,33 @@ uu_register_suite('wiring', function (): int {
         $hooks === ['bootup' => ['unboundupstream_queue'], 'dns' => ['unboundupstream_queue'],
             'local' => ['unboundupstream_queue'], 'monitor' => ['unboundupstream_queue_monitor:2'],
             'newwanip' => ['unboundupstream_queue'], 'unbound_start' => ['unboundupstream_queue']]);
-    uu_check($t, 'syslog registers the plugin facility',
-        unboundupstream_syslog() === ['unboundupstream' => ['facility' => ['unboundupstream']]]);
+    uu_check($t, 'syslog registers the plugin log under its own program name',
+        unboundupstream_syslog() === ['unboundupstream' => ['facility' => [UU_SYSLOG_IDENT]]]);
+
+    /* finding L1: program() is an unanchored regex, and core's resolver log filter is program("unbound") */
+    $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';
+    $filters = uu_test_program_filters(is_readable($conf) ? (string)file_get_contents($conf) : '');
+    $selects = fn (string $pattern): bool => preg_match('~' . str_replace('~', '\~', $pattern) . '~', UU_SYSLOG_IDENT) === 1;
+    $others = [];
+    foreach ($filters as $name => $patterns) {
+        foreach ($patterns as $pattern) {
+            if ($name !== 'f_local_unboundupstream' && $selects($pattern)) {
+                $others[] = "{$name} program(\"{$pattern}\")";
+            }
+        }
+    }
+    uu_check($t, 'only the plugin\'s own log filter selects its program name' . ($others === [] ? '' : ' (also: ' . implode(', ', $others) . ')'),
+        in_array(true, array_map($selects, $filters['f_local_unboundupstream'] ?? []), true) && $others === []);
+
+    $mark = 'uu-wiring-' . bin2hex(random_bytes(4));
+    uu_log("{$mark} from evaluate");
+    uu_logger("{$mark} from a hook");
+    $deadline = hrtime(true) + 5000000000;
+    while (substr_count(uu_test_log_dir('unboundupstream'), $mark) < 2 && hrtime(true) < $deadline) {
+        usleep(200000);
+    }
+    uu_check($t, 'both log paths (openlog in evaluate, logger in hooks) reach the plugin log and not the resolver log',
+        substr_count(uu_test_log_dir('unboundupstream'), $mark) === 2 && !str_contains(uu_test_log_dir('resolver'), $mark));
     uu_check($t, 'cron is empty while the plugin is disabled', unboundupstream_cron() === []);
     uu_check($t, 'services is empty while the plugin is disabled', unboundupstream_services() === []);
 

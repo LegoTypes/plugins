@@ -16,6 +16,12 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.0_1
+
+* Log lines carry the program name dnsupstream: as unboundupstream they
+  also landed in Unbound's own log, whose filter selects every program
+  name containing "unbound". The log page and its files are unchanged
+
 1.0
 
 * Initial release
