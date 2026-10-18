@@ -27,7 +27,7 @@ uu_register_suite('snapshot_vm', function (): int {
     }
     $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp', 'resolver' => '10.2.0.1',
                  'failback_delay' => 120, 'probe_name' => '.'];
-    $s = uu_snapshot($settings, []);
+    $s = uu_snapshot($settings, [], null);
     uu_check($t, 'settings pass through, trigger is the group\'s', $s['settings'] === $settings && $s['trigger'] === 'downloss');
     uu_check($t, 'now is monotonic seconds', abs($s['now'] - intdiv(hrtime(true), 1000000000)) <= 2);
     uu_check($t, 'tiers best first', $s['tiers'] === [['wg-test-429'], ['wg-test-529']]);
@@ -42,7 +42,9 @@ uu_register_suite('snapshot_vm', function (): int {
         && is_string($s['probes']['wg-test-429']['status']) && is_string($s['probes']['wg-test-429']['loss'])
         && is_int($s['probes']['wg-test-429']['sock_age']) && $s['probes']['wg-test-429']['sock_age'] >= 0
         && is_int($s['probes']['wg-test-529']['sock_age']) && $s['probes']['wg-test-529']['sock_age'] >= 0);
-    uu_check($t, 'named is what the caller passed', $s['named'] === [] && uu_snapshot($settings, ['wg-test-529'])['named'] === ['wg-test-529']);
+    uu_check($t, 'named and stop are what the caller passed', $s['named'] === [] && $s['stop'] === null
+        && uu_snapshot($settings, ['wg-test-529'], UU_STOP_REQUEST)['named'] === ['wg-test-529']
+        && uu_snapshot($settings, [], UU_STOP_REMOVE)['stop'] === UU_STOP_REMOVE);
     uu_check($t, 'unbound is running and its control channel answers with the live root',
         $s['unbound']['enabled'] && $s['unbound']['pid_alive'] && $s['unbound']['control_ok']
         && $s['unbound']['live_root'] !== null && count($s['unbound']['live_root']) >= 1);
@@ -58,11 +60,11 @@ uu_register_suite('snapshot_vm', function (): int {
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
 
-    $gone = uu_snapshot(['group' => 'no_such_group'] + $settings, []);
+    $gone = uu_snapshot(['group' => 'no_such_group'] + $settings, [], null);
     uu_check($t, 'a group that does not exist: no tiers, no members, group_found false',
         $gone['tiers'] === [] && $gone['members'] === [] && $gone['probes'] === []
         && $gone['contract_input']['group_found'] === false && $gone['contract_input']['members'] === 0);
-    $none = uu_snapshot(['group' => ''] + $settings, []);
+    $none = uu_snapshot(['group' => ''] + $settings, [], null);
     uu_check($t, 'no group set: group_found false', $none['contract_input']['group_found'] === false);
 
     return uu_tally_report('snapshot_vm', $t);

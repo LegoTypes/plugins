@@ -16,6 +16,12 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.0_2
+
+* A stop logs its cause: a stop from the service or configctl, a package
+  removal or a changed resolver address no longer logs "disabled in
+  settings" while the plugin is enabled
+
 1.0_1
 
 * Log lines carry the program name dnsupstream: as unboundupstream they

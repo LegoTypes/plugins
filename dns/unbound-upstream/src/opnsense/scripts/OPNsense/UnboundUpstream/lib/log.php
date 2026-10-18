@@ -135,7 +135,7 @@ function uu_status_route_flags(string $out): array
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *         loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>,
+ *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
