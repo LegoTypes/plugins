@@ -1,0 +1,100 @@
+{#
+ # Copyright (C) 2026 cayossarian (Bill Flood)
+ # All rights reserved.
+ # BSD 2-Clause License
+ #}
+
+<script>
+    $(document).ready(function () {
+        function plain(s) {
+            return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
+        }
+        function yesno(b) {
+            return b ? "{{ lang._('yes') }}" : "{{ lang._('no') }}";
+        }
+        function check(c) {
+            if (!c) { return "{{ lang._('not yet') }}"; }
+            return (c.ok ? "{{ lang._('ok') }}" : "{{ lang._('failed') }}") + ' (' + plain(c.member) + ', ' + new Date(c.at * 1000).toLocaleString() + ')';
+        }
+        function row(label, value) {
+            return $('<tr/>').append($('<th/>').text(label)).append($('<td/>').text(value));
+        }
+        function refreshState() {
+            ajaxGet('/api/unboundupstream/service/state', {}, function (data) {
+                var body = $('#unboundupstream-state tbody').empty();
+                var members = $('#unboundupstream-members tbody').empty();
+                if (!data || data.status === 'failed') {
+                    body.append($('<tr/>').append($('<td colspan="2"/>').text("{{ lang._('Status unavailable.') }}")));
+                    return;
+                }
+                var route = data.route || {};
+                var contract = data.contract || {};
+                body.append(row("{{ lang._('Mode') }}", plain(data.mode) + (data.dry_run ? " ({{ lang._('dry run') }})" : '')));
+                body.append(row("{{ lang._('Member') }}", data.member === null ? '' : plain(data.member) + ' ({{ lang._('tier') }} ' + data.tier + ')'));
+                body.append(row("{{ lang._('Unbound') }}", data.unbound.running ? (data.unbound.control_ok ? "{{ lang._('running') }}" : "{{ lang._('running, control channel silent') }}") : "{{ lang._('not running') }}"));
+                body.append(row("{{ lang._('Live root forwarders') }}", data.live_root === null ? "{{ lang._('unknown') }}" : plain(data.live_root.join(', '))));
+                body.append(row("{{ lang._('Configured root forwarders') }}", plain((data.configured_root.addrs || []).join(', ')) + (data.configured_root.tls ? ' (TLS)' : '')));
+                body.append(row("{{ lang._('TLS flag last applied') }}", data.tls_applied === null ? '' : yesno(data.tls_applied)));
+                body.append(row("{{ lang._('Resolver route') }}", route.present ? plain((route.reject ? "{{ lang._('reject') }}" : route.gateway + ' ' + route.interface) + ' [' + (route.flags || []).join(' ') + ']' + (route.ours ? '' : " {{ lang._('(not made by this plugin)') }}")) : "{{ lang._('absent') }}"));
+                body.append(row("{{ lang._('Rules loaded') }}", yesno(data.rules_loaded) + (data.blocked === null ? '' : ' (' + data.blocked + " {{ lang._('blocked packets') }})")));
+                body.append(row("{{ lang._('Last direct check') }}", check((data.checks || {}).direct)));
+                body.append(row("{{ lang._('Last check through Unbound') }}", check((data.checks || {}).unbound)));
+                var ls = data.last_switch;
+                body.append(row("{{ lang._('Last switch') }}", ls ? new Date(ls.at * 1000).toLocaleString() + ': ' + plain(ls.from) + ' -> ' + plain(ls.to) + ' (' + plain(ls.reason) + ')' : ''));
+                body.append(row("{{ lang._('Next action') }}", plain(data.next.action) + (data.next.reasons.length ? ' (' + plain(data.next.reasons.join('; ')) + ')' : '')));
+                $.each(data.members || [], function (i, m) {
+                    members.append($('<tr/>')
+                        .append($('<td/>').text(plain(m.name)))
+                        .append($('<td/>').text(m.tier))
+                        .append($('<td/>').text(plain(m.verdict === null ? "{{ lang._('up') }}" : m.verdict)))
+                        .append($('<td/>').text(yesno(m.usable)))
+                        .append($('<td/>').text(m.resolver_failed_for === null ? '' : m.resolver_failed_for + ' s'))
+                        .append($('<td/>').text(m.counted + ' s')));
+                });
+                var notes = [];
+                $.each(contract.failures || [], function (i, f) { notes.push("{{ lang._('Core changed, tunnel mode refused:') }} " + plain(f)); });
+                $.each(contract.notes || [], function (i, n) { notes.push(plain(n)); });
+                $('#unboundupstream-notes').text(notes.join(' ')).toggle(notes.length > 0);
+            });
+        }
+
+        mapDataToFormUI({'frm_general': '/api/unboundupstream/settings/get'}).done(function () {
+            formatTokenizersUI();
+            $('.selectpicker').selectpicker('refresh');
+        });
+        $('#reconfigureAct').SimpleActionButton({
+            onPreAction: function () {
+                var dfObj = new $.Deferred();
+                saveFormToEndpoint('/api/unboundupstream/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
+                return dfObj;
+            },
+            onAction: function () { refreshState(); }
+        });
+        refreshState();
+    });
+</script>
+
+<div class="content-box">
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+</div>
+<div class="content-box">
+    <div class="alert alert-info" id="unboundupstream-notes" style="display: none;"></div>
+    <p>{{ lang._("Unbound's own settings page keeps showing its configured forwarders while the tunnel is in use") }}</p>
+    <table class="table table-condensed" id="unboundupstream-state">
+        <tbody></tbody>
+    </table>
+    <table class="table table-condensed" id="unboundupstream-members">
+        <thead>
+            <tr>
+                <th>{{ lang._('Member') }}</th>
+                <th>{{ lang._('Tier') }}</th>
+                <th>{{ lang._('Verdict') }}</th>
+                <th>{{ lang._('Usable') }}</th>
+                <th>{{ lang._('Resolver failed for') }}</th>
+                <th>{{ lang._('Counted') }}</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+{{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/unboundupstream/service/reconfigure'}) }}

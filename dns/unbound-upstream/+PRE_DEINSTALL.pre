@@ -1,0 +1,4 @@
+#!/bin/sh
+
+# Leave tunnel mode and delete the resolver's route while the plugin's files still exist (spec 3.7).
+/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php stop || true

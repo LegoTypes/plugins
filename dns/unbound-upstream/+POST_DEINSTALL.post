@@ -1,0 +1,3 @@
+
+# The rendered block and pass rules go with the plugin's files: reload the filter once they are gone.
+/usr/local/sbin/configctl filter reload || true
