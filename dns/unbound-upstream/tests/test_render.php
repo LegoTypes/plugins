@@ -89,18 +89,26 @@ uu_register_suite('render', function (): int {
 
     $fw = uu_test_fw();
     $threw = false;
+    $logged = [];
     try {
         uu_render_firewall($fw, function (): array {
-            throw new \RuntimeException('boom');
+            throw new \RuntimeException("boom\nsecond line");
+        }, function (string $msg) use (&$logged): void {
+            $logged[] = $msg;
         });
     } catch (\Throwable) {
         $threw = true;
     }
     uu_check($t, 'a throwing $wanted: no rules, no exception', !$threw && $fw->rules === []);
+    uu_check($t, 'the failure is logged once, newlines collapsed', $logged === ['rules not rendered: boom; second line']);
 
     $fw = uu_test_fw();
-    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => 'not an address', 'members' => [$a]]);
-    uu_check($t, 'an invalid resolver address renders nothing', $fw->rules === []);
+    $logged = [];
+    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => 'not an address', 'members' => [$a]],
+        function (string $msg) use (&$logged): void {
+            $logged[] = $msg;
+        });
+    uu_check($t, 'an invalid resolver address renders nothing and is logged', $fw->rules === [] && count($logged) === 1);
 
     return uu_tally_report('render', $t);
 });
