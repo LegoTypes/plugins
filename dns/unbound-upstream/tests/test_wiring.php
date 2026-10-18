@@ -46,6 +46,21 @@ function uu_test_program_filters(string $conf): array
 }
 
 /**
+ * The Services > Unbound DNS entries of one Menu.xml, as entry name => order.
+ *
+ * @return array<string, int>
+ */
+function uu_test_unbound_menu(string $file): array
+{
+    $xml = is_readable($file) ? simplexml_load_file($file) : false;
+    $entries = [];
+    foreach ($xml === false ? [] : ($xml->xpath('/menu/Services/Unbound/*') ?: []) as $node) {
+        $entries[$node->getName()] = (int)$node['order'];
+    }
+    return $entries;
+}
+
+/**
  * configd's log, every daily file: latest.log can still point at an earlier day's file (syslog-ng moves it on the
  * next rotation, and a VM restored from a checkpoint crosses midnight UTC without one).
  */
@@ -104,6 +119,17 @@ uu_register_suite('wiring', function (): int {
             'newwanip' => ['unboundupstream_queue'], 'unbound_start' => ['unboundupstream_queue']]);
     uu_check($t, 'syslog registers the plugin log under its own program name',
         unboundupstream_syslog() === ['unboundupstream' => ['facility' => [UU_SYSLOG_IDENT]]]);
+
+    /* the menu: the settings page right after Query Forwarding, the log right after Unbound's own Log File */
+    $menu = uu_test_unbound_menu('/usr/local/opnsense/mvc/app/models/OPNsense/Unbound/Menu/Menu.xml')
+        + uu_test_unbound_menu('/usr/local/opnsense/mvc/app/models/OPNsense/UnboundUpstream/Menu/Menu.xml');
+    asort($menu);
+    $names = array_keys($menu);
+    $after = fn (string $name): ?string => ($i = array_search($name, $names, true)) === false ? null
+        : ($names[$i + 1] ?? null);
+    uu_check($t, 'menu: Upstream via Gateway follows Query Forwarding and its log follows Log File, no order shared',
+        $after('Forward') === 'UnboundUpstream' && $after('LogFile') === 'UnboundUpstreamLog'
+        && count(array_unique($menu)) === count($menu));
 
     /* finding L1: program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';

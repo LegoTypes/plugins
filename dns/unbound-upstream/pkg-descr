@@ -16,6 +16,11 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.0_3
+
+* Menu: the log sits after Unbound's own Log File, and the settings page
+  right after Query Forwarding
+
 1.0_2
 
 * A stop logs its cause: a stop from the service or configctl, a package

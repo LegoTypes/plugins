@@ -1,8 +1,8 @@
 <menu>
     <Services>
         <Unbound>
-            <UnboundUpstream order="60" VisibleName="Upstream via Gateway" url="/ui/unboundupstream"/>
-            <UnboundUpstreamLog order="65" VisibleName="Upstream via Gateway Log" url="/ui/diagnostics/log/core/unboundupstream"/>
+            <UnboundUpstream order="65" VisibleName="Upstream via Gateway" url="/ui/unboundupstream"/>
+            <UnboundUpstreamLog order="110" VisibleName="Upstream via Gateway Log" url="/ui/diagnostics/log/core/unboundupstream"/>
         </Unbound>
     </Services>
 </menu>
