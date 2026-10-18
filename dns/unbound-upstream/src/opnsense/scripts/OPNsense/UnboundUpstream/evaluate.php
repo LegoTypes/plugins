@@ -14,8 +14,12 @@ declare(strict_types=1);
  *   evaluate.php start                regenerate cron (the minute job exists only while enabled), then one
  *                                     evaluation (Save with enabled on while the job is missing)
  *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
- *                                     whatever the settings say (Save with enabled off, the package's deinstall)
- *   evaluate.php status               the section 3.8 JSON for the page; read-only and without the lock
+ *                                     whatever the settings say (Save with enabled off)
+ *   evaluate.php remove               the package's deinstall: leave the removal marker, then stop; every
+ *                                     evaluation stops while the marker exists (a cron tick or a hook between the
+ *                                     deinstall's stop and the files' removal would otherwise re-enter tunnel mode
+ *                                     with nothing left to undo it), until the package's post-install deletes it
+ *   evaluate.php status              the section 3.8 JSON for the page; read-only and without the lock
  *   evaluate.php selftest             the pure suites, from a source tree (the package carries no tests)
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
@@ -27,6 +31,7 @@ declare(strict_types=1);
 const UU_RUN_DIR = '/var/run/unboundupstream';
 const UU_STATE_PATH = UU_RUN_DIR . '/state.json';
 const UU_LOCK_PATH = UU_RUN_DIR . '/evaluate.lock';
+const UU_REMOVING_PATH = UU_RUN_DIR . '/removing';  /* +POST_INSTALL.post deletes it by this path */
 
 require_once __DIR__ . '/lib/constants.php';
 require_once __DIR__ . '/lib/state.php';
@@ -50,11 +55,11 @@ try {
 function uu_main(array $args): int
 {
     $mode = $args[0] ?? 'evaluate';
-    if (!in_array($mode, ['evaluate', 'start', 'stop', 'status', 'selftest', 'record', 'replay'], true)) {
+    if (!in_array($mode, ['evaluate', 'start', 'stop', 'remove', 'status', 'selftest', 'record', 'replay'], true)) {
         /* `evaluate.php NAMES`: the one argument is the names list */
         if (count($args) > 1) {
-            fwrite(STDERR, "usage: evaluate.php [evaluate] [NAMES] | start | stop | status | selftest | record FILE"
-                . " | replay FILE\n");
+            fwrite(STDERR, "usage: evaluate.php [evaluate] [NAMES] | start | stop | remove | status | selftest"
+                . " | record FILE | replay FILE\n");
             return 2;
         }
         $args = ['evaluate', $mode];
@@ -72,6 +77,12 @@ function uu_main(array $args): int
         case 'start':
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(false, []));
+        case 'remove':
+            uu_run_dir();
+            if (!touch(UU_REMOVING_PATH)) {
+                throw new RuntimeException('cannot create ' . UU_REMOVING_PATH);
+            }
+            return uu_with_lock(fn (): int => uu_evaluate(true, []));
         case 'stop':
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(true, []));
@@ -110,6 +121,13 @@ function uu_names(string $arg): array
     return $names;
 }
 
+function uu_run_dir(): void
+{
+    if (!is_dir(UU_RUN_DIR) && !mkdir(UU_RUN_DIR, 0700, true) && !is_dir(UU_RUN_DIR)) {
+        throw new RuntimeException('cannot create ' . UU_RUN_DIR);
+    }
+}
+
 /**
  * Run fn under the evaluate lock: exclusive, blocking up to UU_LOCK_WAIT_SECONDS, never dropping a trigger at
  * once. The lock is close-on-exec, so a child (configctl unbound restart) never holds it.
@@ -118,9 +136,7 @@ function uu_names(string $arg): array
  */
 function uu_with_lock(callable $fn): int
 {
-    if (!is_dir(UU_RUN_DIR) && !mkdir(UU_RUN_DIR, 0700, true) && !is_dir(UU_RUN_DIR)) {
-        throw new RuntimeException('cannot create ' . UU_RUN_DIR);
-    }
+    uu_run_dir();
     $lock = fopen(UU_LOCK_PATH, 'ce');
     if ($lock === false) {
         throw new RuntimeException('cannot open ' . UU_LOCK_PATH);
@@ -142,8 +158,9 @@ function uu_with_lock(callable $fn): int
 }
 
 /**
- * One evaluation: snapshot, plan, apply, the blocked-count line, save. stop plans as if disabled. The settings
- * are read under the lock, so an evaluation that waited for it acts on the last Save.
+ * One evaluation: snapshot, plan, apply, the blocked-count line, save. stop, and every evaluation while the
+ * removal marker exists, plans as if disabled. The settings are read under the lock, so an evaluation that waited
+ * for it acts on the last Save.
  *
  * @param list<string> $named
  */
@@ -153,6 +170,12 @@ function uu_evaluate(bool $stopping, array $named): int
     $s = uu_snapshot($settings, $named);
     $st = uu_state_load(UU_STATE_PATH);
     $s = uu_route_adopt($s, $st['route_installed']);
+    if (!$stopping && $s['settings']['enabled'] && is_file(UU_REMOVING_PATH)) {
+        /* every minute after a deinstall that stopped partway: worth the noise */
+        uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
+            . 'if the package is still installed', LOG_WARNING);
+        $stopping = true;
+    }
     if ($stopping) {
         $s['settings']['enabled'] = false;
     }

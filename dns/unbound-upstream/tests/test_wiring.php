@@ -23,7 +23,7 @@ function uu_test_configd_log(): string
 {
     $text = '';
     foreach (glob('/var/log/configd/configd_*.log') ?: [] as $file) {
-        $text .= (string)@file_get_contents($file);
+        $text .= is_readable($file) ? (string)file_get_contents($file) : '';
     }
     return $text;
 }
@@ -90,7 +90,10 @@ uu_register_suite('wiring', function (): int {
     $job = '/usr/local/sbin/configctl unboundupstream evaluate';
     $tab = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
     $stale = tempnam('/tmp', 'uu_cron');
-    file_put_contents($stale, $tab . "* * * * * $job\n");
+    if ($stale === false || file_put_contents($stale, $tab . "* * * * * $job\n") === false) {
+        uu_check($t, 'a temporary crontab for the stale-job check', false);
+        return uu_tally_report('wiring', $t);
+    }
     shell_exec('/usr/bin/crontab ' . escapeshellarg($stale));
     unlink($stale);
     $running = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));

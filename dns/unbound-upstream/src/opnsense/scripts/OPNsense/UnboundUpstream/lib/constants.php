@@ -22,7 +22,7 @@ const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many ev
 const UU_ESCALATE_MIN_SECONDS = 120;      /* and silent at least this long, so a fresh start is never restarted */
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
 const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this long after flush_requestlist, before
-                                           * the delete: the VM measured the last send to the resolver within 5 ms
+                                           * the delete: the VM measured the last send to the resolver within 13 ms
                                            * of the flush (without it, retries ran up to 14.5 s) */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
