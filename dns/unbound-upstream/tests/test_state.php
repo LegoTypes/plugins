@@ -182,6 +182,15 @@ uu_register_suite('state', function (): int {
         $loaded['mode'] === 'tunnel' && array_keys($loaded['timers']) === [123]
         && $loaded['timers'][123] === $s['timers']['wg-a']);
 
+    $marked = $s;
+    $marked['timers']['wg-a']['resolver_failed_until'] = 1400;
+    $forgot = uu_state_forget_resolver($marked);
+    $want = $marked;
+    $want['timers']['wg-a']['resolver_failed_until'] = null;
+    $want['timers']['wg-a']['probe_failures'] = 0;
+    uu_check($t, 'forgetting an undone resolver clears every resolver-failed mark and probe failure count, nothing else',
+        $forgot === $want);
+
     $doc = json_decode((string)json_encode($s), true);
     uu_check($t, 'a decoded document of the State shape converts; any other is null',
         is_array($doc) && uu_state_from_doc($doc) === $s
