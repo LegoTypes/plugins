@@ -29,7 +29,8 @@ declare(strict_types=1);
  *     still forward to the resolver (it would black-hole every query); the resolver's route is never deleted then
  *     either (the queries would follow the default route out a WAN);
  *   - the state's mode and member change only when the step that makes them true succeeded;
- *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type <probe_name> SOA only.
+ *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type <probe_name> SOA only; stop's
+ *     flush_requestlist drops the queries in progress (their clients ask again), never a cache entry.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -314,20 +315,33 @@ final class UuApplyRun
     }
 
     /**
-     * Ruling R25: a member route goes to the reject route first and is held there for the drain, so retries Unbound
-     * still has in flight to the resolver fail locally instead of following the default route out a WAN once the
-     * route is gone and the filter reload has removed the block rule. A stopped Unbound has nothing in flight.
+     * Rulings R25 and R29: once the route is gone and the filter reload has removed the block rule, a retry Unbound
+     * still sends to the resolver follows the default route out a WAN, and those retries ran up to 14.5 s after the
+     * restore on the VM. So our route goes to the reject route first (from a member, or already there after a
+     * recent fallback), flush_requestlist drops the queries Unbound was working on (they start again on the
+     * restored forwarders; the cache is untouched), and the reject route is held for the drain before the delete.
+     * A reject route or a flush that failed keeps the route: Unbound may still retry the resolver. A stopped
+     * Unbound has nothing in flight.
      */
     private function drainAndDelete(): void
     {
-        if ($this->route['present'] && $this->route['ours'] && !$this->route['reject']
-            && $this->s['unbound']['pid_alive']) {
+        if ($this->route['present'] && $this->route['ours'] && $this->s['unbound']['pid_alive']) {
             $this->routeReject();
-            if ($this->route['reject']) {
-                ($this->io['sleep_ms'])(($this->s['fib_sync_ms'] ?? 1000) + UU_FIB_SYNC_MARGIN_MS
-                    + UU_STOP_DRAIN_SECONDS * 1000);
-                $this->fibPending = false;
+            if (!$this->route['reject']) {
+                $this->log("stop: no reject route, so the resolver's route stays: Unbound may still retry the "
+                    . 'resolver', LOG_ERR);
+                return;
             }
+            if (!$this->ucOk(['flush_requestlist'])) {
+                $this->log('stop: unbound-control flush_requestlist failed, so the reject route stays: Unbound may '
+                    . 'still retry the resolver', LOG_ERR);
+                return;
+            }
+            $this->log('stop: flush_requestlist: the queries Unbound was working on start again on its configured '
+                . 'forwarders (the cache is untouched)');
+            ($this->io['sleep_ms'])(($this->s['fib_sync_ms'] ?? 1000) + UU_FIB_SYNC_MARGIN_MS
+                + UU_STOP_DRAIN_SECONDS * 1000);
+            $this->fibPending = false;
         }
         $this->routeDelete();
     }

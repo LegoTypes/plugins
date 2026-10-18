@@ -237,6 +237,7 @@ uu_register_suite('apply', function (): int {
     $toResolver = 'uc forward_add . 10.2.0.1';
     $restoreDot = 'uc forward_add +t . 192.0.2.53@853#dns.example 2001:db8::53@853#dns.example';
     $reject = 'route change -host 10.2.0.1 127.0.0.1 -reject';
+    $flushReq = 'uc flush_requestlist';
     $drain = 'sleep ' . (1000 + UU_FIB_SYNC_MARGIN_MS + UU_STOP_DRAIN_SECONDS * 1000);
     $settledDown = uu_test_probe('down', '100.0 %', 300);
     $before = time();
@@ -330,11 +331,23 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'stop with live root the resolver → forward_add +t then route delete; never a restart',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['member'] === null && $st['last_switch'] !== null
         && $st['last_switch']['to'] === 'fallback');
-    uu_check($t, 'stop drains: restore, reject route, then fib_sync + 500 ms + UU_STOP_DRAIN_SECONDS (6500 ms), then delete',
-        UU_STOP_DRAIN_SECONDS === 5 && $drain === 'sleep 6500');
+    uu_check($t, 'stop drains: restore, reject route, flush_requestlist, then fib_sync + 500 ms + UU_STOP_DRAIN_SECONDS (2500 ms), then delete',
+        UU_STOP_DRAIN_SECONDS === 1 && $drain === 'sleep 2500');
+
+    $r = uu_test_io($s, $all, ['uc_fail' => ['flush_requestlist']]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'stop whose flush_requestlist fails → the reject route stays (a retry would leave by a WAN), recorded, logged',
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq]
+        && $st['mode'] === 'fallback' && $st['route_installed'] === ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0']
+        && uu_test_logged($r['calls'], LOG_ERR, 'flush_requestlist failed'));
+    $r = uu_test_io($s, $all, ['route_fail' => ['change', 'add']]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, logged',
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, 'route add -host 10.2.0.1 127.0.0.1 -reject']
+        && uu_test_logged($r['calls'], LOG_ERR, 'no reject route'));
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
@@ -350,8 +363,8 @@ uu_register_suite('apply', function (): int {
     $p = uu_plan($s, uu_test_plan_state(null));
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
-    uu_check($t, 'stop in fallback → our reject route deleted, Unbound untouched',
-        uu_test_acts($r['calls']) === ['route delete -host 10.2.0.1'] && $st['mode'] === 'fallback');
+    uu_check($t, 'stop in fallback → flush_requestlist (a recent fallback leaves retries), drain, our reject route deleted; forwarders untouched',
+        uu_test_acts($r['calls']) === [$flushReq, $drain, 'route delete -host 10.2.0.1'] && $st['mode'] === 'fallback');
 
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $s['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
@@ -394,7 +407,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'dry run turned on in tunnel mode → the plugin\'s live changes are undone for real (stop)',
-        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && uu_test_logged($r['calls'], LOG_NOTICE, 'dry run'));
 
     // Carry-forward obligations.
@@ -509,7 +522,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $off, $r['io']);
     uu_check($t, 'group deleted in tunnel mode, then stop → our recorded route deleted',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null);
 
     $other = $memberRecord;
@@ -684,7 +697,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $silentStop, $r['io']);
     uu_check($t, 'stop in tunnel mode with a silent channel → restart, the configured root confirmed, then reject, drain, delete',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null
         && uu_test_logged($r['calls'], LOG_WARNING, 'restart'));
     $r = uu_test_io($silentStop, $all, ['silent' => true]);
@@ -755,9 +768,9 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'the state is saved after each successful change (the last save is the returned state)',
         isset($r['saved']['state']) && $r['saved']['state'] === $st);
 
-    // Never planned, across every case above.
-    $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'flush_requestlist', 'reload',
-                  'reload_keep_cache', 'fast_reload'];
+    // Never planned, across every case above; flush_requestlist only behind the reject route (ruling R29: stop).
+    $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'reload', 'reload_keep_cache',
+                  'fast_reload'];
     $clean = count($all) > 0;
     $previous = '';
     foreach ($all as $call) {
@@ -767,15 +780,17 @@ uu_register_suite('apply', function (): int {
         }
         if (str_starts_with($call, 'uc ')) {
             $words = explode(' ', substr($call, 3));
+            /* behind the reject route: just after it was installed, or first in a case that starts on it */
             $clean = $clean && !in_array($words[0], $forbidden, true)
-                && ($words[0] !== 'flush_type' || $words === ['flush_type', '.', 'SOA']);
+                && ($words[0] !== 'flush_type' || $words === ['flush_type', '.', 'SOA'])
+                && ($words[0] !== 'flush_requestlist' || $previous === '' || str_ends_with($previous, ' -reject'));
         }
         if (!str_starts_with($call, 'log ')) {
             $clean = $clean && !(str_starts_with($previous, 'route delete') && str_starts_with($call, 'route add'));
             $previous = $call;
         }
     }
-    uu_check($t, 'no recorded call is ever flush, flush_zone, flush_bogus, flush_negative, flush_requestlist, reload, reload_keep_cache or fast_reload, and flush_type only "<probe> SOA" (every case above)',
+    uu_check($t, 'no recorded call is ever flush, flush_zone, flush_bogus, flush_negative, reload, reload_keep_cache or fast_reload; flush_type only "<probe> SOA"; flush_requestlist only behind the reject route (every case above)',
         $clean);
 
     // drill output.
