@@ -75,12 +75,13 @@ function uu_test_apply_snapshot(): array
 function uu_test_io(array $s, ArrayObject $all, array $o = []): array
 {
     $calls = new ArrayObject();
-    $all[] = '-- case';
+    $route = $s['route'];
+    /* the sweep at the end allows a first flush_requestlist only in a case that starts on the reject route */
+    $all[] = $route['present'] && $route['reject'] ? '-- case on reject' : '-- case';
     $record = function (string $call) use ($calls, $all): void {
         $calls[] = $call;
         $all[] = $call;
     };
-    $route = $s['route'];
     $dev = new ArrayObject(['dev' => $route['present'] ? ($route['reject'] ? 'reject' : $route['interface']) : 'none']);
     $live = new ArrayObject(['live' => $s['unbound']['live_root']]);
     $direct = new ArrayObject($o['direct'] ?? []);
@@ -345,9 +346,22 @@ uu_register_suite('apply', function (): int {
         && uu_test_logged($r['calls'], LOG_ERR, 'flush_requestlist failed'));
     $r = uu_test_io($s, $all, ['route_fail' => ['change', 'add']]);
     $st = uu_apply($p, $s, $r['io']);
-    uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, logged',
+    uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, its record unchanged, logged',
         uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, 'route add -host 10.2.0.1 127.0.0.1 -reject']
+        && $st['mode'] === 'fallback' && $st['route_installed'] === $p['state']['route_installed']
         && uu_test_logged($r['calls'], LOG_ERR, 'no reject route'));
+
+    $gap = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $gap['settings']['enabled'] = false;
+    $gap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $p = uu_plan($gap, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($gap, $all);
+    $st = uu_apply($p, $gap, $r['io']);
+    uu_check($t, 'stop in tunnel mode with the route missing (a route-loss window) → reject route added, flush, drain, delete',
+        $p['action'] === 'stop'
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route add -host 10.2.0.1 127.0.0.1 -reject',
+            $flushReq, $drain, 'route delete -host 10.2.0.1']
+        && $st['mode'] === 'fallback' && $st['route_installed'] === null);
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
@@ -773,9 +787,11 @@ uu_register_suite('apply', function (): int {
                   'fast_reload'];
     $clean = count($all) > 0;
     $previous = '';
+    $onReject = false;
     foreach ($all as $call) {
-        if ($call === '-- case') {
+        if (str_starts_with($call, '-- case')) {
             $previous = '';
+            $onReject = $call === '-- case on reject';
             continue;
         }
         if (str_starts_with($call, 'uc ')) {
@@ -783,7 +799,8 @@ uu_register_suite('apply', function (): int {
             /* behind the reject route: just after it was installed, or first in a case that starts on it */
             $clean = $clean && !in_array($words[0], $forbidden, true)
                 && ($words[0] !== 'flush_type' || $words === ['flush_type', '.', 'SOA'])
-                && ($words[0] !== 'flush_requestlist' || $previous === '' || str_ends_with($previous, ' -reject'));
+                && ($words[0] !== 'flush_requestlist' || ($previous === '' && $onReject)
+                    || str_ends_with($previous, ' -reject'));
         }
         if (!str_starts_with($call, 'log ')) {
             $clean = $clean && !(str_starts_with($previous, 'route delete') && str_starts_with($call, 'route add'));

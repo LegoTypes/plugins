@@ -252,12 +252,13 @@ final class UuApplyRun
             return;
         }
         $this->reasons();
+        $wasOnResolver = $this->st['mode'] === 'tunnel' || $this->needsRestore();
         if (!$this->restore() && !$this->restartForStop()) {
             $this->log('stop: Unbound may still forward to the resolver, so its route stays (without it the '
                 . 'queries would follow the default route)', LOG_ERR);
             return;
         }
-        $this->drainAndDelete();
+        $this->drainAndDelete($wasOnResolver);
         $this->switchTo('fallback', null);
     }
 
@@ -317,15 +318,20 @@ final class UuApplyRun
     /**
      * Rulings R25 and R29: once the route is gone and the filter reload has removed the block rule, a retry Unbound
      * still sends to the resolver follows the default route out a WAN, and those retries ran up to 14.5 s after the
-     * restore on the VM. So our route goes to the reject route first (from a member, or already there after a
-     * recent fallback), flush_requestlist drops the queries Unbound was working on (they start again on the
-     * restored forwarders; the cache is untouched), and the reject route is held for the drain before the delete.
-     * A reject route or a flush that failed keeps the route: Unbound may still retry the resolver. A stopped
-     * Unbound has nothing in flight.
+     * restore on the VM. So the resolver goes to the reject route first: from our member route, already there
+     * after a recent fallback, or added when the route is missing while Unbound was on the resolver (a stop in a
+     * route-loss window, such as right after a wireguard restart, when the block rule has been dropping those very
+     * retries). Then flush_requestlist drops the queries Unbound was working on (they start again on the restored
+     * forwarders; the cache is untouched), and the reject route is held for the drain before the delete. A reject
+     * route or a flush that failed keeps the route: Unbound may still retry the resolver. A stopped Unbound has
+     * nothing in flight; a route that is not ours is never touched.
+     *
+     * @param bool $wasOnResolver the run started in tunnel mode, or with Unbound on the resolver
      */
-    private function drainAndDelete(): void
+    private function drainAndDelete(bool $wasOnResolver): void
     {
-        if ($this->route['present'] && $this->route['ours'] && $this->s['unbound']['pid_alive']) {
+        $ours = $this->route['present'] && $this->route['ours'];
+        if ($this->s['unbound']['pid_alive'] && ($ours || (!$this->route['present'] && $wasOnResolver))) {
             $this->routeReject();
             if (!$this->route['reject']) {
                 $this->log("stop: no reject route, so the resolver's route stays: Unbound may still retry the "
