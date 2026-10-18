@@ -33,33 +33,23 @@ function uu_timer_new(): array
  * @param array<string, string> $kinds reading kind per member (uu_reading_kind)
  * @param array<string, bool> $usable settled and usable per member (uu_usable_settled)
  * @param array<string, bool> $down member has a down verdict (uu_member_down !== null)
+ * @param int $now monotonic seconds (intdiv(hrtime(true), 1000000000)); the wall clock is never used, so an NTP
+ *             step cannot move a timer or a resolver-failed mark
  * @return array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                             probe_failures: int}>
  */
 function uu_timers_update(array $timers, array $kinds, array $usable, array $down, int $now): array
 {
-    $backwards = false;
-    foreach ($timers as $timer) {
-        if ($timer['last_at'] !== null && $timer['last_at'] - $now > UU_CLOCK_BACK_SECONDS) {
-            $backwards = true;
-        }
-    }
     $out = [];
     foreach ($kinds as $name => $kind) {
         $timer = $timers[$name] ?? uu_timer_new();
-        if ($backwards) {
-            $timer['counted'] = 0;
-            $timer['usable_since'] = null;
-            $timer['last_at'] = null;
-            $timer['resolver_failed_until'] = null;
-        }
         if ($down[$name] ?? false) {
             $timer['counted'] = 0;
             $timer['usable_since'] = null;
             $timer['last_at'] = null;
         } elseif ($kind === 'settled' && ($usable[$name] ?? false)) {
             if ($timer['last_at'] !== null) {
-                $timer['counted'] += min(UU_TIMER_STEP_MAX, max(0, $now - $timer['last_at']));
+                $timer['counted'] += max(0, $now - $timer['last_at']);
             }
             $timer['usable_since'] = $timer['usable_since'] ?? $now;
             $timer['last_at'] = $now;
@@ -75,13 +65,21 @@ function uu_timers_update(array $timers, array $kinds, array $usable, array $dow
  * Members in the order they should be tried; the first is the target, and the current member first means stay.
  *
  * @param list<list<string>> $tiers best tier first, configured order within a tier
- * @param array<string, bool> $usableSettled
+ * @param array<string, bool> $usableSettled settled and usable per member; gates entering and returning only
+ * @param array<string, bool> $down member has a down verdict; the current member stays while it is not down
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int}> $timers
  * @return list<string>
  */
-function uu_candidates(array $tiers, array $usableSettled, array $timers, int $now, int $failbackDelay, ?string $current): array
-{
+function uu_candidates(
+    array $tiers,
+    array $usableSettled,
+    array $down,
+    array $timers,
+    int $now,
+    int $failbackDelay,
+    ?string $current
+): array {
     $currentTier = null;
     foreach ($tiers as $index => $tier) {
         if ($current !== null && in_array($current, $tier, true)) {
@@ -90,17 +88,25 @@ function uu_candidates(array $tiers, array $usableSettled, array $timers, int $n
     }
     $out = [];
     foreach ($tiers as $index => $tier) {
-        if ($currentTier !== null && in_array($current, $tier, true)) {
+        if ($index === $currentTier) {
             $tier = array_merge([(string)$current], array_values(array_diff($tier, [(string)$current])));
         }
         foreach ($tier as $name) {
             $failedUntil = $timers[$name]['resolver_failed_until'] ?? null;
-            if (!($usableSettled[$name] ?? false) || ($failedUntil !== null && $now < $failedUntil)) {
+            if ($failedUntil !== null && $now < $failedUntil) {
+                continue;
+            }
+            if ($name === $current) {
+                if (!($down[$name] ?? false)) {
+                    $out[] = $name;
+                }
+                continue;
+            }
+            if (!($usableSettled[$name] ?? false)) {
                 continue;
             }
             $delayed = ($timers[$name]['counted'] ?? 0) >= $failbackDelay;
-            $free = $currentTier !== null && ($index >= $currentTier);
-            if ($free || $delayed) {
+            if ($delayed || ($currentTier !== null && $index >= $currentTier)) {
                 $out[] = $name;
             }
         }
