@@ -1,0 +1,9 @@
+   route to: 10.2.0.1
+destination: 0.0.0.0
+       mask: 0.0.0.0
+    gateway: 192.0.2.1
+        fib: 0
+  interface: hn1
+      flags: <UP,GATEWAY,DONE,STATIC>
+ recvpipe  sendpipe  ssthresh  rtt,msec    mtu        weight    expire
+       0         0         0         0      1500         1         0 
