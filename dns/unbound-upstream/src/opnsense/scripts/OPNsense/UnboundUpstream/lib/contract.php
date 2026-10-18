@@ -16,9 +16,11 @@ declare(strict_types=1);
  */
 
 /**
- * @param array<string, mixed> $c unbound_hooks_registered, unbound_sorts_first, groups_have_tiers, status_fields,
- *     foreign_route, cacheflush, group_found: bool; resolver_is_monitor, resolver_in_static,
- *     unmonitored_members: list<string>; zone: Zone (zone.php); fib_sync_ms: ?int; members: int
+ * @param array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
+ *     unmonitored_members: list<string>, foreign_route: bool,
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int} $c
  * @return array{ok: bool, failures: list<string>, notes: list<string>}
  */
 function uu_contract(array $c): array
@@ -38,25 +40,25 @@ function uu_contract(array $c): array
     if ($c['status_fields'] !== true) {
         $failures[] = 'gateway status lacks expected fields';
     }
-    foreach ((array)$c['resolver_is_monitor'] as $gateway) {
-        $failures[] = 'resolver is the monitor of ' . (string)$gateway;
+    foreach ($c['resolver_is_monitor'] as $gateway) {
+        $failures[] = 'resolver is the monitor of ' . $gateway;
     }
-    foreach ((array)$c['resolver_in_static'] as $network) {
-        $failures[] = 'resolver is inside static route ' . (string)$network;
+    foreach ($c['resolver_in_static'] as $network) {
+        $failures[] = 'resolver is inside static route ' . $network;
     }
-    foreach ((array)$c['unmonitored_members'] as $gateway) {
-        $failures[] = 'member ' . (string)$gateway . ' is not monitored';
+    foreach ($c['unmonitored_members'] as $gateway) {
+        $failures[] = 'member ' . $gateway . ' is not monitored';
     }
     if ($c['foreign_route'] === true) {
         $failures[] = 'resolver route not ours';
     }
 
-    $zone = (array)$c['zone'];
+    $zone = $c['zone'];
     if ($zone['shape'] === 'unrestorable') {
-        $failures[] = 'root zone cannot be restored: ' . implode(', ', array_map('strval', (array)$zone['problems']));
+        $failures[] = 'root zone cannot be restored: ' . implode(', ', $zone['problems']);
     } elseif ($zone['shape'] === 'none') {
         $notes[] = 'no root zone: fallback is recursion over the WAN';
-    } elseif ((array)$zone['addrs'] === []) {
+    } elseif ($zone['addrs'] === []) {
         /* fallback would forward_add an empty list */
         $failures[] = 'root zone has no forward-addr';
     }
@@ -69,7 +71,7 @@ function uu_contract(array $c): array
     }
     if ($c['group_found'] !== true) {
         $failures[] = 'group not found';
-    } elseif ((int)$c['members'] === 0) {
+    } elseif ($c['members'] === 0) {
         $failures[] = 'group has no members';
     }
 
