@@ -239,6 +239,34 @@ function uu_state_load(string $path): array
 }
 
 /**
+ * The state once the plugin's footprint on another resolver address has been undone (ruling R31): every member's
+ * resolver-failed mark and probe failure count were about that address, so none holds for the new one.
+ *
+ * @param array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string} $state
+ * @return array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
+ */
+function uu_state_forget_resolver(array $state): array
+{
+    foreach (array_keys($state['timers']) as $name) {
+        $state['timers'][$name]['resolver_failed_until'] = null;
+        $state['timers'][$name]['probe_failures'] = 0;
+    }
+    return $state;
+}
+
+/**
  * Write the state to path.tmp and rename it over path, so a crash leaves the old file or the new one. The
  * directory is created 0700.
  *

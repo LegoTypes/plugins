@@ -161,7 +161,8 @@ function uu_with_lock(callable $fn): int
  * One evaluation. stop, and every evaluation while the removal marker exists, plans as if disabled. The settings
  * are read under the lock, so an evaluation that waited for it acts on the last Save. When the state records a
  * resolver address other than the setting's (a Save changed it, ruling R31), that address's route and forwarders
- * are undone first by a stop for it; if that does not finish, the new address waits for the next evaluation.
+ * are undone first by a stop for it, and the members' resolver-failed marks, which were about it, are forgotten;
+ * if that does not finish, the new address waits for the next evaluation.
  *
  * @param list<string> $named
  */
@@ -181,11 +182,13 @@ function uu_evaluate(bool $stopping, array $named): int
         $previous = $settings;
         $previous['resolver'] = $old;
         uu_evaluate_once($previous, [], true);
-        if (uu_state_load(UU_STATE_PATH)['resolver'] === $old) {
+        $st = uu_state_load(UU_STATE_PATH);
+        if ($st['resolver'] === $old) {
             uu_log("the route or forwarders of $old could not be undone: {$settings['resolver']} waits for the next "
                 . 'evaluation', LOG_ERR);
             return 1;
         }
+        uu_state_save(UU_STATE_PATH, uu_state_forget_resolver($st));
     }
     uu_evaluate_once($settings, $named, $stopping);
     return 0;

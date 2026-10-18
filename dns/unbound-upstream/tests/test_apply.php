@@ -389,6 +389,18 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'stop in fallback → flush_requestlist (a recent fallback leaves retries), drain, our reject route deleted; forwarders untouched',
         uu_test_acts($r['calls']) === [$flushReq, $drain, 'route delete -host 10.2.0.1'] && $st['mode'] === 'fallback');
 
+    /* the re-review's N1: a route record that outlived its route (the kernel deleted it) must not pin the address */
+    $s = uu_test_apply_snapshot();
+    $s['settings']['enabled'] = false;
+    $stale = uu_test_plan_state(null);
+    $stale['route_installed'] = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
+    $stale['resolver'] = '10.2.0.1';
+    $p = uu_plan($s, $stale);
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'stop in fallback with a stale route record and no route → no calls, the resolver no longer recorded',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [] && $st['resolver'] === null);
+
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $s['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));

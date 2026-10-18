@@ -762,12 +762,14 @@ final class UuApplyRun
 
     /**
      * Ruling R31: record the resolver address while the plugin's route refers to it or Unbound may forward to it,
-     * and null once neither holds, so a later change of the resolver setting knows which address to undo.
+     * and null once neither holds, so a later change of the resolver setting knows which address to undo. The
+     * route is this run's live view of it, not route_installed: a record can outlive a route the kernel deleted
+     * (device recreation), and it must not pin an address nothing refers to.
      */
     private function footprint(): void
     {
-        $on = $this->st['route_installed'] !== null || $this->st['mode'] === 'tunnel' || $this->maybeResolver
-            || uu_apply_same($this->live, [$this->resolver]);
+        $on = ($this->route['present'] && $this->route['ours']) || $this->st['mode'] === 'tunnel'
+            || $this->maybeResolver || uu_apply_same($this->live, [$this->resolver]);
         $this->st['resolver'] = $on ? $this->resolver : null;
     }
 
