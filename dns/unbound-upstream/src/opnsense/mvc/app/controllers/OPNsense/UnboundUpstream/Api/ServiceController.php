@@ -48,6 +48,16 @@ class ServiceController extends ApiMutableServiceControllerBase
     }
 
     /**
+     * Apply while enabled reloads (one evaluation, start when the minute job is missing) instead of stop + start:
+     * stop leaves tunnel mode and drops the queries in flight, so a restart on each Apply would bounce household
+     * DNS through the fallback forwarders. Disable still runs stop.
+     */
+    protected function reconfigureForceRestart()
+    {
+        return false;
+    }
+
+    /**
      * Status for the page: mode, member, live and configured forwarders, the route, the rules, the checks, every
      * member's verdict and the contract findings.
      */

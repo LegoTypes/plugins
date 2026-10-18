@@ -69,7 +69,8 @@ function uu_test_apply_snapshot(): array
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
  *     save: callable(array): void},
  *     calls: ArrayObject<int, string>,
- *     saved: ArrayObject<string, array{route_installed: ?array{kind: string, next_hop: string, if: string}}>}
+ *     saved: ArrayObject<string, array{route_installed: ?array{kind: string, next_hop: string, if: string},
+ *         resolver: ?string}>}
  *   saved holds the state the last save received under 'state'; saves are not in calls
  */
 function uu_test_io(array $s, ArrayObject $all, array $o = []): array
@@ -261,6 +262,8 @@ uu_register_suite('apply', function (): int {
         && $st['checks']['unbound'] !== null && $st['checks']['unbound']['ok']
         && $st['timers']['wg-a']['probe_failures'] === 0
         && uu_test_logged($r['calls'], LOG_NOTICE, 'fallback', 'wg-a'));
+    uu_check($t, 'entering: the state records the resolver its route and forwarders refer to (ruling R31)',
+        $st['resolver'] === '10.2.0.1' && $r['saved']['state']['resolver'] === '10.2.0.1');
 
     // Changing member: the live root is already the resolver.
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
@@ -335,6 +338,8 @@ uu_register_suite('apply', function (): int {
         && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['member'] === null && $st['last_switch'] !== null
         && $st['last_switch']['to'] === 'fallback');
+    uu_check($t, 'a finished stop clears the recorded resolver: nothing refers to it any more',
+        $st['resolver'] === null && $r['saved']['state']['resolver'] === null);
     uu_check($t, 'stop drains: restore, reject route, flush_requestlist, then fib_sync + 500 ms + UU_STOP_DRAIN_SECONDS (2500 ms), then delete',
         UU_STOP_DRAIN_SECONDS === 1 && $drain === 'sleep 2500');
 
@@ -343,6 +348,7 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'stop whose flush_requestlist fails → the reject route stays (a retry would leave by a WAN), recorded, logged',
         uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq]
         && $st['mode'] === 'fallback' && $st['route_installed'] === ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0']
+        && $st['resolver'] === '10.2.0.1'
         && uu_test_logged($r['calls'], LOG_ERR, 'flush_requestlist failed'));
     $wgARecord = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
     $recordedWgA = uu_test_plan_state('wg-a', $usable);

@@ -131,7 +131,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}}
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
  */
 function uu_test_plan_state(
     ?string $member,

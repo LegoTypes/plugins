@@ -28,6 +28,7 @@ uu_register_suite('log', function (): int {
         uu_pf_label_packets($pf) === ['02f4bab031b57d1e30553ce08e0ec131' => 3, $passA => 246, $block => 37]);
     uu_check($t, 'pfctl -vsr: empty output has no labels', uu_pf_label_packets('') === []);
 
+    /* a real `pfctl -vsr` of the disposable test VM without the plugin's rules; its addresses are the VM's own */
     $absent = uu_snapshot_fixture('pfctl_vsr_absent.txt');
     uu_check($t, 'rules loaded: the block rule and every member pass rule are present',
         uu_rules_loaded($pf, ['opt1']) && uu_rules_loaded($pf, ['opt1', '']));

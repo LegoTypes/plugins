@@ -16,6 +16,13 @@
             if (!c) { return "{{ lang._('not yet') }}"; }
             return (c.ok ? "{{ lang._('ok') }}" : "{{ lang._('failed') }}") + ' (' + plain(c.member) + ', ' + new Date(c.at * 1000).toLocaleString() + ')';
         }
+        /* the member's reading (section 3.2): only a settled window qualifies it for choice */
+        var readings = {
+            'settled': "{{ lang._('settled') }}",
+            'young': "{{ lang._('young (window not yet full)') }}",
+            'cached': "{{ lang._('cached (last reading of the gateway watcher)') }}",
+            'none': "{{ lang._('none') }}"
+        };
         function row(label, value) {
             return $('<tr/>').append($('<th/>').text(label)).append($('<td/>').text(value));
         }
@@ -46,6 +53,7 @@
                     members.append($('<tr/>')
                         .append($('<td/>').text(plain(m.name)))
                         .append($('<td/>').text(m.tier))
+                        .append($('<td/>').text(plain(readings[m.kind] || m.kind)))
                         .append($('<td/>').text(plain(m.verdict === null ? "{{ lang._('up') }}" : m.verdict)))
                         .append($('<td/>').text(yesno(m.usable)))
                         .append($('<td/>').text(m.resolver_failed_for === null ? '' : m.resolver_failed_for + ' s'))
@@ -71,6 +79,8 @@
             onAction: function () { refreshState(); }
         });
         refreshState();
+        /* the plugin evaluates every minute and on gateway events: keep the page current */
+        setInterval(refreshState, 10000);
     });
 </script>
 
@@ -88,6 +98,7 @@
             <tr>
                 <th>{{ lang._('Member') }}</th>
                 <th>{{ lang._('Tier') }}</th>
+                <th>{{ lang._('Reading') }}</th>
                 <th>{{ lang._('Verdict') }}</th>
                 <th>{{ lang._('Usable') }}</th>
                 <th>{{ lang._('Resolver failed for') }}</th>
