@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/zone.php';
+require_once __DIR__ . '/log.php';
 
 /** Core's PHP library, loaded when a collector needs it so the parsers load anywhere. */
 function uu_load_core(): void
@@ -201,7 +202,7 @@ function uu_route_ours(array $route, array $members): bool
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param ?array{kind: string, next_hop: string, if: string} $installed
@@ -220,7 +221,7 @@ function uu_route_ours(array $route, array $members): bool
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
  */
@@ -324,7 +325,7 @@ function uu_zone_texts(): array
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
  */
@@ -476,6 +477,8 @@ function uu_snapshot(array $settings, array $named): array
             'resolver_in_static' => $inStatic,
             'unmonitored_members' => $unmonitored,
             'foreign_route' => $route['present'] && !$ours,
+            'rules_loaded' => uu_rules_loaded((string)shell_exec('/sbin/pfctl -vsr 2>/dev/null'),
+                array_column($members, 'interface')),
             'zone' => $zone,
             'fib_sync_ms' => $fibSyncMs,
             'cacheflush' => $unboundMdl->general->cacheflush->isEqual('1'),

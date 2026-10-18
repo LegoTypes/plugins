@@ -69,11 +69,12 @@ function unboundupstream_queue(bool $verbose = false): void
 }
 
 /**
- * The monitor hook: the gateways that changed go to the action as ONE comma-joined parameter.
+ * The monitor hook: the gateways that changed go to the action as ONE comma-joined parameter. Core calls it
+ * without names at boot (rc.bootup: plugins_configure('monitor', true)), and then it is a plain evaluate.
  *
  * @param list<string> $gwnames
  */
-function unboundupstream_queue_monitor(bool $verbose, array $gwnames): void
+function unboundupstream_queue_monitor(bool $verbose = false, array $gwnames = []): void
 {
     try {
         if ($verbose) {
@@ -81,8 +82,8 @@ function unboundupstream_queue_monitor(bool $verbose, array $gwnames): void
             flush();
         }
         $names = implode(',', array_map('strval', $gwnames));
-        exec('/usr/local/sbin/configctl -d unboundupstream evaluate ' . escapeshellarg($names)
-            . ' > /dev/null 2>&1');
+        exec('/usr/local/sbin/configctl -d unboundupstream evaluate'
+            . ($names === '' ? '' : ' ' . escapeshellarg($names)) . ' > /dev/null 2>&1');
         if ($verbose) {
             echo "done.\n";
         }

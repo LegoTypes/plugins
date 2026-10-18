@@ -173,7 +173,7 @@ function uu_evaluate(bool $stopping, array $named): int
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param string $mode the saved state's mode
@@ -192,7 +192,7 @@ function uu_evaluate(bool $stopping, array $named): int
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
  */
