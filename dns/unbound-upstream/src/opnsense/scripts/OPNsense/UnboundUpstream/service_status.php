@@ -8,16 +8,11 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * configd [status]: the line ApiMutableServiceControllerBase recognises. The plugin has no daemon; it "runs"
- * while the model's enabled switch is on (its cron job and hooks are the service).
+ * configd [status]: the line ApiMutableServiceControllerBase recognises. The plugin has no daemon; it runs while
+ * its minute job is installed (start and stop regenerate cron). Reporting the enabled setting instead would turn
+ * the Save that enables the plugin into a reload, which never installs the job.
  */
 
-require_once 'config.inc';
-
-try {
-    $enabled = (new \OPNsense\UnboundUpstream\UnboundUpstream())->enabled->isEqual('1');
-} catch (\Throwable $e) {
-    fwrite(STDERR, $e->getMessage() . "\n");
-    $enabled = false;
-}
-echo $enabled ? "unboundupstream is running\n" : "unboundupstream is not running\n";
+$cron = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
+echo str_contains($cron, '/usr/local/sbin/configctl unboundupstream evaluate')
+    ? "unboundupstream is running\n" : "unboundupstream is not running\n";

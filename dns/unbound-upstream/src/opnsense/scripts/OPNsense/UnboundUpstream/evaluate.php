@@ -11,8 +11,10 @@ declare(strict_types=1);
  * The plugin's single entry point (spec 2026-10-17 sections 3.1, 3.4, 3.7, 3.8 and 3.10):
  *   evaluate.php [evaluate] [NAMES]   one evaluation (configd, cron, hooks); NAMES is ONE comma-separated list of
  *                                     the gateways the monitor hook passed (configd hands %s over as one parameter)
- *   evaluate.php stop                 leave tunnel mode and delete the resolver's route, whatever the settings say
- *                                     (Save with enabled off, the package's deinstall)
+ *   evaluate.php start                regenerate cron (the minute job exists only while enabled), then one
+ *                                     evaluation (Save with enabled on while the job is missing)
+ *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
+ *                                     whatever the settings say (Save with enabled off, the package's deinstall)
  *   evaluate.php status               the section 3.8 JSON for the page; read-only and without the lock
  *   evaluate.php selftest             the pure suites, from a source tree (the package carries no tests)
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing
@@ -48,10 +50,11 @@ try {
 function uu_main(array $args): int
 {
     $mode = $args[0] ?? 'evaluate';
-    if (!in_array($mode, ['evaluate', 'stop', 'status', 'selftest', 'record', 'replay'], true)) {
+    if (!in_array($mode, ['evaluate', 'start', 'stop', 'status', 'selftest', 'record', 'replay'], true)) {
         /* `evaluate.php NAMES`: the one argument is the names list */
         if (count($args) > 1) {
-            fwrite(STDERR, "usage: evaluate.php [evaluate] [NAMES] | stop | status | selftest | record FILE | replay FILE\n");
+            fwrite(STDERR, "usage: evaluate.php [evaluate] [NAMES] | start | stop | status | selftest | record FILE"
+                . " | replay FILE\n");
             return 2;
         }
         $args = ['evaluate', $mode];
@@ -66,10 +69,27 @@ function uu_main(array $args): int
             return uu_record_main($args[1] ?? '');
         case 'replay':
             return uu_replay_main($args[1] ?? '');
+        case 'start':
+            uu_cron_regenerate();
+            return uu_with_lock(fn (): int => uu_evaluate(false, []));
         case 'stop':
+            uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(true, []));
         default:
             return uu_with_lock(fn (): int => uu_evaluate(false, uu_names($args[1] ?? '')));
+    }
+}
+
+/**
+ * configd's cron restart, which reads unboundupstream_cron(): the minute job is installed while the plugin is enabled
+ * and removed otherwise. A failure is logged; the evaluation still runs.
+ */
+function uu_cron_regenerate(): void
+{
+    uu_load_core();
+    $out = trim((new \OPNsense\Core\Backend())->configdRun('cron restart'));
+    if ($out !== 'OK') {
+        uu_log("cron restart answered '$out': the minute job may not match the enabled setting", LOG_WARNING);
     }
 }
 

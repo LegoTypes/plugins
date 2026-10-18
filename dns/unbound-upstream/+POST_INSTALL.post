@@ -1,3 +1,5 @@
 
-# An install or an upgrade (its deinstall dropped the rendered rules) loads the plugin's rules; no service starts.
+# An install or an upgrade (its deinstall dropped the rendered rules and the minute job) loads the plugin's rules
+# and, while it is enabled, its minute job back; nothing else starts.
 /usr/local/sbin/configctl filter reload || true
+/usr/local/sbin/configctl cron restart || true
