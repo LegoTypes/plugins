@@ -27,8 +27,8 @@ declare(strict_types=1);
  *   candidates in order; the first is the target), 'fallback' (leave tunnel mode) or 'none'. candidates is always
  *   the full choice list, so apply can move on when the current member fails its resolver checks. reassert and
  *   route_repair are the section 3.4 reconcile and are only set with 'none'. state carries the mode and member
- *   planned against (recovered from the live root and route when the state file was lost), the advanced timers
- *   and control_failures; apply records switches and last_switch.
+ *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
+ *   control_failures and control_silent_since; apply records switches and last_switch.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -89,15 +89,15 @@ function uu_plan_note(
  * @param list<string> $candidates
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, last_switch: ?array{at: int, from: string, to: string,
- *     reason: string}} $st
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $st
  * @param list<string> $reasons
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
- *         last_switch: ?array{at: int, from: string, to: string, reason: string}},
+ *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}},
  *     reasons: list<string>}
  */
 function uu_plan_result(
@@ -135,14 +135,14 @@ function uu_plan_result(
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, last_switch: ?array{at: int, from: string, to: string,
- *     reason: string}} $st
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
- *         last_switch: ?array{at: int, from: string, to: string, reason: string}},
+ *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}},
  *     reasons: list<string>}
  */
 function uu_plan(array $s, array $st): array
@@ -180,10 +180,12 @@ function uu_plan(array $s, array $st): array
     }
     $st['timers'] = uu_timers_update($st['timers'], $kinds, $usable, $down, $now);
 
-    /* the live root decides the mode when the state file does not say tunnel (Review Focus 4) */
-    $liveIsResolver = $s['unbound']['live_root'] === [$resolver];
+    /* when the state file does not say tunnel, the live root decides the mode (Review Focus 4); with the control
+     * channel silent there is no live root, and our route via a member is the evidence instead */
+    $liveRoot = $s['unbound']['live_root'];
+    $liveIsResolver = $liveRoot === [$resolver];
     $current = $st['mode'] === 'tunnel' ? $st['member'] : null;
-    if ($current === null && $liveIsResolver) {
+    if ($current === null && ($liveIsResolver || $liveRoot === null)) {
         foreach (array_keys($kinds) as $name) {
             $m = $s['members'][$name] ?? null;
             if ($m !== null && uu_plan_route_via($route, $m)) {
@@ -191,11 +193,21 @@ function uu_plan(array $s, array $st): array
                 break;
             }
         }
-        $reasons[] = $current === null
-            ? 'live root is the resolver but our route is via no member: tunnel mode with no member'
-            : "live root is the resolver and our route is via $current: tunnel mode on $current";
+        if ($liveIsResolver) {
+            $reasons[] = $current === null
+                ? 'live root is the resolver but our route is via no member: tunnel mode with no member'
+                : "live root is the resolver and our route is via $current: tunnel mode on $current";
+        } elseif ($current !== null) {
+            $reasons[] = "live root unknown and our route is via $current: tunnel mode on $current";
+        }
     }
-    $mode = $current !== null || $liveIsResolver ? 'tunnel' : 'fallback';
+    if ($current !== null || $liveIsResolver) {
+        $mode = 'tunnel';
+    } elseif ($liveRoot === null) {
+        $mode = $st['mode'];
+    } else {
+        $mode = 'fallback';
+    }
     $st['mode'] = $mode;
     $st['member'] = $current;
 
@@ -204,33 +216,41 @@ function uu_plan(array $s, array $st): array
 
     if (!$s['settings']['enabled']) {
         $st['control_failures'] = 0;
+        $st['control_silent_since'] = null;
         $reasons[] = 'disabled in settings';
         return uu_plan_result('stop', $candidates, false, false, false, $st, $reasons);
     }
     if (!$s['unbound']['enabled'] || !$s['unbound']['pid_alive']) {
         /* the user stopped Unbound: a silent control channel is no fault and nothing escalates (Review Focus 3) */
         $st['control_failures'] = 0;
+        $st['control_silent_since'] = null;
         $reasons[] = 'Unbound not running: ' . ($s['unbound']['enabled'] ? 'no live pid' : 'disabled');
         return uu_plan_result('stop', $candidates, false, false, false, $st, $reasons);
     }
     if (!$s['unbound']['control_ok']) {
         $st['control_failures']++;
-        $reasons[] = sprintf('Unbound control channel silent (%d evaluations)', $st['control_failures']);
+        $st['control_silent_since'] = $st['control_silent_since'] ?? $now;
+        $silentFor = max(0, $now - $st['control_silent_since']);
+        $reasons[] = sprintf('Unbound control channel silent (%d evaluations, %d s)', $st['control_failures'],
+            $silentFor);
         $escalate = false;
-        if ($mode === 'tunnel' && $st['control_failures'] >= UU_ESCALATE_EVALUATIONS) {
+        if ($mode === 'tunnel' && $st['control_failures'] >= UU_ESCALATE_EVALUATIONS
+            && $silentFor >= UU_ESCALATE_MIN_SECONDS) {
             if ($s['contract_input']['cacheflush']) {
                 $reasons[] = 'restart escalation disabled: cacheflush on';
             } else {
                 $escalate = true;
-                $reasons[] = sprintf('control channel silent %d evaluations in tunnel mode: restart Unbound',
-                    $st['control_failures']);
-                /* the restart starts the count again, so a channel still silent after it waits three more */
+                $reasons[] = sprintf('control channel silent %d evaluations over %d s in tunnel mode: restart Unbound',
+                    $st['control_failures'], $silentFor);
+                /* the restart starts the count again, so a channel still silent after it waits as long again */
                 $st['control_failures'] = 0;
+                $st['control_silent_since'] = null;
             }
         }
         return uu_plan_result('skip', $candidates, false, false, $escalate, $st, $reasons);
     }
     $st['control_failures'] = 0;
+    $st['control_silent_since'] = null;
 
     /* never repair a route the plugin did not make; the contract refuses tunnel mode over it (Review Focus 1) */
     $foreign = $route['present'] && !$route['ours'];

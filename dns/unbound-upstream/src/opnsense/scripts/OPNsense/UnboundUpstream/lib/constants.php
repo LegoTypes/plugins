@@ -19,6 +19,7 @@ const UU_PROBE_FAILURES = 2;              /* consecutive failed probes before le
 const UU_CONTROL_WAIT_SECONDS = 15;       /* wait for Unbound's control channel after a start */
 const UU_CONTROL_CALL_TIMEOUT_SECONDS = 5; /* every unbound-control call has a timeout */
 const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many evaluations before a restart */
+const UU_ESCALATE_MIN_SECONDS = 120;      /* and silent at least this long, so a fresh start is never restarted */
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */

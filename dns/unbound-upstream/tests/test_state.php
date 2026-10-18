@@ -35,9 +35,10 @@ uu_register_suite('state', function (): int {
     $path = $dir . '/run/state.json';
 
     $new = uu_state_new();
-    uu_check($t, 'new state: version 1, fallback, no member, no timers, no failures, no switch',
-        $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback' && $new['member'] === null
-        && $new['timers'] === [] && $new['control_failures'] === 0 && $new['last_switch'] === null);
+    uu_check($t, 'new state: version 2, fallback, no member, no timers, no failures, not silent, no switch',
+        UU_STATE_VERSION === 2 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
+        && $new['member'] === null && $new['timers'] === [] && $new['control_failures'] === 0
+        && $new['control_silent_since'] === null && $new['last_switch'] === null);
 
     uu_check($t, 'missing file loads as a new state', uu_state_load($path) === $new);
 
@@ -47,6 +48,7 @@ uu_register_suite('state', function (): int {
     $s['timers'] = ['wg-a' => ['usable_since' => 1200, 'counted' => 45, 'last_at' => 1245,
         'resolver_failed_until' => null, 'probe_failures' => 1]];
     $s['control_failures'] = 2;
+    $s['control_silent_since'] = 1300;
     $s['last_switch'] = ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'];
     uu_state_save($path, $s);
     uu_check($t, 'round trip returns the saved state', uu_state_load($path) === $s);
@@ -91,6 +93,22 @@ uu_register_suite('state', function (): int {
     $bad['timers']['wg-a']['counted'] = 'many';
     file_put_contents($path, json_encode($bad));
     uu_check($t, 'a timer with a wrongly typed field loads as a new state', uu_state_load($path) === $new);
+
+    $bad = $s;
+    $bad['control_silent_since'] = 'soon';
+    file_put_contents($path, json_encode($bad));
+    uu_check($t, 'a wrongly typed control_silent_since loads as a new state', uu_state_load($path) === $new);
+
+    $old = $s;
+    unset($old['control_silent_since']);
+    $old['version'] = 1;
+    file_put_contents($path, json_encode($old));
+    uu_check($t, 'a version 1 file (no control_silent_since) loads as a new state', uu_state_load($path) === $new);
+
+    $old['version'] = UU_STATE_VERSION;
+    file_put_contents($path, json_encode($old));
+    uu_check($t, 'a current-version file without control_silent_since loads as a new state',
+        uu_state_load($path) === $new);
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

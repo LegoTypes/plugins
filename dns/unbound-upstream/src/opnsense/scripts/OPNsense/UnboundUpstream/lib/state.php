@@ -10,19 +10,20 @@ declare(strict_types=1);
  * Runtime state under /var/run (spec 2026-10-17 section 3.3). Lost at boot on purpose: a boot starts in fallback.
  *
  * State = array{version: int, mode: string, member: ?string, timers: Timers, control_failures: int,
- *               last_switch: ?array{at: int, from: string, to: string, reason: string}}
- * mode is 'tunnel' or 'fallback'. Timers (choose.php) are monotonic seconds; last_switch.at is wall-clock time,
- * for display only. A file that cannot be read back exactly as written is discarded: the planner derives the
+ *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string}}
+ * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
+ * evaluations with a silent control channel) are monotonic seconds; last_switch.at is wall-clock time, for
+ * display only. A file that cannot be read back exactly as written is discarded: the planner derives the
  * mode from the live forwarders and route, so a fresh state costs only the failback timers.
  */
 
-const UU_STATE_VERSION = 1;
+const UU_STATE_VERSION = 2;
 
 /**
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, last_switch: ?array{at: int, from: string, to: string,
- *     reason: string}}
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string}}
  */
 function uu_state_new(): array
 {
@@ -32,6 +33,7 @@ function uu_state_new(): array
         'member' => null,
         'timers' => [],
         'control_failures' => 0,
+        'control_silent_since' => null,
         'last_switch' => null,
     ];
 }
@@ -56,7 +58,7 @@ function uu_state_timer_ok(array $timer): bool
  */
 function uu_state_valid(array $doc): bool
 {
-    if (count($doc) !== 6 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
+    if (count($doc) !== 7 || ($doc['version'] ?? null) !== UU_STATE_VERSION) {
         return false;
     }
     if (!in_array($doc['mode'] ?? null, ['tunnel', 'fallback'], true)) {
@@ -66,6 +68,10 @@ function uu_state_valid(array $doc): bool
         return false;
     }
     if (!isset($doc['control_failures']) || !is_int($doc['control_failures'])) {
+        return false;
+    }
+    if (!array_key_exists('control_silent_since', $doc)
+        || ($doc['control_silent_since'] !== null && !is_int($doc['control_silent_since']))) {
         return false;
     }
     if (!isset($doc['timers']) || !is_array($doc['timers'])) {
@@ -95,8 +101,8 @@ function uu_state_valid(array $doc): bool
  *
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, last_switch: ?array{at: int, from: string, to: string,
- *     reason: string}}
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string}}
  */
 function uu_state_load(string $path): array
 {
@@ -112,6 +118,8 @@ function uu_state_load(string $path): array
     $state['mode'] = (string)$doc['mode'];
     $state['member'] = $doc['member'] === null ? null : (string)$doc['member'];
     $state['control_failures'] = (int)$doc['control_failures'];
+    $state['control_silent_since'] = $doc['control_silent_since'] === null
+        ? null : (int)$doc['control_silent_since'];
     foreach ($doc['timers'] as $name => $timer) {
         $state['timers'][(string)$name] = [
             'usable_since' => $timer['usable_since'] === null ? null : (int)$timer['usable_since'],
@@ -139,8 +147,8 @@ function uu_state_load(string $path): array
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, last_switch: ?array{at: int, from: string, to: string,
- *     reason: string}} $state
+ *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string}} $state
  */
 function uu_state_save(string $path, array $state): void
 {
