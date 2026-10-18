@@ -261,13 +261,19 @@ final class UuApplyRun
     }
 
     /**
-     * Restart Unbound when this run's restore met a silent control channel with Unbound running and cacheflush off
-     * (the restart then keeps the cache, section 3.4), and confirm through `forward`, polled for up to
-     * UU_CONTROL_WAIT_SECONDS, that Unbound came back on its configured root. True only when that is confirmed.
+     * Restart Unbound when this run's restore met a silent control channel with Unbound enabled, running and
+     * cacheflush off (the restart then keeps the cache, section 3.4), and confirm through `forward`, polled for up
+     * to UU_CONTROL_WAIT_SECONDS, that the live root is no longer the resolver. True only when that is confirmed.
+     * An Unbound the user disabled is never restarted, even while its pid is still alive.
      */
     private function restartForStop(): bool
     {
         if (!$this->silent || !$this->s['unbound']['pid_alive']) {
+            return false;
+        }
+        if (!$this->s['unbound']['enabled']) {
+            $this->log("stop: Unbound's control channel is silent, but Unbound is disabled in its settings: no "
+                . 'restart', LOG_ERR);
             return false;
         }
         if ($this->s['contract_input']['cacheflush']) {
@@ -298,8 +304,8 @@ final class UuApplyRun
             /* Unbound's own start applied the configured TLS flag, not the plugin */
             $this->st['tls_applied'] = null;
             $this->checkpoint();
-            $this->log('stop: Unbound restarted on its configured root zone (' . $this->liveText() . ')',
-                LOG_WARNING);
+            $this->log('stop: Unbound restarted and no longer forwards to the resolver (live root '
+                . $this->liveText() . ')', LOG_WARNING);
             return true;
         }
         $this->log('stop: Unbound\'s control channel is still silent ' . UU_CONTROL_WAIT_SECONDS

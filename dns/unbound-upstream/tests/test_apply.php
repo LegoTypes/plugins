@@ -706,6 +706,20 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'stop with a silent channel and cacheflush on → no restart, the route stays, logged as an error',
         uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
         && uu_test_logged($r['calls'], LOG_ERR, 'cacheflush'));
+    $disabled = $silentStop;
+    $disabled['settings']['enabled'] = true;
+    $disabled['unbound']['enabled'] = false;
+    $p = uu_plan($disabled, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($disabled, $all, ['silent' => true, 'restart_live' => ['192.0.2.53']]);
+    $st = uu_apply($p, $disabled, $r['io']);
+    uu_check($t, 'stop, Unbound disabled by the user with its pid alive, silent channel → no restart, the route stays, logged',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
+        && $st['member'] === 'wg-a' && uu_test_logged($r['calls'], LOG_ERR, 'disabled', 'no restart')
+        && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53']]);
+    uu_apply(uu_plan($silentStop, uu_test_plan_state('wg-a', $usable)), $silentStop, $r['io']);
+    uu_check($t, 'after the restart the log says what was checked: the live root is no longer the resolver',
+        uu_test_logged($r['calls'], LOG_WARNING, 'no longer forwards to the resolver'));
     $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($silentStop, $all, ['uc_fail' => ['forward_add']]);
     $st = uu_apply($p, $silentStop, $r['io']);
