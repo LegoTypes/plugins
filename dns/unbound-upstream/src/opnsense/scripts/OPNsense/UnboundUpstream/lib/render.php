@@ -87,9 +87,13 @@ function uu_wanted_render(): array
 /**
  * The plugins_firewall hook body. Never throws: any failure renders nothing and is logged.
  *
+ * The failure is logged through logger(1), not openlog(): the hook runs inside core's filter reload and must
+ * not replace core's syslog ident or drop its connection.
+ *
  * @param ?callable(): array{enabled: bool, resolver: string, members: list<array{interface: string}>} $wanted
+ * @param ?callable(string): void $log receives the message; default logs it to unboundupstream at local4.err
  */
-function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = null): void
+function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = null, ?callable $log = null): void
 {
     try {
         $w = $wanted !== null ? $wanted() : uu_wanted_render();
@@ -103,8 +107,11 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
             $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
         }
     } catch (\Throwable $e) {
-        openlog('unboundupstream', LOG_PID, LOG_LOCAL4);
-        syslog(LOG_ERR, 'rules not rendered: ' . $e->getMessage());
-        closelog();
+        $msg = 'rules not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage());
+        if ($log !== null) {
+            $log($msg);
+        } else {
+            exec('/usr/bin/logger -t unboundupstream -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
+        }
     }
 }
