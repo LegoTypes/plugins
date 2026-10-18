@@ -40,7 +40,10 @@ wf_register_suite('judge', function (): int {
     wf_check($t, '100% for 6 s is not yet unavailable', wf_reading(wf_t_w(['loss' => 100.0, 'sock_age' => 6]), $d) === WF_UNKNOWN);
     wf_check($t, 'young 6 s at 50% (1 of 2) is unknown', wf_reading(wf_t_w(['loss' => 50.0, 'sock_age' => 6]), $d) === WF_UNKNOWN);
     wf_check($t, 'young 20 s at 25% (4 lost) is unknown', wf_reading(wf_t_w(['loss' => 25.0, 'sock_age' => 20]), $d) === WF_UNKNOWN);
-    wf_check($t, 'young 40 s at 35% (12.6 lost >= 12) is bad', wf_reading(wf_t_w(['loss' => 35.0, 'sock_age' => 40]), $d) === WF_BAD);
+    wf_check($t, 'young 40 s at 35% (12.6, rounded 13 lost >= 12) is bad', wf_reading(wf_t_w(['loss' => 35.0, 'sock_age' => 40]), $d) === WF_BAD);
+    // dpinger prints loss rounded to 0.1 %: 12 lost of 36 counted prints 33.3 %, which is 11.988 probes
+    wf_check($t, 'young 40 s at 33.3% (12 of 36 lost, as dpinger rounds it) is bad', wf_reading(wf_t_w(['loss' => 33.3, 'sock_age' => 40]), $d) === WF_BAD);
+    wf_check($t, 'young 40 s at 30.6% (11 of 36 lost) is unknown', wf_reading(wf_t_w(['loss' => 30.6, 'sock_age' => 40]), $d) === WF_UNKNOWN);
     wf_check($t, 'young 0% is unknown, never clean', wf_reading(wf_t_w(['loss' => 0.0, 'sock_age' => 30]), $d) === WF_UNKNOWN);
     wf_check($t, '~ on a settled dpinger (stddev and loss exactly 0) is clean (R3-10)', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 300]), $d) === WF_CLEAN);
     wf_check($t, '~ on a young dpinger is unknown', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 30]), $d) === WF_UNKNOWN);
