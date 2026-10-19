@@ -18,12 +18,17 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.1_1
+
+* Notify URL: an ordinary setting the page shows after saving, and a
+  failed POST's warning names the whole URL
+
 1.1
 
 * Status privilege "Status: Unbound DNS: Upstream via Gateway (API)":
   reads the status and nothing else, for a poller's API key
 * Notify on switch: POST each switch between a member and the fallback
-  to a URL as JSON; the URL is update-only and logs show only its host
+  to a URL as JSON
 * The status names the resolver address
 * Fix: the gateway monitor hook threw a TypeError (a PHP crash report)
   when core reloaded routing in full, which passes no gateway names,

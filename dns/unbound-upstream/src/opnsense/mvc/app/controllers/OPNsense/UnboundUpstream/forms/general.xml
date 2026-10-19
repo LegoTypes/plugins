@@ -45,6 +45,6 @@
         <id>unboundupstream.notify_url</id>
         <label>Notify URL</label>
         <type>text</type>
-        <help>The http or https URL that receives each switch. It can only be set and changed, and is not shown again after saving.</help>
+        <help>The http or https URL that receives each switch.</help>
     </field>
 </form>

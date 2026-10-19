@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The switch notification (spec section 3.11): when one is due, its body, and what a log may show of the URL.
+ * The switch notification (spec section 3.11): when one is due, and its body.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -33,13 +33,5 @@ uu_register_suite('notify', function (): int {
         json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a]), true)['member']
             === 'wg-a');
 
-    uu_check($t, 'where: scheme and host of a webhook URL, never its path',
-        uu_notify_where('https://ha.example.test/api/webhook/secret-id') === 'https://ha.example.test');
-    uu_check($t, 'where: the port is kept, the query dropped',
-        uu_notify_where('http://127.0.0.1:18080/hook?token=x') === 'http://127.0.0.1:18080');
-    uu_check($t, 'where: credentials in the URL are dropped',
-        uu_notify_where('https://user:pass@ha.example.test/x') === 'https://ha.example.test');
-    uu_check($t, 'where: a URL without a host is named, not echoed',
-        uu_notify_where('not a url') === 'the notify URL');
     return uu_tally_report('notify', $t);
 });

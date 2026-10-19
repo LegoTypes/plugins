@@ -46,8 +46,8 @@
             <Default>0</Default>
             <Required>Y</Required>
         </notify>
-        <!-- a webhook URL is a credential; required when notify is on: checked in the model class -->
-        <notify_url type="UpdateOnlyTextField">
+        <!-- required when notify is on: checked in the model class -->
+        <notify_url type="TextField">
             <Mask>/^https?:\/\/[^\s\/?#]+(\/\S*)?$/</Mask>
             <ValidationMessage>Enter an http or https URL.</ValidationMessage>
         </notify_url>
