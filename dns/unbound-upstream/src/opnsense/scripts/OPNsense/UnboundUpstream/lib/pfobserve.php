@@ -234,13 +234,17 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
     if (!$mayList) {
         return ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null];
     }
+    $unreadable = false;
     for ($pair = 1; $pair <= UU_RULES_LIST_PAIRS; $pair++) {
         $before = $pair === 1 ? $live : $checksum();
         if ($before === null) {
+            $unreadable = true;
             continue;
         }
         $verdict = $verdictOf($listing());
-        if ($checksum() !== $before) {
+        $after = $checksum();
+        if ($after !== $before) {
+            $unreadable = $unreadable || $after === null;
             continue;
         }
         $new = ['checksum' => $before, 'inputs' => $inputs, 'at' => $wall, 'loaded' => $verdict['loaded'],
@@ -252,8 +256,8 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
         return ['state' => $record['loaded'] ? 'loaded' : 'missing', 'problems' => $record['problems'],
                 'verified_at' => $record['at'], 'record' => null];
     }
-    return ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'], 'verified_at' => null,
-            'record' => null];
+    $problem = $unreadable ? 'pf status unreadable' : 'the ruleset changed during every listing';
+    return ['state' => 'missing', 'problems' => [$problem], 'verified_at' => null, 'record' => null];
 }
 
 /**
