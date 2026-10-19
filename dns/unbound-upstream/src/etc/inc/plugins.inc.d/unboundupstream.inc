@@ -73,19 +73,23 @@ function unboundupstream_queue(bool $verbose = false): void
 }
 
 /**
- * The monitor hook: the gateways that changed go to the action as ONE comma-joined parameter. Core calls it
- * without names at boot (rc.bootup: plugins_configure('monitor', true)), and then it is a plain evaluate.
+ * The monitor hook: the gateways that changed go to the action as ONE comma-joined parameter. Core passes a plugin
+ * argument map: none at boot (rc.bootup), null for a full reload (rc.routing_configure), a list of names
+ * (rc.syshook.d/monitor), or a comma-separated string (pluginctl -c monitor). plugins_argument_map() reads all of
+ * them, as dpinger's hook does; without names it is a plain evaluate.
  *
- * @param list<string> $gwnames
+ * @param list<string>|string|null $gwnames
  */
-function unboundupstream_queue_monitor(bool $verbose = false, array $gwnames = []): void
+function unboundupstream_queue_monitor(bool $verbose = false, array|string|null $gwnames = null): void
 {
     try {
         if ($verbose) {
             echo 'Queueing the Unbound upstream evaluation...';
             flush();
         }
-        $names = implode(',', array_map('strval', $gwnames));
+        $map = $gwnames;
+        plugins_argument_map($map);
+        $names = is_array($map) ? implode(',', array_map('strval', $map)) : '';
         exec('/usr/local/sbin/configctl -d unboundupstream evaluate'
             . ($names === '' ? '' : ' ' . escapeshellarg($names)) . ' > /dev/null 2>&1');
         if ($verbose) {

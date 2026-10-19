@@ -64,10 +64,10 @@ uu_register_suite('log', function (): int {
     $plan = uu_plan($s, $st);
     $doc = uu_status_doc($s, $plan, $pf, uu_snapshot_fixture('route_get_member.txt'));
     uu_check($t, 'status: every section 3.8 field',
-        array_keys($doc) === ['enabled', 'dry_run', 'mode', 'member', 'tier', 'unbound', 'live_root', 'configured_root',
+        array_keys($doc) === ['enabled', 'dry_run', 'resolver', 'mode', 'member', 'tier', 'unbound', 'live_root', 'configured_root',
             'tls_applied', 'route', 'rules_loaded', 'blocked', 'checks', 'members', 'last_switch', 'contract', 'next']);
-    uu_check($t, 'status: mode, member and its tier; live and configured roots; the TLS flag applied',
-        $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
+    uu_check($t, 'status: the resolver, mode, member and its tier; live and configured roots; the TLS flag applied',
+        $doc['resolver'] === $s['settings']['resolver'] && $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
         && $doc['live_root'] === ['10.2.0.1'] && $doc['configured_root'] === $s['zone'] && $doc['tls_applied'] === false
         && $doc['unbound'] === ['enabled' => true, 'running' => true, 'control_ok' => true]);
     uu_check($t, 'status: the route with its flags',

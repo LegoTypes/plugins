@@ -35,4 +35,16 @@
         <type>text</type>
         <help>The name used to check that the resolver answers; "." asks for the root.</help>
     </field>
+    <field>
+        <id>unboundupstream.notify</id>
+        <label>Notify on switch</label>
+        <type>checkbox</type>
+        <help>POST each switch between a member and the fallback to the URL below as JSON, for example to a Home Assistant webhook.</help>
+    </field>
+    <field>
+        <id>unboundupstream.notify_url</id>
+        <label>Notify URL</label>
+        <type>text</type>
+        <help>The http or https URL that receives each switch. It can only be set and changed, and is not shown again after saving.</help>
+    </field>
 </form>

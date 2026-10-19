@@ -8,4 +8,10 @@
             <pattern>api/diagnostics/log/core/unboundupstream*</pattern>
         </patterns>
     </page-services-unboundupstream>
+    <page-status-unboundupstream>
+        <name>Status: Unbound DNS: Upstream via Gateway (API)</name>
+        <patterns>
+            <pattern>api/unboundupstream/service/state</pattern>
+        </patterns>
+    </page-status-unboundupstream>
 </acl>

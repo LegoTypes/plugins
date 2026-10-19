@@ -12,9 +12,22 @@ that member's tunnel and never the WAN.
 - Plan and log only (dry run) is the default; nothing changes in Unbound
   or the routing table until it is turned off
 - Never writes the configuration at run time: the only writer is Save
+- Can POST each switch to a URL, and has a read-only status privilege
+  for pollers such as Home Assistant
 
 Plugin Changelog
 ================
+
+1.1
+
+* Status privilege "Status: Unbound DNS: Upstream via Gateway (API)":
+  reads the status and nothing else, for a poller's API key
+* Notify on switch: POST each switch between a member and the fallback
+  to a URL as JSON; the URL is update-only and logs show only its host
+* The status names the resolver address
+* Fix: the gateway monitor hook threw a TypeError (a PHP crash report)
+  when core reloaded routing in full, which passes no gateway names,
+  and dropped that evaluation; it now takes every form core passes
 
 1.0_3
 

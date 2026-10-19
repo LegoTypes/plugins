@@ -42,5 +42,14 @@
             <Mask>/^(\.|([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.?)$/</Mask>
             <ValidationMessage>Enter a host name to probe the resolver with, or "." for the root.</ValidationMessage>
         </probe_name>
+        <notify type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </notify>
+        <!-- a webhook URL is a credential; required when notify is on: checked in the model class -->
+        <notify_url type="UpdateOnlyTextField">
+            <Mask>/^https?:\/\/[^\s\/?#]+(\/\S*)?$/</Mask>
+            <ValidationMessage>Enter an http or https URL.</ValidationMessage>
+        </notify_url>
     </items>
 </model>

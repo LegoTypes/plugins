@@ -39,6 +39,7 @@ require_once __DIR__ . '/lib/planner.php';
 require_once __DIR__ . '/lib/snapshot.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/log.php';
+require_once __DIR__ . '/lib/notify.php';
 
 try {
     exit(uu_main(array_values(array_slice($argv, 1))));
@@ -197,7 +198,8 @@ function uu_evaluate(?string $stop, array $named): int
 }
 
 /**
- * Snapshot, plan, apply, the blocked-count line, save, for one set of settings.
+ * Snapshot, plan, apply, the blocked-count line, save, then the switch notification when the run switched (section
+ * 3.11), for one set of settings.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string} $settings
@@ -208,6 +210,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 {
     $s = uu_snapshot($settings, $named, $stop);
     $st = uu_state_load(UU_STATE_PATH);
+    $previousSwitch = $st['last_switch'];
     $s = uu_route_adopt($s, $st['route_installed']);
     $s = uu_wait_control($s, $st['mode']);
     $p = uu_plan($s, $st);
@@ -223,6 +226,9 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     }
     $st['blocked'] = $blocked;
     uu_state_save(UU_STATE_PATH, $st);
+    if (uu_notify_due($previousSwitch, $st['last_switch'])) {
+        uu_notify_switch($st);
+    }
 }
 
 /**
