@@ -34,7 +34,8 @@ const UU_STATE_VERSION = 5;
 /**
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -65,7 +66,13 @@ function uu_state_timer_ok(array $timer): bool
 {
     $nullableInt = fn (string $key): bool => array_key_exists($key, $timer)
         && ($timer[$key] === null || is_int($timer[$key]));
-    return count($timer) === 5
+    $lastDown = $timer['last_down'] ?? null;
+    $lastDownOk = $lastDown === null || (is_array($lastDown) && count($lastDown) === 2
+        && isset($lastDown['at']) && is_int($lastDown['at'])
+        && isset($lastDown['reason']) && is_string($lastDown['reason']));
+    /* a 1.1 timer has the five keys; 1.2 adds last_down */
+    return (count($timer) === 5 || (count($timer) === 6 && array_key_exists('last_down', $timer)))
+        && $lastDownOk
         && $nullableInt('usable_since') && $nullableInt('last_at') && $nullableInt('resolver_failed_until')
         && isset($timer['counted']) && is_int($timer['counted'])
         && isset($timer['probe_failures']) && is_int($timer['probe_failures']);
@@ -164,7 +171,8 @@ function uu_state_valid(array $doc): bool
  * @param array<array-key, mixed> $doc
  * @return ?array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -189,6 +197,9 @@ function uu_state_from_doc(array $doc): ?array
             'resolver_failed_until' => $timer['resolver_failed_until'] === null
                 ? null : (int)$timer['resolver_failed_until'],
             'probe_failures' => (int)$timer['probe_failures'],
+            'last_down' => is_array($timer['last_down'] ?? null)
+                ? ['at' => (int)$timer['last_down']['at'], 'reason' => (string)$timer['last_down']['reason']]
+                : null,
         ];
     }
     if (is_array($doc['last_switch'])) {
@@ -222,7 +233,8 @@ function uu_state_from_doc(array $doc): ?array
  *
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -244,14 +256,16 @@ function uu_state_load(string $path): array
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string} $state
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -272,7 +286,8 @@ function uu_state_forget_resolver(array $state): array
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,

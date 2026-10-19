@@ -10,40 +10,49 @@ declare(strict_types=1);
  * Candidate choice, failback timers and probe outcomes (spec 2026-10-17 sections 3.3 and 3.5). Pure.
  *
  * Timers = array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                              probe_failures: int}>
+ *                              probe_failures: int,
+ *                                  last_down: ?array{at: int, reason: string}}>
  * A member's timer counts the seconds between two consecutive evaluations that both read it settled and usable.
  * last_at is the previous such evaluation; any other reading (young, cached, none, unusable) clears it, so the
- * gap is neither counted nor does it reset the count. A down verdict resets the count.
+ * gap is neither counted nor does it reset the count. A down verdict resets the count; when the member had been
+ * counting, it also records last_down (wall-clock time and the verdict), which stays until the next such down.
  */
 
 require_once __DIR__ . '/constants.php';
 
 /**
- * @return array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int, probe_failures: int}
+ * @return array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int, probe_failures: int,
+ *             last_down: ?array{at: int, reason: string}}
  */
 function uu_timer_new(): array
 {
     return ['usable_since' => null, 'counted' => 0, 'last_at' => null, 'resolver_failed_until' => null,
-            'probe_failures' => 0];
+            'probe_failures' => 0, 'last_down' => null];
 }
 
 /**
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                            probe_failures: int}> $timers
+ *                            probe_failures: int,
+ *                                last_down: ?array{at: int, reason: string}}> $timers
  * @param array<string, string> $kinds reading kind per member (uu_reading_kind)
  * @param array<string, bool> $usable settled and usable per member (uu_usable_settled)
- * @param array<string, bool> $down member has a down verdict (uu_member_down !== null)
+ * @param array<string, string> $down the down verdict (uu_member_down) of every member that has one; the others are absent
  * @param int $now monotonic seconds (intdiv(hrtime(true), 1000000000)); the wall clock is never used, so an NTP
  *             step cannot move a timer or a resolver-failed mark
+ * @param int $wall wall-clock seconds, for display only (a last_down record); no timer reads it
  * @return array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                             probe_failures: int}>
+ *                             probe_failures: int,
+ *                                 last_down: ?array{at: int, reason: string}}>
  */
-function uu_timers_update(array $timers, array $kinds, array $usable, array $down, int $now): array
+function uu_timers_update(array $timers, array $kinds, array $usable, array $down, int $now, int $wall): array
 {
     $out = [];
     foreach ($kinds as $name => $kind) {
         $timer = $timers[$name] ?? uu_timer_new();
-        if ($down[$name] ?? false) {
+        if (isset($down[$name])) {
+            if ($timer['counted'] > 0) {
+                $timer['last_down'] = ['at' => $wall, 'reason' => $down[$name]];
+            }
             $timer['counted'] = 0;
             $timer['usable_since'] = null;
             $timer['last_at'] = null;
@@ -68,7 +77,8 @@ function uu_timers_update(array $timers, array $kinds, array $usable, array $dow
  * @param array<string, bool> $usableSettled settled and usable per member; gates entering and returning only
  * @param array<string, bool> $down member has a down verdict; the current member stays while it is not down
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                            probe_failures: int}> $timers
+ *                            probe_failures: int,
+ *                                last_down: ?array{at: int, reason: string}}> $timers
  * @return list<string>
  */
 function uu_candidates(

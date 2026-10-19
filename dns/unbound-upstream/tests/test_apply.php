@@ -18,7 +18,7 @@ require_once __DIR__ . '/test_planner.php';
 /**
  * The planner's test snapshot with Unbound's live root as Unbound prints it: bare addresses, its own order.
  *
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -50,7 +50,7 @@ function uu_test_apply_snapshot(): array
  * `forward` prints, bare and in reverse order, as Unbound prints its own order. Every call is also appended to
  * $all after a "-- case" marker, so the never-planned assertion sees every case and where each starts.
  *
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},

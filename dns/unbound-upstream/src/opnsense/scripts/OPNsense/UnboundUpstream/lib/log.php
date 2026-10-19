@@ -124,10 +124,29 @@ function uu_status_route_flags(string $out): array
 }
 
 /**
+ * A duration as text with its two largest units: "3 d 4 h", "11 h 22 min", "2 min 10 s", "59 s". The largest unit
+ * is the largest that is not zero (a whole day is "1 d 0 h"); below a minute only seconds are shown.
+ */
+function uu_duration_text(int $seconds): string
+{
+    $seconds = max(0, $seconds);
+    if ($seconds >= 86400) {
+        return intdiv($seconds, 86400) . ' d ' . intdiv($seconds % 86400, 3600) . ' h';
+    }
+    if ($seconds >= 3600) {
+        return intdiv($seconds, 3600) . ' h ' . intdiv($seconds % 3600, 60) . ' min';
+    }
+    if ($seconds >= 60) {
+        return intdiv($seconds, 60) . ' min ' . ($seconds % 60) . ' s';
+    }
+    return $seconds . ' s';
+}
+
+/**
  * The status page's document (section 3.8). The mode, member and timers are the plan's view of now (recovered
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
  *
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -149,7 +168,8 @@ function uu_status_route_flags(string $out): array
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
- *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
+ *         resolver_failed_until: ?int, probe_failures: int,
+ *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,

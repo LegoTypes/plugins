@@ -9,7 +9,7 @@ declare(strict_types=1);
  *
  * The planner (spec 2026-10-17 sections 3.2 to 3.4 and 3.10). Pure: (snapshot, state) -> plan.
  *
- * Snapshot = array{now: int, settings: array{enabled: bool, dry_run: bool, group: string, resolver: string,
+ * Snapshot = array{now: int, wall: int, settings: array{enabled: bool, dry_run: bool, group: string, resolver: string,
  *                  failback_delay: int, probe_name: string},
  *                  trigger: string, tiers: list<list<string>>, members: array<string, Member>,
  *                  probes: array<string, Probe>, named: list<string>, stop: ?string,
@@ -60,7 +60,8 @@ function uu_plan_route_via(array $route, array $m): bool
  * @param array<string, string> $kinds reading kind per group member
  * @param array<string, bool> $usable
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                            probe_failures: int}> $timers
+ *                            probe_failures: int,
+ *                                last_down: ?array{at: int, reason: string}}> $timers
  */
 function uu_plan_note(
     string $name,
@@ -91,7 +92,8 @@ function uu_plan_note(
  * @param list<string> $candidates
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -101,7 +103,8 @@ function uu_plan_note(
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
- *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
+ *         resolver_failed_until: ?int, probe_failures: int,
+ *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -142,7 +145,7 @@ function uu_plan_stop_reason(array $s): ?string
 }
 
 /**
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -162,7 +165,8 @@ function uu_plan_stop_reason(array $s): ?string
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -171,7 +175,8 @@ function uu_plan_stop_reason(array $s): ?string
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
- *         resolver_failed_until: ?int, probe_failures: int}>, control_failures: int,
+ *         resolver_failed_until: ?int, probe_failures: int,
+ *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -211,7 +216,7 @@ function uu_plan(array $s, array $st): array
             }
         }
     }
-    $st['timers'] = uu_timers_update($st['timers'], $kinds, $usable, $down, $now);
+    $st['timers'] = uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall']);
 
     /* when the state file does not say tunnel, the live root decides the mode (Review Focus 4); with the control
      * channel silent there is no live root, and our route via a member is the evidence instead */
