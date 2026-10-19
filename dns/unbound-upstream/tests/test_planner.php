@@ -21,7 +21,7 @@ require_once __DIR__ . '/test_contract.php';
  * Two members, wg-a tier 1 and wg-b tier 2, both settled with no loss; Unbound running on the configured DoT
  * root; no resolver route. Cases override fields directly.
  *
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -56,6 +56,7 @@ function uu_test_snapshot(): array
     $contract['fib_sync_ms'] = 1000;
     return [
         'now' => 10000,
+        'wall' => 1792400000,
         'settings' => ['enabled' => true, 'dry_run' => false, 'group' => 'grp_test', 'resolver' => '10.2.0.1',
                        'failback_delay' => 120, 'probe_name' => '.'],
         'trigger' => 'downloss',
@@ -76,7 +77,7 @@ function uu_test_snapshot(): array
  * The snapshot as tunnel mode through a member leaves it: the resolver is the live root and our route points at
  * the member.
  *
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -94,7 +95,7 @@ function uu_test_snapshot(): array
  *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -125,10 +126,12 @@ function uu_test_in_tunnel(array $s, string $member): array
  * A state in tunnel mode on the member, or in fallback when it is null.
  *
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                            probe_failures: int}> $timers
+ *                            probe_failures: int,
+ *                                last_down: ?array{at: int, reason: string}}> $timers
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int}>, control_failures: int, control_silent_since: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,

@@ -187,7 +187,7 @@ function uu_route_ours(array $route, array $members): bool
  * fallback and stop replace or delete the plugin's stale route instead of reading it as foreign. evaluate.php
  * applies it to every snapshot before planning; a route matching neither stays foreign.
  *
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -206,7 +206,7 @@ function uu_route_ours(array $route, array $members): bool
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param ?array{kind: string, next_hop: string, if: string} $installed
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -305,13 +305,13 @@ function uu_zone_texts(): array
 }
 
 /**
- * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it).
+ * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -454,6 +454,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop): array
 
     return [
         'now' => $now,
+        'wall' => time(),
         'settings' => $settings,
         'trigger' => $trigger,
         'tiers' => $tiers,

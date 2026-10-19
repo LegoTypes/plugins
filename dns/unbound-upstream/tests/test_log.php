@@ -53,6 +53,11 @@ uu_register_suite('log', function (): int {
         === ['UP', 'GATEWAY', 'HOST', 'DONE', 'STATIC']);
     uu_check($t, 'route flags: none for empty output', uu_status_route_flags('') === []);
 
+    uu_check($t, 'duration: two largest units',
+        uu_duration_text(0) === '0 s' && uu_duration_text(59) === '59 s' && uu_duration_text(60) === '1 min 0 s'
+        && uu_duration_text(130) === '2 min 10 s' && uu_duration_text(40979) === '11 h 22 min'
+        && uu_duration_text(273600) === '3 d 4 h' && uu_duration_text(86400) === '1 d 0 h');
+
     $now = 10000;
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $s['probes']['wg-b'] = uu_test_probe('down', '100.0 %', 300);

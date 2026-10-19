@@ -236,7 +236,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
  * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo.
  *
- * @param array{now: int,
+ * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -255,7 +255,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
  * @param string $mode the saved state's mode
- * @return array{now: int,
+ * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
  *     trigger: string, tiers: list<list<string>>,
@@ -348,7 +348,7 @@ function uu_replay_main(string $path): int
         throw new RuntimeException("cannot read $path");
     }
     $doc = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
-    $keys = ['now', 'settings', 'trigger', 'tiers', 'members', 'probes', 'named', 'stop', 'unbound', 'zone',
+    $keys = ['now', 'wall', 'settings', 'trigger', 'tiers', 'members', 'probes', 'named', 'stop', 'unbound', 'zone',
              'route', 'fib_sync_ms', 'contract_input'];
     /* the snapshot is evaluate.php record's own output: its top-level shape is checked, not every field */
     if (!is_array($doc) || !is_array($doc['snapshot'] ?? null) || array_keys($doc['snapshot']) !== $keys

@@ -49,7 +49,8 @@ uu_register_suite('state', function (): int {
     $s['mode'] = 'tunnel';
     $s['member'] = 'wg-a';
     $s['timers'] = ['wg-a' => ['usable_since' => 1200, 'counted' => 45, 'last_at' => 1245,
-        'resolver_failed_until' => null, 'probe_failures' => 1]];
+        'resolver_failed_until' => null, 'probe_failures' => 1,
+        'last_down' => ['at' => 5, 'reason' => 'x']]];
     $s['control_failures'] = 2;
     $s['control_silent_since'] = 1300;
     $s['last_switch'] = ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'];
@@ -195,6 +196,22 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'a decoded document of the State shape converts; any other is null',
         is_array($doc) && uu_state_from_doc($doc) === $s
         && uu_state_from_doc(['version' => UU_STATE_VERSION]) === null);
+
+    $v11 = json_decode((string)json_encode($s), true);
+    unset($v11['timers']['wg-a']['last_down']);
+    $from11 = is_array($v11) ? uu_state_from_doc($v11) : null;
+    uu_check($t, 'state: a 1.1 timer without last_down loads, last_down null',
+        $from11 !== null && $from11['timers']['wg-a']['last_down'] === null
+        && $from11['timers']['wg-a']['counted'] === 45);
+    $rt = json_decode((string)json_encode($s), true);
+    $badAt = $rt;
+    unset($badAt['timers']['wg-a']['last_down']['at']);
+    $badType = $rt;
+    $badType['timers']['wg-a']['last_down']['at'] = 'soon';
+    uu_check($t, 'state: last_down round-trips; a missing or non-int at makes the document invalid',
+        is_array($rt) && uu_state_from_doc($rt) === $s
+        && is_array($badAt) && uu_state_from_doc($badAt) === null
+        && is_array($badType) && uu_state_from_doc($badType) === null);
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);
