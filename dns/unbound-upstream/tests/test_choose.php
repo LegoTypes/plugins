@@ -104,7 +104,8 @@ uu_register_suite('choose', function (): int {
     uu_check($t, 'a long settled gap (900 s) counts in full', $r['wg-a']['counted'] === 910);
     $r = uu_timers_update(['wg-a' => uu_test_timer(80, null, null)], ['wg-a' => 'young'], ['wg-a' => false],
         ['wg-a' => 'no gateway status'], 1000, $w);
-    uu_check($t, 'down on a young tick still resets counted', $r['wg-a']['counted'] === 0);
+    uu_check($t, 'down on a young tick still resets counted, and records last_down',
+        $r['wg-a']['counted'] === 0 && $r['wg-a']['last_down'] === ['at' => $w, 'reason' => 'no gateway status']);
 
     uu_check($t, 'last_down: the first down of a counting timer records when and why',
         uu_timers_update(['a' => ['counted' => 300] + uu_timer_new()], ['a' => 'settled'], ['a' => false],

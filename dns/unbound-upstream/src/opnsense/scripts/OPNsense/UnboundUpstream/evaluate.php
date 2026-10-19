@@ -216,7 +216,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     if ($s['rules']['record'] !== null) {
         try {
             uu_rules_record_save(UU_RULES_PATH, $s['rules']['record']);
-        } catch (\RuntimeException $e) {
+        } catch (\Throwable $e) {
             uu_log('rules: the verification could not be saved (' . $e->getMessage() . '): the next evaluation '
                 . 'lists the ruleset again', LOG_WARNING);
         }

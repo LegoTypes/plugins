@@ -53,13 +53,17 @@ function uu_blocked_line(?int $previous, ?int $now): ?string
         return null;
     }
     if ($previous === null || $now < $previous) {
-        return sprintf('blocked %d resolver packets on a non-member path since the rules were loaded', $now);
+        return sprintf('blocked %d resolver packets on a non-member path since the counting table was created',
+            $now);
     }
     if ($now === $previous) {
         return null;
     }
-    return sprintf('blocked %d more resolver packets on a non-member path (%d since the rules were loaded)',
-        $now - $previous, $now);
+    return sprintf(
+        'blocked %d more resolver packets on a non-member path (%d since the counting table was created)',
+        $now - $previous,
+        $now
+    );
 }
 
 /**
