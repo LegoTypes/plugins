@@ -18,6 +18,13 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.2_1
+
+* A rules listing cut short by a filter reload, even one that leaves
+  the ruleset unchanged, is listed again instead of being judged
+* A missing-rules verdict is checked again at every evaluation, instead
+  of holding the fallback until the next ruleset change
+
 1.2
 
 * The firewall rules are verified once per ruleset change, keyed by
