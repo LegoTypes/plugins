@@ -11,7 +11,8 @@ declare(strict_types=1);
  * plugin's rules read from the kernel's own listing by keyword, and that verdict kept once per checksum so the
  * 2.5 s ruleset listing is only paid after the ruleset changed. Pure apart from the record file.
  *
- * Record = array{checksum: string, at: int, loaded: bool, problems: list<string>}
+ * Record = array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}
+ *   inputs is uu_rules_inputs() of what the verdict was made for; a record holds only for its checksum AND inputs
  * Verdict = array{loaded: bool, problems: list<string>}
  * RulesCheck = array{state: string, problems: list<string>, verified_at: ?int, record: ?Record}  (uu_rules_check())
  * TableFacts = array{addresses: int, references: int, out_block: int}  (uu_pf_table())
@@ -186,27 +187,43 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members, bool
 }
 
 /**
- * Whether the plugin's rules are loaded, verified once per ruleset checksum. A live checksum equal to the record's
- * uses the record, with no listing. Otherwise, when listing is allowed, the checksum is read, the ruleset listed
- * once and the checksum read again; the verdict is recorded only when both reads agree, since a reload in between
- * could have made the listing a mix of two rulesets. When listing is not allowed (a status call) the answer is
- * 'verifying'. state is 'loaded', 'missing' or 'verifying'; record is the new record to save, or null.
+ * What a verdict depends on besides the ruleset: the resolver, whether the counting block is asked for, and each
+ * ruled member's interface and device. Order-independent over the members. Between a Save and its filter reload
+ * the checksum is unchanged while the settings already differ, so a record is reused only for the same inputs.
  *
- * @param ?array{checksum: string, at: int, loaded: bool, problems: list<string>} $record
+ * @param list<array{name: string, interface: string, if: string}> $members
+ */
+function uu_rules_inputs(string $resolver, bool $counting, array $members): string
+{
+    $pairs = array_map(fn (array $m): array => [$m['interface'], $m['if']], $members);
+    sort($pairs);
+    return md5(json_encode([$resolver, $counting, $pairs], JSON_THROW_ON_ERROR));
+}
+
+/**
+ * Whether the plugin's rules are loaded, verified once per ruleset checksum and inputs. A record whose checksum is
+ * live and whose inputs are these is used, with no listing. Otherwise, when listing is allowed, the checksum is
+ * read, the ruleset listed once and the checksum read again; the verdict is recorded (under these inputs) only
+ * when both reads agree, since a reload in between could have made the listing a mix of two rulesets. When
+ * listing is not allowed (a status call) the answer is 'verifying'. state is 'loaded', 'missing' or 'verifying';
+ * record is the new record to save, or null.
+ *
+ * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record
+ * @param string $inputs uu_rules_inputs() of the verdict's inputs
  * @param callable(): ?string $checksum
  * @param callable(): string $listing
  * @param callable(string): array{loaded: bool, problems: list<string>} $verdictOf
  * @return array{state: string, problems: list<string>, verified_at: ?int,
- *     record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}}
+ *     record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}}
  */
-function uu_rules_check(?array $record, callable $checksum, callable $listing, callable $verdictOf, int $wall,
-    bool $mayList): array
+function uu_rules_check(?array $record, string $inputs, callable $checksum, callable $listing, callable $verdictOf,
+    int $wall, bool $mayList): array
 {
     $live = $checksum();
     if ($live === null) {
         return ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null, 'record' => null];
     }
-    if ($record !== null && $record['checksum'] === $live) {
+    if ($record !== null && $record['checksum'] === $live && $record['inputs'] === $inputs) {
         return ['state' => $record['loaded'] ? 'loaded' : 'missing', 'problems' => $record['problems'],
                 'verified_at' => $record['at'], 'record' => null];
     }
@@ -218,14 +235,16 @@ function uu_rules_check(?array $record, callable $checksum, callable $listing, c
     if ($checksum() !== $live) {
         return ['state' => $state, 'problems' => $verdict['problems'], 'verified_at' => null, 'record' => null];
     }
-    $new = ['checksum' => $live, 'at' => $wall, 'loaded' => $verdict['loaded'], 'problems' => $verdict['problems']];
+    $new = ['checksum' => $live, 'inputs' => $inputs, 'at' => $wall, 'loaded' => $verdict['loaded'],
+            'problems' => $verdict['problems']];
     return ['state' => $state, 'problems' => $verdict['problems'], 'verified_at' => $wall, 'record' => $new];
 }
 
 /**
- * The saved record, or null when the file is missing, truncated or not exactly the Record shape.
+ * The saved record, or null when the file is missing, truncated or not exactly the Record shape (a record without
+ * inputs, from a build before them, is null too: the next evaluation lists once).
  *
- * @return ?array{checksum: string, at: int, loaded: bool, problems: list<string>}
+ * @return ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}
  */
 function uu_rules_record_load(string $path): ?array
 {
@@ -234,8 +253,9 @@ function uu_rules_record_load(string $path): ?array
         return null;
     }
     $doc = json_decode($text, true);
-    if (!is_array($doc) || count($doc) !== 4
+    if (!is_array($doc) || count($doc) !== 5
         || !isset($doc['checksum']) || !is_string($doc['checksum'])
+        || !isset($doc['inputs']) || !is_string($doc['inputs'])
         || !isset($doc['at']) || !is_int($doc['at'])
         || !isset($doc['loaded']) || !is_bool($doc['loaded'])
         || !isset($doc['problems']) || !is_array($doc['problems'])) {
@@ -248,13 +268,14 @@ function uu_rules_record_load(string $path): ?array
         }
         $problems[] = $problem;
     }
-    return ['checksum' => $doc['checksum'], 'at' => $doc['at'], 'loaded' => $doc['loaded'], 'problems' => $problems];
+    return ['checksum' => $doc['checksum'], 'inputs' => $doc['inputs'], 'at' => $doc['at'], 'loaded' => $doc['loaded'],
+            'problems' => $problems];
 }
 
 /**
  * Write the record to path.tmp and rename it over path, like the state file. The directory is created 0700.
  *
- * @param array{checksum: string, at: int, loaded: bool, problems: list<string>} $record
+ * @param array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record
  */
 function uu_rules_record_save(string $path, array $record): void
 {

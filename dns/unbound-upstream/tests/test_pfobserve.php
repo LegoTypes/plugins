@@ -86,6 +86,18 @@ uu_register_suite('pfobserve', function (): int {
         $verdict('')['problems'] === ['no pass rule for wg-a (opt1)', 'no pass rule for wg-b (opt2)',
             'counting block missing', 'backstop block missing']);
 
+    /* inputs */
+    $in = uu_rules_inputs($resolver, true, $members);
+    $moved = $members;
+    $moved[1]['if'] = 'wg7';
+    uu_check($t, 'inputs: order-independent over the members',
+        uu_rules_inputs($resolver, true, array_reverse($members)) === $in);
+    uu_check($t, 'inputs: change with the resolver, counting, or a member\'s device or interface',
+        uu_rules_inputs('10.2.0.9', true, $members) !== $in && uu_rules_inputs($resolver, false, $members) !== $in
+        && uu_rules_inputs($resolver, true, $moved) !== $in
+        && uu_rules_inputs($resolver, true, [['interface' => 'opt9'] + $members[0], $members[1]]) !== $in
+        && uu_rules_inputs($resolver, true, [$members[0]]) !== $in);
+
     /* check */
     $good = ['loaded' => true, 'problems' => []];
     $boom = function (): string {
@@ -96,38 +108,53 @@ uu_register_suite('pfobserve', function (): int {
             return array_shift($values);
         };
     };
-    $record = ['checksum' => '0xaa', 'at' => 500, 'loaded' => true, 'problems' => []];
-    $r = uu_rules_check($record, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
-    uu_check($t, 'check: a live recorded checksum is used without listing',
+    $record = ['checksum' => '0xaa', 'inputs' => $in, 'at' => 500, 'loaded' => true, 'problems' => []];
+    $r = uu_rules_check($record, $in, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: a live recorded checksum with the same inputs is used without listing',
         $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 500, 'record' => null]);
-    $bad = ['checksum' => '0xaa', 'at' => 500, 'loaded' => false, 'problems' => ['backstop block missing']];
-    $r = uu_rules_check($bad, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
+    $bad = ['checksum' => '0xaa', 'inputs' => $in, 'at' => 500, 'loaded' => false,
+            'problems' => ['backstop block missing']];
+    $r = uu_rules_check($bad, $in, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
     uu_check($t, 'check: a recorded fault reads missing with its problems',
         $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => 500, 'record' => null]);
+    $other = uu_rules_inputs('10.2.0.9', true, $members);
     $lists = 0;
-    $r = uu_rules_check($record, $reads(['0xbb', '0xbb']), function () use (&$lists): string {
+    $r = uu_rules_check($record, $other, $reads(['0xaa', '0xaa']), function () use (&$lists): string {
+        $lists++;
+        return 'listing';
+    }, fn (string $s): array => ['loaded' => false, 'problems' => ['wg-a pass: wrong address']], 900, true);
+    uu_check($t, 'check: a recorded checksum with other inputs lists',
+        $lists === 1 && $r['state'] === 'missing' && $r['problems'] === ['wg-a pass: wrong address']
+        && $r['record'] === ['checksum' => '0xaa', 'inputs' => $other, 'at' => 900, 'loaded' => false,
+                             'problems' => ['wg-a pass: wrong address']]);
+    $r = uu_rules_check($record, $other, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, false);
+    uu_check($t, 'check: other inputs with no listing allowed read verifying',
+        $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]);
+    $lists = 0;
+    $r = uu_rules_check($record, $in, $reads(['0xbb', '0xbb']), function () use (&$lists): string {
         $lists++;
         return 'listing';
     }, fn (string $s): array => $s === 'listing' ? $good : ['loaded' => false, 'problems' => ['x']], 900, true);
     uu_check($t, 'check: a changed checksum lists once and records',
         $lists === 1 && $r['state'] === 'loaded' && $r['verified_at'] === 900
-        && $r['record'] === ['checksum' => '0xbb', 'at' => 900, 'loaded' => true, 'problems' => []]);
-    $r = uu_rules_check(null, $reads(['0xbb', '0xbb']), fn (): string => 'l',
+        && $r['record'] === ['checksum' => '0xbb', 'inputs' => $in, 'at' => 900, 'loaded' => true, 'problems' => []]);
+    $r = uu_rules_check(null, $in, $reads(['0xbb', '0xbb']), fn (): string => 'l',
         fn (string $s): array => ['loaded' => false, 'problems' => ['counting block missing']], 900, true);
     uu_check($t, 'check: a faulty listing records the fault',
         $r['state'] === 'missing' && $r['problems'] === ['counting block missing']
         && is_array($r['record']) && $r['record']['loaded'] === false);
-    $r = uu_rules_check($record, $reads(['0xbb', '0xcc']), fn (): string => 'l', fn (string $s): array => $good, 900, true);
+    $r = uu_rules_check($record, $in, $reads(['0xbb', '0xcc']), fn (): string => 'l', fn (string $s): array => $good,
+        900, true);
     uu_check($t, 'check: checksums that disagree leave no record',
         $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => null, 'record' => null]);
-    $r = uu_rules_check(null, $reads(['0xbb', null]), fn (): string => 'l',
+    $r = uu_rules_check(null, $in, $reads(['0xbb', null]), fn (): string => 'l',
         fn (string $s): array => ['loaded' => false, 'problems' => ['backstop block missing']], 900, true);
     uu_check($t, 'check: a second read that fails leaves no record',
         $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => null, 'record' => null]);
-    $r = uu_rules_check($record, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
+    $r = uu_rules_check($record, $in, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
     uu_check($t, 'check: no listing allowed reads verifying',
         $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]);
-    $r = uu_rules_check($record, $reads([null]), $boom, fn (string $s): array => $good, 900, true);
+    $r = uu_rules_check($record, $in, $reads([null]), $boom, fn (string $s): array => $good, 900, true);
     uu_check($t, 'check: an unreadable checksum is missing with problem "pf status unreadable"',
         $r === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null, 'record' => null]);
 
@@ -140,9 +167,14 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, 'record: a missing file is null', uu_rules_record_load($dir . '/none.json') === null);
     file_put_contents($path, '{"checksum":"0xaa","at":"x"');
     uu_check($t, 'record: a truncated file is null', uu_rules_record_load($path) === null);
-    file_put_contents($path, json_encode(['checksum' => '0xaa', 'at' => 5, 'loaded' => true, 'problems' => [], 'x' => 1]));
+    file_put_contents($path, json_encode($record + ['x' => 1]));
     uu_check($t, 'record: a wrong shape is null', uu_rules_record_load($path) === null);
-    file_put_contents($path, json_encode(['checksum' => '0xaa', 'at' => 5, 'loaded' => true, 'problems' => [3]]));
+    file_put_contents($path, json_encode(['checksum' => '0xaa', 'at' => 5, 'loaded' => true, 'problems' => []]));
+    uu_check($t, 'record: a record without inputs (an earlier build\'s) is null, so it lists once',
+        uu_rules_record_load($path) === null);
+    file_put_contents($path, json_encode(['inputs' => 7] + $record));
+    uu_check($t, 'record: non-string inputs are null', uu_rules_record_load($path) === null);
+    file_put_contents($path, json_encode(['problems' => [3]] + $record));
     uu_check($t, 'record: a non-string problem is null', uu_rules_record_load($path) === null);
     unlink($path);
     rmdir($dir . '/sub');

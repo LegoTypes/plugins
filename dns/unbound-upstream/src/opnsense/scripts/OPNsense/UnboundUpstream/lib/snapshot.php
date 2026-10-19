@@ -206,15 +206,17 @@ function uu_ruled_members(array $members): array
 
 /**
  * What pf says about the plugin's rules and its counting table (section 3.6c), through pfctl. The rules come from
- * the record while its checksum is live; otherwise an evaluation (listRules) lists the ruleset once and returns a
- * record to save, and a status call answers verifying. The table is read only while counting (no alias has its
- * name; with one, that table is the user's), and its addresses only while it exists.
+ * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver,
+ * counting and the members' interfaces and devices); otherwise an evaluation (listRules) lists the ruleset once and
+ * returns a record to save, and a status call answers verifying. The table is read only while counting (no alias
+ * has its name; with one, that table is the user's), and its addresses only while it exists.
  *
  * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
- * @param ?array{checksum: string, at: int, loaded: bool, problems: list<string>} $record the saved verification
+ * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record the saved
+ *     verification
  * @param callable(list<string>): string $pfctl runs /sbin/pfctl with these arguments and returns its stdout
  * @return array{rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */
@@ -223,6 +225,7 @@ function uu_pf_observe(string $resolver, array $members, bool $counting, ?array 
 {
     $rules = uu_rules_check(
         $record,
+        uu_rules_inputs($resolver, $counting, $members),
         fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])),
         fn (): string => $pfctl(['-vsr']),
         fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members, $counting),
@@ -284,7 +287,7 @@ function uu_block_table_counting(): bool
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}} $s
  * @param ?array{kind: string, next_hop: string, if: string} $installed
@@ -307,7 +310,7 @@ function uu_block_table_counting(): bool
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */
@@ -418,7 +421,7 @@ function uu_zone_texts(): array
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */

@@ -60,37 +60,35 @@ uu_register_suite('snapshot_vm', function (): int {
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
 
-    /* a status snapshot never lists the ruleset: its verdict is the saved record's for the live checksum, or
-     * verifying, and it has nothing to save; a listing would have returned this run's time and a record */
+    /* a status snapshot never lists the ruleset: its verdict is the saved record's for the live checksum and these
+     * inputs, or verifying, and it has nothing to save; a listing would have returned this run's time and a record */
     $saved = uu_rules_record_load(UU_RULES_PATH);
     $live = uu_pf_checksum((string)shell_exec('/sbin/pfctl -si -v 2>/dev/null'));
     $r = $s['rules'];
+    $counting = !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
+    $inputs = uu_rules_inputs('10.2.0.1', $counting, uu_ruled_members($s['members']));
     uu_check($t, 'status snapshot: no listing, so verifying or the saved record\'s verdict, and no record to save',
         $r['record'] === null && ($saved !== null && $saved['checksum'] === $live
+            && $saved['inputs'] === $inputs
             ? $r['state'] === ($saved['loaded'] ? 'loaded' : 'missing') && $r['verified_at'] === $saved['at']
             : $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]));
     uu_check($t, 'contract input: the rules\' state and problems',
         $c['rules'] === ['state' => $r['state'], 'problems' => $r['problems']]);
-    $counting = !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
     uu_check($t, 'block table: counting unless an alias has its name; no addresses without the table',
         $s['block_table']['counting'] === $counting
         && ($s['block_table']['table'] !== null || $s['block_table']['addresses'] === []));
+    /* an evaluation snapshot under the test settings, which the VM does not render rules for: a record made for
+     * other inputs (the VM's own settings) is not reused, so these rules read missing, naming wg-test-429 */
     $e = uu_snapshot($settings, [], null, true);
     $er = $e['rules'];
-    uu_check($t, 'evaluation snapshot: never verifying; the saved verdict while its checksum is live, else a fresh '
-        . 'listing with a record of the live checksum to save',
-        $saved !== null && $saved['checksum'] === $live
-            ? $er === ['state' => $saved['loaded'] ? 'loaded' : 'missing', 'problems' => $saved['problems'],
-                       'verified_at' => $saved['at'], 'record' => null]
-            : $er['state'] !== 'verifying' && $er['record'] !== null && $er['record']['checksum'] === $live
-                && $er['verified_at'] === $er['record']['at']);
-    /* a real listing through the live pfctl, whatever is saved: the VM's settings do not render these rules */
-    $o = uu_pf_observe('10.2.0.1', uu_ruled_members($s['members']), $counting, null, 1792400000, true, 'uu_pfctl_out');
-    uu_check($t, 'live listing: these rules are missing, naming wg-test-429, recorded under the live checksum',
-        $o['rules']['state'] === 'missing'
-        && in_array('no pass rule for wg-test-429 (' . ($a['interface'] ?? '') . ')', $o['rules']['problems'], true)
-        && $o['rules']['record'] !== null && $o['rules']['record']['checksum'] === $live
-        && $o['rules']['verified_at'] === 1792400000);
+    uu_check($t, 'evaluation snapshot: the test settings\' rules are missing, naming wg-test-429, and recorded under '
+        . 'the live checksum and these inputs unless a record of exactly those is saved',
+        $er['state'] === 'missing'
+        && in_array('no pass rule for wg-test-429 (' . ($a['interface'] ?? '') . ')', $er['problems'], true)
+        && ($saved !== null && $saved['checksum'] === $live && $saved['inputs'] === $inputs
+            ? $er['record'] === null && $er['verified_at'] === $saved['at']
+            : $er['record'] !== null && $er['record']['checksum'] === $live && $er['record']['inputs'] === $inputs
+                && $er['verified_at'] === $er['record']['at']));
 
     $gone = uu_snapshot(['group' => 'no_such_group'] + $settings, [], null, false);
     uu_check($t, 'a group that does not exist: no tiers, no members, group_found false',

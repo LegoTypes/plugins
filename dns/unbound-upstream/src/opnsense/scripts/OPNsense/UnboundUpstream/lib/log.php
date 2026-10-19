@@ -117,7 +117,7 @@ function uu_duration_text(int $seconds): string
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}} $s
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
