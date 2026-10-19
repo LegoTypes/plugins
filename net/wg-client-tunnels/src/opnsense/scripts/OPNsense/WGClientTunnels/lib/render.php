@@ -36,6 +36,10 @@ const WGCT_FRESHNESS_STATE_FILE = '/var/run/wgclienttunnels/freshness.json';
 const WGCT_RELOAD_SUPPRESS_SECONDS = 300;
 const WGCT_RELOAD_MAX_WINDOW_SECONDS = 3600;
 
+/* The last pfctl -sr listing's result: pf's ruleset checksum and the pin-label hash it was made for, and how
+ * many of those labels pf did not hold. While both are unchanged the count is reused instead of listing again. */
+const WGCT_OBSERVED_FILE = '/var/run/wgclienttunnels/observed.json';
+
 /* Serializes freshness.php runs (cron minute, config syshook, monitor and
  * newwanip hooks can overlap): one run's derive -> observe -> plan -> act
  * must not interleave with another's. A run waits for the lock at most
@@ -348,6 +352,136 @@ function wgct_write_freshness_state(?array $s): bool {
         return false;
     }
     return wgct_write_file_atomic(WGCT_FRESHNESS_STATE_FILE, $json);
+}
+
+/**
+ * pf's ruleset checksum from `pfctl -si -v` (stdout lines, as exec() returns
+ * them). pf recomputes it whenever a ruleset is loaded, so an unchanged value
+ * means the rules pfctl -sr would list are unchanged.
+ *
+ * @param array $siLines
+ * @return string|null the value after "Checksum: " (e.g. 0x0123...), null when no such line
+ */
+function wgct_pf_checksum(array $siLines): ?string {
+    foreach ($siLines as $line) {
+        if (preg_match('/^Checksum:\s+(0x[0-9a-f]+)\s*$/', (string)$line, $m) === 1) {
+            return $m[1];
+        }
+    }
+    return null;
+}
+
+/**
+ * Identifies the pin labels the rendered pins make freshness look for.
+ *
+ * @param array $pins the rendered record's 'pins'
+ * @return string md5 of the sorted distinct labels of wgct_pin_rules($pins), one per line
+ */
+function wgct_pin_labels_hash(array $pins): string {
+    $labels = array_values(array_unique(array_column(wgct_pin_rules($pins), 'label')));
+    sort($labels, SORT_STRING);
+    return md5(implode("\n", $labels));
+}
+
+/**
+ * Whether the last listing's result still holds: pf's ruleset and the labels
+ * looked for are both the ones the record was made from.
+ *
+ * @param array|null  $record     wgct_read_observed()
+ * @param string|null $checksum   pf's checksum now, null when unreadable
+ * @param string      $labelsHash wgct_pin_labels_hash() of the rendered pins
+ * @return int|null the recorded missing_labels to reuse, null when pf must be listed
+ */
+function wgct_observed_reuse(?array $record, ?string $checksum, string $labelsHash): ?int {
+    if ($record === null || $checksum === null
+        || $record['checksum'] !== $checksum || $record['labels_hash'] !== $labelsHash) {
+        return null;
+    }
+    return $record['missing_labels'];
+}
+
+/**
+ * Lists pf's rules and proves no ruleset load ran meanwhile: the checksum read
+ * before the listing must equal the one read after it, else the listing may be
+ * of either ruleset and is retried (once, by default) and never used.
+ *
+ * The caller has already read the checksum for the reuse decision and passes
+ * that read as $first, so the first pair costs one read before the listing,
+ * not two. A caller whose first read failed does not call this (an unreadable
+ * checksum lists as before and records nothing). A listing that failed is
+ * $listing throwing, left to the caller. An empty listing is a valid one.
+ *
+ * @param string   $first    the checksum the caller read before calling
+ * @param callable $checksum (): ?string, pf's checksum now, null when unreadable
+ * @param callable $listing  (): list<string>, the `pfctl -sr` lines
+ * @param int      $pairs    how many reads-around-a-listing to try
+ * @return array|null ['checksum' => string, 'lines' => list<string>] of the first
+ *                    listing the reads around it agree on; null when a read is
+ *                    unreadable or $pairs pairs all straddled a load
+ */
+function wgct_observe_listing(string $first, callable $checksum, callable $listing, int $pairs = 2): ?array {
+    $before = $first;
+    for ($i = 0; $i < $pairs; $i++) {
+        if ($i > 0) {
+            $before = $checksum();
+        }
+        if ($before === null) {
+            return null;
+        }
+        $lines = $listing();
+        $after = $checksum();
+        if ($after === null) {
+            return null;
+        }
+        if ($after === $before) {
+            return ['checksum' => $after, 'lines' => $lines];
+        }
+    }
+    return null;
+}
+
+/**
+ * Pure normaliser for whatever json_decode() hands back for observed.json, as
+ * wgct_normalize_freshness_state() is for freshness.json: a corrupt record
+ * reads as none, so freshness lists and the next run rewrites it.
+ *
+ * @param mixed $data arbitrary decoded JSON at the file boundary, which is why it is mixed
+ * @return array|null array{checksum: string, labels_hash: string, missing_labels: int}
+ */
+function wgct_normalize_observed(mixed $data): ?array {
+    if (!is_array($data) || !wgct_has_exact_keys($data, ['checksum', 'labels_hash', 'missing_labels'])
+        || !is_string($data['checksum']) || !is_string($data['labels_hash'])
+        || !is_int($data['missing_labels']) || $data['missing_labels'] < 0) {
+        return null;
+    }
+    return [
+        'checksum' => $data['checksum'],
+        'labels_hash' => $data['labels_hash'],
+        'missing_labels' => $data['missing_labels'],
+    ];
+}
+
+/**
+ * @return array|null array{checksum: string, labels_hash: string, missing_labels: int}, null when absent or corrupt
+ */
+function wgct_read_observed(): ?array {
+    $raw = @file_get_contents(WGCT_OBSERVED_FILE);
+    return wgct_normalize_observed($raw !== false ? json_decode($raw, true) : null);
+}
+
+/**
+ * Atomic write via a same-directory temp file, like wgct_write_freshness_state().
+ *
+ * @param array $record array{checksum: string, labels_hash: string, missing_labels: int}
+ * @return bool
+ */
+function wgct_write_observed(array $record): bool {
+    $json = json_encode($record);
+    if ($json === false) {
+        wgct_log(LOG_ERR, '[wgct-render] could not encode the observed record: ' . json_last_error_msg());
+        return false;
+    }
+    return wgct_write_file_atomic(WGCT_OBSERVED_FILE, $json);
 }
 
 /**
@@ -1324,6 +1458,120 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] failure_log_plan: success with no prior failure => quiet\n", $ok ? 'PASS' : 'FAIL');
+
+    /* the pf ruleset checksum, the pin-label hash and the observation record */
+    $siText = [
+        'Status: Enabled for 0 days 01:02:03           Debug: Urgent',
+        '',
+        'Hostid:   0x12345678',
+        'Checksum: 0x0123456789abcdef0123456789abcdef',
+        '',
+        'State Table                          Total             Rate',
+        '  current entries                       42',
+    ];
+    $ok = wgct_pf_checksum($siText) === '0x0123456789abcdef0123456789abcdef';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] checksum: parsed\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_pf_checksum(array_slice($siText, 0, 3)) === null && wgct_pf_checksum([]) === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] checksum: absent is null\n", $ok ? 'PASS' : 'FAIL');
+
+    $pinsA = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
+    $pinsB = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10', '198.51.100.11']]], 'inner' => ['opt11']];
+    $pinsC = ['wan' => [['wan_if' => 'opt2', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
+    $ok = wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash($pinsB)
+        && wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash(['wan' => $pinsA['wan'], 'inner' => $pinsA['inner']])
+        && preg_match('/^[0-9a-f]{32}$/', wgct_pin_labels_hash($pinsA)) === 1;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] labels hash: order and duplicates do not matter\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_pin_labels_hash($pinsA) !== wgct_pin_labels_hash($pinsC);
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] labels hash: another label changes it\n", $ok ? 'PASS' : 'FAIL');
+
+    $rec = ['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => 3];
+    $ok = wgct_observed_reuse($rec, '0xaa', 'h1') === 3;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: equal keys reuse the count\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_observed_reuse($rec, '0xbb', 'h1') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: another checksum lists\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_observed_reuse($rec, '0xaa', 'h2') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: another labels hash lists\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_observed_reuse(null, '0xaa', 'h1') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: no record lists\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_observed_reuse($rec, null, 'h1') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: no checksum lists\n", $ok ? 'PASS' : 'FAIL');
+
+    /* $reads feeds the checksum reads in turn (the first is passed in by the caller); every listing
+     * returns the next element of $lists and counts itself in $listed */
+    $listed = 0;
+    $makeObserve = function (array $reads, array $lists) use (&$listed): array {
+        $listed = 0;
+        return [
+            function () use (&$reads): ?string { return array_shift($reads); },
+            function () use (&$lists, &$listed): array { $listed++; return array_shift($lists); },
+        ];
+    };
+
+    [$cs, $ls] = $makeObserve(['0xaa'], [['rule one']]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === ['checksum' => '0xaa', 'lines' => ['rule one']] && $listed === 1;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: agreeing reads use the listing\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve(['0xaa', '0xaa'], [[]]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === ['checksum' => '0xaa', 'lines' => []] && $listed === 1;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: an empty ruleset is a listing\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve(['0xcc', '0xcc', '0xcc'], [['old'], ['new']]);
+    $ok = wgct_observe_listing('0xbb', $cs, $ls) === ['checksum' => '0xcc', 'lines' => ['new']] && $listed === 2;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: a reload during the listing lists again\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve(['0xbb', '0xcc', '0xdd'], [['a'], ['b']]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === null && $listed === 2;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: two straddled pairs give none\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve([null], [['a']]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === null && $listed === 1;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: an unreadable checksum gives none\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_normalize_observed($rec) === $rec
+        && wgct_normalize_observed('x') === null
+        && wgct_normalize_observed(null) === null
+        && wgct_normalize_observed(['checksum' => '0xaa', 'labels_hash' => 'h1']) === null
+        && wgct_normalize_observed(['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => '3']) === null
+        && wgct_normalize_observed(['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => 1.5]) === null
+        && wgct_normalize_observed(['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => -1]) === null
+        && wgct_normalize_observed(['checksum' => 5, 'labels_hash' => 'h1', 'missing_labels' => 0]) === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] record: corrupt reads as none\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
