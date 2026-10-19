@@ -453,6 +453,21 @@ function wgct_observe_listing(string $first, callable $checksum, callable $listi
 }
 
 /**
+ * Why wgct_observe_listing() gave no listing, and whether that is a fault.
+ * Both pairs straddling a ruleset load is expected in a reload burst and
+ * clears itself (the next run lists again), so it is no failure to report; a
+ * checksum that turned unreadable seconds after it was read is one.
+ *
+ * @param bool $checksumUnreadable whether a checksum read inside it was unreadable
+ * @return array ['error' => string, 'transient' => bool]
+ */
+function wgct_unobserved_listing(bool $checksumUnreadable): array {
+    return $checksumUnreadable
+        ? ['error' => 'pf\'s ruleset checksum became unreadable around pfctl -sr', 'transient' => false]
+        : ['error' => 'pfctl -sr listed twice, each time while a ruleset load changed the checksum', 'transient' => true];
+}
+
+/**
  * Pure normaliser for whatever json_decode() hands back for observed.json, as
  * wgct_normalize_freshness_state() is for freshness.json: a corrupt record
  * reads as none, so freshness lists and the next run rewrites it.
@@ -1594,6 +1609,15 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] listing: an unreadable checksum before the second listing gives none\n", $ok ? 'PASS' : 'FAIL');
+
+    $straddled = wgct_unobserved_listing(false);
+    $unreadable = wgct_unobserved_listing(true);
+    $ok = $straddled['transient'] === true && $unreadable['transient'] === false
+        && $straddled['error'] !== $unreadable['error']
+        && strpbrk($straddled['error'] . $unreadable['error'], '()') === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: two straddled pairs are transient, an unreadable checksum is a failure\n", $ok ? 'PASS' : 'FAIL');
 
     $ok = wgct_normalize_observed($rec) === $rec
         && wgct_normalize_observed('x') === null
