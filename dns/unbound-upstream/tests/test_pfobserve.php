@@ -204,6 +204,12 @@ uu_register_suite('pfobserve', function (): int {
         $lists === 2 && $r === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
             'verified_at' => null, 'record' => null]);
     $lists = 0;
+    $r = uu_rules_check($record, $other, $reads(['0xbb', '0xcc', '0xdd', '0xee']),
+        $listings(['whole', 'whole'], $lists), $judge, 900, true);
+    uu_check($t, 'check: two straddled listings never keep a verdict made for other inputs',
+        $lists === 2 && $r === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
+            'verified_at' => null, 'record' => null]);
+    $lists = 0;
     $r = uu_rules_check(null, $in, $reads(['0xbb', null, null]), $listings(['whole'], $lists),
         fn (string $s): array => $good, 900, true);
     uu_check($t, 'check: an unreadable checksum after the listing is a disagreement: no record, no listing while '

@@ -208,9 +208,9 @@ function uu_rules_inputs(string $resolver, array $members): string
  * read, the ruleset listed once and the checksum read again; the verdict is used and recorded (under these
  * inputs) only when both reads agree. When they differ a reload ran during the listing, which may have cut it
  * short, so its verdict is never judged: the pair is tried again, up to UU_RULES_LIST_PAIRS pairs. When no pair
- * agrees, the record keeps its verdict (none: not loaded) and nothing is recorded, so the next evaluation lists
- * again. When listing is not allowed (a status call) the answer is 'verifying'. state is 'loaded', 'missing' or
- * 'verifying'; record is the new record to save, or null.
+ * agrees, a record made for these inputs keeps its verdict (none, or one made for other inputs: not loaded) and
+ * nothing is recorded, so the next evaluation lists again. When listing is not allowed (a status call) the
+ * answer is 'verifying'. state is 'loaded', 'missing' or 'verifying'; record is the new record to save, or null.
  *
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record
  * @param string $inputs uu_rules_inputs() of the verdict's inputs
@@ -248,7 +248,7 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
         return ['state' => $verdict['loaded'] ? 'loaded' : 'missing', 'problems' => $verdict['problems'],
                 'verified_at' => $wall, 'record' => $new];
     }
-    if ($record !== null) {
+    if ($record !== null && $record['inputs'] === $inputs) {
         return ['state' => $record['loaded'] ? 'loaded' : 'missing', 'problems' => $record['problems'],
                 'verified_at' => $record['at'], 'record' => null];
     }
