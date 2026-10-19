@@ -150,12 +150,19 @@ function uu_render_firewall(
         if (filter_var($w['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new \RuntimeException('resolver is not an IPv4 address');
         }
-        $clash = $isAlias !== null ? $isAlias(UU_BLOCK_TABLE) : \OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
-        $counting = !$clash;
-        if ($clash) {
-            $emit('rules: an alias named ' . UU_BLOCK_TABLE . ' exists; the counting block is not rendered');
-        } else {
-            $fw->registerTable(UU_BLOCK_TABLE);
+        // The counting block is optional; a failure here must never cost the passes or the backstop.
+        $counting = false;
+        try {
+            $clash = $isAlias !== null ? $isAlias(UU_BLOCK_TABLE) : \OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
+            if ($clash) {
+                $emit('rules: an alias named ' . UU_BLOCK_TABLE . ' exists; the counting block is not rendered');
+            } else {
+                $fw->registerTable(UU_BLOCK_TABLE);
+                $counting = true;
+            }
+        } catch (\Throwable $e) {
+            $counting = false;
+            $emit('rules: counting block not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage()));
         }
         foreach (uu_rule_confs($w['resolver'], $w['members'], $counting) as $conf) {
             $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
