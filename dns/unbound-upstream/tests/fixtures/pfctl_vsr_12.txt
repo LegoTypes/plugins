@@ -1,0 +1,40 @@
+scrub all fragment reassemble
+  [ Evaluations: 3        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop in log inet all label "02f4bab031b57d1e30553ce08e0ec131"
+  [ Evaluations: 10        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg1 inet proto tcp from (wg1) to 10.2.0.1 port = domain flags S/SA keep state label "3f3c211bfd2d6aae89e7778868f83aeb"
+  [ Evaluations: 17        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg1 inet proto udp from (wg1) to 10.2.0.1 port = domain keep state label "3f3c211bfd2d6aae89e7778868f83aeb"
+  [ Evaluations: 24        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg2 inet proto tcp from (wg2) to 10.2.0.1 port = domain flags S/SA keep state label "c9b2e53c997dbaf255e4695aa6e4c9d7"
+  [ Evaluations: 31        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg2 inet proto udp from (wg2) to 10.2.0.1 port = domain keep state label "c9b2e53c997dbaf255e4695aa6e4c9d7"
+  [ Evaluations: 38        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop out log quick inet from any to <unboundupstream_block> label "172df6b9154ad996a4f8022b74f4dcb1"
+  [ Evaluations: 45        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop out log quick inet from any to 10.2.0.1 label "14c042f39f5e157208f47ea86d530ba1"
+  [ Evaluations: 52        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass in quick on lan inet proto udp from any to 192.168.1.1 port = domain keep state label "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+  [ Evaluations: 59        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out on wan inet from (wan:network) to any keep state label "1f2e3d4c5b6a79880918273645546372"
+  [ Evaluations: 66        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]

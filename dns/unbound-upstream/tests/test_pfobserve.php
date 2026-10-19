@@ -1,0 +1,174 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Copyright (C) 2026 cayossarian (Bill Flood)
+ * All rights reserved.
+ * BSD 2-Clause License
+ *
+ * Observing pf (spec section 3.6c): the ruleset checksum, a table's counters, the rule verdict read from the
+ * kernel's own text by keyword, and the verification kept once per checksum.
+ */
+
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/pfobserve.php';
+
+function uu_pfobserve_fixture(string $name): string
+{
+    $text = file_get_contents(__DIR__ . '/fixtures/' . $name);
+    return $text === false ? '' : $text;
+}
+
+uu_register_suite('pfobserve', function (): int {
+    $t = ['fail' => 0, 'total' => 0];
+    $members = [
+        ['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1'],
+        ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2'],
+    ];
+    $resolver = '10.2.0.1';
+    $vsr = uu_pfobserve_fixture('pfctl_vsr_12.txt');
+    $verdict = fn (string $text, bool $counting = true): array
+        => uu_rules_verdict($text, $resolver, $members, $counting);
+    $without = fn (string $needle): string => implode("\n", array_filter(
+        explode("\n", $vsr),
+        fn (string $line): bool => !str_contains($line, $needle)
+    ));
+
+    /* checksum */
+    uu_check($t, 'checksum: parsed',
+        uu_pf_checksum(uu_pfobserve_fixture('pfctl_si_v.txt')) === '0x86046332dac3627299e22fb166d0fef2');
+    uu_check($t, 'checksum: absent is null', uu_pf_checksum("Status: Enabled\nHostid:   0x1\n") === null);
+
+    /* tables */
+    $tables = uu_pfobserve_fixture('pfctl_vvsTables.txt');
+    uu_check($t, 'table: parsed',
+        uu_pf_table($tables, UU_BLOCK_TABLE) === ['addresses' => 1, 'references' => 1, 'out_block' => 37]);
+    uu_check($t, 'table: absent is null', uu_pf_table($tables, 'nosuchtable') === null);
+    uu_check($t, 'table: another table is read from its own block',
+        uu_pf_table($tables, 'virusprot') === ['addresses' => 0, 'references' => 1, 'out_block' => 0]);
+    uu_check($t, 'show: addresses, one per line',
+        uu_pf_show_addresses("   10.2.0.1\n   10.2.0.9\n") === ['10.2.0.1', '10.2.0.9']
+        && uu_pf_show_addresses('') === []);
+
+    /* verdict */
+    uu_check($t, 'verdict: the full set is loaded', $verdict($vsr) === ['loaded' => true, 'problems' => []]);
+    $v = $verdict($without(uu_label_pass('opt2')));
+    uu_check($t, 'verdict: a member with no pass names it',
+        !$v['loaded'] && $v['problems'] === ['no pass rule for wg-b (opt2)']);
+    $v = $verdict($without('proto udp from (wg1)'));
+    uu_check($t, 'verdict: one protocol missing', !$v['loaded'] && $v['problems'] === ['wg-a: no udp pass']);
+    $v = $verdict(str_replace('pass out quick on wg1 inet proto tcp', 'pass out on wg1 inet proto tcp', $vsr));
+    uu_check($t, 'verdict: a pass without quick', !$v['loaded'] && $v['problems'] === ['wg-a pass: missing quick']);
+    $v = $verdict(str_replace('pass out quick on wg1 inet proto tcp', 'pass in quick on wg1 inet proto tcp', $vsr));
+    uu_check($t, 'verdict: an in pass', !$v['loaded'] && $v['problems'] === ['wg-a pass: missing out']);
+    $v = $verdict(str_replace('pass out quick on wg1 inet proto tcp', 'pass out quick on wg9 inet proto tcp', $vsr));
+    uu_check($t, 'verdict: a pass on another device', !$v['loaded'] && $v['problems'] === ['wg-a pass: not on wg1']);
+    $v = $verdict(str_replace('from (wg1) to 10.2.0.1 port = domain flags', 'from (wg1) to 10.2.0.1 port = 8053 flags', $vsr));
+    uu_check($t, 'verdict: a pass on another port', !$v['loaded'] && $v['problems'] === ['wg-a pass: wrong port']);
+    $v = $verdict(str_replace('port = domain flags', 'port = 53 flags', $vsr));
+    uu_check($t, 'verdict: port 53 as a number is fine', $v['loaded']);
+    $v = $verdict(str_replace('block drop out log quick inet from any to 10.2.0.1', 'block drop out log inet from any to 10.2.0.1', $vsr));
+    uu_check($t, 'verdict: a block without quick',
+        !$v['loaded'] && $v['problems'] === ['backstop block: missing quick']);
+    $v = $verdict($without(uu_label_backstop()));
+    uu_check($t, 'verdict: the backstop missing',
+        !$v['loaded'] && $v['problems'] === ['backstop block missing']);
+    $noCounting = $without(uu_label_block());
+    $v = $verdict($noCounting);
+    uu_check($t, 'verdict: the counting block missing only matters when counting',
+        $verdict($noCounting, false) === ['loaded' => true, 'problems' => []]
+        && !$v['loaded'] && $v['problems'] === ['counting block missing']);
+    $v = $verdict(str_replace('to <unboundupstream_block>', 'to 10.2.0.1', $vsr));
+    uu_check($t, 'verdict: the counting block must target its table',
+        !$v['loaded'] && $v['problems'] === ['counting block: wrong target']);
+    uu_check($t, 'verdict: nothing listed is every rule missing',
+        $verdict('')['problems'] === ['no pass rule for wg-a (opt1)', 'no pass rule for wg-b (opt2)',
+            'counting block missing', 'backstop block missing']);
+
+    /* check */
+    $good = ['loaded' => true, 'problems' => []];
+    $boom = function (): string {
+        throw new RuntimeException('listed');
+    };
+    $reads = function (array $values): callable {
+        return function () use (&$values): ?string {
+            return array_shift($values);
+        };
+    };
+    $record = ['checksum' => '0xaa', 'at' => 500, 'loaded' => true, 'problems' => []];
+    $r = uu_rules_check($record, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: a live recorded checksum is used without listing',
+        $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 500, 'record' => null]);
+    $bad = ['checksum' => '0xaa', 'at' => 500, 'loaded' => false, 'problems' => ['backstop block missing']];
+    $r = uu_rules_check($bad, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: a recorded fault reads missing with its problems',
+        $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => 500, 'record' => null]);
+    $lists = 0;
+    $r = uu_rules_check($record, $reads(['0xbb', '0xbb']), function () use (&$lists): string {
+        $lists++;
+        return 'listing';
+    }, fn (string $s): array => $s === 'listing' ? $good : ['loaded' => false, 'problems' => ['x']], 900, true);
+    uu_check($t, 'check: a changed checksum lists once and records',
+        $lists === 1 && $r['state'] === 'loaded' && $r['verified_at'] === 900
+        && $r['record'] === ['checksum' => '0xbb', 'at' => 900, 'loaded' => true, 'problems' => []]);
+    $r = uu_rules_check(null, $reads(['0xbb', '0xbb']), fn (): string => 'l',
+        fn (string $s): array => ['loaded' => false, 'problems' => ['counting block missing']], 900, true);
+    uu_check($t, 'check: a faulty listing records the fault',
+        $r['state'] === 'missing' && $r['problems'] === ['counting block missing']
+        && is_array($r['record']) && $r['record']['loaded'] === false);
+    $r = uu_rules_check($record, $reads(['0xbb', '0xcc']), fn (): string => 'l', fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: checksums that disagree leave no record',
+        $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => null, 'record' => null]);
+    $r = uu_rules_check(null, $reads(['0xbb', null]), fn (): string => 'l',
+        fn (string $s): array => ['loaded' => false, 'problems' => ['backstop block missing']], 900, true);
+    uu_check($t, 'check: a second read that fails leaves no record',
+        $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => null, 'record' => null]);
+    $r = uu_rules_check($record, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
+    uu_check($t, 'check: no listing allowed reads verifying',
+        $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]);
+    $r = uu_rules_check($record, $reads([null]), $boom, fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: an unreadable checksum is missing with problem "pf status unreadable"',
+        $r === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null, 'record' => null]);
+
+    /* record file */
+    $dir = sys_get_temp_dir() . '/uu_pfobserve_' . getmypid();
+    $path = $dir . '/sub/rules.json';
+    uu_rules_record_save($path, $record);
+    uu_check($t, 'record: saved and loaded back, no temp file left',
+        uu_rules_record_load($path) === $record && !file_exists($path . '.tmp'));
+    uu_check($t, 'record: a missing file is null', uu_rules_record_load($dir . '/none.json') === null);
+    file_put_contents($path, '{"checksum":"0xaa","at":"x"');
+    uu_check($t, 'record: a truncated file is null', uu_rules_record_load($path) === null);
+    file_put_contents($path, json_encode(['checksum' => '0xaa', 'at' => 5, 'loaded' => true, 'problems' => [], 'x' => 1]));
+    uu_check($t, 'record: a wrong shape is null', uu_rules_record_load($path) === null);
+    file_put_contents($path, json_encode(['checksum' => '0xaa', 'at' => 5, 'loaded' => true, 'problems' => [3]]));
+    uu_check($t, 'record: a non-string problem is null', uu_rules_record_load($path) === null);
+    unlink($path);
+    rmdir($dir . '/sub');
+    rmdir($dir);
+
+    /* block table view */
+    $armedTable = ['addresses' => 1, 'references' => 1, 'out_block' => 37];
+    uu_check($t, 'table: empty is not armed and is filled',
+        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], $resolver, null)
+        === ['armed' => false, 'fill' => true, 'blocked' => 0]);
+    uu_check($t, 'table: armed with the resolver',
+        uu_block_table_view($armedTable, [$resolver], $resolver, $resolver)
+        === ['armed' => true, 'fill' => false, 'blocked' => 37]);
+    uu_check($t, 'table: holding another address is not armed and is filled',
+        uu_block_table_view($armedTable, ['10.9.9.9'], $resolver, null)
+        === ['armed' => false, 'fill' => true, 'blocked' => 37]);
+    uu_check($t, 'table: no fill while the recorded resolver differs',
+        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], $resolver, '10.9.9.9')
+        === ['armed' => false, 'fill' => false, 'blocked' => 0]);
+    uu_check($t, 'table: no fill for an unreferenced table',
+        uu_block_table_view(['addresses' => 0, 'references' => 0, 'out_block' => 0], [], $resolver, null)
+        === ['armed' => false, 'fill' => false, 'blocked' => 0]);
+    uu_check($t, 'table: absent is not armed, no fill',
+        uu_block_table_view(null, [], $resolver, null) === ['armed' => false, 'fill' => false, 'blocked' => null]);
+    uu_check($t, 'table: no fill without a resolver',
+        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], '', null)['fill'] === false);
+
+    return uu_tally_report('pfobserve', $t);
+});
