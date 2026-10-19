@@ -76,7 +76,7 @@
                         .append($('<td/>').text(lastDown(m.last_down))));
                 });
                 var notes = [];
-                $.each(contract.failures || [], function (i, f) { notes.push("{{ lang._('Core changed, tunnel mode refused:') }} " + plain(f)); });
+                $.each(contract.failures || [], function (i, f) { notes.push("{{ lang._('Tunnel mode refused:') }} " + plain(f)); });
                 $.each(contract.notes || [], function (i, n) { notes.push(plain(n)); });
                 $('#unboundupstream-notes').text(notes.join(' ')).toggle(notes.length > 0);
             });

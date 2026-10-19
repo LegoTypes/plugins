@@ -18,10 +18,22 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
-1.1_1
+1.2
 
+* The firewall rules are verified once per ruleset change, keyed by
+  pf's ruleset checksum, instead of listing every rule twice on each
+  status: the status answers in well under a second (it took about
+  5 s)
+* A counting block on a table the plugin fills (unboundupstream_block,
+  holding the resolver address) sits ahead of 1.1's block, which stays
+  as the backstop. The page's blocked count is that table's counter;
+  if the table is flushed the backstop still drops, the page reads
+  "counter not armed", and the next evaluation refills it
+* The page shows "Healthy for" and "Last down"
 * Notify URL: an ordinary setting the page shows after saving, and a
   failed POST's warning names the whole URL
+* A contract failure reads "Tunnel mode refused: ..." on the page, as
+  not every failure is a change in core
 
 1.1
 
