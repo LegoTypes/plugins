@@ -44,9 +44,34 @@ uu_register_suite('model', function (): int {
     $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
     uu_check(
         $t,
-        'defaults: disabled, dry run on, failback 120, probe "."',
+        'defaults: disabled, dry run on, failback 120, probe ".", notify off with no URL',
         $m->enabled->isEqual('0') && $m->dry_run->isEqual('1') && $m->failback_delay->isEqual('120')
-            && $m->probe_name->isEqual('.')
+            && $m->probe_name->isEqual('.') && $m->notify->isEqual('0') && $m->notify_url->isEmpty()
+    );
+
+    $hook = 'https://ha.example.test/api/webhook/example-id';
+    uu_check(
+        $t,
+        'notify on needs a URL, whether or not the plugin is enabled; notify off does not',
+        in_array('notify_url', uu_test_model_refused(['notify' => '1']), true)
+            && in_array('notify_url', uu_test_model_refused(['enabled' => '1', 'notify' => '1']), true)
+            && !in_array('notify_url', uu_test_model_refused(['notify' => '0']), true)
+    );
+    $url = fn (string $v): bool => !in_array('notify_url', uu_test_model_refused(['notify' => '1', 'notify_url' => $v]), true);
+    uu_check(
+        $t,
+        'notify_url: http and https URLs accepted; ftp, a bare host and a URL with a space refused',
+        $url($hook) && $url('http://127.0.0.1:18080/hook') && $url('https://ha.example.test')
+            && !$url('ftp://ha.example.test/x') && !$url('ha.example.test/x') && !$url('https://ha.example.test/a b')
+    );
+    $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    $m->setNodes(['notify' => '1', 'notify_url' => $hook]);
+    $m->setNodes(['notify_url' => '']);
+    uu_check(
+        $t,
+        'notify_url is update-only: the page shows it empty, and Saving it empty keeps the stored URL',
+        $m->notify_url->getValue() === $hook && (string)$m->notify_url === ''
+            && ($m->getNodes()['notify_url'] ?? null) === ''
     );
 
     $bad = ['59', '3601'];

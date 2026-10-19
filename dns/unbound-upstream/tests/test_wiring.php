@@ -7,8 +7,8 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The plugin's wiring on the test VM (spec section 3.1): the hook table, the hook order, configd's answers and
- * the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
+ * The plugin's wiring on the test VM (spec sections 3.1 and 3.11): the hook table, the hook order, the privileges,
+ * configd's answers and the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
  * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, and writes two
  * uu-wiring marker lines to the plugin's log.
@@ -109,6 +109,7 @@ uu_register_suite('wiring', function (): int {
     require_once 'config.inc';
     require_once 'util.inc';
     require_once 'plugins.inc';
+    require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
     require_once $inc;
 
     $hooks = unboundupstream_configure();
@@ -130,6 +131,31 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'menu: Upstream via Gateway follows Query Forwarding and its log follows Log File, no order shared',
         $after('Forward') === 'UnboundUpstream' && $after('LogFile') === 'UnboundUpstreamLog'
         && count(array_unique($menu)) === count($menu));
+
+    /* section 3.11: the status privilege reads the state and nothing else; the page privilege keeps everything */
+    $aclXml = simplexml_load_file('/usr/local/opnsense/mvc/app/models/OPNsense/UnboundUpstream/ACL/ACL.xml');
+    $patterns = function (string $priv) use ($aclXml): array {
+        return $aclXml === false ? [] : array_map('strval', $aclXml->xpath("/acl/{$priv}/patterns/pattern") ?: []);
+    };
+    $acl = new \OPNsense\Core\ACL();
+    $allows = function (string $priv, string $url) use ($acl, $patterns): bool {
+        foreach ($patterns($priv) as $mask) {
+            if ($acl->urlMatch($url, $mask)) {
+                return true;
+            }
+        }
+        return false;
+    };
+    $writes = ['/api/unboundupstream/service/stop', '/api/unboundupstream/service/start',
+        '/api/unboundupstream/service/reconfigure', '/api/unboundupstream/service/status',
+        '/api/unboundupstream/settings/set', '/api/unboundupstream/settings/get', '/ui/unboundupstream',
+        '/api/diagnostics/log/core/unboundupstream'];
+    uu_check($t, 'ACL: the status privilege allows service/state and none of the other plugin endpoints',
+        $allows('page-status-unboundupstream', '/api/unboundupstream/service/state')
+        && array_filter($writes, fn (string $u): bool => $allows('page-status-unboundupstream', $u)) === []);
+    uu_check($t, 'ACL: the page privilege still allows the state and every other plugin endpoint',
+        $allows('page-services-unboundupstream', '/api/unboundupstream/service/state')
+        && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
 
     /* finding L1: program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';
@@ -199,10 +225,25 @@ uu_register_suite('wiring', function (): int {
     }
     uu_check($t, 'the monitor hook with one argument does not throw and queues a plain evaluate',
         !$threw && uu_test_wait_configd($plain, $before));
+    /* rc.routing_configure's full reload passes null (system_routing_configure: no interface map) */
+    $before = substr_count(uu_test_configd_log(), $plain);
+    $threw = false;
+    try {
+        unboundupstream_queue_monitor(false, null);
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    uu_check($t, 'the monitor hook with null (a full routing reload) does not throw and queues a plain evaluate',
+        !$threw && uu_test_wait_configd($plain, $before));
     $named = 'unbound-upstream evaluation (wg-test-429,wg-test-529)';
     $before = substr_count(uu_test_configd_log(), $named);
     unboundupstream_queue_monitor(false, ['wg-test-429', 'wg-test-529']);
     uu_check($t, 'the monitor hook with names passes them to the action as one comma-joined parameter',
+        uu_test_wait_configd($named, $before));
+    /* pluginctl -c monitor NAMES passes the names as one string */
+    $before = substr_count(uu_test_configd_log(), $named);
+    unboundupstream_queue_monitor(false, 'wg-test-429,wg-test-529');
+    uu_check($t, 'the monitor hook with a comma-separated string (pluginctl -c monitor) passes the same names',
         uu_test_wait_configd($named, $before));
 
     $before = uu_test_evaluations();

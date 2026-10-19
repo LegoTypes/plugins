@@ -37,7 +37,8 @@ use OPNsense\Routes\Route;
 class UnboundUpstream extends BaseModel
 {
     /**
-     * Cross-field checks that need the gateway and route models run only while the plugin is enabled.
+     * Cross-field checks that need the gateway and route models run only while the plugin is enabled; the notify
+     * URL is required whenever notify is on.
      *
      * @param bool $validateFullModel
      * @return \OPNsense\Base\Messages\MessageCollection|\Phalcon\Messages\Messages
@@ -46,6 +47,9 @@ class UnboundUpstream extends BaseModel
     {
         $messages = parent::performValidation($validateFullModel);
 
+        if ($this->notify->isEqual('1') && $this->notify_url->isEmpty()) {
+            $messages->appendMessage(new Message(gettext('Enter the URL to notify.'), $this->notify_url->__reference));
+        }
         if (!$this->enabled->isEqual('1')) {
             return $messages;
         }

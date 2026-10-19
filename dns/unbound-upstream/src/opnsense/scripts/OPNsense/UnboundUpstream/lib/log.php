@@ -157,7 +157,7 @@ function uu_status_route_flags(string $out): array
  *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param string $pfOut `pfctl -vsr`
  * @param string $routeOut `route -n get -inet <resolver>`
- * @return array{enabled: bool, dry_run: bool, mode: string, member: ?string, tier: ?int,
+ * @return array{enabled: bool, dry_run: bool, resolver: string, mode: string, member: ?string, tier: ?int,
  *     unbound: array{enabled: bool, running: bool, control_ok: bool}, live_root: ?list<string>,
  *     configured_root: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     tls_applied: ?bool,
@@ -205,6 +205,7 @@ function uu_status_doc(array $s, array $plan, string $pfOut, string $routeOut): 
     return [
         'enabled' => $s['settings']['enabled'],
         'dry_run' => $s['settings']['dry_run'],
+        'resolver' => $s['settings']['resolver'],
         'mode' => $st['mode'],
         'member' => $st['member'],
         'tier' => $st['member'] === null ? null : ($tierOf[$st['member']] ?? null),
