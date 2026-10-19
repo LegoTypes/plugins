@@ -177,14 +177,39 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, 'check: a faulty listing records the fault',
         $r['state'] === 'missing' && $r['problems'] === ['counting block missing']
         && is_array($r['record']) && $r['record']['loaded'] === false);
-    $r = uu_rules_check($record, $in, $reads(['0xbb', '0xcc']), fn (): string => 'l', fn (string $s): array => $good,
-        900, true);
-    uu_check($t, 'check: checksums that disagree leave no record',
-        $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => null, 'record' => null]);
-    $r = uu_rules_check(null, $in, $reads(['0xbb', null]), fn (): string => 'l',
-        fn (string $s): array => ['loaded' => false, 'problems' => ['backstop block missing']], 900, true);
-    uu_check($t, 'check: a second read that fails leaves no record',
-        $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => null, 'record' => null]);
+    /* a listing whose checksum reads disagree spans two rulesets and may be cut short: list again, never judge it */
+    $listings = function (array $texts, int &$lists): callable {
+        return function () use (&$texts, &$lists): string {
+            $lists++;
+            return array_shift($texts) ?? '';
+        };
+    };
+    $judge = fn (string $s): array => $s === 'whole' ? $good
+        : ['loaded' => false, 'problems' => ['backstop block missing']];
+    $lists = 0;
+    $r = uu_rules_check($record, $in, $reads(['0xbb', '0xcc', '0xcc', '0xcc']), $listings(['cut', 'whole'], $lists),
+        $judge, 900, true);
+    uu_check($t, 'check: a reload during the listing lists again and records the second',
+        $lists === 2 && $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 900,
+            'record' => ['checksum' => '0xcc', 'inputs' => $in, 'at' => 900, 'loaded' => true, 'problems' => []]]);
+    $lists = 0;
+    $r = uu_rules_check($record, $in, $reads(['0xbb', '0xcc', '0xdd', '0xee']), $listings(['cut', 'cut'], $lists),
+        $judge, 900, true);
+    uu_check($t, 'check: two straddled listings keep the last verdict and no record',
+        $lists === 2 && $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 500, 'record' => null]);
+    $lists = 0;
+    $r = uu_rules_check(null, $in, $reads(['0xbb', '0xcc', '0xdd', '0xee']), $listings(['whole', 'whole'], $lists),
+        $judge, 900, true);
+    uu_check($t, 'check: two straddled listings with nothing recorded read not loaded, and no record',
+        $lists === 2 && $r === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
+            'verified_at' => null, 'record' => null]);
+    $lists = 0;
+    $r = uu_rules_check(null, $in, $reads(['0xbb', null, null]), $listings(['whole'], $lists),
+        fn (string $s): array => $good, 900, true);
+    uu_check($t, 'check: an unreadable checksum after the listing is a disagreement: no record, no listing while '
+        . 'the checksum stays unreadable',
+        $lists === 1 && $r === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
+            'verified_at' => null, 'record' => null]);
     $r = uu_rules_check($record, $in, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
     uu_check($t, 'check: no listing allowed reads verifying',
         $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]);
