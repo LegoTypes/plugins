@@ -118,33 +118,35 @@ try {
     $liveFrom = null;
     $observeError = null;
     $observeTransient = false;
-    $anchorLines = [];
-    exec('/sbin/pfctl -a ' . escapeshellarg(WGCT_MSS_ANCHOR) . ' -sr', $anchorLines, $anchorRc);
-    if ($anchorRc !== 0) {
-        $observeError = 'pfctl -a ' . WGCT_MSS_ANCHOR . ' -sr failed (exit ' . $anchorRc . ')';
+    /* Every pfctl call here goes through wgct_pfctl_run(): no shell, and
+     * stderr kept apart from the lines. Only the rules listing judges its
+     * stderr; the anchor listing's and the checksum reads' (pf's ALTQ notices
+     * on a kernel without ALTQ, for -si) are dropped. The anchor holds a
+     * handful of rules and its count only orders a cheap anchor load
+     * (wgct_freshness_plan), so a cut anchor listing is not retried. */
+    $anchorRun = wgct_pfctl_run(['-a', WGCT_MSS_ANCHOR, '-sr']);
+    $anchorLines = $anchorRun['lines'];
+    if ($anchorRun['rc'] !== 0) {
+        $observeError = wgct_pfctl_failure('pfctl -a ' . WGCT_MSS_ANCHOR . ' -sr', $anchorRun);
     } else {
         $pins = $rendered !== null ? $rendered['pins'] : ['wan' => [], 'inner' => []];
         $labelsHash = wgct_pin_labels_hash($pins);
-        /* stderr discarded as core's filter_current_hostid() does: on a
-         * kernel without ALTQ, -si (unlike -sr) warns "No ALTQ support in
-         * kernel" there, and this runs from cron and configd every minute */
         $checksumUnreadable = false;
         $readChecksum = function () use (&$checksumUnreadable): ?string {
-            $siLines = [];
-            exec('/sbin/pfctl -si -v 2> /dev/null', $siLines, $siRc);
-            $checksum = $siRc === 0 ? wgct_pf_checksum($siLines) : null;
+            $run = wgct_pfctl_run(['-si', '-v']);
+            $checksum = $run['rc'] === 0 ? wgct_pf_checksum($run['lines']) : null;
             $checksumUnreadable = $checksumUnreadable || $checksum === null;
             return $checksum;
         };
         /* a failed listing throws, which ends wgct_observe_listing without
          * another listing; caught below as the pfctl failure it is. A listing
          * cut short returns null. */
-        $rulesRc = 0;
-        $listRules = function () use (&$rulesRc): ?array {
+        $rulesFailure = null;
+        $listRules = function () use (&$rulesFailure): ?array {
             $run = wgct_pfctl_run(['-sr']);
-            $rulesRc = $run['rc'];
-            if ($rulesRc !== 0) {
-                throw new \RuntimeException('pfctl -sr failed (exit ' . $rulesRc . ')');
+            if ($run['rc'] !== 0) {
+                $rulesFailure = wgct_pfctl_failure('pfctl -sr', $run);
+                throw new \RuntimeException($rulesFailure);
             }
             return wgct_pf_listing_usable($run['err']) ? $run['lines'] : null;
         };
@@ -184,10 +186,10 @@ try {
                 }
             }
         } catch (\RuntimeException $e) {
-            if ($rulesRc === 0) {
+            if ($rulesFailure === null) {
                 throw $e;
             }
-            $observeError = 'pfctl -sr failed (exit ' . $rulesRc . ')';
+            $observeError = $rulesFailure;
         }
     }
 

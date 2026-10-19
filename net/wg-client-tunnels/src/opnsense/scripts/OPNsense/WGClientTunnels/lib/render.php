@@ -420,24 +420,41 @@ function wgct_pfctl_run(array $args): array {
     if ($errFile === false) {
         return ['rc' => -1, 'lines' => [], 'err' => 'pfctl: no temporary file for its stderr'];
     }
-    $pipes = [];
-    $proc = proc_open(
-        array_merge(['/sbin/pfctl'], $args),
-        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']],
-        $pipes
-    );
-    if (!is_resource($proc)) {
+    try {
+        $pipes = [];
+        $proc = proc_open(
+            array_merge(['/sbin/pfctl'], $args),
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']],
+            $pipes
+        );
+        if (!is_resource($proc)) {
+            return ['rc' => -1, 'lines' => [], 'err' => 'pfctl: could not be started'];
+        }
+        $out = (string)stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $rc = proc_close($proc);
+        $err = (string)@file_get_contents($errFile);
+    } finally {
         @unlink($errFile);
-        return ['rc' => -1, 'lines' => [], 'err' => 'pfctl: could not be started'];
     }
-    $out = (string)stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    $rc = proc_close($proc);
-    $err = (string)@file_get_contents($errFile);
-    @unlink($errFile);
     /* as exec() returns them: one entry per line, trailing whitespace stripped, no final empty line */
     $lines = $out === '' ? [] : array_map('rtrim', explode("\n", rtrim($out, "\n")));
     return ['rc' => $rc, 'lines' => $lines, 'err' => $err];
+}
+
+/**
+ * The failure text for a wgct_pfctl_run() whose rc is not 0: pfctl's exit
+ * status, or for a run that never started (rc -1) the reason, so a log line
+ * does not read just "exit -1".
+ *
+ * @param string $what the command as the text names it, e.g. 'pfctl -sr'
+ * @param array  $run  wgct_pfctl_run()'s result
+ * @return string
+ */
+function wgct_pfctl_failure(string $what, array $run): string {
+    return $run['rc'] === -1
+        ? $what . ' failed (' . trim($run['err']) . ')'
+        : $what . ' failed (exit ' . $run['rc'] . ')';
 }
 
 /**
@@ -1618,12 +1635,12 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] reuse: a recorded miss lists again\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_observed_reuse($rec, '0xbb', 'h1') === null;
+    $ok = wgct_observed_reuse($recWhole, '0xbb', 'h1') === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] reuse: another checksum lists\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_observed_reuse($rec, '0xaa', 'h2') === null;
+    $ok = wgct_observed_reuse($recWhole, '0xaa', 'h2') === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] reuse: another labels hash lists\n", $ok ? 'PASS' : 'FAIL');
@@ -1633,7 +1650,7 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] reuse: no record lists\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_observed_reuse($rec, null, 'h1') === null;
+    $ok = wgct_observed_reuse($recWhole, null, 'h1') === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] reuse: no checksum lists\n", $ok ? 'PASS' : 'FAIL');
@@ -1706,6 +1723,13 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] listing: a pfctl: line on stderr makes it unusable, the ALTQ notices alone do not\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_pfctl_failure('pfctl -sr', ['rc' => 1, 'lines' => [], 'err' => 'pfctl: x']) === 'pfctl -sr failed (exit 1)'
+        && wgct_pfctl_failure('pfctl -sr', ['rc' => -1, 'lines' => [], 'err' => "pfctl: could not be started\n"])
+            === 'pfctl -sr failed (pfctl: could not be started)';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] pfctl failure: the exit status, or the reason for a run that never started\n", $ok ? 'PASS' : 'FAIL');
 
     $straddled = wgct_unobserved_listing(false);
     $unreadable = wgct_unobserved_listing(true);
