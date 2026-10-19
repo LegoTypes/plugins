@@ -205,10 +205,12 @@ function uu_rules_inputs(string $resolver, array $members): string
 /**
  * Whether the plugin's rules are loaded, verified once per ruleset checksum and inputs. A record whose checksum is
  * live and whose inputs are these is used, with no listing. Otherwise, when listing is allowed, the checksum is
- * read, the ruleset listed once and the checksum read again; the verdict is recorded (under these inputs) only
- * when both reads agree, since a reload in between could have made the listing a mix of two rulesets. When
- * listing is not allowed (a status call) the answer is 'verifying'. state is 'loaded', 'missing' or 'verifying';
- * record is the new record to save, or null.
+ * read, the ruleset listed once and the checksum read again; the verdict is used and recorded (under these
+ * inputs) only when both reads agree. When they differ a reload ran during the listing, which may have cut it
+ * short, so its verdict is never judged: the pair is tried again, up to UU_RULES_LIST_PAIRS pairs. When no pair
+ * agrees, the record keeps its verdict (none: not loaded) and nothing is recorded, so the next evaluation lists
+ * again. When listing is not allowed (a status call) the answer is 'verifying'. state is 'loaded', 'missing' or
+ * 'verifying'; record is the new record to save, or null.
  *
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record
  * @param string $inputs uu_rules_inputs() of the verdict's inputs
@@ -232,14 +234,26 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
     if (!$mayList) {
         return ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null];
     }
-    $verdict = $verdictOf($listing());
-    $state = $verdict['loaded'] ? 'loaded' : 'missing';
-    if ($checksum() !== $live) {
-        return ['state' => $state, 'problems' => $verdict['problems'], 'verified_at' => null, 'record' => null];
+    for ($pair = 1; $pair <= UU_RULES_LIST_PAIRS; $pair++) {
+        $before = $pair === 1 ? $live : $checksum();
+        if ($before === null) {
+            continue;
+        }
+        $verdict = $verdictOf($listing());
+        if ($checksum() !== $before) {
+            continue;
+        }
+        $new = ['checksum' => $before, 'inputs' => $inputs, 'at' => $wall, 'loaded' => $verdict['loaded'],
+                'problems' => $verdict['problems']];
+        return ['state' => $verdict['loaded'] ? 'loaded' : 'missing', 'problems' => $verdict['problems'],
+                'verified_at' => $wall, 'record' => $new];
     }
-    $new = ['checksum' => $live, 'inputs' => $inputs, 'at' => $wall, 'loaded' => $verdict['loaded'],
-            'problems' => $verdict['problems']];
-    return ['state' => $state, 'problems' => $verdict['problems'], 'verified_at' => $wall, 'record' => $new];
+    if ($record !== null) {
+        return ['state' => $record['loaded'] ? 'loaded' : 'missing', 'problems' => $record['problems'],
+                'verified_at' => $record['at'], 'record' => null];
+    }
+    return ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'], 'verified_at' => null,
+            'record' => null];
 }
 
 /**
