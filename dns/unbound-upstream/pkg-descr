@@ -24,7 +24,7 @@ Plugin Changelog
   pf's ruleset checksum, instead of listing every rule twice on each
   status: the status answers in well under a second (it took about
   5 s)
-* A counting block on a table the plugin fills (unboundupstream_block,
+* A counting block on a table the plugin fills (__unboundupstream_block,
   holding the resolver address) sits ahead of 1.1's block, which stays
   as the backstop. The page's blocked count is that table's counter;
   if the table is flushed the backstop still drops, the page reads

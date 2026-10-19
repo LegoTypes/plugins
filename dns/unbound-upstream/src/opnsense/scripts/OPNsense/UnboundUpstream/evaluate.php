@@ -296,8 +296,7 @@ function uu_block_table_fill(string $resolver): void
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @param string $mode the saved state's mode
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -319,8 +318,7 @@ function uu_block_table_fill(string $resolver): void
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_wait_control(array $s, string $mode): array
 {

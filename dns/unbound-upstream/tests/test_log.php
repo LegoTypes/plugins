@@ -93,7 +93,7 @@ uu_register_suite('log', function (): int {
     uu_check($t, 'status: a table that does not hold the resolver is not armed; its count is still the table\'s',
         $d['counter_armed'] === false && $d['blocked'] === 0);
     $d = uu_status_doc($s, $plan, ['armed' => false, 'fill' => false, 'blocked' => null], $route);
-    uu_check($t, 'status: no table (or a user alias of its name): not armed, no count',
+    uu_check($t, 'status: no table: not armed, no count',
         $d['counter_armed'] === false && $d['blocked'] === null);
     uu_check($t, 'status: members with tier, reading kind, verdict, health as a duration, last down, resolver-failed '
         . 'time and failures',

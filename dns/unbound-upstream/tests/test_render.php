@@ -77,9 +77,10 @@ uu_register_suite('render', function (): int {
             'descr' => 'Unbound upstream: the resolver through this member']);
     uu_check($t, 'the second member gets its own interface and label',
         $c[1]['interface'] === 'opt15' && $c[1]['from'] === 'opt15ip' && $c[1]['label'] === md5('uu-pass-opt15'));
-    uu_check($t, 'rules: the counting block targets <unboundupstream_block> and the backstop the resolver, both log and quick',
+    uu_check($t, 'rules: the counting block targets <__unboundupstream_block> and the backstop the resolver, both log '
+        . 'and quick',
         $c[2] == ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-            'to' => '<unboundupstream_block>', 'label' => md5('uu-block'),
+            'to' => '<__unboundupstream_block>', 'label' => md5('uu-block'),
             'descr' => 'Unbound upstream: the resolver never leaves by another interface (counted)']
         && $c[3] == ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
             'to' => '10.2.0.1', 'label' => md5('uu-backstop'),
@@ -91,7 +92,7 @@ uu_register_suite('render', function (): int {
     uu_check($t, 'a member without a friendly interface gets no pass',
         count(uu_rule_confs('10.2.0.1', [array_merge($a, ['interface' => ''])], true)) === 2);
     $nc = uu_rule_confs('10.2.0.1', [$a], false);
-    uu_check($t, 'rules: no counting block when not counting',
+    uu_check($t, 'rules: no counting block without its table (a registerTable failure)',
         count($nc) === 2 && $nc[1]['label'] === md5('uu-backstop') && $nc[1]['to'] === '10.2.0.1'
         && uu_rule_confs('10.2.0.1', [], false) === [$nc[1]]);
     uu_check($t, 'priority is the constant', UU_RULE_PRIORITY === 99998);
@@ -104,32 +105,8 @@ uu_register_suite('render', function (): int {
     uu_check($t, 'enabled: every conf registered at UU_RULE_PRIORITY',
         count($fw->rules) === 4 && $fw->rules[0][0] === UU_RULE_PRIORITY && $fw->rules[3][0] === UU_RULE_PRIORITY
         && $fw->rules[3][1]['type'] === 'block');
-    uu_check($t, 'render: the table is registered without persist or file', $fw->tables === [['unboundupstream_block', false, null]]);
-
-    $fw = uu_test_fw();
-    $logged = [];
-    uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
-        $logged[] = $msg;
-    }, fn (string $name): bool => $name === 'unboundupstream_block');
-    uu_check($t, 'render: an alias clash registers no table, renders passes and the backstop, and logs',
-        $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
-        && $logged === ['rules: an alias named unboundupstream_block exists; the counting block is not rendered']);
-
-    $fw = uu_test_fw();
-    $logged = [];
-    $threw = false;
-    try {
-        uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
-            $logged[] = $msg;
-        }, function (string $name): bool {
-            throw new \RuntimeException('config unreadable');
-        });
-    } catch (\Throwable) {
-        $threw = true;
-    }
-    uu_check($t, 'render: a throwing alias check costs only the counting block, never the backstop',
-        !$threw && $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
-        && $logged === ['rules: counting block not rendered: config unreadable']);
+    uu_check($t, 'render: the table is registered in core\'s __ namespace, without persist or file',
+        $fw->tables === [['__unboundupstream_block', false, null]]);
 
     $fw = uu_test_fw();
     $fw->tableThrows = true;
@@ -138,7 +115,7 @@ uu_register_suite('render', function (): int {
     try {
         uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
             $logged[] = $msg;
-        }, fn (string $name): bool => false);
+        });
     } catch (\Throwable) {
         $threw = true;
     }

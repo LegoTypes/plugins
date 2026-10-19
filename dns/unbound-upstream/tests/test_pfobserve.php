@@ -29,8 +29,7 @@ uu_register_suite('pfobserve', function (): int {
     $resolver = '10.2.0.1';
     /* the plugin's own lines of a test VM listing (members on opt1/wg1 and opt2/wg2), with their counter lines */
     $vsr = uu_pfobserve_fixture('pfctl_vsr_12.txt');
-    $verdict = fn (string $text, bool $counting = true): array
-        => uu_rules_verdict($text, $resolver, $members, $counting);
+    $verdict = fn (string $text): array => uu_rules_verdict($text, $resolver, $members);
     /* every edit below must change the capture, or the case it builds would test nothing */
     $missed = [];
     $without = function (string $needle) use ($vsr, &$missed): string {
@@ -59,7 +58,7 @@ uu_register_suite('pfobserve', function (): int {
     /* tables */
     $tables = uu_pfobserve_fixture('pfctl_vvsTables.txt');
     uu_check($t, 'table: parsed',
-        uu_pf_table($tables, UU_BLOCK_TABLE) === ['addresses' => 1, 'references' => 1, 'out_block' => 37]);
+        uu_pf_table($tables, UU_BLOCK_TABLE) === ['addresses' => 1, 'references' => 1, 'out_block' => 6]);
     uu_check($t, 'table: absent is null', uu_pf_table($tables, 'nosuchtable') === null);
     uu_check($t, 'table: another table is read from its own block',
         uu_pf_table($tables, 'virusprot') === ['addresses' => 0, 'references' => 1, 'out_block' => 0]);
@@ -94,30 +93,44 @@ uu_register_suite('pfobserve', function (): int {
     $v = $verdict($without(uu_label_backstop()));
     uu_check($t, 'verdict: the backstop missing',
         !$v['loaded'] && $v['problems'] === ['backstop block missing']);
-    $noCounting = $without(uu_label_block());
-    $v = $verdict($noCounting);
-    uu_check($t, 'verdict: the counting block missing only matters when counting',
-        $verdict($noCounting, false) === ['loaded' => true, 'problems' => []]
-        && !$v['loaded'] && $v['problems'] === ['counting block missing']);
-    $v = $verdict($edit('to <unboundupstream_block>', 'to 10.2.0.1'));
+    $v = $verdict($without(uu_label_block()));
+    uu_check($t, 'verdict: the counting block missing', !$v['loaded'] && $v['problems'] === ['counting block missing']);
+    $v = $verdict($edit('to <' . UU_BLOCK_TABLE . '>', 'to 10.2.0.1'));
     uu_check($t, 'verdict: the counting block must target its table',
         !$v['loaded'] && $v['problems'] === ['counting block: wrong target']);
-    uu_check($t, 'fixture: every edit applies to the capture', $missed === []);
+    $v = $verdict($edit('to <' . UU_BLOCK_TABLE . '>', 'to <' . UU_BLOCK_TABLE . '2>'));
+    uu_check($t, 'verdict: a table that only starts with the counting table\'s name is another',
+        !$v['loaded'] && $v['problems'] === ['counting block: wrong target']);
+    /* boundaries: a device, an address or a label that only starts with the expected one is another */
+    $v = $verdict($edit('pass out quick on wg1 inet proto tcp', 'pass out quick on wg1.65 inet proto tcp'));
+    uu_check($t, 'verdict: on wg1.65 is not on wg1', !$v['loaded'] && $v['problems'] === ['wg-a pass: not on wg1']);
+    $v = $verdict($edit('pass out quick on wg1 inet proto tcp', 'pass out quick on wg10 inet proto tcp'));
+    uu_check($t, 'verdict: on wg10 is not on wg1', !$v['loaded'] && $v['problems'] === ['wg-a pass: not on wg1']);
+    $v = $verdict($edit('from (wg1) to 10.2.0.1 port = domain flags', 'from (wg1) to 10.2.0.10 port = domain flags'));
+    uu_check($t, 'verdict: to 10.2.0.10 is not the resolver',
+        !$v['loaded'] && $v['problems'] === ['wg-a pass: wrong address']);
+    $v = $verdict($edit('label "' . uu_label_pass('opt1') . '"', 'label "' . uu_label_pass('opt1') . '0"'));
+    uu_check($t, 'verdict: a label that only starts with the member\'s is not its pass',
+        !$v['loaded'] && $v['problems'] === ['no pass rule for wg-a (opt1)']);
+    $v = uu_rules_verdict($vsr, $resolver, [['if' => ''] + $members[0], $members[1]]);
+    uu_check($t, 'verdict: a member without a device is reported, not matched to any device',
+        !$v['loaded'] && $v['problems'] === ['wg-a pass: no device']);
+    uu_check($t, 'fixture: every edit applies to the capture' . ($missed === [] ? '' : ': ' . implode(', ', $missed)),
+        $missed === []);
     uu_check($t, 'verdict: nothing listed is every rule missing',
         $verdict('')['problems'] === ['no pass rule for wg-a (opt1)', 'no pass rule for wg-b (opt2)',
             'counting block missing', 'backstop block missing']);
 
     /* inputs */
-    $in = uu_rules_inputs($resolver, true, $members);
+    $in = uu_rules_inputs($resolver, $members);
     $moved = $members;
     $moved[1]['if'] = 'wg7';
     uu_check($t, 'inputs: order-independent over the members',
-        uu_rules_inputs($resolver, true, array_reverse($members)) === $in);
-    uu_check($t, 'inputs: change with the resolver, counting, or a member\'s device or interface',
-        uu_rules_inputs('10.2.0.9', true, $members) !== $in && uu_rules_inputs($resolver, false, $members) !== $in
-        && uu_rules_inputs($resolver, true, $moved) !== $in
-        && uu_rules_inputs($resolver, true, [['interface' => 'opt9'] + $members[0], $members[1]]) !== $in
-        && uu_rules_inputs($resolver, true, [$members[0]]) !== $in);
+        uu_rules_inputs($resolver, array_reverse($members)) === $in);
+    uu_check($t, 'inputs: change with the resolver, or a member\'s device or interface, or the members',
+        uu_rules_inputs('10.2.0.9', $members) !== $in && uu_rules_inputs($resolver, $moved) !== $in
+        && uu_rules_inputs($resolver, [['interface' => 'opt9'] + $members[0], $members[1]]) !== $in
+        && uu_rules_inputs($resolver, [$members[0]]) !== $in);
 
     /* check */
     $good = ['loaded' => true, 'problems' => []];
@@ -138,7 +151,7 @@ uu_register_suite('pfobserve', function (): int {
     $r = uu_rules_check($bad, $in, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
     uu_check($t, 'check: a recorded fault reads missing with its problems',
         $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => 500, 'record' => null]);
-    $other = uu_rules_inputs('10.2.0.9', true, $members);
+    $other = uu_rules_inputs('10.2.0.9', $members);
     $lists = 0;
     $r = uu_rules_check($record, $other, $reads(['0xaa', '0xaa']), function () use (&$lists): string {
         $lists++;
