@@ -35,8 +35,13 @@ function uu_test_fw(): \OPNsense\Firewall\Plugin
         {
         }
 
+        public bool $tableThrows = false;
+
         public function registerTable($name, $persist = false, $file = null)
         {
+            if ($this->tableThrows) {
+                throw new \RuntimeException("table\nfailed");
+            }
             $this->tables[] = [$name, $persist, $file];
         }
 
@@ -109,6 +114,37 @@ uu_register_suite('render', function (): int {
     uu_check($t, 'render: an alias clash registers no table, renders passes and the backstop, and logs',
         $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
         && $logged === ['rules: an alias named unboundupstream_block exists; the counting block is not rendered']);
+
+    $fw = uu_test_fw();
+    $logged = [];
+    $threw = false;
+    try {
+        uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
+            $logged[] = $msg;
+        }, function (string $name): bool {
+            throw new \RuntimeException('config unreadable');
+        });
+    } catch (\Throwable) {
+        $threw = true;
+    }
+    uu_check($t, 'render: a throwing alias check costs only the counting block, never the backstop',
+        !$threw && $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
+        && $logged === ['rules: counting block not rendered: config unreadable']);
+
+    $fw = uu_test_fw();
+    $fw->tableThrows = true;
+    $logged = [];
+    $threw = false;
+    try {
+        uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
+            $logged[] = $msg;
+        }, fn (string $name): bool => false);
+    } catch (\Throwable) {
+        $threw = true;
+    }
+    uu_check($t, 'render: a throwing registerTable costs only the counting block, never the backstop',
+        !$threw && $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
+        && $logged === ['rules: counting block not rendered: table; failed']);
 
     $fw = uu_test_fw();
     uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '10.2.0.1', 'members' => [$a]]);
