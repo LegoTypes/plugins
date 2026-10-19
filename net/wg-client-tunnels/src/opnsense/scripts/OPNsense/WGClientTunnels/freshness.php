@@ -21,6 +21,10 @@
  *     reconcile runs within routing configure), and a synchronous
  *     configctl there could re-enter configd. The hook
  *     re-renders during that reload.
+ * What pf holds is listed (pfctl -sr) only when pf's ruleset checksum or the
+ * rendered pin labels differ from the last listing's (WGCT_OBSERVED_FILE),
+ * not on every reconcile; a listing that a filter reload ran during is never
+ * used, and is listed again (spec 2026-10-19).
  * Repeated reload requests for the same wanted pins are rate-limited with
  * exponential back-off, and a persistently failing anchor load, pf
  * observation or run logs at most once per distinct failure, so a render
@@ -91,24 +95,82 @@ try {
      * rendered: a filter reload while the hook could not render leaves pf
      * without the pins and anchor while the record still describes them.
      * stdout only (exec() never captures stderr); $live stays null when
-     * either pfctl call fails, and the plan then rests on the record alone. */
+     * either pfctl listing fails, and the plan then rests on the record alone.
+     *
+     * The main ruleset changes only when it is loaded, and pf recomputes its
+     * ruleset checksum over the rules' labels at every load (an identical
+     * load keeps it), so `pfctl -sr` (seconds on a large ruleset) runs only
+     * when the checksum or the rendered pin labels differ from observed.json's;
+     * otherwise missing_labels is the recorded count. A listing counts only
+     * when the checksum read before it equals the one after
+     * (wgct_observe_listing): a load during it may have cut it short. A second
+     * straddled listing leaves $live null and records nothing; an unreadable
+     * checksum lists as before and records nothing. */
     $live = null;
+    $liveFrom = null;
     $observeError = null;
     $anchorLines = [];
     exec('/sbin/pfctl -a ' . escapeshellarg(WGCT_MSS_ANCHOR) . ' -sr', $anchorLines, $anchorRc);
     if ($anchorRc !== 0) {
         $observeError = 'pfctl -a ' . WGCT_MSS_ANCHOR . ' -sr failed (exit ' . $anchorRc . ')';
     } else {
-        $ruleLines = [];
-        exec('/sbin/pfctl -sr', $ruleLines, $rulesRc);
-        if ($rulesRc !== 0) {
+        $pins = $rendered !== null ? $rendered['pins'] : ['wan' => [], 'inner' => []];
+        $labelsHash = wgct_pin_labels_hash($pins);
+        /* stderr discarded as core's filter_current_hostid() does: on a
+         * kernel without ALTQ, -si (unlike -sr) warns "No ALTQ support in
+         * kernel" there, and this runs from cron and configd every minute */
+        $checksumUnreadable = false;
+        $readChecksum = function () use (&$checksumUnreadable): ?string {
+            $siLines = [];
+            exec('/sbin/pfctl -si -v 2> /dev/null', $siLines, $siRc);
+            $checksum = $siRc === 0 ? wgct_pf_checksum($siLines) : null;
+            $checksumUnreadable = $checksumUnreadable || $checksum === null;
+            return $checksum;
+        };
+        /* a failed listing throws, which ends wgct_observe_listing without
+         * another listing; caught below as the pfctl failure it is */
+        $rulesRc = 0;
+        $listRules = function () use (&$rulesRc): array {
+            $ruleLines = [];
+            exec('/sbin/pfctl -sr', $ruleLines, $rulesRc);
+            if ($rulesRc !== 0) {
+                throw new \RuntimeException('pfctl -sr failed (exit ' . $rulesRc . ')');
+            }
+            return $ruleLines;
+        };
+
+        $before = $readChecksum();
+        $reused = wgct_observed_reuse(wgct_read_observed(), $before, $labelsHash);
+        try {
+            if ($reused !== null) {
+                $live = ['anchor_count' => wgct_anchor_rule_count($anchorLines), 'missing_labels' => $reused];
+                $liveFrom = 'from the record';
+            } elseif ($before === null) {
+                $live = wgct_live_observation($anchorLines, $listRules(), $pins);
+                $liveFrom = 'listed; checksum unreadable, nothing recorded';
+            } else {
+                $observed = wgct_observe_listing($before, $readChecksum, $listRules);
+                if ($observed === null) {
+                    $observeError = $checksumUnreadable
+                        ? 'pf\'s ruleset checksum became unreadable around pfctl -sr'
+                        : 'pfctl -sr listed twice, each time during a ruleset load (the checksum changed)';
+                } else {
+                    $live = wgct_live_observation($anchorLines, $observed['lines'], $pins);
+                    $liveFrom = 'listed';
+                    if (!$dry) {
+                        wgct_write_observed([
+                            'checksum' => $observed['checksum'],
+                            'labels_hash' => $labelsHash,
+                            'missing_labels' => $live['missing_labels'],
+                        ]);
+                    }
+                }
+            }
+        } catch (\RuntimeException $e) {
+            if ($rulesRc === 0) {
+                throw $e;
+            }
             $observeError = 'pfctl -sr failed (exit ' . $rulesRc . ')';
-        } else {
-            $live = wgct_live_observation(
-                $anchorLines,
-                $ruleLines,
-                $rendered !== null ? $rendered['pins'] : ['wan' => [], 'inner' => []]
-            );
         }
     }
 
@@ -128,9 +190,10 @@ try {
             $plan['reason'],
             $live !== null
                 ? sprintf(
-                    '%d MSS anchor rule(s), %d rendered pin label(s) missing from pf',
+                    '%d MSS anchor rule(s), %d rendered pin label(s) missing from pf (%s)',
                     $live['anchor_count'],
-                    $live['missing_labels']
+                    $live['missing_labels'],
+                    $liveFrom
                 )
                 : 'not observed (' . $observeError . ')'
         );

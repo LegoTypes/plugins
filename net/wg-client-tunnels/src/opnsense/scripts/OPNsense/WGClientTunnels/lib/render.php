@@ -243,6 +243,23 @@ function wgct_pins_nonempty(array $pins): bool {
 }
 
 /**
+ * The MSS anchor's rule count, for wgct_live_observation() and for a run that
+ * reuses the recorded missing_labels (it still lists the anchor, which is cheap).
+ *
+ * @param array $anchorLines `pfctl -a wgclienttunnels_mss -sr` lines; blank lines are not rules
+ * @return int
+ */
+function wgct_anchor_rule_count(array $anchorLines): int {
+    $count = 0;
+    foreach ($anchorLines as $line) {
+        if (trim((string)$line) !== '') {
+            $count++;
+        }
+    }
+    return $count;
+}
+
+/**
  * What pf is actually enforcing, from the output of `pfctl -a
  * WGCT_MSS_ANCHOR -sr` and `pfctl -sr` (stdout lines, as exec() returns
  * them). Pure, so it is directly testable; freshness.php runs the two
@@ -256,12 +273,7 @@ function wgct_pins_nonempty(array $pins): bool {
  *               wgct_pin_rules() builds for $pins pf does not hold
  */
 function wgct_live_observation(array $anchorLines, array $ruleLines, array $pins): array {
-    $anchorCount = 0;
-    foreach ($anchorLines as $line) {
-        if (trim((string)$line) !== '') {
-            $anchorCount++;
-        }
-    }
+    $anchorCount = wgct_anchor_rule_count($anchorLines);
     $ruleText = implode("\n", $ruleLines);
     $missing = 0;
     foreach (array_unique(array_column(wgct_pin_rules($pins), 'label')) as $label) {
@@ -628,9 +640,11 @@ function wgct_report_freshness_outcome(?string $error): void {
  *                                record, or null
  * @param int        $now        current time
  * @param array|null $live       wgct_live_observation()'s
- *                                ['anchor_count' => int, 'missing_labels' => int],
- *                                or null when pf could not be read (pfctl
- *                                exited non-zero)
+ *                                ['anchor_count' => int, 'missing_labels' => int]
+ *                                (missing_labels possibly the recorded count,
+ *                                see wgct_observed_reuse()), or null when pf
+ *                                could not be read (pfctl exited non-zero, or
+ *                                every listing straddled a ruleset load)
  * @return array ['reload' => bool, 'anchor' => bool, 'reason' => string, 'state' => array|null]
  */
 function wgct_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime, ?array $state, int $now, ?array $live): array {
