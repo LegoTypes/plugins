@@ -135,13 +135,53 @@ uu_register_suite('snapshot', function (): int {
                 '-t ' . UU_BLOCK_TABLE . ' -T show' => "   10.2.0.1\n"];
     $observe = function (?array $record, bool $listRules, array $outputs) use ($ruled): array {
         $calls = [];
-        $pfctl = function (array $args) use (&$calls, $outputs): string {
+        $pfctl = function (array $args) use (&$calls, $outputs): array {
             $calls[] = implode(' ', $args);
-            return $outputs[implode(' ', $args)] ?? '';
+            return ['out' => $outputs[implode(' ', $args)] ?? '', 'err' => "No ALTQ support in kernel\n"];
         };
         $o = uu_pf_observe('10.2.0.1', $ruled, $record, 1792400000, $listRules, $pfctl);
         return [$o, $calls];
     };
+    /* the runner returns stdout and stderr apart: stderr decides a listing's use and never reaches a parser */
+    $observe2 = function (?array $record, array $vsr) use ($ruled, $si): array {
+        $calls = [];
+        $altq = "No ALTQ support in kernel\nALTQ related functions disabled\n";
+        $pfctl = function (array $args) use (&$calls, &$vsr, $si, $altq): array {
+            $key = implode(' ', $args);
+            $calls[] = $key;
+            return match ($key) {
+                '-si -v' => ['out' => $si, 'err' => $altq],
+                '-vsr' => array_shift($vsr) ?? ['out' => '', 'err' => ''],
+                '-vvsTables' => ['out' => uu_snapshot_fixture('pfctl_vvsTables.txt'), 'err' => $altq],
+                default => ['out' => "   10.2.0.1\n", 'err' => ''],
+            };
+        };
+        return [uu_pf_observe('10.2.0.1', $ruled, $record, 1792400000, true, $pfctl), $calls];
+    };
+    $whole = uu_snapshot_fixture('pfctl_vsr_12.txt');
+    $half = implode("\n", array_slice(explode("\n", $whole), 0, 8)) . "\n";
+    $try = function (callable $case): bool {
+        try {
+            return (bool)$case();
+        } catch (\Throwable) {
+            return false;
+        }
+    };
+    uu_check($t, 'observe: a listing pfctl cut short (DIOCGETRULE: Device busy, exit 0, same checksum) is listed '
+        . 'again and the whole one recorded',
+        $try(function () use ($observe2, $half, $whole): bool {
+            [$o, $calls] = $observe2(null, [['out' => $half, 'err' => "pfctl: DIOCGETRULE: Device busy\n"],
+                ['out' => $whole, 'err' => "No ALTQ support in kernel\n"]]);
+            return count(array_keys($calls, '-vsr', true)) === 2 && $o['rules']['state'] === 'loaded'
+                && $o['rules']['record'] !== null && $o['rules']['record']['loaded'] === true;
+        }));
+    uu_check($t, 'observe: a listing with only the ALTQ notices on stderr is used at once',
+        $try(function () use ($observe2, $whole): bool {
+            [$o, $calls] = $observe2(null, [['out' => $whole,
+                'err' => "No ALTQ support in kernel\nALTQ related functions disabled\n"]]);
+            return count(array_keys($calls, '-vsr', true)) === 1 && $o['rules']['state'] === 'loaded'
+                && $o['rules']['record'] !== null;
+        }));
     [$o, $calls] = $observe(null, false, $outputs);
     uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '
         . 'the ruleset is never listed',

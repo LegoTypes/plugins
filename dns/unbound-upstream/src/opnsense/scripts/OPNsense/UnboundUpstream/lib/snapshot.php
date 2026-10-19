@@ -214,7 +214,8 @@ function uu_ruled_members(array $members): array
  * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record the saved
  *     verification
- * @param callable(list<string>): string $pfctl runs /sbin/pfctl with these arguments and returns its stdout
+ * @param callable(list<string>): array{out: string, err: string} $pfctl runs /sbin/pfctl with these arguments and
+ *     returns its stdout and stderr apart (uu_pfctl_run()); stderr only decides whether a listing is whole
  * @return array{rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -225,25 +226,48 @@ function uu_pf_observe(string $resolver, array $members, ?array $record, int $wa
     $rules = uu_rules_check(
         $record,
         uu_rules_inputs($resolver, $members),
-        fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])),
-        fn (): string => $pfctl(['-vsr']),
+        fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])['out']),
+        function () use ($pfctl): ?string {
+            $run = $pfctl(['-vsr']);
+            return uu_pf_listing_usable($run['err']) ? $run['out'] : null;
+        },
         fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members),
         $wall,
         $listRules
     );
-    $table = uu_pf_table($pfctl(['-vvsTables']), UU_BLOCK_TABLE);
-    $addresses = $table === null ? [] : uu_pf_show_addresses($pfctl(['-t', UU_BLOCK_TABLE, '-T', 'show']));
+    $table = uu_pf_table($pfctl(['-vvsTables'])['out'], UU_BLOCK_TABLE);
+    $addresses = $table === null ? [] : uu_pf_show_addresses($pfctl(['-t', UU_BLOCK_TABLE, '-T', 'show'])['out']);
     return ['rules' => $rules, 'block_table' => ['table' => $table, 'addresses' => $addresses]];
 }
 
 /**
- * /sbin/pfctl with these arguments, stdout only (pfctl prints an ALTQ notice on stderr).
+ * /sbin/pfctl with these arguments, no shell, its stdout and stderr apart: stderr goes to a temporary file, so a
+ * long listing cannot block on a full pipe and no stderr line (pfctl's ALTQ notices on every call, or
+ * `pfctl: DIOCGETRULE: Device busy` when a load cut a listing short) ever reaches a parser. A pfctl that cannot
+ * be started reads as no output with a `pfctl:` error, so a listing is then unusable.
  *
  * @param list<string> $args
+ * @return array{out: string, err: string}
  */
-function uu_pfctl_out(array $args): string
+function uu_pfctl_run(array $args): array
 {
-    return (string)shell_exec('/sbin/pfctl ' . implode(' ', array_map('escapeshellarg', $args)) . ' 2>/dev/null');
+    $errFile = tempnam(sys_get_temp_dir(), 'uu_pfctl');
+    if ($errFile === false) {
+        return ['out' => '', 'err' => 'pfctl: no temporary file for its stderr'];
+    }
+    $pipes = [];
+    $proc = proc_open(array_merge(['/sbin/pfctl'], $args),
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+    if (!is_resource($proc)) {
+        unlink($errFile);
+        return ['out' => '', 'err' => 'pfctl: could not be started'];
+    }
+    $out = (string)stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    proc_close($proc);
+    $err = (string)file_get_contents($errFile);
+    unlink($errFile);
+    return ['out' => $out, 'err' => $err];
 }
 
 /**
@@ -531,7 +555,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* pf: the rules' verdict for the live checksum and the counting table (section 3.6c) */
     $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_rules_record_load(UU_RULES_PATH), $wall,
-        $listRules, 'uu_pfctl_out');
+        $listRules, 'uu_pfctl_run');
 
     return [
         'now' => $now,

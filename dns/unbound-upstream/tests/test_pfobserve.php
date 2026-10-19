@@ -148,9 +148,17 @@ uu_register_suite('pfobserve', function (): int {
         $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 500, 'record' => null]);
     $bad = ['checksum' => '0xaa', 'inputs' => $in, 'at' => 500, 'loaded' => false,
             'problems' => ['backstop block missing']];
-    $r = uu_rules_check($bad, $in, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, true);
-    uu_check($t, 'check: a recorded fault reads missing with its problems',
+    $r = uu_rules_check($bad, $in, $reads(['0xaa']), $boom, fn (string $s): array => $good, 900, false);
+    uu_check($t, 'check: a status call shows a recorded fault (missing, its problems) without listing',
         $r === ['state' => 'missing', 'problems' => ['backstop block missing'], 'verified_at' => 500, 'record' => null]);
+    $lists = 0;
+    $r = uu_rules_check($bad, $in, $reads(['0xaa', '0xaa']), function () use (&$lists): string {
+        $lists++;
+        return 'whole';
+    }, fn (string $s): array => $s === 'whole' ? $good : ['loaded' => false, 'problems' => ['x']], 900, true);
+    uu_check($t, 'check: an evaluation never reuses a recorded fault: it lists again and records the new verdict',
+        $lists === 1 && $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 900,
+            'record' => ['checksum' => '0xaa', 'inputs' => $in, 'at' => 900, 'loaded' => true, 'problems' => []]]);
     $other = uu_rules_inputs('10.2.0.9', $members);
     $lists = 0;
     $r = uu_rules_check($record, $other, $reads(['0xaa', '0xaa']), function () use (&$lists): string {
@@ -216,6 +224,52 @@ uu_register_suite('pfobserve', function (): int {
         . 'the checksum stays unreadable, and the problem names the unreadable status',
         $lists === 1 && $r === ['state' => 'missing', 'problems' => ['pf status unreadable'],
             'verified_at' => null, 'record' => null]);
+    /*
+     * a listing pfctl cut short (a `pfctl:` line on its stderr, exit 0) is unusable, null here: retried like a
+     * straddle, whatever the checksums say; a TypeError from a build that judges it anyway is a FAIL, not a crash
+     */
+    $try = function (callable $case): bool {
+        try {
+            return (bool)$case();
+        } catch (\Throwable) {
+            return false;
+        }
+    };
+    $cut = function (array $texts, int &$lists): callable {
+        return function () use (&$texts, &$lists): ?string {
+            $lists++;
+            return array_shift($texts);
+        };
+    };
+    $judgeCut = fn (?string $s): array => $s === 'whole' ? $good
+        : ['loaded' => false, 'problems' => ['backstop block missing']];
+    uu_check($t, 'check: a listing cut short is retried and the second, whole listing is recorded',
+        $try(function () use ($record, $in, $reads, $cut, $judgeCut): bool {
+            $lists = 0;
+            $r = uu_rules_check($record, $in, $reads(['0xbb', '0xbb', '0xbb', '0xbb']), $cut([null, 'whole'], $lists),
+                $judgeCut, 900, true);
+            return $lists === 2 && $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 900,
+                'record' => ['checksum' => '0xbb', 'inputs' => $in, 'at' => 900, 'loaded' => true, 'problems' => []]];
+        }));
+    uu_check($t, 'check: two listings cut short end as two straddles: a record of these inputs is kept, none reads '
+        . 'not loaded, and nothing is recorded',
+        $try(function () use ($record, $in, $reads, $cut, $judgeCut): bool {
+            $lists = 0;
+            $kept = uu_rules_check($record, $in, $reads(['0xbb', '0xbb', '0xbb', '0xbb']), $cut([null, null], $lists),
+                $judgeCut, 900, true);
+            $lists2 = 0;
+            $none = uu_rules_check(null, $in, $reads(['0xbb', '0xbb', '0xbb', '0xbb']), $cut([null, null], $lists2),
+                $judgeCut, 900, true);
+            return $lists === 2 && $lists2 === 2
+                && $kept === ['state' => 'loaded', 'problems' => [], 'verified_at' => 500, 'record' => null]
+                && $none === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
+                    'verified_at' => null, 'record' => null];
+        }));
+    uu_check($t, 'listing: a pfctl: line on stderr makes it unusable; pf\'s ALTQ notices alone do not',
+        $try(fn (): bool => uu_pf_listing_usable("No ALTQ support in kernel\nALTQ related functions disabled\n")
+            && uu_pf_listing_usable('')
+            && !uu_pf_listing_usable("No ALTQ support in kernel\npfctl: DIOCGETRULE: Device busy\n")
+            && !uu_pf_listing_usable('pfctl: DIOCGETRULE: Device busy')));
     $r = uu_rules_check($record, $in, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
     uu_check($t, 'check: no listing allowed reads verifying',
         $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]);
