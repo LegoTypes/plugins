@@ -444,16 +444,17 @@ function wgct_pfctl_run(array $args): array {
 
 /**
  * The failure text for a wgct_pfctl_run() whose rc is not 0: pfctl's exit
- * status, or for a run that never started (rc -1) the reason, so a log line
- * does not read just "exit -1".
+ * status, or for a run that never started (rc -1) the reason when one is
+ * known, so a log line reads "exit -1" only when nothing better exists.
  *
  * @param string $what the command as the text names it, e.g. 'pfctl -sr'
  * @param array  $run  wgct_pfctl_run()'s result
  * @return string
  */
 function wgct_pfctl_failure(string $what, array $run): string {
-    return $run['rc'] === -1
-        ? $what . ' failed (' . trim($run['err']) . ')'
+    $reason = trim($run['err']);
+    return $run['rc'] === -1 && $reason !== ''
+        ? $what . ' failed (' . $reason . ')'
         : $what . ' failed (exit ' . $run['rc'] . ')';
 }
 
@@ -1726,10 +1727,12 @@ function wgct_render_selftest(): int {
 
     $ok = wgct_pfctl_failure('pfctl -sr', ['rc' => 1, 'lines' => [], 'err' => 'pfctl: x']) === 'pfctl -sr failed (exit 1)'
         && wgct_pfctl_failure('pfctl -sr', ['rc' => -1, 'lines' => [], 'err' => "pfctl: could not be started\n"])
-            === 'pfctl -sr failed (pfctl: could not be started)';
+            === 'pfctl -sr failed (pfctl: could not be started)'
+        && wgct_pfctl_failure('pfctl -sr', ['rc' => -1, 'lines' => [], 'err' => ''])
+            === 'pfctl -sr failed (exit -1)';
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] pfctl failure: the exit status, or the reason for a run that never started\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] pfctl failure: the exit status, or the reason for a run that never started (the status when none is known)\n", $ok ? 'PASS' : 'FAIL');
 
     $straddled = wgct_unobserved_listing(false);
     $unreadable = wgct_unobserved_listing(true);
