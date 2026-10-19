@@ -207,9 +207,10 @@ function uu_ruled_members(array $members): array
 /**
  * What pf says about the plugin's rules and its counting table (section 3.6c), through pfctl. The rules come from
  * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver and the
- * members' interfaces and devices); otherwise an evaluation (listRules) lists the ruleset (again when a reload
- * straddled the first listing) and returns a record to save, and a status call answers verifying. The table's
- * addresses are read only while the table exists.
+ * members' interfaces and devices), except that an evaluation (listRules) never reuses a recorded fault: it lists
+ * again while the fault stands, and a status call shows it. Otherwise an evaluation lists the ruleset (again when
+ * a reload straddled the first listing or pfctl cut it short) and returns a record to save, and a status call
+ * answers verifying. The table's addresses are read only while the table exists.
  *
  * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record the saved
@@ -244,30 +245,39 @@ function uu_pf_observe(string $resolver, array $members, ?array $record, int $wa
  * /sbin/pfctl with these arguments, no shell, its stdout and stderr apart: stderr goes to a temporary file, so a
  * long listing cannot block on a full pipe and no stderr line (pfctl's ALTQ notices on every call, or
  * `pfctl: DIOCGETRULE: Device busy` when a load cut a listing short) ever reaches a parser. A pfctl that cannot
- * be started reads as no output with a `pfctl:` error, so a listing is then unusable.
+ * be started, or that exits non-zero (a signal mid-listing too), gets a `pfctl:` line on stderr, so its listing
+ * is unusable (uu_pf_listing_usable()); its stdout is kept, and nothing else reads stderr. The temporary file
+ * goes in every case. $binary is for the tests.
  *
  * @param list<string> $args
  * @return array{out: string, err: string}
  */
-function uu_pfctl_run(array $args): array
+function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl'): array
 {
     $errFile = tempnam(sys_get_temp_dir(), 'uu_pfctl');
     if ($errFile === false) {
         return ['out' => '', 'err' => 'pfctl: no temporary file for its stderr'];
     }
-    $pipes = [];
-    $proc = proc_open(array_merge(['/sbin/pfctl'], $args),
-        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
-    if (!is_resource($proc)) {
-        unlink($errFile);
-        return ['out' => '', 'err' => 'pfctl: could not be started'];
+    try {
+        $pipes = [];
+        $proc = proc_open(array_merge([$binary], $args),
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+        if (!is_resource($proc)) {
+            return ['out' => '', 'err' => 'pfctl: could not be started'];
+        }
+        $out = (string)stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $rc = proc_close($proc);
+        $err = (string)file_get_contents($errFile);
+        if ($rc !== 0) {
+            $err .= ($err === '' || str_ends_with($err, "\n") ? '' : "\n") . 'pfctl: exit ' . $rc . "\n";
+        }
+        return ['out' => $out, 'err' => $err];
+    } finally {
+        if (is_file($errFile)) {
+            unlink($errFile);
+        }
     }
-    $out = (string)stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    proc_close($proc);
-    $err = (string)file_get_contents($errFile);
-    unlink($errFile);
-    return ['out' => $out, 'err' => $err];
 }
 
 /**
@@ -406,8 +416,9 @@ function uu_zone_texts(): array
  *     probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
- * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved: an
- *     evaluation's snapshot, never a status call's (section 3.6c)
+ * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved, or
+ *     the saved one is a fault (it is verified again), or a listing was cut short: an evaluation's snapshot, never
+ *     a status call's (section 3.6c)
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
