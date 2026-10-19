@@ -133,60 +133,54 @@ uu_register_suite('snapshot', function (): int {
     $outputs = ['-si -v' => $si, '-vsr' => uu_snapshot_fixture('pfctl_vsr_12.txt'),
                 '-vvsTables' => uu_snapshot_fixture('pfctl_vvsTables.txt'),
                 '-t ' . UU_BLOCK_TABLE . ' -T show' => "   10.2.0.1\n"];
-    $observe = function (bool $counting, ?array $record, bool $listRules, array $outputs) use ($ruled): array {
+    $observe = function (?array $record, bool $listRules, array $outputs) use ($ruled): array {
         $calls = [];
         $pfctl = function (array $args) use (&$calls, $outputs): string {
             $calls[] = implode(' ', $args);
             return $outputs[implode(' ', $args)] ?? '';
         };
-        $o = uu_pf_observe('10.2.0.1', $ruled, $counting, $record, 1792400000, $listRules, $pfctl);
+        $o = uu_pf_observe('10.2.0.1', $ruled, $record, 1792400000, $listRules, $pfctl);
         return [$o, $calls];
     };
-    [$o, $calls] = $observe(true, null, false, $outputs);
+    [$o, $calls] = $observe(null, false, $outputs);
     uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '
         . 'the ruleset is never listed',
         $o['rules'] === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]
         && $calls === ['-si -v', '-vvsTables', '-t ' . UU_BLOCK_TABLE . ' -T show']);
     uu_check($t, 'observe: the counting table\'s facts and addresses',
-        $o['block_table'] === ['counting' => true, 'table' => ['addresses' => 1, 'references' => 1, 'out_block' => 37],
+        $o['block_table'] === ['table' => ['addresses' => 1, 'references' => 1, 'out_block' => 6],
                                'addresses' => ['10.2.0.1']]);
-    $in = uu_rules_inputs('10.2.0.1', true, $ruled);
+    $in = uu_rules_inputs('10.2.0.1', $ruled);
     $record = ['checksum' => $sum, 'inputs' => $in, 'at' => 1792399000, 'loaded' => true, 'problems' => []];
-    [$o, $calls] = $observe(true, $record, false, $outputs);
+    [$o, $calls] = $observe($record, false, $outputs);
     uu_check($t, 'observe, status with a record of the live checksum: its verdict and time, no listing',
         $o['rules'] === ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000, 'record' => null]
         && !in_array('-vsr', $calls, true));
-    [$o, $calls] = $observe(true, null, true, $outputs);
+    [$o, $calls] = $observe(null, true, $outputs);
     uu_check($t, 'observe, evaluation without a record: lists once between two checksum reads and returns the record',
         $o['rules'] === ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792400000,
                          'record' => ['checksum' => $sum, 'inputs' => $in, 'at' => 1792400000, 'loaded' => true,
                                       'problems' => []]]
         && array_slice($calls, 0, 3) === ['-si -v', '-vsr', '-si -v']
         && count(array_keys($calls, '-vsr', true)) === 1);
-    [$o, $calls] = $observe(true, ['checksum' => '0x1'] + $record, true, $outputs);
+    [$o, $calls] = $observe(['checksum' => '0x1'] + $record, true, $outputs);
     uu_check($t, 'observe, evaluation with a stale record: lists again',
         in_array('-vsr', $calls, true) && $o['rules']['record'] !== null && $o['rules']['record']['checksum'] === $sum);
-    [$o, $calls] = $observe(true, $record, true, $outputs);
+    [$o, $calls] = $observe($record, true, $outputs);
     uu_check($t, 'observe, evaluation with a record of the live checksum: no listing and nothing to save',
         !in_array('-vsr', $calls, true) && $o['rules']['state'] === 'loaded' && $o['rules']['record'] === null);
-    [$o, $calls] = $observe(false, $record, true, $outputs);
-    uu_check($t, 'observe: the live checksum recorded for other inputs (counting) lists and records the new inputs',
-        in_array('-vsr', $calls, true) && $o['rules']['record'] !== null
-        && $o['rules']['record']['inputs'] === uu_rules_inputs('10.2.0.1', false, $ruled));
-    [$o, $calls] = $observe(false, $record, false, $outputs);
+    $otherInputs = ['inputs' => uu_rules_inputs('10.2.0.9', $ruled)] + $record;
+    [$o, $calls] = $observe($otherInputs, true, $outputs);
+    uu_check($t, 'observe: the live checksum recorded for other inputs (another resolver) lists and records these',
+        in_array('-vsr', $calls, true) && $o['rules']['record'] !== null && $o['rules']['record']['inputs'] === $in);
+    [$o, $calls] = $observe($otherInputs, false, $outputs);
     uu_check($t, 'observe, status: the live checksum recorded for other inputs reads verifying, no listing',
         $o['rules']['state'] === 'verifying' && !in_array('-vsr', $calls, true));
-    [$o, $calls] = $observe(false, null, true, $outputs);
-    uu_check($t, 'observe, an alias holds the table\'s name: the table is never read, and the verdict does not ask '
-        . 'for the counting block',
-        $o['block_table'] === ['counting' => false, 'table' => null, 'addresses' => []]
-        && !in_array('-vvsTables', $calls, true) && !in_array('-t ' . UU_BLOCK_TABLE . ' -T show', $calls, true)
-        && $o['rules']['state'] === 'loaded');
-    [$o, $calls] = $observe(true, null, true, ['-vvsTables' => ''] + $outputs);
+    [$o, $calls] = $observe(null, true, ['-vvsTables' => ''] + $outputs);
     uu_check($t, 'observe: no table listed, so its addresses are not asked for',
-        $o['block_table'] === ['counting' => true, 'table' => null, 'addresses' => []]
+        $o['block_table'] === ['table' => null, 'addresses' => []]
         && !in_array('-t ' . UU_BLOCK_TABLE . ' -T show', $calls, true));
-    [$o, $calls] = $observe(true, null, true, ['-si -v' => ''] + $outputs);
+    [$o, $calls] = $observe(null, true, ['-si -v' => ''] + $outputs);
     uu_check($t, 'observe: pf status unreadable is missing, named, and nothing is listed',
         $o['rules'] === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null,
                          'record' => null] && !in_array('-vsr', $calls, true));

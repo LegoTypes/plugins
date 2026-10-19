@@ -38,8 +38,7 @@ require_once __DIR__ . '/test_planner.php';
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_test_apply_snapshot(): array
 {

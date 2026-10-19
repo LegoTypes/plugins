@@ -206,10 +206,10 @@ function uu_ruled_members(array $members): array
 
 /**
  * What pf says about the plugin's rules and its counting table (section 3.6c), through pfctl. The rules come from
- * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver,
- * counting and the members' interfaces and devices); otherwise an evaluation (listRules) lists the ruleset once and
- * returns a record to save, and a status call answers verifying. The table is read only while counting (no alias
- * has its name; with one, that table is the user's), and its addresses only while it exists.
+ * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver and the
+ * members' interfaces and devices); otherwise an evaluation (listRules) lists the ruleset (again when a reload
+ * straddled the first listing) and returns a record to save, and a status call answers verifying. The table's
+ * addresses are read only while the table exists.
  *
  * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record the saved
@@ -217,25 +217,23 @@ function uu_ruled_members(array $members): array
  * @param callable(list<string>): string $pfctl runs /sbin/pfctl with these arguments and returns its stdout
  * @return array{rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
-function uu_pf_observe(string $resolver, array $members, bool $counting, ?array $record, int $wall, bool $listRules,
+function uu_pf_observe(string $resolver, array $members, ?array $record, int $wall, bool $listRules,
     callable $pfctl): array
 {
     $rules = uu_rules_check(
         $record,
-        uu_rules_inputs($resolver, $counting, $members),
+        uu_rules_inputs($resolver, $members),
         fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])),
         fn (): string => $pfctl(['-vsr']),
-        fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members, $counting),
+        fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members),
         $wall,
         $listRules
     );
-    $table = $counting ? uu_pf_table($pfctl(['-vvsTables']), UU_BLOCK_TABLE) : null;
+    $table = uu_pf_table($pfctl(['-vvsTables']), UU_BLOCK_TABLE);
     $addresses = $table === null ? [] : uu_pf_show_addresses($pfctl(['-t', UU_BLOCK_TABLE, '-T', 'show']));
-    return ['rules' => $rules,
-            'block_table' => ['counting' => $counting, 'table' => $table, 'addresses' => $addresses]];
+    return ['rules' => $rules, 'block_table' => ['table' => $table, 'addresses' => $addresses]];
 }
 
 /**
@@ -246,20 +244,6 @@ function uu_pf_observe(string $resolver, array $members, bool $counting, ?array 
 function uu_pfctl_out(array $args): string
 {
     return (string)shell_exec('/sbin/pfctl ' . implode(' ', array_map('escapeshellarg', $args)) . ' 2>/dev/null');
-}
-
-/**
- * Whether the plugin's counting block may have its table: no alias has the table's name. The renderer's own
- * check (render.php), so both agree; an alias check that throws is a clash, as the renderer then renders no
- * counting block either.
- */
-function uu_block_table_counting(): bool
-{
-    try {
-        return !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
-    } catch (\Throwable $e) {
-        return false;
-    }
 }
 
 /**
@@ -288,8 +272,7 @@ function uu_block_table_counting(): bool
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @param ?array{kind: string, next_hop: string, if: string} $installed
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -311,8 +294,7 @@ function uu_block_table_counting(): bool
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_route_adopt(array $s, ?array $installed): array
 {
@@ -422,8 +404,7 @@ function uu_zone_texts(): array
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules): array
 {
@@ -549,8 +530,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     }
 
     /* pf: the rules' verdict for the live checksum and the counting table (section 3.6c) */
-    $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_block_table_counting(),
-        uu_rules_record_load(UU_RULES_PATH), $wall, $listRules, 'uu_pfctl_out');
+    $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_rules_record_load(UU_RULES_PATH), $wall,
+        $listRules, 'uu_pfctl_out');
 
     return [
         'now' => $now,

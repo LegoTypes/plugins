@@ -42,8 +42,7 @@ require_once __DIR__ . '/test_contract.php';
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_test_snapshot(): array
 {
@@ -76,7 +75,7 @@ function uu_test_snapshot(): array
         'fib_sync_ms' => 1000,
         'contract_input' => $contract,
         'rules' => ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000, 'record' => null],
-        'block_table' => ['counting' => true, 'table' => ['addresses' => 1, 'references' => 1, 'out_block' => 37],
+        'block_table' => ['table' => ['addresses' => 1, 'references' => 1, 'out_block' => 37],
                           'addresses' => ['10.2.0.1']],
     ];
 }
@@ -105,8 +104,7 @@ function uu_test_snapshot(): array
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
@@ -127,8 +125,7 @@ function uu_test_snapshot(): array
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
 function uu_test_in_tunnel(array $s, string $member): array
 {

@@ -65,8 +65,7 @@ uu_register_suite('snapshot_vm', function (): int {
     $saved = uu_rules_record_load(UU_RULES_PATH);
     $live = uu_pf_checksum((string)shell_exec('/sbin/pfctl -si -v 2>/dev/null'));
     $r = $s['rules'];
-    $counting = !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
-    $inputs = uu_rules_inputs('10.2.0.1', $counting, uu_ruled_members($s['members']));
+    $inputs = uu_rules_inputs($settings['resolver'], uu_ruled_members($s['members']));
     uu_check($t, 'status snapshot: no listing, so verifying or the saved record\'s verdict, and no record to save',
         $r['record'] === null && ($saved !== null && $saved['checksum'] === $live
             && $saved['inputs'] === $inputs
@@ -74,9 +73,8 @@ uu_register_suite('snapshot_vm', function (): int {
             : $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]));
     uu_check($t, 'contract input: the rules\' state and problems',
         $c['rules'] === ['state' => $r['state'], 'problems' => $r['problems']]);
-    uu_check($t, 'block table: counting unless an alias has its name; no addresses without the table',
-        $s['block_table']['counting'] === $counting
-        && ($s['block_table']['table'] !== null || $s['block_table']['addresses'] === []));
+    uu_check($t, 'block table: no addresses without the table',
+        $s['block_table']['table'] !== null || $s['block_table']['addresses'] === []);
     /* an evaluation snapshot under the test settings, which the VM does not render rules for: a record made for
      * other inputs (the VM's own settings) is not reused, so these rules read missing, naming wg-test-429 */
     $e = uu_snapshot($settings, [], null, true);

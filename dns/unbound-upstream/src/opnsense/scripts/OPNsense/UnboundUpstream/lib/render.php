@@ -12,13 +12,13 @@ declare(strict_types=1);
  * registered as filter rules at every filter reload and never stored in the configuration. Core calls the
  * plugin's firewall hook both for a real reload and to list rules for display, so the hook only registers.
  *
- * Why there are two blocks and a table: the counting block targets the table unboundupstream_block, so the
+ * Why there are two blocks and a table: the counting block targets the table __unboundupstream_block, so the
  * status can read which addresses the table holds and how many packets it stopped; the backstop targets the
  * resolver as a literal address and does not depend on the table. The table counts, the literal guarantees:
- * should the table be empty, missing or an alias, the backstop still keeps the resolver off every other
- * interface. The table is registered without persist or file, so core's ruleset load never depends on a
- * plugin file, and pf keeps the addresses a table declared without any holds across reloads. When an alias
- * already has the table's name, the counting block is not rendered and the backstop stands alone.
+ * should the table be empty or missing, the backstop still keeps the resolver off every other interface. The
+ * table is registered without persist or file, so core's ruleset load never depends on a plugin file, and pf
+ * keeps the addresses a table declared without any holds across reloads. Its name is in core's __ namespace,
+ * which core's alias-name validator refuses, so no alias can share it.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -127,14 +127,9 @@ function uu_wanted_render(): array
  *
  * @param ?callable(): array{enabled: bool, resolver: string, members: list<array{interface: string}>} $wanted
  * @param ?callable(string): void $log receives the message; default logs it as UU_SYSLOG_IDENT at local4.err
- * @param ?callable(string): bool $isAlias whether an alias has the name; default asks core
  */
-function uu_render_firewall(
-    \OPNsense\Firewall\Plugin $fw,
-    ?callable $wanted = null,
-    ?callable $log = null,
-    ?callable $isAlias = null
-): void {
+function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = null, ?callable $log = null): void
+{
     $emit = static function (string $msg) use ($log): void {
         if ($log !== null) {
             $log($msg);
@@ -150,16 +145,11 @@ function uu_render_firewall(
         if (filter_var($w['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new \RuntimeException('resolver is not an IPv4 address');
         }
-        // The counting block is optional; a failure here must never cost the passes or the backstop.
+        // The counting block needs its table; a failure here must never cost the passes or the backstop.
         $counting = false;
         try {
-            $clash = $isAlias !== null ? $isAlias(UU_BLOCK_TABLE) : \OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
-            if ($clash) {
-                $emit('rules: an alias named ' . UU_BLOCK_TABLE . ' exists; the counting block is not rendered');
-            } else {
-                $fw->registerTable(UU_BLOCK_TABLE);
-                $counting = true;
-            }
+            $fw->registerTable(UU_BLOCK_TABLE);
+            $counting = true;
         } catch (\Throwable $e) {
             $counting = false;
             $emit('rules: counting block not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage()));

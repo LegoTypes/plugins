@@ -16,7 +16,7 @@ declare(strict_types=1);
  *                  unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *                  zone: Zone, route: array{present: bool, gateway: string, interface: string, reject: bool,
  *                  ours: bool}, fib_sync_ms: ?int, contract_input: ContractInput, rules: RulesCheck,
- *                  block_table: array{counting: bool, table: ?TableFacts, addresses: list<string>}}
+ *                  block_table: array{table: ?TableFacts, addresses: list<string>}}
  *   now is monotonic seconds; tiers come from the group (best first) and are empty when the group is gone;
  *   members and probes are keyed by gateway name (Member and Probe: verdict.php); named lists the gateways the
  *   monitor hook passed; stop is why this run stops whatever the settings say (a UU_STOP_* cause), or null;
@@ -24,8 +24,8 @@ declare(strict_types=1);
  *   <resolver>`, interface the device it leaves by (compared with Member.if) and ours whether the plugin made
  *   it; Zone is zone.php's; ContractInput is uu_contract()'s input (contract.php). rules is uu_rules_check()'s
  *   answer (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an
- *   evaluation saves), block_table the counting table's facts as pf printed them (counting false: an alias has the
- *   table's name, so the table is the user's and is never read); the caller turns it into uu_block_table_view()
+ *   evaluation saves), block_table the counting table's facts as pf printed them (table null: no such table);
+ *   the caller turns it into uu_block_table_view()
  *   with the saved state's resolver, since the snapshot never reads the state file.
  * Plan     = array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *                  escalate_restart: bool, state: State, reasons: list<string>}
@@ -170,8 +170,7 @@ function uu_plan_stop_reason(array $s): ?string
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
- *         addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,

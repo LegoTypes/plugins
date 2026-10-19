@@ -126,12 +126,14 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
 
 /**
  * Whether the plugin's rules are in the listing, member by member (tcp and udp pass, by label) and block by block
- * (the counting block only when counting), with the shape of each checked by keyword on its own line.
+ * (the counting block and the backstop), with the shape of each checked by keyword on its own line. A device, an
+ * address or a target is bounded like a word that may not continue with a word character or a dot, so wg1 is
+ * not wg10 or wg1.65 and 10.2.0.1 is not 10.2.0.10.
  *
  * @param list<array{name: string, interface: string, if: string}> $members
  * @return array{loaded: bool, problems: list<string>}
  */
-function uu_rules_verdict(string $vsrOut, string $resolver, array $members, bool $counting): array
+function uu_rules_verdict(string $vsrOut, string $resolver, array $members): array
 {
     $problems = [];
     $address = preg_quote($resolver, '/');
@@ -158,7 +160,9 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members, bool
                         $problems[] = $member['name'] . ' pass: missing ' . $word;
                     }
                 }
-                if (!uu_rules_has($line, '\bon ' . preg_quote($member['if'], '/') . '\b')) {
+                if ($member['if'] === '') {
+                    $problems[] = $member['name'] . ' pass: no device';
+                } elseif (!uu_rules_has($line, '\bon ' . preg_quote($member['if'], '/') . '(?![\w.])')) {
                     $problems[] = $member['name'] . ' pass: not on ' . $member['if'];
                 }
                 if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.])')) {
@@ -170,13 +174,11 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members, bool
             }
         }
     }
-    if ($counting) {
-        array_push($problems, ...uu_rules_block_problems(
-            uu_rules_lines($vsrOut, uu_label_block()),
-            'counting block',
-            '<' . UU_BLOCK_TABLE . '>'
-        ));
-    }
+    array_push($problems, ...uu_rules_block_problems(
+        uu_rules_lines($vsrOut, uu_label_block()),
+        'counting block',
+        '<' . UU_BLOCK_TABLE . '>'
+    ));
     array_push($problems, ...uu_rules_block_problems(
         uu_rules_lines($vsrOut, uu_label_backstop()),
         'backstop block',
@@ -187,17 +189,17 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members, bool
 }
 
 /**
- * What a verdict depends on besides the ruleset: the resolver, whether the counting block is asked for, and each
- * ruled member's interface and device. Order-independent over the members. Between a Save and its filter reload
- * the checksum is unchanged while the settings already differ, so a record is reused only for the same inputs.
+ * What a verdict depends on besides the ruleset: the resolver and each ruled member's interface and device.
+ * Order-independent over the members. Between a Save and its filter reload the checksum is unchanged while the
+ * settings already differ, so a record is reused only for the same inputs.
  *
  * @param list<array{name: string, interface: string, if: string}> $members
  */
-function uu_rules_inputs(string $resolver, bool $counting, array $members): string
+function uu_rules_inputs(string $resolver, array $members): string
 {
     $pairs = array_map(fn (array $m): array => [$m['interface'], $m['if']], $members);
     sort($pairs);
-    return md5(json_encode([$resolver, $counting, $pairs], JSON_THROW_ON_ERROR));
+    return md5(json_encode([$resolver, $pairs], JSON_THROW_ON_ERROR));
 }
 
 /**
