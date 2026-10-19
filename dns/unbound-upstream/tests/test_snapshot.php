@@ -182,6 +182,20 @@ uu_register_suite('snapshot', function (): int {
             return count(array_keys($calls, '-vsr', true)) === 1 && $o['rules']['state'] === 'loaded'
                 && $o['rules']['record'] !== null;
         }));
+    /*
+     * the runner on a stand-in binary: a pfctl that exits non-zero, or is killed mid-listing, keeps the stdout it
+     * printed and gets a "pfctl: exit N" line on stderr, so its listing is unusable
+     */
+    $exit3 = uu_pfctl_run(['-c', 'printf partial; exit 3'], '/bin/sh');
+    uu_check($t, 'runner: a non-zero exit keeps stdout and adds "pfctl: exit 3" to stderr, so a listing is unusable',
+        $exit3['out'] === 'partial' && str_contains($exit3['err'], 'pfctl: exit 3')
+        && !uu_pf_listing_usable($exit3['err']));
+    $killed = uu_pfctl_run(['-c', 'printf partial; kill -9 $$'], '/bin/sh');
+    uu_check($t, 'runner: a pfctl killed mid-listing makes the listing unusable',
+        $killed['out'] === 'partial' && !uu_pf_listing_usable($killed['err']));
+    $clean = uu_pfctl_run(['-c', 'printf whole; echo "No ALTQ support in kernel" >&2'], '/bin/sh');
+    uu_check($t, 'runner: exit 0 with only an ALTQ notice on stderr is a usable listing, the streams apart',
+        $clean === ['out' => 'whole', 'err' => "No ALTQ support in kernel\n"] && uu_pf_listing_usable($clean['err']));
     [$o, $calls] = $observe(null, false, $outputs);
     uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '
         . 'the ruleset is never listed',

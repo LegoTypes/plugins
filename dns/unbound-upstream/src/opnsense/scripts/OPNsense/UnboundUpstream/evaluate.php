@@ -377,8 +377,9 @@ function uu_record_main(string $path): int
         fwrite(STDERR, "usage: evaluate.php record FILE\n");
         return 2;
     }
-    /* lists the ruleset when no verification of the live checksum is saved, as an evaluation would, so a replay
-     * plans on the same verdict; the verification is not saved (record changes nothing) */
+    /* lists the ruleset as an evaluation would (no verification of the live checksum saved, a saved fault, or a
+     * listing cut short), so a replay plans on the same verdict; the verification is not saved (record changes
+     * nothing) */
     $doc = ['snapshot' => uu_snapshot(uu_settings(), [], null, true), 'state' => uu_state_load(UU_STATE_PATH)];
     if (file_put_contents($path, json_encode($doc, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
         . "\n") === false) {
