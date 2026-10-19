@@ -33,9 +33,13 @@ require_once __DIR__ . '/test_planner.php';
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}}
  */
 function uu_test_apply_snapshot(): array
 {

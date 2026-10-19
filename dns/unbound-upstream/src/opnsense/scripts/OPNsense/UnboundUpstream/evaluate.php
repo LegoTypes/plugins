@@ -19,7 +19,8 @@ declare(strict_types=1);
  *                                     evaluation stops while the marker exists (a cron tick or a hook between the
  *                                     deinstall's stop and the files' removal would otherwise re-enter tunnel mode
  *                                     with nothing left to undo it), until the package's post-install deletes it
- *   evaluate.php status               the section 3.8 JSON for the page; read-only and without the lock
+ *   evaluate.php status               the section 3.8 JSON for the page; read-only and without the lock, and it
+ *                                     never lists the ruleset (section 3.6c)
  *   evaluate.php selftest             the pure suites, from a source tree (the package carries no tests)
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
@@ -198,8 +199,11 @@ function uu_evaluate(?string $stop, array $named): int
 }
 
 /**
- * Snapshot, plan, apply, the blocked-count line, save, then the switch notification when the run switched (section
- * 3.11), for one set of settings.
+ * Snapshot, the rules' verification saved when this run made one, plan, apply, the counting table's upkeep and
+ * blocked-count line, save, then the switch notification when the run switched (section 3.11), for one set of
+ * settings. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with
+ * changes the checksum anyway; the stop for a replaced resolver address would also verify the rules against an
+ * address they are no longer rendered for and save that verdict under the live checksum.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string} $settings
@@ -208,8 +212,18 @@ function uu_evaluate(?string $stop, array $named): int
  */
 function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 {
-    $s = uu_snapshot($settings, $named, $stop);
+    $s = uu_snapshot($settings, $named, $stop, $stop === null);
+    if ($s['rules']['record'] !== null) {
+        try {
+            uu_rules_record_save(UU_RULES_PATH, $s['rules']['record']);
+        } catch (\RuntimeException $e) {
+            uu_log('rules: the verification could not be saved (' . $e->getMessage() . '): the next evaluation '
+                . 'lists the ruleset again', LOG_WARNING);
+        }
+    }
     $st = uu_state_load(UU_STATE_PATH);
+    $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
+        $st['resolver']);
     $previousSwitch = $st['last_switch'];
     $s = uu_route_adopt($s, $st['route_installed']);
     $s = uu_wait_control($s, $st['mode']);
@@ -218,7 +232,11 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 
     $blocked = null;
     if (uu_plan_stop_reason($s) === null) {
-        $blocked = uu_pf_label_packets((string)shell_exec('/sbin/pfctl -vsr 2>/dev/null'))[uu_label_block()] ?? null;
+        /* the removal marker can appear while this run holds the lock: a deinstall's remove waits for it */
+        if ($table['fill'] && !is_file(UU_REMOVING_PATH)) {
+            uu_block_table_fill($settings['resolver']);
+        }
+        $blocked = $table['blocked'];
         $line = uu_blocked_line($st['blocked'], $blocked);
         if ($line !== null) {
             uu_log($line, LOG_NOTICE);
@@ -228,6 +246,28 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     uu_state_save(UU_STATE_PATH, $st);
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
+    }
+}
+
+/**
+ * Section 3.6c: put the resolver back into the counting table, which the rules reference but which does not hold
+ * exactly the resolver (a boot, a flush from Diagnostics, the first reload after enabling). The plugin's only pf
+ * write, and in dry run too: the table is the counting block's upkeep, and the rules are rendered in dry run.
+ */
+function uu_block_table_fill(string $resolver): void
+{
+    if (filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        return;
+    }
+    $out = [];
+    $rc = 0;
+    exec('/sbin/pfctl -t ' . escapeshellarg(UU_BLOCK_TABLE) . ' -T replace ' . escapeshellarg($resolver)
+        . ' 2>/dev/null', $out, $rc);
+    if ($rc === 0) {
+        uu_log("rules: the counting table holds $resolver again", LOG_NOTICE);
+    } else {
+        uu_log("rules: the counting table could not be filled with $resolver (pfctl exit $rc): blocked packets are "
+            . 'not counted until it is', LOG_WARNING);
     }
 }
 
@@ -251,9 +291,13 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}} $s
  * @param string $mode the saved state's mode
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -270,9 +314,13 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}}
  */
 function uu_wait_control(array $s, string $mode): array
 {
@@ -297,11 +345,14 @@ function uu_status_main(): int
 {
     $settings = uu_settings();
     $st = uu_state_load(UU_STATE_PATH);
-    $s = uu_route_adopt(uu_snapshot($settings, [], null), $st['route_installed']);
+    /* never lists the ruleset (section 3.6c): the checksum and the counting table only */
+    $s = uu_route_adopt(uu_snapshot($settings, [], null, false), $st['route_installed']);
     $p = uu_plan($s, $st);
+    $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
+        $st['resolver']);
     $route = filter_var($settings['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false ? ''
         : (string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($settings['resolver']) . ' 2>/dev/null');
-    $doc = uu_status_doc($s, $p, (string)shell_exec('/sbin/pfctl -vsr 2>/dev/null'), $route);
+    $doc = uu_status_doc($s, $p, $table, $route);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
     return 0;
 }
@@ -328,7 +379,9 @@ function uu_record_main(string $path): int
         fwrite(STDERR, "usage: evaluate.php record FILE\n");
         return 2;
     }
-    $doc = ['snapshot' => uu_snapshot(uu_settings(), [], null), 'state' => uu_state_load(UU_STATE_PATH)];
+    /* lists the ruleset when no verification of the live checksum is saved, as an evaluation would, so a replay
+     * plans on the same verdict; the verification is not saved (record changes nothing) */
+    $doc = ['snapshot' => uu_snapshot(uu_settings(), [], null, true), 'state' => uu_state_load(UU_STATE_PATH)];
     if (file_put_contents($path, json_encode($doc, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
         . "\n") === false) {
         throw new RuntimeException("cannot write $path");
@@ -349,7 +402,7 @@ function uu_replay_main(string $path): int
     }
     $doc = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
     $keys = ['now', 'wall', 'settings', 'trigger', 'tiers', 'members', 'probes', 'named', 'stop', 'unbound', 'zone',
-             'route', 'fib_sync_ms', 'contract_input'];
+             'route', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
     /* the snapshot is evaluate.php record's own output: its top-level shape is checked, not every field */
     if (!is_array($doc) || !is_array($doc['snapshot'] ?? null) || array_keys($doc['snapshot']) !== $keys
         || !is_array($doc['state'] ?? null)) {

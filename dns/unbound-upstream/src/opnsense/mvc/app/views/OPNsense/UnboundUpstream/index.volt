@@ -23,6 +23,21 @@
             'cached': "{{ lang._('cached (last reading of the gateway watcher)') }}",
             'none': "{{ lang._('none') }}"
         };
+        /* section 3.6c: loaded, verifying (the ruleset changed since the last evaluation) or the named problems */
+        function rulesText(data) {
+            var r = data.rules || {};
+            var text = r.state === 'loaded' ? "{{ lang._('yes') }}"
+                : (r.state === 'verifying' ? "{{ lang._('verifying') }}"
+                    : "{{ lang._('no') }}" + ((r.problems || []).length ? ': ' + plain(r.problems.join('; ')) : ''));
+            if (r.verified_at !== null && r.verified_at !== undefined) {
+                text += ' (' + "{{ lang._('verified') }} " + new Date(r.verified_at * 1000).toLocaleString() + ')';
+            }
+            return text + ', ' + (data.counter_armed && data.blocked !== null
+                ? data.blocked + " {{ lang._('blocked packets') }}" : "{{ lang._('counter not armed') }}");
+        }
+        function lastDown(d) {
+            return d ? new Date(d.at * 1000).toLocaleString() + ': ' + plain(d.reason) : '';
+        }
         function row(label, value) {
             return $('<tr/>').append($('<th/>').text(label)).append($('<td/>').text(value));
         }
@@ -43,7 +58,7 @@
                 body.append(row("{{ lang._('Configured root forwarders') }}", plain((data.configured_root.addrs || []).join(', ')) + (data.configured_root.tls ? ' (TLS)' : '')));
                 body.append(row("{{ lang._('TLS flag last applied') }}", data.tls_applied === null ? '' : yesno(data.tls_applied)));
                 body.append(row("{{ lang._('Resolver route') }}", route.present ? plain((route.reject ? "{{ lang._('reject') }}" : route.gateway + ' ' + route.interface) + ' [' + (route.flags || []).join(' ') + ']' + (route.ours ? '' : " {{ lang._('(not made by this plugin)') }}")) : "{{ lang._('absent') }}"));
-                body.append(row("{{ lang._('Rules loaded') }}", yesno(data.rules_loaded) + (data.blocked === null ? '' : ' (' + data.blocked + " {{ lang._('blocked packets') }})")));
+                body.append(row("{{ lang._('Rules loaded') }}", rulesText(data)));
                 body.append(row("{{ lang._('Last direct check') }}", check((data.checks || {}).direct)));
                 body.append(row("{{ lang._('Last check through Unbound') }}", check((data.checks || {}).unbound)));
                 var ls = data.last_switch;
@@ -57,7 +72,8 @@
                         .append($('<td/>').text(plain(m.verdict === null ? "{{ lang._('up') }}" : m.verdict)))
                         .append($('<td/>').text(yesno(m.usable)))
                         .append($('<td/>').text(m.resolver_failed_for === null ? '' : m.resolver_failed_for + ' s'))
-                        .append($('<td/>').text(m.counted + ' s')));
+                        .append($('<td/>').text(plain(m.healthy_for_text)))
+                        .append($('<td/>').text(lastDown(m.last_down))));
                 });
                 var notes = [];
                 $.each(contract.failures || [], function (i, f) { notes.push("{{ lang._('Core changed, tunnel mode refused:') }} " + plain(f)); });
@@ -102,7 +118,8 @@
                 <th>{{ lang._('Verdict') }}</th>
                 <th>{{ lang._('Usable') }}</th>
                 <th>{{ lang._('Resolver failed for') }}</th>
-                <th>{{ lang._('Counted') }}</th>
+                <th title="{{ lang._('How long the member has been continuously healthy. DNS returns to it only once this reaches the failback delay.') }}">{{ lang._('Healthy for') }}</th>
+                <th>{{ lang._('Last down') }}</th>
             </tr>
         </thead>
         <tbody></tbody>

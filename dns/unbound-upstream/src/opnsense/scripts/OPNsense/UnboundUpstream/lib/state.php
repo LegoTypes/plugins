@@ -20,7 +20,7 @@ declare(strict_types=1);
  * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
  * wall-clock time, for display only. checks are the last direct and through-Unbound results (section 3.8),
  * tls_applied the TLS flag the plugin last gave forward_add (Unbound cannot print it back; null before the plugin
- * set the forwarders) and blocked the block rule's packet count at the last evaluation, so a rise is logged.
+ * set the forwarders) and blocked the counting table's blocked packets at the last evaluation, so a rise is logged.
  * route_installed is the resolver route the plugin last added or changed (null after its delete), so the route
  * stays the plugin's own when the group that explained it is renamed or deleted (ruling R22). resolver is the
  * address that route and Unbound's live root referred to (null once nothing does), so a Save that changes the

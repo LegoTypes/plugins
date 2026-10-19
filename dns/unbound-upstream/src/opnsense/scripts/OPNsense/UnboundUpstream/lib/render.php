@@ -29,7 +29,7 @@ function uu_label_pass(string $opt): string
     return md5('uu-pass-' . $opt);
 }
 
-/** The pf label of the block rule; the status reads the blocked packet count by it. */
+/** The pf label of the counting block; the rules verdict looks for it by this label. */
 function uu_label_block(): string
 {
     return md5('uu-block');

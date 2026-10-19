@@ -9,13 +9,16 @@ declare(strict_types=1);
  *
  * Live collectors (spec 2026-10-17 section 3.2). Read-only: the plugin model, gateway groups and records and
  * status, the dpinger processes' ages, Unbound's state, forwarders and generated configuration, the resolver's
- * route, one sysctl, and the core hook files the contract checks. Builds the Snapshot uu_plan() consumes
- * (planner.php). The parsers are pure; the collectors are not and run only where core is installed.
+ * route, one sysctl, the core hook files the contract checks, and pf (section 3.6c: the ruleset checksum, the
+ * counting table, and the ruleset listing only when an evaluation finds no verdict for the live checksum). Builds
+ * the Snapshot uu_plan() consumes (planner.php). The parsers are pure; the collectors are not and run only where
+ * core is installed.
  */
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/zone.php';
 require_once __DIR__ . '/log.php';
+require_once __DIR__ . '/pfobserve.php';
 
 /** Core's PHP library, loaded when a collector needs it so the parsers load anywhere. */
 function uu_load_core(): void
@@ -182,6 +185,81 @@ function uu_route_ours(array $route, array $members): bool
 }
 
 /**
+ * The members the renderer gives pass rules (section 3.6b): those whose gateway record names an interface. Members
+ * sharing an interface share its rules, so the verdict asks each for them.
+ *
+ * @param array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
+ *     force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
+ *     loss_interval: int, losshigh: int}> $members
+ * @return list<array{name: string, interface: string, if: string}>
+ */
+function uu_ruled_members(array $members): array
+{
+    $ruled = [];
+    foreach ($members as $m) {
+        if ($m['interface'] !== '') {
+            $ruled[] = ['name' => $m['name'], 'interface' => $m['interface'], 'if' => $m['if']];
+        }
+    }
+    return $ruled;
+}
+
+/**
+ * What pf says about the plugin's rules and its counting table (section 3.6c), through pfctl. The rules come from
+ * the record while its checksum is live; otherwise an evaluation (listRules) lists the ruleset once and returns a
+ * record to save, and a status call answers verifying. The table is read only while counting (no alias has its
+ * name; with one, that table is the user's), and its addresses only while it exists.
+ *
+ * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
+ * @param ?array{checksum: string, at: int, loaded: bool, problems: list<string>} $record the saved verification
+ * @param callable(list<string>): string $pfctl runs /sbin/pfctl with these arguments and returns its stdout
+ * @return array{rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}}
+ */
+function uu_pf_observe(string $resolver, array $members, bool $counting, ?array $record, int $wall, bool $listRules,
+    callable $pfctl): array
+{
+    $rules = uu_rules_check(
+        $record,
+        fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])),
+        fn (): string => $pfctl(['-vsr']),
+        fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members, $counting),
+        $wall,
+        $listRules
+    );
+    $table = $counting ? uu_pf_table($pfctl(['-vvsTables']), UU_BLOCK_TABLE) : null;
+    $addresses = $table === null ? [] : uu_pf_show_addresses($pfctl(['-t', UU_BLOCK_TABLE, '-T', 'show']));
+    return ['rules' => $rules,
+            'block_table' => ['counting' => $counting, 'table' => $table, 'addresses' => $addresses]];
+}
+
+/**
+ * /sbin/pfctl with these arguments, stdout only (pfctl prints an ALTQ notice on stderr).
+ *
+ * @param list<string> $args
+ */
+function uu_pfctl_out(array $args): string
+{
+    return (string)shell_exec('/sbin/pfctl ' . implode(' ', array_map('escapeshellarg', $args)) . ' 2>/dev/null');
+}
+
+/**
+ * Whether the plugin's counting block may have its table: no alias has the table's name. The renderer's own
+ * check (render.php), so both agree; an alias check that throws is a clash, as the renderer then renders no
+ * counting block either.
+ */
+function uu_block_table_counting(): bool
+{
+    try {
+        return !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
+    } catch (\Throwable $e) {
+        return false;
+    }
+}
+
+/**
  * Ruling R22: a live route equal to the one the plugin last installed (the state's route_installed) is the
  * plugin's own even when no current member explains it, so a group renamed or deleted in tunnel mode lets
  * fallback and stop replace or delete the plugin's stale route instead of reading it as foreign. evaluate.php
@@ -202,9 +280,13 @@ function uu_route_ours(array $route, array $members): bool
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}} $s
  * @param ?array{kind: string, next_hop: string, if: string} $installed
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -221,9 +303,13 @@ function uu_route_ours(array $route, array $members): bool
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}}
  */
 function uu_route_adopt(array $s, ?array $installed): array
 {
@@ -311,6 +397,8 @@ function uu_zone_texts(): array
  *     probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
+ * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved: an
+ *     evaluation's snapshot, never a status call's (section 3.6c)
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
@@ -326,14 +414,19 @@ function uu_zone_texts(): array
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}}
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}}
  */
-function uu_snapshot(array $settings, array $named, ?string $stop): array
+function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules): array
 {
     uu_load_core();
     $now = intdiv(hrtime(true), 1000000000);
+    $wall = time();
     $resolver = $settings['resolver'];
 
     /* the group: tiers and trigger */
@@ -452,9 +545,13 @@ function uu_snapshot(array $settings, array $named, ?string $stop): array
         $hooks = function_exists('unbound_configure') && array_key_exists('unbound_start', unbound_configure());
     }
 
+    /* pf: the rules' verdict for the live checksum and the counting table (section 3.6c) */
+    $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_block_table_counting(),
+        uu_rules_record_load(UU_RULES_PATH), $wall, $listRules, 'uu_pfctl_out');
+
     return [
         'now' => $now,
-        'wall' => time(),
+        'wall' => $wall,
         'settings' => $settings,
         'trigger' => $trigger,
         'tiers' => $tiers,
@@ -480,13 +577,14 @@ function uu_snapshot(array $settings, array $named, ?string $stop): array
             'resolver_in_static' => $inStatic,
             'unmonitored_members' => $unmonitored,
             'foreign_route' => $route['present'] && !$ours,
-            'rules_loaded' => uu_rules_loaded((string)shell_exec('/sbin/pfctl -vsr 2>/dev/null'),
-                array_column($members, 'interface')),
+            'rules' => ['state' => $pf['rules']['state'], 'problems' => $pf['rules']['problems']],
             'zone' => $zone,
             'fib_sync_ms' => $fibSyncMs,
             'cacheflush' => $unboundMdl->general->cacheflush->isEqual('1'),
             'group_found' => $group !== null,
             'members' => count($members),
         ],
+        'rules' => $pf['rules'],
+        'block_table' => $pf['block_table'],
     ];
 }
