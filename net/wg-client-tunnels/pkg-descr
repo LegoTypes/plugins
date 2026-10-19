@@ -66,6 +66,12 @@ Features:
 Plugin Changelog
 ================
 
+3.7_1
+
+* Freshness lists the ruleset only when it changed (pf's ruleset
+  checksum and the rendered pin labels), not on every reconcile; a
+  listing during a filter reload is listed again
+
 3.7
 
 * Health mirror settle guard: a freshly restarted gateway monitor's
