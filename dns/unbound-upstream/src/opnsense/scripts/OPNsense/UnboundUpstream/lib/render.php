@@ -8,9 +8,17 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Rendered allow-list (spec 2026-10-17 section 3.6b): queries to the resolver may leave only through a member
- * of the configured group. One pass per member, then one block to the resolver on every other interface,
+ * of the configured group. One pass per member, then two blocks to the resolver on every other interface,
  * registered as filter rules at every filter reload and never stored in the configuration. Core calls the
  * plugin's firewall hook both for a real reload and to list rules for display, so the hook only registers.
+ *
+ * Why there are two blocks and a table: the counting block targets the table unboundupstream_block, so the
+ * status can read which addresses the table holds and how many packets it stopped; the backstop targets the
+ * resolver as a literal address and does not depend on the table. The table counts, the literal guarantees:
+ * should the table be empty, missing or an alias, the backstop still keeps the resolver off every other
+ * interface. The table is registered without persist or file, so core's ruleset load never depends on a
+ * plugin file, and pf keeps the addresses a table declared without any holds across reloads. When an alias
+ * already has the table's name, the counting block is not rendered and the backstop stands alone.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -34,14 +42,16 @@ function uu_label_backstop(): string
 }
 
 /**
- * One pass per distinct member interface, then the block. The pass is on the member's friendly interface name,
- * which core maps to the device, with the interface's own address as source so a query that Unbound sent from
- * another address cannot ride a member out. disablereplyto keeps the pass from also stamping reply-to.
+ * One pass per distinct member interface, then the counting block when asked, then the backstop. The pass is on
+ * the member's friendly interface name, which core maps to the device, with the interface's own address as
+ * source so a query that Unbound sent from another address cannot ride a member out. disablereplyto keeps the
+ * pass from also stamping reply-to. The counting block targets the plugin table; the backstop targets the
+ * resolver itself and is always rendered.
  *
  * @param list<array{interface: string}> $members
  * @return list<array<string, string|bool>>
  */
-function uu_rule_confs(string $resolver, array $members): array
+function uu_rule_confs(string $resolver, array $members, bool $counting): array
 {
     $confs = [];
     $seen = [];
@@ -58,10 +68,17 @@ function uu_rule_confs(string $resolver, array $members): array
             'descr' => 'Unbound upstream: the resolver through this member',
         ];
     }
+    if ($counting) {
+        $confs[] = [
+            'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+            'to' => '<' . UU_BLOCK_TABLE . '>', 'label' => uu_label_block(),
+            'descr' => 'Unbound upstream: the resolver never leaves by another interface (counted)',
+        ];
+    }
     $confs[] = [
         'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-        'to' => $resolver, 'label' => uu_label_block(),
-        'descr' => 'Unbound upstream: the resolver never leaves by another interface',
+        'to' => $resolver, 'label' => uu_label_backstop(),
+        'descr' => 'Unbound upstream: the resolver never leaves by another interface (backstop)',
     ];
     return $confs;
 }
@@ -110,9 +127,21 @@ function uu_wanted_render(): array
  *
  * @param ?callable(): array{enabled: bool, resolver: string, members: list<array{interface: string}>} $wanted
  * @param ?callable(string): void $log receives the message; default logs it as UU_SYSLOG_IDENT at local4.err
+ * @param ?callable(string): bool $isAlias whether an alias has the name; default asks core
  */
-function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = null, ?callable $log = null): void
-{
+function uu_render_firewall(
+    \OPNsense\Firewall\Plugin $fw,
+    ?callable $wanted = null,
+    ?callable $log = null,
+    ?callable $isAlias = null
+): void {
+    $emit = static function (string $msg) use ($log): void {
+        if ($log !== null) {
+            $log($msg);
+        } else {
+            exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
+        }
+    };
     try {
         $w = $wanted !== null ? $wanted() : uu_wanted_render();
         if (!$w['enabled']) {
@@ -121,15 +150,18 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         if (filter_var($w['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
             throw new \RuntimeException('resolver is not an IPv4 address');
         }
-        foreach (uu_rule_confs($w['resolver'], $w['members']) as $conf) {
+        $clash = $isAlias !== null ? $isAlias(UU_BLOCK_TABLE) : \OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
+        $counting = !$clash;
+        if ($clash) {
+            $emit('rules: an alias named ' . UU_BLOCK_TABLE . ' exists; the counting block is not rendered');
+        } else {
+            $fw->registerTable(UU_BLOCK_TABLE);
+        }
+        foreach (uu_rule_confs($w['resolver'], $w['members'], $counting) as $conf) {
             $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
         }
     } catch (\Throwable $e) {
         $msg = 'rules not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage());
-        if ($log !== null) {
-            $log($msg);
-        } else {
-            exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
-        }
+        $emit($msg);
     }
 }

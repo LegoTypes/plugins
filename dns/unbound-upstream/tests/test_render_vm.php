@@ -38,7 +38,9 @@ uu_register_suite('render_vm', function (): int {
     uu_check($t, 'rendered on the tunnel device wg1', str_contains($text, 'on wg1 '));
     uu_check($t, 'rendered on the tunnel device wg2', str_contains($text, 'on wg2 '));
     uu_check($t, 'the source is the interface address (opt1ip rendered as (wg1))', str_contains($text, 'on wg1 inet proto {tcp udp} from {(wg1)} to {10.2.0.1} port {53}'));
-    uu_check($t, 'a block to the resolver is present', str_contains($text, 'block out log quick inet from {any} to {10.2.0.1}'));
+    uu_check($t, 'the backstop block to the resolver literal is present', str_contains($text, 'block out log quick inet from {any} to {10.2.0.1}'));
+    uu_check($t, 'the counting block targets the plugin table', str_contains($text, 'block out log quick inet from {any} to {<unboundupstream_block>}'));
+    uu_check($t, 'the table is declared bare: no persist, no file', preg_match('/^table <unboundupstream_block>$/m', $fw->tablesToText()) === 1);
     uu_check($t, 'no unresolved ## placeholder', !str_contains($text, '##'));
     printf("%s", preg_replace('/^/m', '    | ', $text));
     return uu_tally_report('render_vm', $t);

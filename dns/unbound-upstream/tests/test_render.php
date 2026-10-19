@@ -28,8 +28,16 @@ function uu_test_fw(): \OPNsense\Firewall\Plugin
         /** @var list<array{int, array<string, string|bool>}> */
         public array $rules = [];
 
+        /** @var list<array{string, bool, ?string}> */
+        public array $tables = [];
+
         public function __construct()
         {
+        }
+
+        public function registerTable($name, $persist = false, $file = null)
+        {
+            $this->tables[] = [$name, $persist, $file];
         }
 
         /**
@@ -53,8 +61,10 @@ uu_register_suite('render', function (): int {
     $b['interface'] = 'opt15';
     $b['if'] = 'wg5';
 
-    $c = uu_rule_confs('10.2.0.1', [$a, $b]);
-    uu_check($t, 'one pass per member and one block: three confs', count($c) === 3);
+    $c = uu_rule_confs('10.2.0.1', [$a, $b], true);
+    uu_check($t, 'rules: passes, counting block, backstop in that order',
+        count($c) === 4 && $c[0]['type'] === 'pass' && $c[1]['type'] === 'pass'
+        && $c[2]['label'] === md5('uu-block') && $c[3]['label'] === md5('uu-backstop'));
     uu_check($t, 'per member: pass out quick on the friendly interface, from <opt>ip, tcp/udp to resolver port 53',
         $c[0] == ['type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => 'opt14',
             'ipprotocol' => 'inet', 'protocol' => 'tcp/udp', 'from' => 'opt14ip', 'to' => '10.2.0.1', 'to_port' => '53',
@@ -62,16 +72,23 @@ uu_register_suite('render', function (): int {
             'descr' => 'Unbound upstream: the resolver through this member']);
     uu_check($t, 'the second member gets its own interface and label',
         $c[1]['interface'] === 'opt15' && $c[1]['from'] === 'opt15ip' && $c[1]['label'] === md5('uu-pass-opt15'));
-    uu_check($t, 'last: block out log quick inet to the resolver',
-        end($c) == ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-            'to' => '10.2.0.1', 'label' => md5('uu-block'),
-            'descr' => 'Unbound upstream: the resolver never leaves by another interface']);
+    uu_check($t, 'rules: the counting block targets <unboundupstream_block> and the backstop the resolver, both log and quick',
+        $c[2] == ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+            'to' => '<unboundupstream_block>', 'label' => md5('uu-block'),
+            'descr' => 'Unbound upstream: the resolver never leaves by another interface (counted)']
+        && $c[3] == ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+            'to' => '10.2.0.1', 'label' => md5('uu-backstop'),
+            'descr' => 'Unbound upstream: the resolver never leaves by another interface (backstop)']);
     uu_check($t, 'two members on one interface render one pass',
-        count(uu_rule_confs('10.2.0.1', [$a, $a])) === 2);
-    uu_check($t, 'no members still blocks the resolver everywhere',
-        count(uu_rule_confs('10.2.0.1', [])) === 1 && uu_rule_confs('10.2.0.1', [])[0]['type'] === 'block');
+        count(uu_rule_confs('10.2.0.1', [$a, $a], true)) === 3);
+    uu_check($t, 'no members still blocks the resolver everywhere: counting block and backstop',
+        count(uu_rule_confs('10.2.0.1', [], true)) === 2 && uu_rule_confs('10.2.0.1', [], true)[1]['to'] === '10.2.0.1');
     uu_check($t, 'a member without a friendly interface gets no pass',
-        count(uu_rule_confs('10.2.0.1', [array_merge($a, ['interface' => ''])])) === 1);
+        count(uu_rule_confs('10.2.0.1', [array_merge($a, ['interface' => ''])], true)) === 2);
+    $nc = uu_rule_confs('10.2.0.1', [$a], false);
+    uu_check($t, 'rules: no counting block when not counting',
+        count($nc) === 2 && $nc[1]['label'] === md5('uu-backstop') && $nc[1]['to'] === '10.2.0.1'
+        && uu_rule_confs('10.2.0.1', [], false) === [$nc[1]]);
     uu_check($t, 'priority is the constant', UU_RULE_PRIORITY === 99998);
 
     $wanted = function () use ($a, $b): array {
@@ -80,12 +97,22 @@ uu_register_suite('render', function (): int {
     $fw = uu_test_fw();
     uu_render_firewall($fw, $wanted);
     uu_check($t, 'enabled: every conf registered at UU_RULE_PRIORITY',
-        count($fw->rules) === 3 && $fw->rules[0][0] === UU_RULE_PRIORITY && $fw->rules[2][0] === UU_RULE_PRIORITY
-        && $fw->rules[2][1]['type'] === 'block');
+        count($fw->rules) === 4 && $fw->rules[0][0] === UU_RULE_PRIORITY && $fw->rules[3][0] === UU_RULE_PRIORITY
+        && $fw->rules[3][1]['type'] === 'block');
+    uu_check($t, 'render: the table is registered without persist or file', $fw->tables === [['unboundupstream_block', false, null]]);
+
+    $fw = uu_test_fw();
+    $logged = [];
+    uu_render_firewall($fw, $wanted, function (string $msg) use (&$logged): void {
+        $logged[] = $msg;
+    }, fn (string $name): bool => $name === 'unboundupstream_block');
+    uu_check($t, 'render: an alias clash registers no table, renders passes and the backstop, and logs',
+        $fw->tables === [] && count($fw->rules) === 3 && $fw->rules[2][1]['label'] === md5('uu-backstop')
+        && $logged === ['rules: an alias named unboundupstream_block exists; the counting block is not rendered']);
 
     $fw = uu_test_fw();
     uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '10.2.0.1', 'members' => [$a]]);
-    uu_check($t, 'disabled: no rules registered', $fw->rules === []);
+    uu_check($t, 'disabled: no rules registered', $fw->rules === [] && $fw->tables === []);
 
     $fw = uu_test_fw();
     $threw = false;
