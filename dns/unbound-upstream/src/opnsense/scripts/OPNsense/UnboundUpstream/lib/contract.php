@@ -18,7 +18,7 @@ declare(strict_types=1);
 /**
  * @param array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *     unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *     unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int} $c
  * @return array{ok: bool, failures: list<string>, notes: list<string>}
@@ -52,8 +52,13 @@ function uu_contract(array $c): array
     if ($c['foreign_route'] === true) {
         $failures[] = 'resolver route not ours';
     }
-    if ($c['rules_loaded'] !== true) {
-        $failures[] = 'firewall rules not loaded';
+    /* section 3.6c: verifying (a status call after the ruleset changed) is no fault, the next evaluation lists */
+    if ($c['rules']['state'] === 'verifying') {
+        $notes[] = 'firewall rules are being verified (the ruleset changed)';
+    } elseif ($c['rules']['state'] !== 'loaded') {
+        foreach ($c['rules']['problems'] === [] ? ['not loaded'] : $c['rules']['problems'] as $problem) {
+            $failures[] = 'firewall rules: ' . $problem;
+        }
     }
 
     $zone = $c['zone'];

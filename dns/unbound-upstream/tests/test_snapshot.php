@@ -7,7 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Live snapshot parsers (spec section 3.2): route get, unbound-control forward, sysctl, ps, group tiers.
+ * Live snapshot parsers (spec section 3.2): route get, unbound-control forward, sysctl, ps, group tiers; and the pf
+ * observation the snapshot makes through an injected pfctl (section 3.6c): what it reads, and that a status never
+ * lists the ruleset.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -110,6 +112,75 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'ours: no route is not ours, and a connected route (no gateway) is not ours',
         !uu_route_ours(['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false], $members)
         && !uu_route_ours(['gateway' => ''] + $via, ['wg-a' => ['next_hop' => ''] + $a]));
+
+    /* the members the renderer gives pass rules: those with an interface */
+    $b = uu_test_member();
+    $b['name'] = 'wg-b';
+    $b['interface'] = 'opt2';
+    $b['if'] = 'wg2';
+    $c = uu_test_member();
+    $c['name'] = 'wg-c';
+    $c['interface'] = '';
+    $c['if'] = '';
+    $ruled = uu_ruled_members(['wg-a' => $a, 'wg-c' => $c, 'wg-b' => $b]);
+    uu_check($t, 'ruled members: name, interface and device of each member with an interface, in order',
+        $ruled === [['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1'],
+                    ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2']]);
+
+    /* pf observation through a recording pfctl */
+    $si = uu_snapshot_fixture('pfctl_si_v.txt');
+    $sum = '0x86046332dac3627299e22fb166d0fef2';
+    $outputs = ['-si -v' => $si, '-vsr' => uu_snapshot_fixture('pfctl_vsr_12.txt'),
+                '-vvsTables' => uu_snapshot_fixture('pfctl_vvsTables.txt'),
+                '-t ' . UU_BLOCK_TABLE . ' -T show' => "   10.2.0.1\n"];
+    $observe = function (bool $counting, ?array $record, bool $listRules, array $outputs) use ($ruled): array {
+        $calls = [];
+        $pfctl = function (array $args) use (&$calls, $outputs): string {
+            $calls[] = implode(' ', $args);
+            return $outputs[implode(' ', $args)] ?? '';
+        };
+        $o = uu_pf_observe('10.2.0.1', $ruled, $counting, $record, 1792400000, $listRules, $pfctl);
+        return [$o, $calls];
+    };
+    [$o, $calls] = $observe(true, null, false, $outputs);
+    uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '
+        . 'the ruleset is never listed',
+        $o['rules'] === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]
+        && $calls === ['-si -v', '-vvsTables', '-t ' . UU_BLOCK_TABLE . ' -T show']);
+    uu_check($t, 'observe: the counting table\'s facts and addresses',
+        $o['block_table'] === ['counting' => true, 'table' => ['addresses' => 1, 'references' => 1, 'out_block' => 37],
+                               'addresses' => ['10.2.0.1']]);
+    $record = ['checksum' => $sum, 'at' => 1792399000, 'loaded' => true, 'problems' => []];
+    [$o, $calls] = $observe(true, $record, false, $outputs);
+    uu_check($t, 'observe, status with a record of the live checksum: its verdict and time, no listing',
+        $o['rules'] === ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000, 'record' => null]
+        && !in_array('-vsr', $calls, true));
+    [$o, $calls] = $observe(true, null, true, $outputs);
+    uu_check($t, 'observe, evaluation without a record: lists once between two checksum reads and returns the record',
+        $o['rules'] === ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792400000,
+                         'record' => ['checksum' => $sum, 'at' => 1792400000, 'loaded' => true, 'problems' => []]]
+        && array_slice($calls, 0, 3) === ['-si -v', '-vsr', '-si -v']
+        && count(array_keys($calls, '-vsr', true)) === 1);
+    [$o, $calls] = $observe(true, ['checksum' => '0x1'] + $record, true, $outputs);
+    uu_check($t, 'observe, evaluation with a stale record: lists again',
+        in_array('-vsr', $calls, true) && $o['rules']['record'] !== null && $o['rules']['record']['checksum'] === $sum);
+    [$o, $calls] = $observe(true, $record, true, $outputs);
+    uu_check($t, 'observe, evaluation with a record of the live checksum: no listing and nothing to save',
+        !in_array('-vsr', $calls, true) && $o['rules']['state'] === 'loaded' && $o['rules']['record'] === null);
+    [$o, $calls] = $observe(false, null, true, $outputs);
+    uu_check($t, 'observe, an alias holds the table\'s name: the table is never read, and the verdict does not ask '
+        . 'for the counting block',
+        $o['block_table'] === ['counting' => false, 'table' => null, 'addresses' => []]
+        && !in_array('-vvsTables', $calls, true) && !in_array('-t ' . UU_BLOCK_TABLE . ' -T show', $calls, true)
+        && $o['rules']['state'] === 'loaded');
+    [$o, $calls] = $observe(true, null, true, ['-vvsTables' => ''] + $outputs);
+    uu_check($t, 'observe: no table listed, so its addresses are not asked for',
+        $o['block_table'] === ['counting' => true, 'table' => null, 'addresses' => []]
+        && !in_array('-t ' . UU_BLOCK_TABLE . ' -T show', $calls, true));
+    [$o, $calls] = $observe(true, null, true, ['-si -v' => ''] + $outputs);
+    uu_check($t, 'observe: pf status unreadable is missing, named, and nothing is listed',
+        $o['rules'] === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null,
+                         'record' => null] && !in_array('-vsr', $calls, true));
 
     return uu_tally_report('snapshot', $t);
 });

@@ -7,15 +7,14 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Status and logging (spec 2026-10-17 section 3.8): syslog lines, the blocked-packet line, the rule counters and
- * the status document. Pure except uu_log() and uu_logger().
+ * Status and logging (spec 2026-10-17 section 3.8): syslog lines, the blocked-packet line, durations and the status
+ * document. Pure except uu_log() and uu_logger().
  */
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/verdict.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/contract.php';
-require_once __DIR__ . '/render.php';
 
 /**
  * Log from evaluate.php's own process as program UU_SYSLOG_IDENT at local4, which the plugin's syslog-ng filter
@@ -44,56 +43,9 @@ function uu_logger(string $msg, string $level = 'notice'): void
 }
 
 /**
- * Whether pf holds the plugin's rules: the block rule and a pass rule for every member interface that resolved
- * (an empty interface name has no rule). A filter reload without the plugin's files drops them (section 3.6).
- *
- * @param list<string> $interfaces the members' interface names (opt1, ...)
- */
-function uu_rules_loaded(string $pfOut, array $interfaces): bool
-{
-    $counts = uu_pf_label_packets($pfOut);
-    if (!isset($counts[uu_label_block()])) {
-        return false;
-    }
-    foreach ($interfaces as $opt) {
-        if ($opt !== '' && !isset($counts[uu_label_pass($opt)])) {
-            return false;
-        }
-    }
-    return true;
-}
-
-/**
- * `pfctl -vsr`: packets per rule label, summed over the rules one label expands to (a tcp/udp pass is two pf
- * rules). A labelled rule without a counter line counts 0, so its label still shows the rule is loaded.
- *
- * @return array<string, int>
- */
-function uu_pf_label_packets(string $out): array
-{
-    $counts = [];
-    $label = null;
-    foreach (preg_split('/\R/', $out) ?: [] as $line) {
-        if ($line === '') {
-            continue;
-        }
-        if ($line[0] !== ' ' && $line[0] !== "\t") {
-            $label = preg_match('/\blabel "([^"]*)"/', $line, $m) === 1 ? $m[1] : null;
-            if ($label !== null) {
-                $counts[$label] = $counts[$label] ?? 0;
-            }
-            continue;
-        }
-        if ($label !== null && preg_match('/\bPackets:\s*(\d+)/', $line, $m) === 1) {
-            $counts[$label] += (int)$m[1];
-        }
-    }
-    return $counts;
-}
-
-/**
- * The log line for the block rule's packet count, or null when there is nothing new. pf resets rule counters on
- * every filter reload, so a lower count starts again from the reload.
+ * The log line for the counting table's blocked packets (its Out/Block count), or null when there is nothing new.
+ * The table's counters survive filter reloads and reset only when the table is created again (the plugin disabled
+ * and enabled, a boot), so a lower count starts again from then.
  */
 function uu_blocked_line(?int $previous, ?int $now): ?string
 {
@@ -161,9 +113,13 @@ function uu_duration_text(int $seconds): string
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules_loaded: bool,
+ *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}} $s
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
+ *         addresses: list<string>}} $s
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
@@ -175,23 +131,26 @@ function uu_duration_text(int $seconds): string
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
  *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
- * @param string $pfOut `pfctl -vsr`
+ * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
+ *     block_table and the saved state's resolver
  * @param string $routeOut `route -n get -inet <resolver>`
  * @return array{enabled: bool, dry_run: bool, resolver: string, mode: string, member: ?string, tier: ?int,
  *     unbound: array{enabled: bool, running: bool, control_ok: bool}, live_root: ?list<string>,
  *     configured_root: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     tls_applied: ?bool,
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool, flags: list<string>},
- *     rules_loaded: bool, blocked: ?int,
+ *     rules_loaded: bool, rules: array{state: string, problems: list<string>, verified_at: ?int},
+ *     counter_armed: bool, blocked: ?int,
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}},
- *     members: list<array{name: string, tier: int, kind: string, verdict: ?string, usable: bool, counted: int,
+ *     members: list<array{name: string, tier: int, kind: string, verdict: ?string, usable: bool,
+ *         healthy_for: int, healthy_for_text: string, last_down: ?array{at: int, reason: string},
  *         resolver_failed_for: ?int, probe_failures: int}>,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     contract: array{ok: bool, failures: list<string>, notes: list<string>},
  *     next: array{action: string, reasons: list<string>}}
  */
-function uu_status_doc(array $s, array $plan, string $pfOut, string $routeOut): array
+function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOut): array
 {
     $st = $plan['state'];
     $tierOf = [];
@@ -213,14 +172,13 @@ function uu_status_doc(array $s, array $plan, string $pfOut, string $routeOut): 
             'verdict' => $m === null ? 'no gateway record'
                 : ($p === null ? 'no gateway status' : uu_member_down($m, $p, $s['trigger'], false)),
             'usable' => $m !== null && $p !== null && uu_usable_settled($m, $p, $s['trigger']),
-            'counted' => $timer['counted'],
+            'healthy_for' => $timer['counted'],
+            'healthy_for_text' => uu_duration_text($timer['counted']),
+            'last_down' => $timer['last_down'],
             'resolver_failed_for' => $until !== null && $s['now'] < $until ? $until - $s['now'] : null,
             'probe_failures' => $timer['probe_failures'],
         ];
     }
-
-    $counts = uu_pf_label_packets($pfOut);
-    $loaded = uu_rules_loaded($pfOut, array_column($s['members'], 'interface'));
 
     return [
         'enabled' => $s['settings']['enabled'],
@@ -235,8 +193,11 @@ function uu_status_doc(array $s, array $plan, string $pfOut, string $routeOut): 
         'configured_root' => $s['zone'],
         'tls_applied' => $st['tls_applied'],
         'route' => $s['route'] + ['flags' => $s['route']['present'] ? uu_status_route_flags($routeOut) : []],
-        'rules_loaded' => $loaded,
-        'blocked' => $counts[uu_label_block()] ?? null,
+        'rules_loaded' => $s['rules']['state'] === 'loaded',
+        'rules' => ['state' => $s['rules']['state'], 'problems' => $s['rules']['problems'],
+                    'verified_at' => $s['rules']['verified_at']],
+        'counter_armed' => $blockTable['armed'],
+        'blocked' => $blockTable['blocked'],
         'checks' => $st['checks'],
         'members' => $members,
         'last_switch' => $st['last_switch'],

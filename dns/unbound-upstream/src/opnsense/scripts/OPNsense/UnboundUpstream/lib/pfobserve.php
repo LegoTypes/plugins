@@ -13,6 +13,8 @@ declare(strict_types=1);
  *
  * Record = array{checksum: string, at: int, loaded: bool, problems: list<string>}
  * Verdict = array{loaded: bool, problems: list<string>}
+ * RulesCheck = array{state: string, problems: list<string>, verified_at: ?int, record: ?Record}  (uu_rules_check())
+ * TableFacts = array{addresses: int, references: int, out_block: int}  (uu_pf_table())
  */
 
 require_once __DIR__ . '/constants.php';

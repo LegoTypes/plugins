@@ -1,5 +1,7 @@
 
 # The rendered block and pass rules and the minute job go with the plugin's files: reload the filter and
-# regenerate cron once they are gone (the pre-deinstall stop still saw the plugin enabled).
+# regenerate cron once they are gone (the pre-deinstall stop still saw the plugin enabled). The reload drops the
+# counting table with its rule; the rules' verification record goes too.
 /usr/local/sbin/configctl filter reload || true
 /usr/local/sbin/configctl cron restart || true
+rm -f /var/run/unboundupstream/rules.json

@@ -27,7 +27,7 @@ uu_register_suite('snapshot_vm', function (): int {
     }
     $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp', 'resolver' => '10.2.0.1',
                  'failback_delay' => 120, 'probe_name' => '.'];
-    $s = uu_snapshot($settings, [], null);
+    $s = uu_snapshot($settings, [], null, false);
     uu_check($t, 'settings pass through, trigger is the group\'s', $s['settings'] === $settings && $s['trigger'] === 'downloss');
     uu_check($t, 'now is monotonic seconds', abs($s['now'] - intdiv(hrtime(true), 1000000000)) <= 2);
     uu_check($t, 'tiers best first', $s['tiers'] === [['wg-test-429'], ['wg-test-529']]);
@@ -43,8 +43,8 @@ uu_register_suite('snapshot_vm', function (): int {
         && is_int($s['probes']['wg-test-429']['sock_age']) && $s['probes']['wg-test-429']['sock_age'] >= 0
         && is_int($s['probes']['wg-test-529']['sock_age']) && $s['probes']['wg-test-529']['sock_age'] >= 0);
     uu_check($t, 'named and stop are what the caller passed', $s['named'] === [] && $s['stop'] === null
-        && uu_snapshot($settings, ['wg-test-529'], UU_STOP_REQUEST)['named'] === ['wg-test-529']
-        && uu_snapshot($settings, [], UU_STOP_REMOVE)['stop'] === UU_STOP_REMOVE);
+        && uu_snapshot($settings, ['wg-test-529'], UU_STOP_REQUEST, false)['named'] === ['wg-test-529']
+        && uu_snapshot($settings, [], UU_STOP_REMOVE, false)['stop'] === UU_STOP_REMOVE);
     uu_check($t, 'unbound is running and its control channel answers with the live root',
         $s['unbound']['enabled'] && $s['unbound']['pid_alive'] && $s['unbound']['control_ok']
         && $s['unbound']['live_root'] !== null && count($s['unbound']['live_root']) >= 1);
@@ -56,15 +56,47 @@ uu_register_suite('snapshot_vm', function (): int {
     uu_check($t, 'contract input: group found, two members, hooks fine, order is a fault only while the hook file is not overlaid',
         $c['group_found'] === true && $c['members'] === 2 && $c['unbound_hooks_registered'] === true
         && $c['unbound_sorts_first'] === is_readable('/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc') && $c['groups_have_tiers'] === true && $c['status_fields'] === true
-        && $c['foreign_route'] === false && $c['rules_loaded'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
+        && $c['foreign_route'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
 
-    $gone = uu_snapshot(['group' => 'no_such_group'] + $settings, [], null);
+    /* a status snapshot never lists the ruleset: its verdict is the saved record's for the live checksum, or
+     * verifying, and it has nothing to save; a listing would have returned this run's time and a record */
+    $saved = uu_rules_record_load(UU_RULES_PATH);
+    $live = uu_pf_checksum((string)shell_exec('/sbin/pfctl -si -v 2>/dev/null'));
+    $r = $s['rules'];
+    uu_check($t, 'status snapshot: no listing, so verifying or the saved record\'s verdict, and no record to save',
+        $r['record'] === null && ($saved !== null && $saved['checksum'] === $live
+            ? $r['state'] === ($saved['loaded'] ? 'loaded' : 'missing') && $r['verified_at'] === $saved['at']
+            : $r === ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null]));
+    uu_check($t, 'contract input: the rules\' state and problems',
+        $c['rules'] === ['state' => $r['state'], 'problems' => $r['problems']]);
+    $counting = !\OPNsense\Firewall\Util::isAlias(UU_BLOCK_TABLE);
+    uu_check($t, 'block table: counting unless an alias has its name; no addresses without the table',
+        $s['block_table']['counting'] === $counting
+        && ($s['block_table']['table'] !== null || $s['block_table']['addresses'] === []));
+    $e = uu_snapshot($settings, [], null, true);
+    $er = $e['rules'];
+    uu_check($t, 'evaluation snapshot: never verifying; the saved verdict while its checksum is live, else a fresh '
+        . 'listing with a record of the live checksum to save',
+        $saved !== null && $saved['checksum'] === $live
+            ? $er === ['state' => $saved['loaded'] ? 'loaded' : 'missing', 'problems' => $saved['problems'],
+                       'verified_at' => $saved['at'], 'record' => null]
+            : $er['state'] !== 'verifying' && $er['record'] !== null && $er['record']['checksum'] === $live
+                && $er['verified_at'] === $er['record']['at']);
+    /* a real listing through the live pfctl, whatever is saved: the VM's settings do not render these rules */
+    $o = uu_pf_observe('10.2.0.1', uu_ruled_members($s['members']), $counting, null, 1792400000, true, 'uu_pfctl_out');
+    uu_check($t, 'live listing: these rules are missing, naming wg-test-429, recorded under the live checksum',
+        $o['rules']['state'] === 'missing'
+        && in_array('no pass rule for wg-test-429 (' . ($a['interface'] ?? '') . ')', $o['rules']['problems'], true)
+        && $o['rules']['record'] !== null && $o['rules']['record']['checksum'] === $live
+        && $o['rules']['verified_at'] === 1792400000);
+
+    $gone = uu_snapshot(['group' => 'no_such_group'] + $settings, [], null, false);
     uu_check($t, 'a group that does not exist: no tiers, no members, group_found false',
         $gone['tiers'] === [] && $gone['members'] === [] && $gone['probes'] === []
         && $gone['contract_input']['group_found'] === false && $gone['contract_input']['members'] === 0);
-    $none = uu_snapshot(['group' => ''] + $settings, [], null);
+    $none = uu_snapshot(['group' => ''] + $settings, [], null, false);
     uu_check($t, 'no group set: group_found false', $none['contract_input']['group_found'] === false);
 
     return uu_tally_report('snapshot_vm', $t);
