@@ -213,8 +213,8 @@ uu_register_suite('pfobserve', function (): int {
     $r = uu_rules_check(null, $in, $reads(['0xbb', null, null]), $listings(['whole'], $lists),
         fn (string $s): array => $good, 900, true);
     uu_check($t, 'check: an unreadable checksum after the listing is a disagreement: no record, no listing while '
-        . 'the checksum stays unreadable',
-        $lists === 1 && $r === ['state' => 'missing', 'problems' => ['the ruleset changed during every listing'],
+        . 'the checksum stays unreadable, and the problem names the unreadable status',
+        $lists === 1 && $r === ['state' => 'missing', 'problems' => ['pf status unreadable'],
             'verified_at' => null, 'record' => null]);
     $r = uu_rules_check($record, $in, $reads(['0xbb']), $boom, fn (string $s): array => $good, 900, false);
     uu_check($t, 'check: no listing allowed reads verifying',
