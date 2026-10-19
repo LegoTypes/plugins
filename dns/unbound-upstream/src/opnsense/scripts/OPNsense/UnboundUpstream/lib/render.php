@@ -27,6 +27,12 @@ function uu_label_block(): string
     return md5('uu-block');
 }
 
+/** The pf label of the backstop block; the rules verdict looks for it by this label. */
+function uu_label_backstop(): string
+{
+    return md5('uu-backstop');
+}
+
 /**
  * One pass per distinct member interface, then the block. The pass is on the member's friendly interface name,
  * which core maps to the device, with the interface's own address as source so a query that Unbound sent from
