@@ -23,7 +23,8 @@
  *     re-renders during that reload.
  * What pf holds is listed (pfctl -sr) only when pf's ruleset checksum or the
  * rendered pin labels differ from the last listing's (WGCT_OBSERVED_FILE),
- * not on every reconcile; a listing that a filter reload ran during is never
+ * or that listing counted a miss, not on every reconcile; a listing that a
+ * filter reload cut short (an identical reload too) or straddled is never
  * used, and is listed again (spec 2026-10-19).
  * Repeated reload requests for the same wanted pins are rate-limited with
  * exponential back-off, and a persistently failing anchor load, pf
@@ -94,20 +95,25 @@ try {
     /* What pf holds right now, not just what rendered.json says was
      * rendered: a filter reload while the hook could not render leaves pf
      * without the pins and anchor while the record still describes them.
-     * stdout only (exec() never captures stderr); $live stays null when
-     * a pfctl listing fails or no listing can be trusted (below), and the plan
-     * then rests on the record alone.
+     * Parsed from stdout only; $live stays null when a pfctl listing fails or
+     * no listing can be trusted (below), and the plan then rests on the record
+     * alone.
      *
      * The main ruleset changes only when it is loaded, and pf recomputes its
      * ruleset checksum over the rules' labels at every load (an identical
      * load keeps it), so `pfctl -sr` (seconds on a large ruleset) runs only
-     * when the checksum or the rendered pin labels differ from observed.json's;
-     * otherwise missing_labels is the recorded count. A listing counts only
-     * when the checksum read before it equals the one after
-     * (wgct_observe_listing): a load during it may have cut it short. A second
-     * straddled listing leaves $live null and records nothing, and is no
-     * failure ($observeTransient: a notice, the next run lists again); an
-     * unreadable checksum lists as before and records nothing. */
+     * when the checksum or the rendered pin labels differ from observed.json's,
+     * or the record counts a miss; otherwise missing_labels is the recorded 0.
+     * A listing counts only when it is whole and the checksum read before it
+     * equals the one after (wgct_observe_listing). Any load during it, an
+     * identical one too, cuts it short: pfctl then prints
+     * `pfctl: DIOCGETRULE: Device busy` and still exits 0, so its stderr is
+     * kept apart and judged (wgct_pf_listing_usable); a load that changes the
+     * ruleset also moves the checksum. A listing cut short or straddled is
+     * listed once more; a second one leaves $live null and records nothing,
+     * and is no failure ($observeTransient: a notice, the next run lists
+     * again). An unreadable checksum lists as before (a cut listing is listed
+     * once more there too) and records nothing. */
     $live = null;
     $liveFrom = null;
     $observeError = null;
@@ -131,15 +137,16 @@ try {
             return $checksum;
         };
         /* a failed listing throws, which ends wgct_observe_listing without
-         * another listing; caught below as the pfctl failure it is */
+         * another listing; caught below as the pfctl failure it is. A listing
+         * cut short returns null. */
         $rulesRc = 0;
-        $listRules = function () use (&$rulesRc): array {
-            $ruleLines = [];
-            exec('/sbin/pfctl -sr', $ruleLines, $rulesRc);
+        $listRules = function () use (&$rulesRc): ?array {
+            $run = wgct_pfctl_run(['-sr']);
+            $rulesRc = $run['rc'];
             if ($rulesRc !== 0) {
                 throw new \RuntimeException('pfctl -sr failed (exit ' . $rulesRc . ')');
             }
-            return $ruleLines;
+            return wgct_pf_listing_usable($run['err']) ? $run['lines'] : null;
         };
 
         $before = $readChecksum();
@@ -149,8 +156,15 @@ try {
                 $live = ['anchor_count' => wgct_anchor_rule_count($anchorLines), 'missing_labels' => $reused];
                 $liveFrom = 'from the record';
             } elseif ($before === null) {
-                $live = wgct_live_observation($anchorLines, $listRules(), $pins);
-                $liveFrom = 'listed; checksum unreadable, nothing recorded';
+                $ruleLines = $listRules() ?? $listRules();
+                if ($ruleLines === null) {
+                    $unobserved = wgct_unobserved_listing(false);
+                    $observeError = $unobserved['error'];
+                    $observeTransient = $unobserved['transient'];
+                } else {
+                    $live = wgct_live_observation($anchorLines, $ruleLines, $pins);
+                    $liveFrom = 'listed; checksum unreadable, nothing recorded';
+                }
             } else {
                 $observed = wgct_observe_listing($before, $readChecksum, $listRules);
                 if ($observed === null) {
@@ -283,11 +297,11 @@ try {
 
     /* A run that could not read pf still acted on the record, but reports
      * that (once per distinct failure); a clean run reports a recovery once.
-     * A run whose listings a reload straddled twice is neither: it logs a
-     * notice and leaves the failure record alone, so it neither reports a
-     * recovery nor clears an earlier failure's hash. */
+     * A run whose two listings a reload cut short or straddled is neither: it
+     * logs a notice and leaves the failure record alone, so it neither reports
+     * a recovery nor clears an earlier failure's hash. */
     if ($observeTransient) {
-        wgct_log(LOG_NOTICE, '[wgct-render] freshness: the ruleset changed during both listings; the next run lists again');
+        wgct_log(LOG_NOTICE, '[wgct-render] freshness: a ruleset load ran during both listings; the next run lists again');
     } else {
         wgct_report_freshness_outcome(
             $observeError !== null

@@ -368,8 +368,11 @@ function wgct_write_freshness_state(?array $s): bool {
 
 /**
  * pf's ruleset checksum from `pfctl -si -v` (stdout lines, as exec() returns
- * them). pf recomputes it whenever a ruleset is loaded, so an unchanged value
- * means the rules pfctl -sr would list are unchanged.
+ * them). pf recomputes it whenever the main ruleset is loaded, so an unchanged
+ * value means the rules pfctl -sr would list are unchanged. It does not say a
+ * listing is whole: a load that keeps it (an identical one) still cuts short a
+ * listing running at that moment, which only pfctl's stderr shows
+ * (wgct_pf_listing_usable()).
  *
  * @param array $siLines
  * @return string|null the value after "Checksum: " (e.g. 0x0123...), null when no such line
@@ -381,6 +384,60 @@ function wgct_pf_checksum(array $siLines): ?string {
         }
     }
     return null;
+}
+
+/**
+ * Whether a `pfctl -sr` listing is whole, from its stderr. Every load, an
+ * identical one too, makes pfctl stop a listing running at that moment with
+ * `pfctl: DIOCGETRULE: Device busy` and exit 0, so a line beginning `pfctl:`
+ * makes the listing unusable. pf's ALTQ notices ("No ALTQ support in kernel")
+ * do not begin so and change nothing.
+ *
+ * @param string $stderr the listing's stderr, kept apart from its lines
+ * @return bool
+ */
+function wgct_pf_listing_usable(string $stderr): bool {
+    foreach (preg_split('/\R/', $stderr) ?: [] as $line) {
+        if (str_starts_with(ltrim($line), 'pfctl:')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * /sbin/pfctl with $args and no shell, its stdout lines split as exec() would
+ * and its stderr apart: stderr goes to a temporary file (so a long listing
+ * cannot block on a full pipe) and never reaches the lines. A pfctl that
+ * cannot be started, or no temporary file for its stderr, reads as a failed
+ * run (rc -1), not as a listing cut short.
+ *
+ * @param array $args list<string>
+ * @return array ['rc' => int, 'lines' => list<string>, 'err' => string]
+ */
+function wgct_pfctl_run(array $args): array {
+    $errFile = tempnam(sys_get_temp_dir(), 'wgct_pfctl');
+    if ($errFile === false) {
+        return ['rc' => -1, 'lines' => [], 'err' => 'pfctl: no temporary file for its stderr'];
+    }
+    $pipes = [];
+    $proc = proc_open(
+        array_merge(['/sbin/pfctl'], $args),
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']],
+        $pipes
+    );
+    if (!is_resource($proc)) {
+        @unlink($errFile);
+        return ['rc' => -1, 'lines' => [], 'err' => 'pfctl: could not be started'];
+    }
+    $out = (string)stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    $rc = proc_close($proc);
+    $err = (string)@file_get_contents($errFile);
+    @unlink($errFile);
+    /* as exec() returns them: one entry per line, trailing whitespace stripped, no final empty line */
+    $lines = $out === '' ? [] : array_map('rtrim', explode("\n", rtrim($out, "\n")));
+    return ['rc' => $rc, 'lines' => $lines, 'err' => $err];
 }
 
 /**
@@ -397,15 +454,18 @@ function wgct_pin_labels_hash(array $pins): string {
 
 /**
  * Whether the last listing's result still holds: pf's ruleset and the labels
- * looked for are both the ones the record was made from.
+ * looked for are both the ones the record was made from, and pf held every
+ * label. A recorded miss is never reused: it is what freshness acts on, and
+ * the listing that counted it may have been cut short by a load that kept the
+ * checksum, so while it stands every run lists again.
  *
  * @param array|null  $record     wgct_read_observed()
  * @param string|null $checksum   pf's checksum now, null when unreadable
  * @param string      $labelsHash wgct_pin_labels_hash() of the rendered pins
- * @return int|null the recorded missing_labels to reuse, null when pf must be listed
+ * @return int|null the recorded missing_labels (0) to reuse, null when pf must be listed
  */
 function wgct_observed_reuse(?array $record, ?string $checksum, string $labelsHash): ?int {
-    if ($record === null || $checksum === null
+    if ($record === null || $checksum === null || $record['missing_labels'] > 0
         || $record['checksum'] !== $checksum || $record['labels_hash'] !== $labelsHash) {
         return null;
     }
@@ -414,8 +474,10 @@ function wgct_observed_reuse(?array $record, ?string $checksum, string $labelsHa
 
 /**
  * Lists pf's rules and proves no ruleset load ran meanwhile: the checksum read
- * before the listing must equal the one read after it, else the listing may be
- * of either ruleset and is retried (once, by default) and never used.
+ * before the listing must equal the one read after it, and the listing must be
+ * whole (an identical load keeps the checksum but still cuts it short, which
+ * $listing reports as null), else it is retried (once, by default) and never
+ * used.
  *
  * The caller has already read the checksum for the reuse decision and passes
  * that read as $first, so the first pair costs one read before the listing,
@@ -425,11 +487,13 @@ function wgct_observed_reuse(?array $record, ?string $checksum, string $labelsHa
  *
  * @param string   $first    the checksum the caller read before calling
  * @param callable $checksum (): ?string, pf's checksum now, null when unreadable
- * @param callable $listing  (): list<string>, the `pfctl -sr` lines
+ * @param callable $listing  (): ?list<string>, the `pfctl -sr` lines, null when
+ *                           pfctl cut the listing short (wgct_pf_listing_usable())
  * @param int      $pairs    how many reads-around-a-listing to try
  * @return array|null ['checksum' => string, 'lines' => list<string>] of the first
- *                    listing the reads around it agree on; null when a read is
- *                    unreadable or $pairs pairs all straddled a load
+ *                    whole listing the reads around it agree on; null when a read
+ *                    is unreadable or $pairs listings were all cut short or
+ *                    straddled a load
  */
 function wgct_observe_listing(string $first, callable $checksum, callable $listing, int $pairs = 2): ?array {
     $before = $first;
@@ -441,6 +505,9 @@ function wgct_observe_listing(string $first, callable $checksum, callable $listi
             return null;
         }
         $lines = $listing();
+        if ($lines === null) {
+            continue;
+        }
         $after = $checksum();
         if ($after === null) {
             return null;
@@ -453,18 +520,18 @@ function wgct_observe_listing(string $first, callable $checksum, callable $listi
 }
 
 /**
- * Why wgct_observe_listing() gave no listing, and whether that is a fault.
- * Both pairs straddling a ruleset load is expected in a reload burst and
+ * Why no listing could be used, and whether that is a fault. Both listings
+ * cut short or straddled by a ruleset load is expected in a reload burst and
  * clears itself (the next run lists again), so it is no failure to report; a
  * checksum that turned unreadable seconds after it was read is one.
  *
- * @param bool $checksumUnreadable whether a checksum read inside it was unreadable
+ * @param bool $checksumUnreadable whether a checksum read inside wgct_observe_listing() was unreadable
  * @return array ['error' => string, 'transient' => bool]
  */
 function wgct_unobserved_listing(bool $checksumUnreadable): array {
     return $checksumUnreadable
         ? ['error' => 'pf\'s ruleset checksum became unreadable around pfctl -sr', 'transient' => false]
-        : ['error' => 'pfctl -sr listed twice, each time while a ruleset load changed the checksum', 'transient' => true];
+        : ['error' => 'pfctl -sr listed twice, each time during a ruleset load', 'transient' => true];
 }
 
 /**
@@ -1538,10 +1605,18 @@ function wgct_render_selftest(): int {
     printf("[%s] labels hash: another label changes it\n", $ok ? 'PASS' : 'FAIL');
 
     $rec = ['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => 3];
-    $ok = wgct_observed_reuse($rec, '0xaa', 'h1') === 3;
+    $recWhole = ['checksum' => '0xaa', 'labels_hash' => 'h1', 'missing_labels' => 0];
+    $ok = wgct_observed_reuse($recWhole, '0xaa', 'h1') === 0;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] reuse: equal keys reuse the count\n", $ok ? 'PASS' : 'FAIL');
+
+    /* a miss is what freshness acts on, and an identical reload (which keeps the checksum) can be the
+     * very listing that miscounted it: never trusted, always listed again */
+    $ok = wgct_observed_reuse($rec, '0xaa', 'h1') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] reuse: a recorded miss lists again\n", $ok ? 'PASS' : 'FAIL');
 
     $ok = wgct_observed_reuse($rec, '0xbb', 'h1') === null;
     $fail += $ok ? 0 : 1;
@@ -1564,13 +1639,13 @@ function wgct_render_selftest(): int {
     printf("[%s] reuse: no checksum lists\n", $ok ? 'PASS' : 'FAIL');
 
     /* $reads feeds the checksum reads in turn (the first is passed in by the caller); every listing
-     * returns the next element of $lists and counts itself in $listed */
+     * returns the next element of $lists (null: pfctl cut it short) and counts itself in $listed */
     $listed = 0;
     $makeObserve = function (array $reads, array $lists) use (&$listed): array {
         $listed = 0;
         return [
             function () use (&$reads): ?string { return array_shift($reads); },
-            function () use (&$lists, &$listed): array { $listed++; return array_shift($lists); },
+            function () use (&$lists, &$listed): ?array { $listed++; return array_shift($lists); },
         ];
     };
 
@@ -1609,6 +1684,28 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] listing: an unreadable checksum before the second listing gives none\n", $ok ? 'PASS' : 'FAIL');
+
+    /* an identical load keeps the checksum yet cuts a listing short: the reads agree and only
+     * pfctl's stderr tells (the listing callable returns null) */
+    [$cs, $ls] = $makeObserve(['0xaa', '0xaa', '0xaa'], [null, ['whole']]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === ['checksum' => '0xaa', 'lines' => ['whole']] && $listed === 2;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: a listing cut short with agreeing reads is listed again\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve(['0xaa', '0xaa', '0xaa', '0xaa'], [null, null]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === null && $listed === 2;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: two listings cut short give none\n", $ok ? 'PASS' : 'FAIL');
+
+    $altq = "No ALTQ support in kernel\nALTQ related functions disabled\n";
+    $ok = wgct_pf_listing_usable('') && wgct_pf_listing_usable($altq)
+        && !wgct_pf_listing_usable($altq . "pfctl: DIOCGETRULE: Device busy\n")
+        && !wgct_pf_listing_usable('pfctl: DIOCGETRULE: Device busy');
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: a pfctl: line on stderr makes it unusable, the ALTQ notices alone do not\n", $ok ? 'PASS' : 'FAIL');
 
     $straddled = wgct_unobserved_listing(false);
     $unreadable = wgct_unobserved_listing(true);

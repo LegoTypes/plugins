@@ -70,7 +70,9 @@ Plugin Changelog
 
 * Freshness lists the ruleset only when it changed (pf's ruleset
   checksum and the rendered pin labels), not on every reconcile; a
-  listing during a filter reload is listed again
+  listing cut short by a filter reload, even one that leaves the ruleset
+  unchanged, is listed again, and a recorded miss is checked again at
+  every reconcile
 
 3.7
 
