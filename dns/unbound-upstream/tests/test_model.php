@@ -66,12 +66,12 @@ uu_register_suite('model', function (): int {
     );
     $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
     $m->setNodes(['notify' => '1', 'notify_url' => $hook]);
+    $shown = $m->getNodes()['notify_url'] ?? null;
     $m->setNodes(['notify_url' => '']);
     uu_check(
         $t,
-        'notify_url is update-only: the page shows it empty, and Saving it empty keeps the stored URL',
-        $m->notify_url->getValue() === $hook && (string)$m->notify_url === ''
-            && ($m->getNodes()['notify_url'] ?? null) === ''
+        'notify_url is a plain setting: the page shows the saved URL, and Saving it empty clears it',
+        $shown === $hook && $m->notify_url->getValue() === ''
     );
 
     $bad = ['59', '3601'];

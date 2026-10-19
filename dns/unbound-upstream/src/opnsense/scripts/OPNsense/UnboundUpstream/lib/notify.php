@@ -9,8 +9,7 @@ declare(strict_types=1);
  *
  * The switch notification (spec 2026-10-17 section 3.11): after an evaluation saved a new last_switch, one JSON POST
  * to the notify URL. A prompt for the receiver to read the state, so only the last switch is sent and a failure is
- * logged, never retried. The URL is a credential: it is read from the model only here, and logs name only its
- * scheme, host and port.
+ * logged, never retried.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -35,16 +34,6 @@ function uu_notify_body(array $st): string
 {
     return json_encode($st['last_switch'] + ['mode' => $st['mode'], 'member' => $st['member']],
         JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-}
-
-/** The URL as a log may show it: scheme, host and port, without credentials, path or query. */
-function uu_notify_where(string $url): string
-{
-    $parts = parse_url($url);
-    if (!is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
-        return 'the notify URL';
-    }
-    return $parts['scheme'] . '://' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');
 }
 
 /** The notify URL while notify is on, else null. */
@@ -94,7 +83,7 @@ function uu_notify_switch(array $st): void
         }
         $error = uu_notify_post($url, uu_notify_body($st));
         if ($error !== null) {
-            uu_log("notify: the switch $switch did not reach " . uu_notify_where($url) . ": $error", LOG_WARNING);
+            uu_log("notify: the switch $switch did not reach $url: $error", LOG_WARNING);
         }
     } catch (\Throwable $e) {
         uu_log("notify: the switch $switch was not sent: " . $e->getMessage(), LOG_WARNING);
