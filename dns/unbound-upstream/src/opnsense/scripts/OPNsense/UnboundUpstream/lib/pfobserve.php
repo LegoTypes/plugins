@@ -76,6 +76,21 @@ function uu_pf_show_addresses(string $showOut): array
 }
 
 /**
+ * Whether a `pfctl -vsr` listing is whole, from its stderr. Every pf load advances pf's ticket, an identical one
+ * too (it keeps the checksum), and pfctl then stops mid-listing with `pfctl: DIOCGETRULE: Device busy` and exit 0,
+ * so any line beginning `pfctl:` makes the listing unusable. pf's ALTQ notices, printed on every call, do not.
+ */
+function uu_pf_listing_usable(string $stderr): bool
+{
+    foreach (preg_split('/\R/', $stderr) ?: [] as $line) {
+        if (str_starts_with(ltrim($line), 'pfctl:')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
  * The rule lines of a `pfctl -vsr` listing that carry a label (the counter lines under each rule start with blanks).
  *
  * @return list<string>
@@ -204,18 +219,21 @@ function uu_rules_inputs(string $resolver, array $members): string
 
 /**
  * Whether the plugin's rules are loaded, verified once per ruleset checksum and inputs. A record whose checksum is
- * live and whose inputs are these is used, with no listing. Otherwise, when listing is allowed, the checksum is
- * read, the ruleset listed once and the checksum read again; the verdict is used and recorded (under these
- * inputs) only when both reads agree. When they differ a reload ran during the listing, which may have cut it
- * short, so its verdict is never judged: the pair is tried again, up to UU_RULES_LIST_PAIRS pairs. When no pair
- * agrees, a record made for these inputs keeps its verdict (none, or one made for other inputs: not loaded) and
- * nothing is recorded, so the next evaluation lists again. When listing is not allowed (a status call) the
- * answer is 'verifying'. state is 'loaded', 'missing' or 'verifying'; record is the new record to save, or null.
+ * live and whose inputs are these is used with no listing, except a recorded fault (loaded false) by an
+ * evaluation: the plugin acts on that fault (fallback), so every evaluation lists again while it stands; a status
+ * call shows it. Otherwise, when listing is allowed, the checksum is read, the ruleset listed once and the
+ * checksum read again; the verdict is used and recorded (under these inputs) only when both reads agree and the
+ * listing is whole (listing returns null when pfctl cut it short, uu_pf_listing_usable()). When the reads differ
+ * or the listing was cut, a reload ran during it, so its verdict is never judged: the pair is tried again, up to
+ * UU_RULES_LIST_PAIRS pairs. When no pair agrees, a record made for these inputs keeps its verdict (none, or one
+ * made for other inputs: not loaded) and nothing is recorded, so the next evaluation lists again. When listing
+ * is not allowed (a status call) the answer is 'verifying'. state is 'loaded', 'missing' or 'verifying'; record
+ * is the new record to save, or null.
  *
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record
  * @param string $inputs uu_rules_inputs() of the verdict's inputs
  * @param callable(): ?string $checksum
- * @param callable(): string $listing
+ * @param callable(): ?string $listing the ruleset listing, or null when it is not whole
  * @param callable(string): array{loaded: bool, problems: list<string>} $verdictOf
  * @return array{state: string, problems: list<string>, verified_at: ?int,
  *     record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}}
@@ -227,7 +245,8 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
     if ($live === null) {
         return ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null, 'record' => null];
     }
-    if ($record !== null && $record['checksum'] === $live && $record['inputs'] === $inputs) {
+    if ($record !== null && $record['checksum'] === $live && $record['inputs'] === $inputs
+        && ($record['loaded'] || !$mayList)) {
         return ['state' => $record['loaded'] ? 'loaded' : 'missing', 'problems' => $record['problems'],
                 'verified_at' => $record['at'], 'record' => null];
     }
@@ -241,12 +260,13 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
             $unreadable = true;
             continue;
         }
-        $verdict = $verdictOf($listing());
+        $text = $listing();
         $after = $checksum();
-        if ($after !== $before) {
+        if ($after !== $before || $text === null) {
             $unreadable = $unreadable || $after === null;
             continue;
         }
+        $verdict = $verdictOf($text);
         $new = ['checksum' => $before, 'inputs' => $inputs, 'at' => $wall, 'loaded' => $verdict['loaded'],
                 'problems' => $verdict['problems']];
         return ['state' => $verdict['loaded'] ? 'loaded' : 'missing', 'problems' => $verdict['problems'],
