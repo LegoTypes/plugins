@@ -1482,8 +1482,22 @@ function wgct_render_selftest(): int {
     $pinsA = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
     $pinsB = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10', '198.51.100.11']]], 'inner' => ['opt11']];
     $pinsC = ['wan' => [['wan_if' => 'opt2', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
-    $ok = wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash($pinsB)
-        && wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash(['wan' => $pinsA['wan'], 'inner' => $pinsA['inner']])
+    /* the same labels, built in another order and with repeats: the precondition proves the order differs */
+    $pinsD = [
+        'wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']],
+            ['wan_if' => 'opt2', 'family' => 'inet', 'endpoints' => ['198.51.100.20']]],
+        'inner' => ['opt11', 'opt12'],
+    ];
+    $pinsE = [
+        'wan' => [['wan_if' => 'opt2', 'family' => 'inet', 'endpoints' => ['198.51.100.20']],
+            ['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']],
+            ['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.11']]],
+        'inner' => ['opt12', 'opt11', 'opt12'],
+    ];
+    $ok = array_values(array_unique(array_column(wgct_pin_rules($pinsD), 'label')))
+            !== array_values(array_unique(array_column(wgct_pin_rules($pinsE), 'label')))
+        && wgct_pin_labels_hash($pinsD) === wgct_pin_labels_hash($pinsE)
+        && wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash($pinsB)
         && preg_match('/^[0-9a-f]{32}$/', wgct_pin_labels_hash($pinsA)) === 1;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1560,6 +1574,12 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] listing: an unreadable checksum gives none\n", $ok ? 'PASS' : 'FAIL');
+
+    [$cs, $ls] = $makeObserve(['0xbb', null], [['a'], ['b']]);
+    $ok = wgct_observe_listing('0xaa', $cs, $ls) === null && $listed === 1;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] listing: an unreadable checksum before the second listing gives none\n", $ok ? 'PASS' : 'FAIL');
 
     $ok = wgct_normalize_observed($rec) === $rec
         && wgct_normalize_observed('x') === null
