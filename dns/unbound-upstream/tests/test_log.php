@@ -23,11 +23,13 @@ uu_register_suite('log', function (): int {
         uu_blocked_line(null, null) === null && uu_blocked_line(5, null) === null && uu_blocked_line(null, 0) === null
         && uu_blocked_line(7, 7) === null);
     uu_check($t, 'blocked line: a first count above zero is logged',
-        uu_blocked_line(null, 5) === 'blocked 5 resolver packets on a non-member path since the rules were loaded');
+        uu_blocked_line(null, 5)
+        === 'blocked 5 resolver packets on a non-member path since the counting table was created');
     uu_check($t, 'blocked line: a rise is logged with the difference',
-        uu_blocked_line(5, 9) === 'blocked 4 more resolver packets on a non-member path (9 since the rules were loaded)');
+        uu_blocked_line(5, 9)
+        === 'blocked 4 more resolver packets on a non-member path (9 since the counting table was created)');
     uu_check($t, 'blocked line: a lower count is a recreated table (counters reset), logged only above zero',
-        uu_blocked_line(9, 2) === 'blocked 2 resolver packets on a non-member path since the rules were loaded'
+        uu_blocked_line(9, 2) === 'blocked 2 resolver packets on a non-member path since the counting table was created'
         && uu_blocked_line(9, 0) === null);
 
     uu_check($t, 'route flags from route get', uu_status_route_flags(uu_snapshot_fixture('route_get_member.txt'))
@@ -38,6 +40,9 @@ uu_register_suite('log', function (): int {
         uu_duration_text(0) === '0 s' && uu_duration_text(59) === '59 s' && uu_duration_text(60) === '1 min 0 s'
         && uu_duration_text(130) === '2 min 10 s' && uu_duration_text(40979) === '11 h 22 min'
         && uu_duration_text(273600) === '3 d 4 h' && uu_duration_text(86400) === '1 d 0 h');
+    uu_check($t, 'duration: the seams where a unit changes',
+        uu_duration_text(3599) === '59 min 59 s' && uu_duration_text(3600) === '1 h 0 min'
+        && uu_duration_text(86399) === '23 h 59 min');
 
     $now = 10000;
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
