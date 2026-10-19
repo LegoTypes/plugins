@@ -41,7 +41,7 @@ require_once __DIR__ . '/test_contract.php';
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */
@@ -104,7 +104,7 @@ function uu_test_snapshot(): array
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}} $s
  * @return array{now: int, wall: int,
@@ -126,7 +126,7 @@ function uu_test_snapshot(): array
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */

@@ -295,7 +295,7 @@ function uu_block_table_fill(string $resolver): void
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}} $s
  * @param string $mode the saved state's mode
@@ -318,7 +318,7 @@ function uu_block_table_fill(string $resolver): void
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, at: int, loaded: bool, problems: list<string>}},
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{counting: bool, table: ?array{addresses: int, references: int, out_block: int},
  *         addresses: list<string>}}
  */
