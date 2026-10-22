@@ -19,6 +19,12 @@
 #      run again with nothing held: "deinstall: nothing held", nothing saved.
 #   d. release-holds with rehearse held and configd stopped (R29): it ends well within its bound, force_down=0 and
 #      no hold record are saved, routing is skipped and one line says configd is not answering.
+#  d2. release-holds with nothing held and configd still stopped: it ends well within its bound, makes no configd
+#      call and logs "nothing held" alone.
+#   f. A mirror tick that needs a change waits for the gateway lock (held by flock for 70 s, WAN_B forced down and
+#      no hold taken yet) while it holds health.lock; the .pre meanwhile gives up on health.lock after 60 s, writes
+#      the marker and runs release-holds. Once the gateway lock is free the tick stops at the marker: no hold record,
+#      rehearse not forced down (R30, review fix I2).
 #   b. With PKG_UPGRADE set: +PRE_DEINSTALL.pre with rehearse held changes nothing (the hold and its record, the
 #      state directories with the footprint, the MSS anchor, the pin labels in pf, no removal marker), and
 #      +POST_DEINSTALL.post keeps both state directories.
@@ -48,6 +54,8 @@ PHPLOG=/var/lib/php/tmp/PHP_errors.log
 PENDING='WGClientTunnels/(health_mirror|prime)[.]php|wgct[.]sh (reconcile|_reconcile)'
 T=$(mktemp -d /tmp/wgct-deinstall.XXXXXX)
 LOOP=""
+HOLDER=""
+TICK=""
 PASS=0
 FAIL=0
 
@@ -76,6 +84,10 @@ stop_loop() {
 }
 cleanup() {
     stop_loop
+    for p in $HOLDER $TICK; do
+        kill "$p" 2> /dev/null
+        wait "$p" 2> /dev/null
+    done
     service configd status > /dev/null 2>&1 || service configd start > /dev/null 2>&1
     rm -f "$MARKER"
     $PHP "$T/restore.php" "$T/config.xml" || echo "[FAIL] config.xml could not be restored from $T/config.xml"
@@ -228,7 +240,54 @@ check "d: exit 0, ok, saved, rehearse released, routing skipped, nothing replaye
 check "d: rehearse force_down=0 and no hold record saved; WAN_B still forced down, WAN_DHCP untouched" "$(facts)" "0 0 1 0"
 check "d: two lines: the release, then configd not answering" "$(deinstall_lines "$mark" | tr '\n' '|')" \
     "deinstall: released rehearse|deinstall: configd not answering; routing applies the release at its next configure|"
+
+# d2. nothing held, configd still stopped (review fix I1)
+mark=$(wc -l < "$WGLOG")
+start=$(date +%s)
+$PHP "$TUNNEL" --json release-holds > "$T/d2.json"
+rc=$?
+took=$(($(date +%s) - start))
+sleep 1
+echo "    d2: release-holds with nothing held took ${took} s with configd stopped"
+check "d2: release-holds with nothing held ends well within one bound" "$([ "$took" -lt "$bound" ] && echo within || echo "over (${took} s)")" within
+check "d2: exit 0, ok, nothing saved or released, no configd call (routing empty), nothing replayed" \
+    "$rc $($PHP "$T/json.php" ok < "$T/d2.json") $($PHP "$T/json.php" saved < "$T/d2.json") [$($PHP "$T/json.php" released < "$T/d2.json")] [$($PHP "$T/json.php" routing < "$T/d2.json")] [$($PHP "$T/json.php" replayed < "$T/d2.json")]" \
+    "0 true false [] [] []"
+check "d2: one line: deinstall: nothing held" "$(deinstall_lines "$mark")" "deinstall: nothing held"
 service configd start > /dev/null 2>&1
+release_wan_b
+
+# f. a tick waiting on the gateway lock while the .pre runs (review fix I2)
+$PHP "$T/gw.php" WAN_B 1 && /usr/local/sbin/configctl interface routes configure > /dev/null
+settle
+check "f: WAN_B forced down, no hold taken yet" "$(facts)" "0 0 1 0"
+/usr/local/bin/flock -o /tmp/filter_reload_gateway.lock sleep 70 &
+HOLDER=$!
+sleep 1
+mark=$(wc -l < "$WGLOG")
+$PHP "$MIRROR" > "$T/f.tick" 2>&1 &
+TICK=$!
+sleep 5
+check "f: the tick is waiting for the gateway lock, holding health.lock" \
+    "$(kill -0 "$TICK" 2> /dev/null && echo waiting || echo ended) $(/usr/local/bin/flock -n "$RUN/health.lock" true && echo free || echo held)" "waiting held"
+start=$(date +%s)
+env -u PKG_UPGRADE sh "$DIR/+PRE_DEINSTALL.pre"
+rc=$?
+took=$(($(date +%s) - start))
+wait "$TICK"
+wait "$HOLDER" 2> /dev/null
+sleep 1
+echo "    f: the .pre took ${took} s (60 s for health.lock, then release-holds behind the gateway lock)"
+check "f: the .pre exits 0 and leaves the marker" "$rc $([ -f "$MARKER" ] && echo marker || echo none)" "0 marker"
+check "f: after the tick got the gateway lock: no hold record, rehearse not forced down; WAN_B still forced down, WAN_DHCP untouched" \
+    "$(facts)" "0 0 1 0"
+check "f: no tick took a hold" "$(tail -n +"$((mark + 1))" "$WGLOG" | grep -c '\[wgct-health\] rehearse: force_down')" 0
+check "f: release-holds found nothing held" "$(deinstall_lines "$mark")" "deinstall: nothing held"
+# an install after this removal: the marker goes, the state is rendered again
+sh "$DIR/+POST_INSTALL.post"
+"$S/wgct.sh" reconcile > /dev/null 2>&1
+/usr/local/sbin/configctl filter reload > /dev/null
+sleep 2
 release_wan_b
 
 # b. an upgrade: the .pre and the .post of the deinstall change nothing

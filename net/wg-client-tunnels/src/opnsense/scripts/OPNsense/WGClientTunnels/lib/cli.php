@@ -125,6 +125,9 @@ function wgct_cli_main(array $args): int {
                 fwrite(STDERR, WGCT_CLI_USAGE . "\n");
                 return 2;
         }
+    } catch (WgctRemovingException $e) {
+        /* the removal marker appeared while the command waited for the gateway lock: nothing was saved */
+        return wgct_cli_emit(wgct_result(['dry' => $dry, 'errors' => ['general' => "{$cmd}: " . $e->getMessage()]]), $json);
     } catch (\Throwable $e) {
         $msg = wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets);
         wgct_log(LOG_ERR, '[' . WGCT_ACTION_LOG_TAG . "] {$cmd} failed: {$msg}");
@@ -257,7 +260,7 @@ const WGCT_RELEASE_CONFIGD_DOWN = 'deinstall: configd not answering; routing app
  *    held, the released gateways' own included, are replayed through core's `interface routes alarm`. Each configd
  *    call is bounded (wgct_configctl_bounded()); when configd does not answer the re-sync, both are skipped with one
  *    line, and routing applies the saved release at its next configure (ruling R29). The plugin's own configd
- *    actions are never used: the removal deletes them.
+ *    actions are never used: the removal deletes them. With nothing released no configd call is made.
  *
  * Never throws: a failure is logged and returned.
  *
@@ -271,7 +274,7 @@ function wgct_release_holds(): array {
     $lock = null;
     try {
         $before = wgct_gateway_status();
-        $lock = wgct_gateway_lock();
+        $lock = wgct_gateway_lock(true);
         $commit = wgct_locked_commit(function (): array {
             $engine = new \OPNsense\WGClientTunnels\Engine();
             /* the tunnels' part alone: the rest asks configd while it loads, which may not answer (ruling R29) */
@@ -324,7 +327,7 @@ function wgct_release_holds(): array {
         $lock = null;
         if ($answered === false) {
             wgct_log(LOG_WARNING, '[' . WGCT_ACTION_LOG_TAG . '] ' . WGCT_RELEASE_CONFIGD_DOWN);
-        } else {
+        } elseif ($answered === true) {
             /* every alarm routes.alarm dropped while the lock was held, the released gateways' own included */
             $set = wgct_replay_set_now($commit['released'], $before);
             if ($set !== []) {

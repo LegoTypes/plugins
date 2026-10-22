@@ -142,7 +142,7 @@ try {
  * entry.php's check just before the marker appeared finds the lock taken, or the marker once it has the lock:
  * either way it ends here, and no tick re-takes a hold after the removal released it (ruling R30).
  */
-if (is_file(WGCT_ENTRY_RUN_DIR . '/removing')) {
+if (wgct_removing()) {
     exit(0);
 }
 if ($selfLock === null) {
@@ -235,6 +235,9 @@ if (empty($plan['changes'])) {
 $before = wgct_gateway_status();
 try {
     $gwLock = wgct_gateway_lock();
+} catch (WgctRemovingException $e) {
+    /* the removal marker appeared while this tick waited for the gateway lock: it saves nothing (ruling R30) */
+    exit(0);
 } catch (\RuntimeException $e) {
     wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, true, 'gateway change left for the next tick: ' . $e->getMessage(), 'gateway lock available again');
     exit(0);
