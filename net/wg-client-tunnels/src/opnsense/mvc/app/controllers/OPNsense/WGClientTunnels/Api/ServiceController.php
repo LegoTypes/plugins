@@ -45,6 +45,7 @@ class ServiceController extends ApiMutableServiceControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed'];
         }
+        $this->throwReadOnly();
         (new Backend())->configdRun('wgclienttunnels configure_routes');
         return ['status' => 'ok'];
     }
@@ -57,13 +58,11 @@ class ServiceController extends ApiMutableServiceControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        $this->throwReadOnly();
         require_once '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/apply.php';
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
             return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
-        }
-        if (!$dry) {
-            $this->throwReadOnly();
         }
         return wgct_configd_json($dry ? 'wgclienttunnels ensure_sentinel_dry' : 'wgclienttunnels ensure_sentinel', [], 300);
     }

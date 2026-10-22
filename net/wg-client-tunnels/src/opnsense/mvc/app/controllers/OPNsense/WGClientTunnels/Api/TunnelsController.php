@@ -17,7 +17,9 @@ use OPNsense\Core\Backend;
  * done in-process, because only they may see a private key (spec 6.1, 6.5);
  * each then runs the keyless configd action `wgclienttunnels apply_mode`.
  * Every other action runs in its own process through configd, with uuids,
- * gateway names and addresses as its only parameters.
+ * gateway names and addresses as its only parameters. Every POST action that
+ * writes, measures or previews (dry) refuses a read-only user first, before it
+ * reads the dry flag (spec 2026-10-20-02 section 3.3).
  */
 class TunnelsController extends ApiControllerBase
 {
@@ -192,6 +194,7 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        $this->throwReadOnly();
         require_once self::LIB . '/writer.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['result' => 'failed', 'errors' => ['not a tunnel uuid']];
@@ -199,9 +202,6 @@ class TunnelsController extends ApiControllerBase
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
             return ['result' => 'failed', 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
-        }
-        if (!$dry) {
-            $this->throwReadOnly();
         }
         /* a form boundary: edit.* arrives as an array of strings; wgct_edit_request() checks every value */
         $raw = $this->request->getPost('edit');
@@ -264,6 +264,7 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         require_once self::LIB . '/addr.php';
         $wan = $this->postString('wan');
@@ -279,6 +280,7 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not a tunnel uuid']];
@@ -290,7 +292,6 @@ class TunnelsController extends ApiControllerBase
         if ($dry) {
             return wgct_configd_json('wgclienttunnels remove_dry', [$uuid], 120);
         }
-        $this->throwReadOnly();
         return wgct_configd_json('wgclienttunnels remove', [$uuid], 300);
     }
 
@@ -330,6 +331,7 @@ class TunnelsController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['result' => 'failed'];
         }
+        $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
             return ['ok' => false, 'errors' => ['not an instance uuid']];
@@ -341,7 +343,6 @@ class TunnelsController extends ApiControllerBase
         if ($dry) {
             return wgct_configd_json('wgclienttunnels adopt_dry', [$uuid], 120);
         }
-        $this->throwReadOnly();
         return wgct_configd_json('wgclienttunnels adopt', [$uuid], 120);
     }
 

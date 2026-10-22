@@ -11,14 +11,17 @@
  * IPv4, 80 over IPv6), clamped to 1280-1420. A WAN's path is not always
  * 1500: a cellular WAN measured 1436, and a tunnel left at 1420 there
  * dropped every large packet. Takes up to
- * ~30 s and holds no lock; the page runs it as its own keyless action before
- * Create, and a CLI Create without an MTU runs it before locking anything.
+ * ~30 s and holds no config or gateway lock; the page runs it as its own keyless action before
+ * Create, and a CLI Create without an MTU runs it before locking anything. Only one measurement
+ * runs at a time (spec 2026-10-20-02 section 3.3): each is a burst of pings, so a second request
+ * is refused, never queued, on measure.lock under the run directory.
  */
 
 use OPNsense\Core\Config;
 
 require_once __DIR__ . '/tunnels.php';
 require_once __DIR__ . '/wgconf.php';
+require_once __DIR__ . '/render.php';
 require_once __DIR__ . '/selftest.php';
 
 /* ICMP echo header plus the IP header, per family */
@@ -216,16 +219,35 @@ function wgct_ping_fits(string $src, string $dst, int $payload, string $family =
     return is_resource($proc) && proc_close($proc) === 0;
 }
 
+const WGCT_MEASURE_LOCK_FILE = WGCT_RUN_DIR . '/measure.lock';
+const WGCT_MEASURE_BUSY = 'another MTU measurement is running; try again in a minute';
+
 /**
- * @param string $wanName    the WAN gateway the tunnel will be bound to
- * @param string $endpointIp the peer's IPv4 or global IPv6 endpoint
+ * @param string        $wanName    the WAN gateway the tunnel will be bound to
+ * @param string        $endpointIp the peer's IPv4 or global IPv6 endpoint
+ * @param callable|null $lock       returns the held measurement lock, or null when another measurement holds it;
+ *                                  it may throw when the lock file cannot be opened. Default: a non-blocking
+ *                                  lock on WGCT_MEASURE_LOCK_FILE.
  * @return array{ok: bool, mtu: int, path_mtu: ?int, source: string, why: string, errors: list<string>}
  */
-function wgct_measure_mtu(string $wanName, string $endpointIp): array {
+function wgct_measure_mtu(string $wanName, string $endpointIp, ?callable $lock = null): array {
     $result = ['ok' => false, 'mtu' => WGCT_TUNNEL_MTU_MAX, 'path_mtu' => null, 'source' => '', 'why' => '', 'errors' => []];
     $family = wgct_ip_family($endpointIp);
     if (wgct_endpoint_ip($endpointIp) === null) {
         $result['errors'][] = 'the endpoint must be an IPv4 or global IPv6 address';
+        return $result;
+    }
+    $lock ??= fn (): ?\SplFileObject => wgct_poll_lock(WGCT_MEASURE_LOCK_FILE, 0, 50);
+    try {
+        $held = $lock();
+    } catch (\Throwable $e) {
+        wgct_log(LOG_ERR, '[wgct-mtu] the measurement lock cannot be taken: ' . get_class($e) . ': ' . $e->getMessage());
+        $result['errors'][] = 'the MTU measurement lock cannot be opened; enter the MTU, and '
+            . WGCT_LOG_PAGE . ' has the reason';
+        return $result;
+    }
+    if ($held === null) {
+        $result['errors'][] = WGCT_MEASURE_BUSY;
         return $result;
     }
     $src = wgct_wan_source_ip($wanName, $family, $endpointIp);
@@ -302,5 +324,14 @@ function wgct_mtu_selftest(): int {
     wgct_check($t, 'mtu (h): an IPv6 path below 1360 gets a note; IPv4 never does',
         str_contains((string)wgct_small_path_note(1340, 'inet6'), 'stays at the 1280 minimum')
         && wgct_small_path_note(1400, 'inet6') === null && wgct_small_path_note(1300, 'inet') === null);
+    $busy = wgct_measure_mtu('WAN_A', '192.0.2.10', fn (): ?\SplFileObject => null);
+    wgct_check($t, 'mtu (i): a measurement already running => refused, ok false and the one error, merged into the result shape',
+        $busy['ok'] === false && $busy['errors'] === ['another MTU measurement is running; try again in a minute']
+        && array_key_exists('mtu', $busy));
+    $thrown = wgct_measure_mtu('WAN_A', '192.0.2.10', function (): never {
+        throw new \RuntimeException('Failed to open stream');
+    });
+    wgct_check($t, 'mtu (j): a lock that cannot be opened => refused with one clear error, no exception',
+        $thrown['ok'] === false && count($thrown['errors']) === 1 && str_contains($thrown['errors'][0], 'cannot be opened'));
     return wgct_tally_report('mtu', $t);
 }
