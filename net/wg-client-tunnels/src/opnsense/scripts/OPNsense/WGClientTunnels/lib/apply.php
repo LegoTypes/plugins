@@ -34,6 +34,9 @@ const WGCT_CORE_ACTIONS_INTERFACE = '/usr/local/opnsense/service/conf/actions.d/
 const WGCT_CORE_ROUTING_SCRIPT = '/usr/local/etc/rc.routing_configure';
 /* as long as the replay action's `flock -w 120` waits (ruling 22) */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
+const WGCT_FLOCK = '/usr/local/bin/flock';
+/* the command of the plugin's configd action [replay_alarm], gateway names appended as one comma-separated argument */
+const WGCT_REPLAY_ALARM_COMMAND = WGCT_FLOCK . ' -o -w 120 ' . WGCT_GATEWAY_LOCK_FILE . ' ' . WGCT_CORE_ROUTING_SCRIPT . ' alarm';
 const WGCT_ACTION_LOG_TAG = 'wgct-action';
 /*
  * Instances whose Create or Edit saved but whose apply has not completed
@@ -580,16 +583,70 @@ function wgct_write_route_todos(array $todos): void {
  * @return list<string> the gateways replayed
  */
 function wgct_replay_after_hold(array $ours, ?array $before): array {
+    $set = wgct_replay_set_now($ours, $before);
+    if ($set !== []) {
+        wgct_replay_alarm($set, WGCT_ACTION_LOG_TAG);
+    }
+    return array_map('strval', array_keys($set));
+}
+
+/**
+ * The replay set once the gateway lock is released (wgct_replay_set()), from config as saved and status as it is now.
+ *
+ * @param list<string>               $ours   gateway names the action wrote
+ * @param array<string, string>|null $before gateway status taken before the lock
+ * @return array<string, bool> name => expected force_down, sorted by name
+ */
+function wgct_replay_set_now(array $ours, ?array $before): array {
     Config::getInstance()->forceReload();
     $forceDown = [];
     foreach (wgct_core_snapshot()['gateways'] as $name => $g) {
         $forceDown[(string)$name] = $g['force_down'];
     }
-    $set = wgct_replay_set($ours, $before, wgct_gateway_status(), $forceDown);
-    if ($set !== []) {
-        wgct_replay_alarm($set, WGCT_ACTION_LOG_TAG);
+    return wgct_replay_set($ours, $before, wgct_gateway_status(), $forceDown);
+}
+
+/**
+ * Core's routing re-sync, `interface routes configure`, for a caller that cannot count on the plugin's configd
+ * actions (the package removal, convention C6): through configd when it answers, otherwise core's script run
+ * directly. configd answers a script action that ran with "OK"; anything else (no socket, no connection, a
+ * timeout, "Execute error") counts as configd not answering, and the script is run directly, under core's gateway
+ * lock as its alarm path takes it.
+ *
+ * Call it holding the gateway lock as $lock, as the mirror runs its reconfigure. The lock is released (and its
+ * file closed) before anything is exec()ed from here, and flock -o keeps the lock flock(1) takes out of every
+ * process the script starts, so no daemon it (re)starts inherits a lock (the hazard wgct_replay_alarm() names).
+ *
+ * @return string 'configd', 'direct', or 'direct, exit N' when the script failed
+ */
+function wgct_routes_configure_core(?\SplFileObject &$lock): string {
+    $reply = trim((string)(new Backend())->configdRun('interface routes configure', false, 300));
+    $lock?->flock(LOCK_UN);
+    $lock = null;
+    if ($reply === 'OK') {
+        return 'configd';
     }
-    return array_map('strval', array_keys($set));
+    exec(WGCT_FLOCK . ' -o -w 120 ' . WGCT_GATEWAY_LOCK_FILE . ' ' . WGCT_CORE_ROUTING_SCRIPT . ' > /dev/null 2>&1', $out, $rc);
+    return $rc === 0 ? 'direct' : "direct, exit {$rc}";
+}
+
+/**
+ * The command the plugin's configd action [replay_alarm] wraps, run directly for a caller that cannot count on the
+ * plugin's configd actions (the package removal, convention C6): first wait until gateway status shows what was
+ * written, then core's alarm path for $expected's gateways, blocking on core's gateway lock. Call it holding no
+ * lock: flock -o keeps the lock out of what the reconfigure starts, and this process holds none to pass on.
+ *
+ * @param array<string, bool> $expected name => expected force_down (wgct_replay_set_now())
+ * @return bool whether the alarm path ran and exited 0
+ */
+function wgct_replay_alarm_direct(array $expected, string $logTag): bool {
+    wgct_await_gateway_status($expected, $logTag);
+    $names = implode(',', array_keys($expected));
+    exec(WGCT_REPLAY_ALARM_COMMAND . ' ' . escapeshellarg($names) . ' > /dev/null 2>&1', $out, $rc);
+    if ($rc !== 0) {
+        logMsg($logTag, "alarm replay for {$names} failed: exit {$rc}");
+    }
+    return $rc === 0;
 }
 
 /**

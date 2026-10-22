@@ -233,23 +233,7 @@ function wgct_gateway_status() {
  * @param array $expected name => bool force_down for every gateway we changed
  */
 function wgct_replay_alarm(array $expected, $logTag) {
-    $deadline = time() + 20;
-    do {
-        $status = wgct_gateway_status() ?? [];
-        $pending = [];
-        foreach ($expected as $name => $down) {
-            if (isset($status[$name]) && (($status[$name] === 'force_down') !== $down)) {
-                $pending[] = $name;
-            }
-        }
-        if (empty($pending)) {
-            break;
-        }
-        sleep(1);
-    } while (time() < $deadline);
-    if (!empty($pending)) {
-        logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway');
-    }
+    wgct_await_gateway_status($expected, $logTag);
     /*
      * Run it through configd, never exec() from here: PHP opens files without
      * close-on-exec, so anything this process starts inherits its open lock
@@ -266,6 +250,32 @@ function wgct_replay_alarm(array $expected, $logTag) {
     ));
     if ($result !== 'OK') {
         logMsg($logTag, 'alarm replay for ' . implode(',', array_keys($expected)) . " failed: {$result}");
+    }
+}
+
+/**
+ * Wait, at most 20 s, until gateway status shows the force_down values we wrote, so the alarm replayed next sees
+ * them; a status still stale then is logged and the replay goes ahead.
+ *
+ * @param array<string, bool> $expected name => force_down for every gateway to replay
+ */
+function wgct_await_gateway_status(array $expected, string $logTag): void {
+    $deadline = time() + 20;
+    do {
+        $status = wgct_gateway_status() ?? [];
+        $pending = [];
+        foreach ($expected as $name => $down) {
+            if (isset($status[$name]) && (($status[$name] === 'force_down') !== $down)) {
+                $pending[] = $name;
+            }
+        }
+        if (empty($pending)) {
+            break;
+        }
+        sleep(1);
+    } while (time() < $deadline);
+    if (!empty($pending)) {
+        logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway');
     }
 }
 
@@ -649,6 +659,30 @@ function wgct_commit_held(array $heldNames, array $config, string $liveBoot): bo
     $engine->setHolds($rows);
     $engine->serializeToConfig();
     return true;
+}
+
+/**
+ * What a package removal does with the hold records (spec 3.11): the gateway of every owned record is released,
+ * every other record is forgotten with its gateway untouched, and the engine model keeps no record. With no live
+ * boot id no record can be shown to be ours (ruling R17): nothing is released and nothing forgotten, so every
+ * gateway stays as it is and the records stay for a human to judge. Pure.
+ *
+ * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows the records as stored
+ * @param string              $liveBoot     the live kern.boot_id as hex, '' when unreadable
+ * @param ?string             $previousBoot boot.json's boot id when it names another boot than the live one
+ * @param array<string, bool> $forceDown    gateway uuid => force_down
+ * @return array{release: list<string>, prune: list<string>} sorted gateway uuids: those to set force_down=0, and
+ *         those whose record goes without a write to the gateway; each gateway in one list at most
+ */
+function wgct_release_plan(array $rows, string $liveBoot, ?string $previousBoot, array $forceDown): array {
+    if ($liveBoot === '') {
+        return ['release' => [], 'prune' => []];
+    }
+    $deduped = wgct_dedupe_hold_rows($rows, $liveBoot, $previousBoot)['rows'];
+    $resolved = wgct_resolve_holds($deduped, $liveBoot, $previousBoot, $forceDown);
+    $prune = array_map('strval', array_keys($resolved['pruned']));
+    sort($prune);
+    return ['release' => $resolved['owned'], 'prune' => $prune];
 }
 
 /**
@@ -1324,6 +1358,36 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] holds: (R17) no boot id, WAN up => no hold released\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- wgct_release_plan: what a package removal does with the hold records (spec 3.11) ---- */
+    $releaseCases = [
+        // description, rows, live, previous, force_down, expected
+        ['an owned forced row => its gateway is released',
+            [$hold($uA, $live1)], $live1, null, [$uA => true], ['release' => [$uA], 'prune' => []]],
+        ['a previous-boot forced row before the first tick after a reboot => released',
+            [$hold($uA, $prev1)], $live1, $prev1, [$uA => true], ['release' => [$uA], 'prune' => []]],
+        ['a foreign row => pruned, its gateway untouched',
+            [$hold($uA, $other)], $live1, $prev1, [$uA => true], ['release' => [], 'prune' => [$uA]]],
+        ['a row whose gateway was released by hand => pruned, nothing released',
+            [$hold($uA, $live1)], $live1, null, [$uA => false], ['release' => [], 'prune' => [$uA]]],
+        ['no rows => nothing held: nothing released, nothing pruned',
+            [], $live1, $prev1, [$uA => true], ['release' => [], 'prune' => []]],
+        ['mixed rows with a duplicate => each gateway once, released or pruned, sorted',
+            [$hold($uC, $live1), $hold($uB, $other), $hold($uA, $other), $hold($uA, $live1)], $live1, null,
+            [$uA => true, $uB => true, $uC => true], ['release' => [$uA, $uC], 'prune' => [$uB]]],
+        ['(R17) no live boot id => nothing released and nothing pruned, every gateway left as it is',
+            [$hold($uA, $live1), $hold($uB, $other)], '', $prev1, [$uA => true, $uB => true], ['release' => [], 'prune' => []]],
+    ];
+    foreach ($releaseCases as [$desc, $rows, $liveBoot, $prevBoot, $fd, $exp]) {
+        $got = wgct_release_plan($rows, $liveBoot, $prevBoot, $fd);
+        $ok = $got === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] release plan: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        if (!$ok) {
+            printf("       got %s\n", json_encode($got));
+        }
+    }
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
