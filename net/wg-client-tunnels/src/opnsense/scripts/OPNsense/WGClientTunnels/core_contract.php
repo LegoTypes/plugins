@@ -13,7 +13,11 @@
  */
 
 require '/usr/local/opnsense/mvc/script/load_phalcon.php';
-require_once __DIR__ . '/lib/apply.php';
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
+}
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('core_contract.php', 'wgct-contract', ['apply.php']);
 
 if (!(new \OPNsense\WGClientTunnels\WGClientTunnels())->enabled->isEqual('1')) {
     exit(0);

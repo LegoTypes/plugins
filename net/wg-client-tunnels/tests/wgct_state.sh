@@ -211,5 +211,51 @@ else
     check "the dummy tunnel rehearse and its gateway are found for the F8 case" "uuid=$UUID monitor=$OLDMON gateway=$GWUUID" "found"
 fi
 
+# R28: an entry script whose plugin library cannot be loaded ends quietly: exit 0, no output, one line per state in
+# the WireGuard log, nothing in PHP's error log (core's GUI crash reporter reads it). They run from a copy of the
+# script directory without lib/, never the installed one; the copy's entry.php keeps its markers in a directory
+# of this test's own, so the VM's cron runs never see them. php runs with the production ini here (log_errors on).
+PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+E="$T/entry"
+mkdir -p "$E/run"
+cp -Rp "$(dirname "$SRC")" "$E/scripts"
+rm -rf "$E/scripts/lib"
+check "the copy's entry.php names the run directory once" "$(grep -c "'/var/run/wgclienttunnels'" "$E/scripts/entry.php" 2>/dev/null)" 1
+sed -i '' -e "s#'/var/run/wgclienttunnels'#'$E/run'#" "$E/scripts/entry.php" 2>/dev/null
+phplog_size() { stat -f %z "$PHPLOG" 2>/dev/null || echo 0; }
+entry_runs() {
+    # entry_runs <label> <script> [args]: two runs, their exit codes, output and log lines after a mark
+    label=$1; script=$2; shift 2
+    emark=$(wc -l < "$WGLOG")
+    $PHP "$E/scripts/$script" "$@" > "$E/$label.1.out" 2> "$E/$label.1.err"; erc1=$?
+    $PHP "$E/scripts/$script" "$@" > "$E/$label.2.out" 2> "$E/$label.2.err"; erc2=$?
+    sleep 1
+    elines=$(tail -n +$((emark + 1)) "$WGLOG" | grep -c "\[wgct-[a-z]*\] $script cannot load the plugin library")
+}
+before=$(phplog_size)
+for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
+    entry_runs "${script%.php}" "$script"
+    check "$script without lib/: two runs exit 0" "$erc1$erc2" 00
+    check "$script without lib/: nothing on stdout or stderr" "$(cat "$E/${script%.php}".*.out "$E/${script%.php}".*.err)" ""
+    check "$script without lib/: one log line across two runs" "$elines" 1
+done
+entry_runs tunnel tunnel.php --json list
+check "tunnel.php --json list without lib/: two runs exit 1 (the command failed), nothing on stderr" "$erc1$erc2$(cat "$E"/tunnel.*.err)" 11
+check "tunnel.php --json list without lib/: a JSON failure naming the missing file" "$(cat "$E/tunnel.1.out")" '{"ok":false,"errors":["plugin library file cli.php missing"]}'
+check "tunnel.php without lib/: one log line across two runs" "$elines" 1
+mkdir "$E/scripts/lib"
+for f in tunnels.php selftest.php; do cp -p "$LIB/$f" "$E/scripts/lib/"; done
+entry_runs guard default_guard.php
+check "default_guard.php with lib/addr.php missing: exit 0, no output, one new line naming addr.php" "$erc1$erc2$(cat "$E"/guard.*.out "$E"/guard.*.err)$(tail -n +$((emark + 1)) "$WGLOG" | grep -c 'default_guard.php cannot load the plugin library (plugin library file addr.php missing)')" 001
+check "PHP's error log ($PHPLOG) did not grow" "$(phplog_size)" "$before"
+rm -rf "$E/scripts/lib"
+cp -Rp "$LIB" "$E/scripts/lib"
+emark=$(wc -l < "$WGLOG")
+$PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
+$PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
+sleep 1
+check "the first run with the library back logs one recovery line and drops its marker" "$(tail -n +$((emark + 1)) "$WGLOG" | grep -c 'core_contract.php loads the plugin library again')$(ls "$E/run" | grep -c '^core_contract')" 10
+rm -rf "$E"
+
 echo "state: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]

@@ -19,8 +19,11 @@ require_once 'config.inc';
 require_once 'util.inc';
 require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
-require_once __DIR__ . '/lib/apply.php';
-require_once __DIR__ . '/lib/prime.php';
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
+}
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('prime.php', 'wgct-prime', ['apply.php', 'prime.php']);
 
 /**
  * One TCP connect from $source to [$dst]:$port, bound explicitly: a source that will not bind is reported, never

@@ -66,8 +66,11 @@
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
-require_once __DIR__ . '/lib/mirror.php';
-require_once __DIR__ . '/lib/apply.php';
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
+}
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('health_mirror.php', 'wgct-health', ['mirror.php', 'apply.php']);
 
 $logTag = 'wgct-health';
 
