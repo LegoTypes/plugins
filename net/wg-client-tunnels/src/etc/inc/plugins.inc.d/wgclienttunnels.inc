@@ -108,6 +108,10 @@ function wgclienttunnels_firewall($fw)
 /**
  * The filter hook (spec 2026-10-20 section 3.1 part B). Never throws into core.
  *
+ * While the package removal's marker ($runDir/removing, ruling R30) exists,
+ * nothing is registered, read, written or logged: removing the package is
+ * the user's configured removal of the pins. Otherwise:
+ *
  * 1. The normal path: lib/render.php registers the rules it derives, and
  *    records them as the footprint (footprint.json) inside a filter reload.
  * 2. When the library is missing or throws while loading, or the render
@@ -152,6 +156,9 @@ function wgclienttunnels_firewall($fw)
  */
 function wgclienttunnels_firewall_at(string $libDir, string $footprint, string $runDir, $fw): void
 {
+    if (is_file($runDir . '/removing')) {
+        return;
+    }
     $apply = wgclienttunnels_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
     $entered = false;
     $registered = false;

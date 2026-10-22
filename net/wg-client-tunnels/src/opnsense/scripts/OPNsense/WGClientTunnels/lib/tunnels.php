@@ -378,6 +378,27 @@ function wgct_snapshot_validate(array $raw): array {
  * @return array see wgct_derive()
  */
 function wgct_core_snapshot() {
+    return wgct_snapshot_validate(wgct_core_read(true));
+}
+
+/**
+ * The tunnels' part of the snapshot alone: instances, peers, interfaces and gateways, with the routes, outbound NAT,
+ * gateway groups, aliases, DNS servers and forwarders left empty. The models of those ask configd while they load
+ * (on 26.7.7 the routes and aliases 10 s each, outbound NAT 120 s and the gateway groups 100 s when configd does not
+ * answer), so the package removal, which needs only each tunnel's gateways, reads this (ruling R29). Derived from
+ * it, a tunnel's devices and gateways are as from the whole snapshot; its binding and findings are not.
+ *
+ * @return array see wgct_derive()
+ */
+function wgct_core_tunnel_snapshot(): array {
+    return wgct_snapshot_validate(wgct_core_read(false));
+}
+
+/**
+ * @param bool $context also the models that ask configd while they load (see wgct_core_tunnel_snapshot())
+ * @return array the snapshot as read, before wgct_snapshot_validate()
+ */
+function wgct_core_read(bool $context): array {
     $root = Config::getInstance()->object();
     $core = [
         'instances' => [], 'peers' => [], 'interfaces' => [], 'routes' => [], 'gateways' => [],
@@ -410,13 +431,6 @@ function wgct_core_snapshot() {
             'ipaddrv6' => (string)$if->ipaddrv6,
         ];
     }
-    foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $uuid => $r) {
-        $core['routes'][$uuid] = [
-            'network' => (string)$r->network,
-            'gateway' => (string)$r->gateway,
-            'enabled' => (string)$r->enabled === '1',
-        ];
-    }
     foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $uuid => $g) {
         $core['gateways'][(string)$g->name] = [
             'uuid' => $uuid,
@@ -433,6 +447,37 @@ function wgct_core_snapshot() {
             'monitor_noroute' => (string)$g->monitor_noroute === '1',
             'latencylow' => (string)$g->latencylow,
             'latencyhigh' => (string)$g->latencyhigh,
+        ];
+    }
+    if ($context) {
+        wgct_core_read_context($core, $root);
+    }
+    /* the plugin's route switch (the monitor routes, spec 3.5) and core's dpinger defaults, read once here so
+     * the derivation stays pure */
+    $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
+    $core['dpinger_defaults'] = [];
+    try {
+        if (is_callable([\OPNsense\Routing\FieldTypes\GatewayField::class, 'getDpingerDefaults'])) {
+            $core['dpinger_defaults'] = wgct_dpinger_defaults(\OPNsense\Routing\FieldTypes\GatewayField::getDpingerDefaults());
+        }
+    } catch (\Throwable $e) {
+        /* advisory only: a core that no longer offers the defaults must not break the filter and mirror paths */
+    }
+    return $core;
+}
+
+/**
+ * The routes, outbound NAT, gateway groups, DNS servers, aliases and forwarders, into $core.
+ *
+ * @param array             $core the snapshot being read, updated in place
+ * @param \SimpleXMLElement $root config.xml
+ */
+function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
+    foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $uuid => $r) {
+        $core['routes'][$uuid] = [
+            'network' => (string)$r->network,
+            'gateway' => (string)$r->gateway,
+            'enabled' => (string)$r->enabled === '1',
         ];
     }
     foreach ((new \OPNsense\Firewall\Filter())->snatrules->rule->iterateItems() as $rule) {
@@ -464,18 +509,6 @@ function wgct_core_snapshot() {
             $core['forwarders'][] = (string)$dot->server;
         }
     }
-    /* the plugin's route switch (the monitor routes, spec 3.5) and core's dpinger defaults, read once here so
-     * the derivation stays pure */
-    $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
-    $core['dpinger_defaults'] = [];
-    try {
-        if (is_callable([\OPNsense\Routing\FieldTypes\GatewayField::class, 'getDpingerDefaults'])) {
-            $core['dpinger_defaults'] = wgct_dpinger_defaults(\OPNsense\Routing\FieldTypes\GatewayField::getDpingerDefaults());
-        }
-    } catch (\Throwable $e) {
-        /* advisory only: a core that no longer offers the defaults must not break the filter and mirror paths */
-    }
-    return wgct_snapshot_validate($core);
 }
 
 /**

@@ -1,8 +1,15 @@
 #!/bin/sh
-# a real removal releases what the engine holds and removes what it added; an upgrade keeps everything
+# a real removal stops the plugin, releases what the engine holds and removes what it added; an upgrade keeps everything
 if [ -z "${PKG_UPGRADE:-}" ] && [ -x /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh ]; then
-    /usr/local/bin/php -d log_errors=0 /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/tunnel.php --json release-holds > /dev/null 2>&1
-    /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh stop > /dev/null 2>&1
-    /sbin/pfctl -a wgclienttunnels_mss -F rules > /dev/null 2>&1
-    rm -rf /var/run/wgclienttunnels /var/db/wgclienttunnels
+    mkdir -p -m 700 /var/run/wgclienttunnels
+    # The removal marker is written under the health mirror's lock, so a tick in flight ends first (waited for at
+    # most 60 s) and no later tick re-takes a hold; every entry point of the plugin stops while the marker exists.
+    # +POST_DEINSTALL.post removes the state directories, +POST_INSTALL.post the marker.
+    (
+        /usr/local/bin/flock -w 60 9 || true
+        touch /var/run/wgclienttunnels/removing || true
+        /usr/local/bin/php -d log_errors=0 /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/tunnel.php --json release-holds > /dev/null 2>&1 || true
+        /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh stop > /dev/null 2>&1 || true
+        /sbin/pfctl -a wgclienttunnels_mss -F rules > /dev/null 2>&1 || true
+    ) 9>> /var/run/wgclienttunnels/health.lock
 fi

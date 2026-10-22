@@ -1,0 +1,3 @@
+
+# An install after a removal that stopped partway: its marker would keep every entry point of the plugin stopped.
+rm -f /var/run/wgclienttunnels/removing

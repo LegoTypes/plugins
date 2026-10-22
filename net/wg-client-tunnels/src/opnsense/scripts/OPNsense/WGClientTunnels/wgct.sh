@@ -316,6 +316,21 @@ EOF
     printf ']}\n'
 }
 
+# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.post deletes it; spec 2026-10-20
+# section 3.11, ruling R30): while it exists nothing here adds, repairs or queues anything, so nothing rebuilds what
+# the removal takes away. stop (the removal's own), its section and the status lines still run. The minute cron's
+# reconcile says so each minute, which a removal that stopped partway is worth.
+case "$1" in
+    start|restart|configure_routes|reconcile|request_reconcile|_reconcile_wait|_reconcile_queued|_routes)
+        if [ -f "${STATE_DIR}/removing" ]; then
+            if [ "$1" = "reconcile" ] && [ "$2" = "--repair" ]; then
+                log_msg "the package is being removed (${STATE_DIR}/removing exists): the plugin does nothing; delete it if the package is still installed"
+            fi
+            exit 0
+        fi
+        ;;
+esac
+
 case "$1" in
     start|configure_routes)
         with_routes_lock _routes

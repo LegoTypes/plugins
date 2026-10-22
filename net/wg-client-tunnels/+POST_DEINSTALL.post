@@ -1,0 +1,6 @@
+
+# A real removal: the plugin's state directories, with the removal marker, go with its files. An upgrade keeps
+# them, so the new version resumes with the footprint and the boot record.
+if [ -z "${PKG_UPGRADE:-}" ]; then
+    rm -rf /var/run/wgclienttunnels /var/db/wgclienttunnels
+fi
