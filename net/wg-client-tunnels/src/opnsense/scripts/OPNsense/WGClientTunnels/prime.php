@@ -66,7 +66,7 @@ if (in_array('--selftest', $args, true)) {
 }
 $dry = in_array('--dry', $args, true);
 
-$stateDir = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
+$stateDir = '/var/run/wgclienttunnels';
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     if ($dry) {

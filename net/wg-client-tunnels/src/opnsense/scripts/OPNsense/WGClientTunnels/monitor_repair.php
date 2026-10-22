@@ -22,7 +22,7 @@ require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/repair.php';
 
-$stateDir = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
+$stateDir = '/var/run/wgclienttunnels';
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     exit(0);

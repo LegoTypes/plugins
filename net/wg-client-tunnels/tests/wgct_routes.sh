@@ -6,16 +6,20 @@
 #
 # Shell tests for wgct.sh's route set (spec 2026-09-28 sections 3.4.1-3.4.2). Root on the disposable test VM
 # only (vm_selftest.sh), never on a firewall: it creates lo91 and lo92 and routes documentation-range monitors.
-# A stub helper stands in for gateway_config.php and a temp directory for the state directory, so the copy
-# under test runs without the installed plugin; the VM's own reconcile never touches routes it did not record.
+# Production wgct.sh honours no environment override, so the tests run a substituted copy that wgct_stub.sh
+# writes: a stub helper stands in for gateway_config.php, a temp directory for the state directory and a stub
+# command for the queued reconcile. The VM's own reconcile never touches routes it did not record.
 #
 # Usage: wgct_routes.sh /path/to/wgct.sh
 
 set -u
-W="$1"
+SRC="$1"
 T=$(mktemp -d /tmp/wgct-routes.XXXXXX)
-export WGCT_STATE_DIR="$T/state" WGCT_CONFIG_HELPER="$T/helper" WGCT_TEST_DIR="$T"
-mkdir -p "$WGCT_STATE_DIR"
+export WGCT_TEST_DIR="$T"
+STATE="$T/state"
+mkdir -p "$STATE"
+W="$T/wgct.sh"
+sh "$(dirname "$0")/wgct_stub.sh" "$SRC" "$W" "$STATE" "$T/helper" "$T/recon" 120 || exit 1
 cat > "$T/helper" <<'EOF'
 #!/bin/sh
 D="$WGCT_TEST_DIR"
@@ -32,7 +36,7 @@ chmod +x "$T/helper"
 M1=2001:db8:ffff::a1
 M3=2001:db8:ffff::a3
 M4=2001:db8:ffff::a4
-REC="$WGCT_STATE_DIR/active_gateways"
+REC="$STATE/active_gateways"
 for i in 91 92; do
     ifconfig lo$i create 2>/dev/null
     ifconfig lo$i inet6 -ifdisabled up
@@ -82,18 +86,18 @@ check "9 a recorded route that no longer leaves by its device is left alone" '[ 
 route -q -n delete -6 -host $M1
 route -q -n add -6 -host $M4 -iface lo92
 say 'state|on' "$(line lo91 91 $M4)"; run; run
-check "10 a foreign host route to the monitor is left alone, noted once" '[ "$(dev_of $M4)" = lo92 ] && [ "$(grep -c "^$M4|lo92\$" "$WGCT_STATE_DIR/foreign_routes")" = 1 ]'
+check "10 a foreign host route to the monitor is left alone, noted once" '[ "$(dev_of $M4)" = lo92 ] && [ "$(grep -c "^$M4|lo92\$" "$STATE/foreign_routes")" = 1 ]'
 route -q -n delete -6 -host $M4
 say 'state|on' "$(line lo91 91 $M1)"; run
 cp "$REC" "$T/rec.before"
 echo 1 > "$T/rc"; say 'state|on'; run
 check "11 a failed helper (exit 1) changes nothing" '[ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before"'
 rm -f "$T/rc"; say 'PHP Notice: junk' 'state|on'; run
-check "12 output not starting with a state line changes nothing and is noted" '[ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before" && [ -s "$WGCT_STATE_DIR/parse_error" ]'
+check "12 output not starting with a state line changes nothing and is noted" '[ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before" && [ -s "$STATE/parse_error" ]'
 say 'state|off'; run
 check "13 state|off (plugin or IPv6 routes off) changes no route and keeps the record" '[ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before"'
 "$W" stop
-check "14 stop deletes the monitor route, the record and the running flag" '[ -z "$(dev_of $M1)" ] && [ ! -f "$REC" ] && [ ! -f "$WGCT_STATE_DIR/enabled" ]'
+check "14 stop deletes the monitor route, the record and the running flag" '[ -z "$(dev_of $M1)" ] && [ ! -f "$REC" ] && [ ! -f "$STATE/enabled" ]'
 ifconfig lo91 inet6 fd00::91:1/128 alias 2>/dev/null
 route -q -n add -6 fd00::91:2 -iface lo91
 printf 'lo91|fd00::91:1/128|fd00::91:2|t91\n' > "$REC"
@@ -110,9 +114,9 @@ check "16 two concurrent route sets both complete, never overlap (the second wai
 touch "$T/daemon.on"
 run
 rm -f "$T/daemon.on"
-check "17 a daemon the section started does not inherit routes.lock" '[ "$(fstat "$WGCT_STATE_DIR/routes.lock" | grep -c .)" -le 1 ]'
+check "17 a daemon the section started does not inherit routes.lock" '[ "$(fstat "$STATE/routes.lock" | grep -c .)" -le 1 ]'
 kill "$(cat "$T/daemon")" 2>/dev/null
-/usr/local/bin/flock "$WGCT_STATE_DIR/routes.lock" sleep 15 & h=$!
+/usr/local/bin/flock "$STATE/routes.lock" sleep 15 & h=$!
 sleep 1
 "$W" configure_routes; rt=$?
 kill $h 2>/dev/null
@@ -121,8 +125,8 @@ check "18 a wait past 10 s gives up with exit 75" '[ $rt = 75 ]'
 # a failing route command: a copy of wgct.sh whose route and logger are stand-ins (route fails for a host route
 # while $T/route.fail exists, and, like route(8), prints nothing under -q), so the log can be read back
 "$W" stop
-sed -e "s#/sbin/route #$T/route #g" -e "s#logger -t#$T/logger -t#g" "$W" > "$T/wgct_stub.sh"
-chmod +x "$T/wgct_stub.sh"
+sed -e "s#/sbin/route #$T/route #g" -e "s#logger -t#$T/logger -t#g" "$W" > "$T/wgct_fakes.sh"
+chmod +x "$T/wgct_fakes.sh"
 cat > "$T/route" <<'EOF'
 #!/bin/sh
 case " $* " in
@@ -143,12 +147,12 @@ EOF
 chmod +x "$T/route" "$T/logger"
 : > "$T/log"
 touch "$T/route.fail"
-say 'state|on' "$(line lo91 91 $M4)"; "$T/wgct_stub.sh" configure_routes; "$T/wgct_stub.sh" configure_routes
-check "19 a failing route add is logged once, never as an added route, and noted" '[ -z "$(dev_of $M4)" ] && [ "$(grep -c "route add for monitor $M4 on lo91 failed: .*Network is unreachable" "$T/log")" = 1 ] && ! grep -q "added monitor route" "$T/log" && grep -qxF "$M4|lo91" "$WGCT_STATE_DIR/route_failures"'
-rm -f "$T/route.fail"; "$T/wgct_stub.sh" configure_routes
-check "20 once it succeeds the route is added, logged, and the failure note cleared" '[ "$(dev_of $M4)" = lo91 ] && grep -q "added monitor route $M4 via lo91" "$T/log" && ! grep -qxF "$M4|lo91" "$WGCT_STATE_DIR/route_failures"'
+say 'state|on' "$(line lo91 91 $M4)"; "$T/wgct_fakes.sh" configure_routes; "$T/wgct_fakes.sh" configure_routes
+check "19 a failing route add is logged once, never as an added route, and noted" '[ -z "$(dev_of $M4)" ] && [ "$(grep -c "route add for monitor $M4 on lo91 failed: .*Network is unreachable" "$T/log")" = 1 ] && ! grep -q "added monitor route" "$T/log" && grep -qxF "$M4|lo91" "$STATE/route_failures"'
+rm -f "$T/route.fail"; "$T/wgct_fakes.sh" configure_routes
+check "20 once it succeeds the route is added, logged, and the failure note cleared" '[ "$(dev_of $M4)" = lo91 ] && grep -q "added monitor route $M4 via lo91" "$T/log" && ! grep -qxF "$M4|lo91" "$STATE/route_failures"'
 : > "$T/log"; touch "$T/route.fail"
-"$T/wgct_stub.sh" stop
+"$T/wgct_fakes.sh" stop
 check "21 a failing route delete in stop is logged as a failure, not as a removed monitor route" '[ "$(dev_of $M4)" = lo91 ] && grep -q "route delete for monitor $M4 on lo91 failed: .*Network is unreachable" "$T/log" && ! grep -q "monitor route $M4" "$T/log"'
 rm -f "$T/route.fail"
 
@@ -169,7 +173,6 @@ echo run >> "$WGCT_TEST_DIR/runs"
 sleep 2
 EOF
 chmod +x "$T/recon"
-export WGCT_RECONCILE_CMD="$T/recon"
 : > "$T/runs"
 t0=$(date +%s)
 "$W" request_reconcile; "$W" request_reconcile; "$W" request_reconcile
@@ -183,13 +186,14 @@ sleep 6
 check "26 a request made while a reconcile runs gets its own run after it" '[ "$(grep -c . "$T/runs")" = 2 ]'
 check "27 no waiter is left running" '! pgrep -f "_reconcile_queued" > /dev/null'
 : > "$T/log"; : > "$T/runs"
-/usr/local/bin/flock "$WGCT_STATE_DIR/reconcile.lock" sleep 4 & h=$!
+sh "$(dirname "$0")/wgct_stub.sh" "$SRC" "$T/wgct_wait1.sh" "$STATE" "$T/helper" "$T/recon" 1 || exit 1
+sed -e "s#logger -t#$T/logger -t#g" "$T/wgct_wait1.sh" > "$T/wgct_fakes.sh"
+/usr/local/bin/flock "$STATE/reconcile.lock" sleep 4 & h=$!
 sleep 1
-WGCT_RECONCILE_WAIT=1 "$T/wgct_stub.sh" request_reconcile
+"$T/wgct_fakes.sh" request_reconcile
 sleep 5
 kill $h 2>/dev/null
 check "28 a queued reconcile that waits out its time logs that it gave up, and does not run" 'grep -q "queued reconcile skipped" "$T/log" && [ ! -s "$T/runs" ]'
-unset WGCT_RECONCILE_CMD
 
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]

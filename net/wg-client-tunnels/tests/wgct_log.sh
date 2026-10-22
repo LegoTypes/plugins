@@ -6,7 +6,11 @@
 #
 # Log routing test: the plugin logs to core's WireGuard log. Root on the disposable test VM, with the branch
 # build of os-wg-client-tunnels installed; never on a firewall. It logs marked lines the plugin's ways and
-# looks for them in the WireGuard log and the system log.
+# looks for them in the WireGuard log and the system log. The wgct.sh line comes from a substituted copy of
+# wgct.sh (wgct_stub.sh; production honours no environment override): the file named by the optional argument,
+# else the installed one.
+#
+# Usage: wgct_log.sh [/path/to/wgct.sh]
 
 set -u
 pass=0
@@ -22,13 +26,14 @@ tag="wgct-logtest-$$"
 S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
 L=/var/log/wireguard
 T=$(mktemp -d /tmp/wgct-log.XXXXXX)
+sh "$(dirname "$0")/wgct_stub.sh" "${1:-$S/wgct.sh}" "$T/wgct.sh" "$T/state" "$T/helper" "$T/recon" 120 || exit 1
 # a plugin line from a process whose ident is core's (as in the filter hook or a controller), and an info line
 /usr/local/bin/php -d log_errors=0 -r 'require "'$S'/lib/tunnels.php"; openlog("config", 0, LOG_USER);
     wgct_log(LOG_NOTICE, "[wgct-logtest] '$tag' core-ident"); wgct_log(LOG_INFO, "[wgct-logtest] '$tag' info");'
 # a wgct.sh line: a stub helper reports the routes off, which the non-quiet route set logs
 printf '#!/bin/sh\necho "state|off"\n' > "$T/helper"
 chmod +x "$T/helper"
-WGCT_CONFIG_HELPER="$T/helper" WGCT_STATE_DIR="$T/state" "$S/wgct.sh" configure_routes
+"$T/wgct.sh" configure_routes
 # core's own line
 logger -t config "coretest-$tag"
 sleep 3

@@ -26,12 +26,10 @@
 # The route set comes from gateway_config.php (its line protocol: spec
 # 2026-09-28 section 3.4.1). Every run holds ${STATE_DIR}/routes.lock through
 # "flock -o": only the waiting flock process holds the lock, and nothing the
-# section starts inherits it. WGCT_CONFIG_HELPER (a command printing the
-# protocol) and WGCT_STATE_DIR override the helper and the state directory;
-# the shell tests use both.
+# section starts inherits it.
 
 SCRIPTS="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels"
-STATE_DIR="${WGCT_STATE_DIR:-/var/run/wgclienttunnels}"
+STATE_DIR="/var/run/wgclienttunnels"
 RECORD="${STATE_DIR}/active_gateways"
 GUARD="${SCRIPTS}/default_guard.php"
 FRESHNESS="${SCRIPTS}/freshness.php"
@@ -47,11 +45,7 @@ log_msg() {
 # The route protocol on stdout. PHP diagnostics go to stderr, so a notice can
 # never land ahead of the state line.
 parse_config() {
-    if [ -n "${WGCT_CONFIG_HELPER:-}" ]; then
-        "${WGCT_CONFIG_HELPER}"
-    else
-        "${PHP}" -d display_errors=stderr "${SCRIPTS}/gateway_config.php"
-    fi
+    "${PHP}" -d display_errors=stderr "${SCRIPTS}/gateway_config.php"
 }
 
 # The device a host route to exactly $1 leaves by; nothing when the address
@@ -350,7 +344,7 @@ case "$1" in
         ;;
     _reconcile_wait)
         # A reconcile running past the wait leaves the mark for the next request or the minute cron.
-        wait="${WGCT_RECONCILE_WAIT:-120}"
+        wait=120
         "${FLOCK}" -E 75 -w "${wait}" -o "${STATE_DIR}/reconcile.lock" "$0" _reconcile_queued
         if [ $? -eq 75 ]; then
             log_msg "queued reconcile skipped: another reconcile held reconcile.lock for ${wait} s; the minute reconcile will run it"
@@ -359,11 +353,7 @@ case "$1" in
     _reconcile_queued)
         [ -f "${STATE_DIR}/reconcile.pending" ] || exit 0
         rm -f "${STATE_DIR}/reconcile.pending"
-        if [ -n "${WGCT_RECONCILE_CMD:-}" ]; then
-            "${WGCT_RECONCILE_CMD}"
-        else
-            "$0" reconcile
-        fi
+        "$0" reconcile
         ;;
     _routes)
         routes_section "$2"
