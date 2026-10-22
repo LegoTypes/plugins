@@ -12,6 +12,11 @@
 # working tree, not the installed package; the installed package supplies only what wgct.sh calls through
 # its own fixed paths. The VM's minute cron also reconciles, so the windows are kept to one php process.
 #
+# The mirror cases (spec section 3.2, lock bullets) run the copy's health_mirror.php with --dry, which still
+# takes health.lock and writes the skip markers but changes no gateway. The VM's own cron may run the mirror
+# inside a window; a holder keeps health.lock for the whole case, so a cron tick skips too, and the dedup marker
+# makes the log carry one skip line whichever process wrote it. Counts are of lines after a recorded marker.
+#
 # Usage: wgct_state.sh /path/to/wgct.sh   (its lib/ directory beside it)
 
 set -u
@@ -34,13 +39,19 @@ check() {
     fi
 }
 
+stop_holder() {
+    [ -n "$HOLDER" ] && kill "$HOLDER" > /dev/null 2>&1
+    HOLDER=""
+}
+
 restore() {
     rm -rf "$RUN" "$DB"
     [ -d "$T/run" ] && mv "$T/run" "$RUN"
     [ -d "$T/db" ] && mv "$T/db" "$DB"
     rm -rf "$T"
 }
-trap restore EXIT
+HOLDER=""
+trap 'stop_holder; restore' EXIT
 
 [ -d "$RUN" ] && mv "$RUN" "$T/run"
 [ -d "$DB" ] && mv "$DB" "$T/db"
@@ -82,6 +93,38 @@ check "a root-owned regular observed.json reads as its record" "$(grep '^regular
 check "an observed.json owned by nobody reads as absent" "$(grep '^nobody=' "$T/probe.out")" "nobody=absent"
 check "a symlink at observed.json reads as absent" "$(grep '^symlink=' "$T/probe.out")" "symlink=absent"
 check "no observed.json reads as absent" "$(grep '^missing=' "$T/probe.out")" "missing=absent"
+
+# (a) and (b) the health mirror's tick lock: three skipped runs log one skip, the first run after the holder
+# ends logs one resume
+MIRROR="$(dirname "$SRC")/health_mirror.php"
+WGLOG=/var/log/wireguard/latest.log
+mkdir -p -m 700 "$RUN"
+rm -f "$RUN/health.skipped"
+$PHP -d log_errors=0 -r '$f = fopen("'"$RUN"'/health.lock", "c"); flock($f, LOCK_EX); sleep(20);' &
+HOLDER=$!
+sleep 1
+mark=$(wc -l < "$WGLOG")
+slow=0
+for i in 1 2 3; do
+    t0=$(date +%s)
+    $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 0 ] || slow=1
+    [ $(($(date +%s) - t0)) -le 1 ] || slow=1
+done
+sleep 1
+check "three runs against a held health.lock each exit 0 within a second" "$slow" 0
+check "three skipped runs log one skip line" "$(tail -n +$((mark + 1)) "$WGLOG" | grep -c 'wgct-health.*tick skipped: another run holds health.lock')" 1
+check "the skip leaves its marker" "$([ -f "$RUN/health.skipped" ] && echo yes || echo no)" yes
+stop_holder
+sleep 1
+mark=$(wc -l < "$WGLOG")
+$PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
+$PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
+sleep 1
+check "the first run after the holder ends logs one resume line, the next none" "$(tail -n +$((mark + 1)) "$WGLOG" | grep -c 'wgct-health.*health resumed')" 1
+check "the resume removes the marker" "$([ -f "$RUN/health.skipped" ] && echo yes || echo no)" no
+check "no /tmp/wgct_health.lock is created by a run" "$(rm -f /tmp/wgct_health.lock; $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1; [ -e /tmp/wgct_health.lock ] && echo yes || echo no)" no
 
 echo "state: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]
