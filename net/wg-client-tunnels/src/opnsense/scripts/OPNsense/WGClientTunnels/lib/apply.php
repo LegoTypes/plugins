@@ -784,7 +784,8 @@ function wgct_filter_action(callable $commit): array {
  * apply-pending tunnel runs it again -- without a mode, the mode its record
  * still needs (wgct_rerun_mode()). The modes are wgct_apply_mode_steps()'s;
  * filter takes no gateway lock. Only a complete run of at least the recorded
- * mode settles apply-pending.
+ * mode settles apply-pending. An instance missing from the engine model's
+ * managed list is refused ("not a managed tunnel") before any lock or step.
  *
  * @param string      $uuid the WireGuard instance; its gateways (for the replay) are derived here
  * @param string|null $mode one of WGCT_APPLY_MODES, or null for the recorded one
@@ -792,6 +793,10 @@ function wgct_filter_action(callable $commit): array {
  * @throws \InvalidArgumentException for an unknown mode, before anything runs
  */
 function wgct_apply_only(string $uuid, ?string $mode = null): array {
+    /* Spec 3.6: before any lock or step, an instance the engine model does not list is not the plugin's to apply. */
+    if (!in_array($uuid, wgct_managed(), true)) {
+        return wgct_result(['errors' => ['not a managed tunnel'], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
+    }
     $seen = wgct_apply_pending_record($uuid);
     $mode ??= wgct_rerun_mode($seen['mode'] ?? null);
     $steps = wgct_apply_mode_steps($mode, $uuid);
