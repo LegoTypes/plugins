@@ -65,6 +65,7 @@ const WGCT_FINDINGS = [
     'sentinel-missing' => [false, 'Settings > Check default-route exclusion (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways that keep the tunnels out of the default route'],
     'render-failed' => [false, WGCT_LOG_PAGE . ': the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
+    'core-value-invalid' => [false, 'The named settings hold a value core would not accept (a restored or hand-edited configuration): correct or delete the entry under System > Gateways, Interfaces > Assignments, Firewall > Aliases or VPN > WireGuard > Instances; the plugin ignores the value until then'],
     'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed the gateway lock or the routing alarm command the plugin copies, so its alarm replay may not match core; install a plugin update that matches this core'],
 ];
 
@@ -137,8 +138,152 @@ function wgct_xml_list(\SimpleXMLElement $root, string ...$path): array {
     return $nodes;
 }
 
+/*
+ * The shapes core's own models enforce (Gateways.xml and GatewayGroups.xml name Mask, AliasNameField, interface
+ * assignment keys), applied again to everything a restored config.xml can carry into a pf line, a route or a
+ * device name (spec 3.7, convention C7). The model masks do not run on a restored file. "D" keeps a trailing
+ * newline from passing "$".
+ */
+const WGCT_GATEWAY_NAME_MASK = '/^[a-zA-Z0-9_-]{1,32}$/D';
+const WGCT_INTERFACE_KEY_MASK = '/^[a-z0-9]+$/D';
+const WGCT_INTERFACE_DEVICE_MASK = '/^[a-zA-Z0-9_.-]*$/D';
+/* AliasNameField's own shape: a letter, or an underscore before a letter, then up to 29 more word characters */
+const WGCT_ALIAS_NAME_MASK = '/^([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9])[_a-zA-Z0-9]{0,29}))$/D';
+/* the per-interface network aliases core itself adds to the model (__lan_network, __opt1_network, ...), which the
+ * field's user-facing mask would refuse */
+const WGCT_ALIAS_INTERNAL_MASK = '/^__[a-z0-9]+_network$/D';
+
 /**
- * Everything the derivation reads from core config, through models.
+ * @param mixed $v a value read from config
+ * @return bool a gateway or gateway group name core accepts
+ */
+function wgct_valid_gateway_name(mixed $v): bool {
+    return is_string($v) && preg_match(WGCT_GATEWAY_NAME_MASK, $v) === 1;
+}
+
+/**
+ * @param mixed $v a value read from config
+ * @return bool an interface assignment key (wan, lan, opt1, ...)
+ */
+function wgct_valid_interface_key(mixed $v): bool {
+    return is_string($v) && preg_match(WGCT_INTERFACE_KEY_MASK, $v) === 1;
+}
+
+/**
+ * @param mixed $v a value read from config
+ * @return bool an alias name core accepts
+ */
+function wgct_valid_alias_name(mixed $v): bool {
+    return is_string($v) && (preg_match(WGCT_ALIAS_NAME_MASK, $v) === 1 || preg_match(WGCT_ALIAS_INTERNAL_MASK, $v) === 1);
+}
+
+/**
+ * @param mixed $v a value read from config
+ * @return bool a wgN device name
+ */
+function wgct_valid_wg_device(mixed $v): bool {
+    return is_string($v) && preg_match('/^wg[0-9]+$/D', $v) === 1;
+}
+
+/**
+ * @param string $instance a WireGuard instance number from the snapshot
+ * @return string wgN, or '' for an instance without a valid number (the derivation's "no device")
+ */
+function wgct_device_name(string $instance): string {
+    return $instance !== '' ? 'wg' . $instance : '';
+}
+
+/**
+ * @param mixed $v a value read from config or derived from it
+ * @param bool  $allowEmpty whether '' passes
+ * @return bool a bare IPv4 or IPv6 address, or an IPv6 address with a link-scope zone
+ */
+function wgct_valid_ip_field(mixed $v, bool $allowEmpty = false): bool {
+    if (!is_string($v)) {
+        return false;
+    }
+    if ($v === '') {
+        return $allowEmpty;
+    }
+    $bare = preg_replace('/%[A-Za-z0-9_.]+$/D', '', $v);
+    return $bare !== null && filter_var($bare, FILTER_VALIDATE_IP) !== false;
+}
+
+/**
+ * The snapshot with every value core would reject removed (spec 3.7). Pure, so the self-tests reach it with
+ * hand-built input; wgct_core_snapshot() hands it the raw values. What fails is dropped or blanked, and 'invalid'
+ * names each affected field once, never the value, because findings reach the GUI.
+ *
+ *  - instance numbers that are not all digits become '' (the derivation's "no device")
+ *  - gateways and gateway groups whose name fails core's mask, and gateways whose interface key does, are dropped;
+ *    a failing group member is dropped from its group
+ *  - interfaces whose key or device name fails are dropped
+ *  - alias names that fail core's mask are dropped
+ *
+ * @param array $raw the snapshot as read from config; 'aliases' is optional
+ * @return array the same shape, plus 'aliases' (list) and 'invalid' (list of field names)
+ */
+function wgct_snapshot_validate(array $raw): array {
+    $invalid = [];
+    $flag = function (string $field) use (&$invalid): void {
+        if (!in_array($field, $invalid, true)) {
+            $invalid[] = $field;
+        }
+    };
+    $core = $raw;
+    foreach ($raw['instances'] as $uuid => $inst) {
+        if (!ctype_digit((string)$inst['instance'])) {
+            $core['instances'][$uuid]['instance'] = '';
+            $flag('instance number');
+        }
+    }
+    $core['interfaces'] = [];
+    foreach ($raw['interfaces'] as $key => $if) {
+        if (!wgct_valid_interface_key((string)$key)) {
+            $flag('interface key');
+        } elseif (preg_match(WGCT_INTERFACE_DEVICE_MASK, $if['if']) !== 1) {
+            $flag('interface device');
+        } else {
+            $core['interfaces'][$key] = $if;
+        }
+    }
+    $core['gateways'] = [];
+    foreach ($raw['gateways'] as $name => $g) {
+        if (!wgct_valid_gateway_name((string)$name)) {
+            $flag('gateway name');
+        } elseif (!wgct_valid_interface_key($g['interface'])) {
+            $flag('interface key');
+        } else {
+            $core['gateways'][$name] = $g;
+        }
+    }
+    $core['groups'] = [];
+    foreach ($raw['groups'] as $name => $members) {
+        if (!wgct_valid_gateway_name((string)$name)) {
+            $flag('gateway name');
+            continue;
+        }
+        $kept = array_values(array_filter($members, 'wgct_valid_gateway_name'));
+        if (count($kept) !== count($members)) {
+            $flag('gateway name');
+        }
+        $core['groups'][$name] = $kept;
+    }
+    $core['aliases'] = [];
+    foreach ($raw['aliases'] ?? [] as $alias) {
+        if (wgct_valid_alias_name($alias)) {
+            $core['aliases'][] = $alias;
+        } else {
+            $flag('alias name');
+        }
+    }
+    $core['invalid'] = $invalid;
+    return $core;
+}
+
+/**
+ * Everything the derivation reads from core config, through models, with the values core would reject removed
+ * (wgct_snapshot_validate()).
  *
  * @return array see wgct_derive()
  */
@@ -146,7 +291,7 @@ function wgct_core_snapshot() {
     $root = Config::getInstance()->object();
     $core = [
         'instances' => [], 'peers' => [], 'interfaces' => [], 'routes' => [], 'gateways' => [],
-        'snat' => [], 'groups' => [], 'dns_servers' => [], 'forwarders' => [],
+        'snat' => [], 'groups' => [], 'dns_servers' => [], 'forwarders' => [], 'aliases' => [],
     ];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $s) {
         $core['instances'][$uuid] = [
@@ -221,6 +366,9 @@ function wgct_core_snapshot() {
             $core['dns_servers'][] = (string)$dns;
         }
     }
+    foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
+        $core['aliases'][] = (string)$alias->name;
+    }
     foreach ((new \OPNsense\Unbound\Unbound())->dots->dot->iterateItems() as $dot) {
         if ((string)$dot->enabled === '1' && (string)$dot->server !== '') {
             $core['forwarders'][] = (string)$dot->server;
@@ -237,7 +385,7 @@ function wgct_core_snapshot() {
     } catch (\Throwable $e) {
         /* advisory only: a core that no longer offers the defaults must not break the filter and mirror paths */
     }
-    return $core;
+    return wgct_snapshot_validate($core);
 }
 
 /**
@@ -300,6 +448,9 @@ function wgct_derive(array $core, array $managed) {
     if (!empty($managed) && (!isset($core['gateways']['NO_DEFAULT4']) || !isset($core['gateways']['NO_DEFAULT6']))) {
         $global[] = wgct_finding('sentinel-missing', 'NO_DEFAULT4 and NO_DEFAULT6 keep tunnels out of the default-gateway election');
     }
+    if (!empty($core['invalid'])) {
+        $global[] = wgct_finding('core-value-invalid', 'ignored: ' . implode(', ', $core['invalid']));
+    }
     return ['tunnels' => $tunnels, 'global' => $global];
 }
 
@@ -310,7 +461,9 @@ function wgct_derive(array $core, array $managed) {
 function wgct_wg_devices(array $core): array {
     $out = [];
     foreach ($core['instances'] as $inst) {
-        $out['wg' . $inst['instance']] = true;
+        if ($inst['instance'] !== '') {
+            $out[wgct_device_name($inst['instance'])] = true;
+        }
     }
     return $out;
 }
@@ -379,7 +532,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     }
     $t['name'] = $inst['name'];
     $t['enabled'] = $inst['enabled'];
-    $t['device'] = 'wg' . $inst['instance'];
+    $t['device'] = wgct_device_name($inst['instance']);
 
     /* peer, endpoint and the WAN binding */
     if (count($inst['peers']) !== 1) {
@@ -430,7 +583,8 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     /* everything else hangs off the interface assignment */
     $opt = $ctx['opt_by_device'][$t['device']] ?? null;
     if ($opt === null) {
-        $t['findings'][] = wgct_finding('not-assigned', "{$t['device']} has no interface assignment");
+        $t['findings'][] = wgct_finding('not-assigned', $t['device'] === ''
+            ? 'the instance has no valid number, so no wgN device' : "{$t['device']} has no interface assignment");
         return $t;
     }
     $t['interface'] = $opt;
@@ -646,7 +800,7 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
     $clean = fn (mixed $v): string => str_replace(['|', "\r", "\n"], ' ', trim((string)$v));
     $lines = ['state|on'];
     foreach ($derived['tunnels'] as $t) {
-        if ($t['device'] === '') {
+        if (!wgct_valid_wg_device($t['device'])) {
             continue;
         }
         if (wgct_blocked($t)) {
@@ -655,6 +809,13 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
         }
         if (!$t['enabled'] || $t['gw4'] === null || $t['gw6'] === null || $t['ipv6_address'] === null
             || (string)$t['ipv6_next_hop'] === '') {
+            continue;
+        }
+        /* the same shapes the snapshot enforced, again at the point the line is written (spec 3.7) */
+        $address = explode('/', (string)$t['ipv6_address'], 2);
+        if (!wgct_valid_ip_field($address[0]) || (isset($address[1]) && preg_match('/^[0-9]{1,3}$/D', $address[1]) !== 1)
+            || !wgct_valid_ip_field($t['ipv6_next_hop']) || !wgct_valid_ip_field($t['monitor6'], true)
+            || !wgct_valid_gateway_name($t['gw4']) || !wgct_valid_gateway_name($t['gw6'])) {
             continue;
         }
         $lines[] = implode('|', array_map($clean,
@@ -679,7 +840,7 @@ function wgct_pin_set(array $derived, $wanPins, $innerSource) {
     $wan = [];
     $inner = [];
     foreach ($derived['tunnels'] as $t) {
-        if (!$t['enforceable'] || $t['interface'] === null) {
+        if (!$t['enforceable'] || $t['interface'] === null || !wgct_valid_interface_key($t['interface'])) {
             continue;
         }
         if ($innerSource) {
@@ -687,8 +848,12 @@ function wgct_pin_set(array $derived, $wanPins, $innerSource) {
         }
         if ($wanPins) {
             $ip = $t['endpoint_ip'];
+            if (!wgct_valid_ip_field($ip)) {
+                continue;
+            }
             $family = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 'inet6' : 'inet';
-            $wanIf = $t['wan_interface'] ?? '';
+            /* a WAN interface key that fails the mask is treated as unresolved: the handshake is blocked everywhere */
+            $wanIf = wgct_valid_interface_key($t['wan_interface'] ?? '') ? $t['wan_interface'] : '';
             $wan[$wanIf . '|' . $family][] = $ip;
         }
     }
@@ -717,7 +882,11 @@ function wgct_pin_set(array $derived, $wanPins, $innerSource) {
 function wgct_pin_rules(array $pinSet) {
     $rules = [];
     foreach ($pinSet['wan'] as $w) {
-        if ($w['wan_if'] === '') {
+        $w['endpoints'] = array_values(array_filter($w['endpoints'], 'wgct_valid_ip_field'));
+        if ($w['endpoints'] === []) {
+            continue;
+        }
+        if ($w['wan_if'] === '' || !wgct_valid_interface_key($w['wan_if'])) {
             /* the bound WAN could not be resolved: block the handshake everywhere instead of leaving it unpinned */
             $rules[] = [
                 'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true,
@@ -736,6 +905,9 @@ function wgct_pin_rules(array $pinSet) {
         ];
     }
     foreach ($pinSet['inner'] as $opt) {
+        if (!wgct_valid_interface_key($opt)) {
+            continue;
+        }
         /* only the tunnel's own addresses, not (self): every tunnel's address is the firewall's, so (self) let one
          * tunnel's NATed source out of another, and a provider that learns the client address from traffic then
          * sends that tunnel's replies to the wrong address.
@@ -768,14 +940,16 @@ function wgct_mss_lines(array $derived, $mssClamp) {
         return $lines;
     }
     foreach ($derived['tunnels'] as $t) {
-        if (!$t['enforceable'] || $t['device'] === '') {
+        if (!$t['enforceable'] || !wgct_valid_wg_device($t['device'])) {
             continue;
         }
-        if ($t['mtu'] >= 576) {
-            $lines[] = sprintf('match on %s inet proto tcp all scrub (max-mss %d)', $t['device'], $t['mtu'] - 40);
+        $n = (int)substr($t['device'], 2);
+        $mtu = (int)$t['mtu'];
+        if ($mtu >= 576) {
+            $lines[] = sprintf('match on wg%d inet proto tcp all scrub (max-mss %d)', $n, $mtu - 40);
         }
-        if ($t['ipv6_address'] !== null && $t['mtu'] >= 1280) {
-            $lines[] = sprintf('match on %s inet6 proto tcp all scrub (max-mss %d)', $t['device'], $t['mtu'] - 60);
+        if ($t['ipv6_address'] !== null && $mtu >= 1280) {
+            $lines[] = sprintf('match on wg%d inet6 proto tcp all scrub (max-mss %d)', $n, $mtu - 60);
         }
     }
     sort($lines);
@@ -1381,6 +1555,114 @@ function wgct_tunnels_selftest() {
         && wgct_route_lines(wgct_derive($c2, ['i-a']), true, true) === ['state|on'];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] routes: (e) an IPv4-only or disabled tunnel => no line\n", $ok ? 'PASS' : 'FAIL');
+
+    /* values from a restored config (spec 3.7): validated again where the snapshot is built and where they are used */
+    $invalidOf = fn (array $core): array => wgct_snapshot_validate($core);
+    $findingFor = fn (array $core, string $field): bool => in_array($field, $core['invalid'] ?? [], true)
+        && count(array_filter(wgct_derive($core, ['i-a'])['global'], fn (array $f): bool => $f['code'] === 'core-value-invalid'
+            && !$f['blocking'] && str_contains($f['detail'], $field))) === 1;
+    $raw = $base();
+    $raw['aliases'] = ['hosts_alias'];
+    $c = $invalidOf($raw);
+    $ok = $c['invalid'] === [] && $c['gateways'] === $raw['gateways'] && $c['interfaces'] === $raw['interfaces']
+        && $c['aliases'] === ['hosts_alias'] && $c['groups'] === $raw['groups']
+        && wgct_derive($c, ['i-a'])['global'] === [] && $codes(wgct_derive($c, ['i-a'])['tunnels'][0]) === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a valid snapshot passes unchanged, no core-value-invalid\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['instances']['i-a']['instance'] = "1\nblock all";
+    $c = $invalidOf($raw);
+    $d = wgct_derive($c, ['i-a']);
+    $ok = $c['instances']['i-a']['instance'] === '' && $d['tunnels'][0]['device'] === '' && $findingFor($c, 'instance number')
+        && !wgct_derive($c, ['i-a'])['tunnels'][0]['enforceable']
+        && wgct_mss_lines($d, true) === [] && wgct_pin_set($d, true, true) === ['wan' => [], 'inner' => []]
+        && wgct_route_lines($d, true, true) === ['state|on'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: instance \"1\\nblock all\" => device '', finding, no MSS line, no pin, no route line\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['instances']['i-a']['instance'] = '';
+    $c = $invalidOf($raw);
+    $ok = $c['instances']['i-a']['instance'] === '' && wgct_derive($c, ['i-a'])['tunnels'][0]['device'] === ''
+        && !isset(wgct_wg_devices($c)['wg']);
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: an empty instance number is no device either\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['gateways']['x;y'] = $gw(['interface' => 'opt1', 'gateway' => '192.0.2.77']);
+    $raw['groups']['grp_a'][] = 'x;y';
+    $c = $invalidOf($raw);
+    $ok = !isset($c['gateways']['x;y']) && isset($c['gateways']['tun_a']) && !in_array('x;y', $c['groups']['grp_a'], true)
+        && $findingFor($c, 'gateway name');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: gateway name x;y => dropped, finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['gateways']['too_long'] = $gw(['interface' => 'opt1']);
+    $raw['gateways'][str_repeat('g', 33)] = $gw(['interface' => 'opt1']);
+    $raw['gateways']['ok-32_' . str_repeat('g', 26)] = $gw(['interface' => 'opt1']);
+    $c = $invalidOf($raw);
+    $ok = isset($c['gateways']['too_long']) && !isset($c['gateways'][str_repeat('g', 33)])
+        && isset($c['gateways']['ok-32_' . str_repeat('g', 26)]) && $findingFor($c, 'gateway name');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: gateway names follow core's mask (hyphen, 32 characters at most)\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['interfaces']['opt1;'] = ['if' => 'igc9', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
+    $raw['gateways']['stray'] = $gw(['interface' => 'opt1;']);
+    $c = $invalidOf($raw);
+    $ok = !isset($c['interfaces']['opt1;']) && !isset($c['gateways']['stray']) && isset($c['interfaces']['opt1'])
+        && $findingFor($c, 'interface key');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: interface key opt1; => dropped (and a gateway on it), finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['interfaces']['opt11']['if'] = "wg1\nblock all";
+    $c = $invalidOf($raw);
+    $ok = !isset($c['interfaces']['opt11']) && $findingFor($c, 'interface device');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: an interface whose device name carries a newline => dropped, finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['aliases'] = ['hosts_alias', 'bad alias', 'LocalNetworks', "x\ny", '1abc', '__lan_network', '__opt1_network', '__x y_network'];
+    $c = $invalidOf($raw);
+    $ok = $c['aliases'] === ['hosts_alias', 'LocalNetworks', '__lan_network', '__opt1_network'] && $findingFor($c, 'alias name');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: an alias name with a space => dropped, finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['gateways']['bad;'] = $gw(['interface' => 'opt1']);
+    $raw['aliases'] = ['bad alias'];
+    $raw['interfaces']['opt1;'] = ['if' => 'igc9', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
+    $c = $invalidOf($raw);
+    $g = wgct_derive($c, ['i-a'])['global'];
+    $ok = count($g) === 1 && $g[0]['code'] === 'core-value-invalid' && !$g[0]['blocking']
+        && str_contains($g[0]['detail'], 'gateway name') && str_contains($g[0]['detail'], 'alias name')
+        && str_contains($g[0]['detail'], 'interface key') && !str_contains($g[0]['detail'], 'bad;')
+        && !str_contains($g[0]['detail'], 'bad alias') && !str_contains($g[0]['detail'], 'opt1;');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: one global finding names the fields, never the values\n", $ok ? 'PASS' : 'FAIL');
+    /* use-time checks on hand-built records: nothing a hostile field carries reaches a line */
+    $d = wgct_derive($invalidOf($base()), ['i-a']);
+    $d['tunnels'][0]['device'] = "wg1\nblock all";
+    $d['tunnels'][0]['interface'] = 'opt11;';
+    $ok = wgct_mss_lines($d, true) === [] && wgct_route_lines($d, true, true) === ['state|on']
+        && wgct_pin_set($d, true, true)['inner'] === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a hostile device or interface key on a derived record => no MSS line, route line or inner pin\n", $ok ? 'PASS' : 'FAIL');
+    $d = wgct_derive($invalidOf($base()), ['i-a']);
+    $d['tunnels'][0]['gw4'] = 'tun a';
+    $e = wgct_derive($invalidOf($base()), ['i-a']);
+    $e['tunnels'][0]['ipv6_next_hop'] = "fd00::1:2\nblock";
+    $f = wgct_derive($invalidOf($base()), ['i-a']);
+    $f['tunnels'][0]['monitor6'] = '2001:db8::9; reboot';
+    $h = wgct_derive($invalidOf($base()), ['i-a']);
+    $h['tunnels'][0]['ipv6_address'] = 'fd00::1:1/12x';
+    $ok = wgct_route_lines($d, true, true) === ['state|on'] && wgct_route_lines($e, true, true) === ['state|on']
+        && wgct_route_lines($f, true, true) === ['state|on'] && wgct_route_lines($h, true, true) === ['state|on'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a route line with a failing field is not emitted\n", $ok ? 'PASS' : 'FAIL');
+    $d = wgct_derive($invalidOf($base()), ['i-a']);
+    $d['tunnels'][0]['mtu'] = '1376 -x';
+    $d['tunnels'][0]['wan_interface'] = 'opt1;';
+    $ok = wgct_mss_lines($d, true) === ['match on wg1 inet proto tcp all scrub (max-mss 1336)',
+                                        'match on wg1 inet6 proto tcp all scrub (max-mss 1316)']
+        && wgct_pin_set($d, true, false)['wan'] === [['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a non-numeric MTU is cast, and a hostile WAN interface key pins fail-closed\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
