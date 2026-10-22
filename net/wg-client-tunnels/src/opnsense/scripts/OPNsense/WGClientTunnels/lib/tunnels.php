@@ -64,6 +64,7 @@ const WGCT_FINDINGS = [
     'ipv6-monitor-config' => [false, 'Edit the tunnel and save its IPv6 monitor again (it resets the monitor route setting and copies the IPv4 thresholds)'],
     'sentinel-missing' => [false, 'Settings > Check default-route exclusion (tunnel.php ensure-sentinel) creates the NO_DEFAULT4 and NO_DEFAULT6 gateways that keep the tunnels out of the default route'],
     'render-failed' => [false, WGCT_LOG_PAGE . ': the plugin could not build its firewall rules at the last reload; they are missing until the next reload succeeds'],
+    'render-fallback' => [false, WGCT_LOG_PAGE . ': the plugin could not build its firewall rules at the last reload, so pf keeps the pins it last put in place; the next reload that succeeds replaces them'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
     'core-value-invalid' => [false, 'The named settings hold a value core would not accept (a restored or hand-edited configuration): correct or delete the entry under System > Gateways, Interfaces > Assignments, Firewall > Aliases or VPN > WireGuard > Instances; the plugin ignores the value until then'],
     'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed the gateway lock or the routing alarm command the plugin copies, so its alarm replay may not match core; install a plugin update that matches this core'],
@@ -122,6 +123,47 @@ function wgct_blocked(array $tunnel) {
  */
 function wgct_pinned(array $t, bool $wanPins, bool $innerSource): bool {
     return wgct_pin_rules(wgct_pin_set(['tunnels' => [$t]], $wanPins, $innerSource)) !== [];
+}
+
+/**
+ * Whether the footprint pf enforces holds a pin for the tunnel: a WAN rule blocking one of its endpoints (on any
+ * interface form), or the inner-source block on its interface. Pure.
+ *
+ * @param array $t     derived record
+ * @param array $rules the footprint's rules
+ * @return bool
+ */
+function wgct_footprint_pinned(array $t, array $rules): bool {
+    $endpoints = array_column($t['pins']['wan'], 0);
+    foreach ($rules as $rule) {
+        if (isset($rule['from'])) {
+            if ($t['interface'] !== null && ($rule['interface'] ?? null) === $t['interface']
+                && $rule['from'] === $t['interface'] . 'ip') {
+                return true;
+            }
+        } elseif (isset($rule['to']) && array_intersect(explode(',', $rule['to']), $endpoints) !== []) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether pf holds a plugin pin for the tunnel, by the render state (wgct_render_state()): the render's pins
+ * under the switches, the footprint's, or none while render-failed shows. Pure; the views' `pinned`.
+ *
+ * @param array $t           derived record
+ * @param array $state       wgct_render_state()
+ * @param bool  $wanPins     the wan_pins switch, false while the plugin is disabled
+ * @param bool  $innerSource the inner_source switch, false while the plugin is disabled
+ * @return bool
+ */
+function wgct_pins_in_pf(array $t, array $state, bool $wanPins, bool $innerSource): bool {
+    return match ($state['pins_from']) {
+        'footprint' => wgct_footprint_pinned($t, $state['rules']),
+        'none' => false,
+        default => wgct_pinned($t, $wanPins, $innerSource),
+    };
 }
 
 /**

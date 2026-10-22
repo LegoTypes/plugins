@@ -6,7 +6,8 @@
 #
 # Writes a copy of the production wgct.sh with the four values the shell tests need to control substituted:
 # the state directory, the command that prints the route protocol, the command a queued reconcile runs, and
-# the seconds a queued reconcile waits for reconcile.lock. Production wgct.sh honours no environment override,
+# the seconds a queued reconcile waits for reconcile.lock. The persistent state directory becomes <state dir>/db,
+# so a copy never touches the footprint in /var/db. Production wgct.sh honours no environment override,
 # so the tests run this copy instead. Each substitution must match exactly one line of wgct.sh; when one
 # matches none (or several), this fails, so a later edit of wgct.sh cannot leave the copy on production paths.
 #
@@ -36,6 +37,7 @@ substitute() {
 }
 
 substitute "state directory" '^STATE_DIR="/var/run/wgclienttunnels"$' "STATE_DIR=\"$state\""
+substitute "db directory" '^DB_DIR="/var/db/wgclienttunnels"$' "DB_DIR=\"$state/db\""
 substitute "route protocol helper" '^\( *\)"${PHP}" -d display_errors=stderr "${SCRIPTS}/gateway_config.php"$' "\\1\"$helper\""
 substitute "reconcile command" '^\( *\)"$0" reconcile$' "\\1\"$recon\""
 substitute "reconcile wait" '^\( *\)wait=120$' "\\1wait=$wait"
