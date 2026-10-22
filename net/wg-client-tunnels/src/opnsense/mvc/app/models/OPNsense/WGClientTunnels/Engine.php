@@ -44,7 +44,8 @@ class Engine extends BaseModel
      */
     public static function parseBootId(string $sysctlOut): string
     {
-        if (preg_match('/Dump:0x([0-9a-f]+)/i', $sysctlOut, $m) !== 1) {
+        /* at most 64 digits, the most a hold record's boot takes; a longer dump is no boot id */
+        if (preg_match('/Dump:0x([0-9a-f]{1,64})(?![0-9a-f])/i', $sysctlOut, $m) !== 1) {
             return '';
         }
         return strtolower($m[1]);
@@ -59,5 +60,42 @@ class Engine extends BaseModel
     {
         $out = shell_exec('/sbin/sysctl -x -n kern.boot_id');
         return is_string($out) ? self::parseBootId($out) : '';
+    }
+
+    /**
+     * The hold records as they are, duplicates and all.
+     *
+     * @return array<string, array{gateway: string, boot: string, underlay: string, taken_at: int}> by item uuid
+     */
+    public function holdRows(): array
+    {
+        $rows = [];
+        foreach ($this->holds->iterateItems() as $item => $node) {
+            $rows[(string)$item] = [
+                'gateway' => $node->gateway->getValue(),
+                'boot' => $node->boot->getValue(),
+                'underlay' => $node->underlay->getValue(),
+                'taken_at' => (int)$node->taken_at->getValue(),
+            ];
+        }
+        return $rows;
+    }
+
+    /**
+     * Replace every hold record with $rows.
+     *
+     * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows
+     */
+    public function setHolds(array $rows): void
+    {
+        foreach (array_keys($this->holdRows()) as $item) {
+            $this->holds->del($item);
+        }
+        foreach ($rows as $row) {
+            $this->holds->Add()->setNodes([
+                'gateway' => $row['gateway'], 'boot' => $row['boot'],
+                'underlay' => $row['underlay'], 'taken_at' => (string)$row['taken_at'],
+            ]);
+        }
     }
 }

@@ -12,14 +12,22 @@
  *                              losshigh, losslow, time_period]
  *   config.underlays  IPv4 tunnel gateway name => WAN gateway name
  *   config.pairs      IPv4 tunnel gateway name => its IPv6 gateway name
- *   config.held       gateway names held down by pass 1
- *   config.held_raw   sorted gateway UUIDs as stored in the model
+ *   config.held       gateway names held down by pass 1: the owned hold records
+ *   config.foreign    name (uuid when the gateway is gone) => 'released' | 'foreign',
+ *                     the hold records the next commit prunes (wgct_resolve_holds())
+ *   config.duplicates names with a second hold record, which the next commit drops
+ *   config.holds_rows the engine model's hold records as stored
+ *   config.live_boot  kern.boot_id, '' when unreadable
+ *   config.previous_boot boot.json's boot id when it names another boot, else null
+ *   config.boot_unreadable no live boot id: the tick neither takes nor releases a hold
  *   live.status       name => gateway_status.php status, null when unavailable
  *   live.loss         name => dpinger loss percent, null without data
  *   live.sock_age     name => dpinger socket age in seconds, null when absent
  *
  * Collectors build the snapshot; wgct_locked_commit() is the only way the
- * mirror writes config (spec 2026-09-24 section 4.6).
+ * mirror writes config (spec 2026-09-24 section 4.6). The hold records live in
+ * the engine model, which has no API (spec 2026-10-20 section 3.5): a record
+ * proves a hold only when its boot is one the mirror itself ran under.
  */
 
 use OPNsense\Core\Config;
@@ -39,6 +47,12 @@ const WGCT_HEALTH_LOCK_FILE = WGCT_RUN_DIR . '/health.lock';
 const WGCT_HEALTH_SKIPPED_FILE = WGCT_RUN_DIR . '/health.skipped';
 const WGCT_HEALTH_UNOPENABLE_FILE = WGCT_RUN_DIR . '/health.unopenable';
 const WGCT_GATEWAY_SKIPPED_FILE = WGCT_RUN_DIR . '/gateway.skipped';
+const WGCT_BOOT_UNREADABLE_FILE = WGCT_RUN_DIR . '/boot.unreadable';
+
+/* The boot the mirror last ran under, written at the end of every tick: after a reboot it still names the
+ * previous boot until the first tick, which is how that tick knows the records of that boot are its own. */
+const WGCT_BOOT_FILE = WGCT_DB_DIR . '/boot.json';
+const WGCT_BOOT_FILE_MAX_BYTES = 256;
 
 /**
  * What a tick does about a lock it could not take, once per state (the shape of wgct_failure_log_plan()).
@@ -376,24 +390,27 @@ function wgct_settled(array $row, $age, $override) {
  * Builds fresh models, so called after Config::lock() it reflects config.xml
  * as it is now.
  *
- * @return array ['enabled', 'gateways', 'underlays', 'pairs',
- *                'held' => names, 'held_raw' => sorted uuids from config]
+ * @return array see the file header
  */
 function wgct_collect_config() {
     $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
+    $engine = new OPNsense\WGClientTunnels\Engine();
     $core = wgct_core_snapshot();
-    $inputs = wgct_mirror_inputs(wgct_derive($core, wgct_split_csv((string)$mdl->managed)));
+    $inputs = wgct_mirror_inputs(wgct_derive($core, wgct_split_csv($engine->managed->getValue())));
+    $holds = wgct_engine_holds($engine, $core['gateways']);
     $nameByUuid = [];
     foreach ($core['gateways'] as $name => $g) {
-        $nameByUuid[$g['uuid']] = $name;
+        $nameByUuid[$g['uuid']] = (string)$name;
     }
-    $heldRaw = wgct_split_csv((string)$mdl->held);
-    sort($heldRaw);
     $held = [];
-    foreach ($heldRaw as $uuid) {
+    foreach ($holds['owned'] as $uuid) {
         if (isset($nameByUuid[$uuid])) {
             $held[] = $nameByUuid[$uuid];
         }
+    }
+    $foreign = [];
+    foreach ($holds['pruned'] as $uuid => $reason) {
+        $foreign[$nameByUuid[$uuid] ?? $uuid] = $reason;
     }
     return [
         'enabled' => $mdl->enabled->isEqual('1') && $mdl->health_mirror->isEqual('1'),
@@ -401,24 +418,70 @@ function wgct_collect_config() {
         'underlays' => $inputs['underlays'],
         'pairs' => $inputs['pairs'],
         'held' => $held,
-        'held_raw' => $heldRaw,
+        'foreign' => $foreign,
+        'duplicates' => array_map(fn (string $uuid): string => $nameByUuid[$uuid] ?? $uuid, $holds['duplicates']),
+        'holds_rows' => $holds['rows'],
+        'live_boot' => $holds['live_boot'],
+        'previous_boot' => $holds['previous_boot'],
+        'boot_unreadable' => $holds['live_boot'] === '',
     ];
 }
 
 /**
- * @param array $heldNames name => true (the planner's held set)
- * @param array $gateways  name => row with 'uuid'
- * @return array sorted gateway uuids; names with no gateway drop out
+ * The engine model's hold records resolved against the live boot and boot.json's (spec 3.5), for the mirror and
+ * the Tunnels view. With no live boot id nothing is decided (ruling R17): no row is owned or pruned, so a reader
+ * shows nothing held and the mirror's tick neither takes nor releases a hold.
+ *
+ * @param \OPNsense\WGClientTunnels\Engine $engine
+ * @param array $gateways core snapshot gateways: name => row with uuid and force_down
+ * @return array{rows: list<array>, live_boot: string, previous_boot: ?string, owned: list<string>,
+ *               pruned: array<string, string>, duplicates: list<string>} rows as stored; uuids otherwise
  */
-function wgct_held_uuids(array $heldNames, array $gateways) {
-    $uuids = [];
-    foreach (array_keys($heldNames) as $name) {
-        if (isset($gateways[$name])) {
-            $uuids[] = $gateways[$name]['uuid'];
-        }
+function wgct_engine_holds(\OPNsense\WGClientTunnels\Engine $engine, array $gateways): array {
+    $rows = array_values($engine->holdRows());
+    $live = OPNsense\WGClientTunnels\Engine::liveBootId();
+    $recorded = wgct_parse_boot_record(wgct_read_state_file(WGCT_BOOT_FILE, WGCT_BOOT_FILE_MAX_BYTES));
+    $previous = $recorded !== null && $recorded !== $live ? $recorded : null;
+    $out = ['rows' => $rows, 'live_boot' => $live, 'previous_boot' => $previous, 'owned' => [], 'pruned' => [], 'duplicates' => []];
+    if ($live === '') {
+        return $out;
     }
-    sort($uuids);
-    return $uuids;
+    $forceDown = [];
+    foreach ($gateways as $g) {
+        $forceDown[$g['uuid']] = $g['force_down'];
+    }
+    $deduped = wgct_dedupe_hold_rows($rows, $live, $previous);
+    $resolved = wgct_resolve_holds($deduped['rows'], $live, $previous, $forceDown);
+    return ['owned' => $resolved['owned'], 'pruned' => $resolved['pruned'], 'duplicates' => $deduped['duplicates']] + $out;
+}
+
+/**
+ * boot.json's boot id. Pure.
+ *
+ * @param string|null $json the file's content, null when absent or untrustworthy
+ * @return string|null the boot id; null unless the content is exactly {"boot_id": <1-64 lower-case hex>, "at": <int>}
+ */
+function wgct_parse_boot_record(?string $json): ?string {
+    $r = $json !== null ? json_decode($json, true) : null;
+    if (!is_array($r) || array_is_list($r) || !wgct_has_exact_keys($r, ['boot_id', 'at']) || !is_int($r['at'])
+        || !is_string($r['boot_id']) || preg_match('/^[0-9a-f]{1,64}$/D', $r['boot_id']) !== 1) {
+        return null;
+    }
+    return $r['boot_id'];
+}
+
+/**
+ * @return string boot.json's content for $bootId at $at. Pure.
+ */
+function wgct_boot_record_json(string $bootId, int $at): string {
+    return (string)json_encode(['boot_id' => $bootId, 'at' => $at]);
+}
+
+/**
+ * Record the boot this tick ran under (the C3 writer: root, 0600, in the 0700 state directory).
+ */
+function wgct_write_boot_record(string $bootId): bool {
+    return wgct_write_file_atomic(WGCT_BOOT_FILE, wgct_boot_record_json($bootId, time()));
 }
 
 /**
@@ -466,22 +529,125 @@ function wgct_resolve_holds(array $rows, string $liveBoot, ?string $previousBoot
 }
 
 /**
- * Serialize the held set into the plugin model when it differs from config.
- * Call only inside wgct_locked_commit(), with $config from a collection
- * made under that lock.
+ * One hold record per gateway (the engine model's ArrayField has no uniqueness), so no gateway is ever both owned
+ * and pruned: of a gateway's rows the first with the live boot is kept, else the first with the previous boot, else
+ * the first. Pure.
  *
- * @param array $heldNames name => true
- * @param array $config    wgct_collect_config() made under the lock
+ * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows
+ * @return array{rows: list<array>, duplicates: list<string>} the kept rows in their first gateway order; the uuid
+ *         of each row dropped
+ */
+function wgct_dedupe_hold_rows(array $rows, string $liveBoot, ?string $previousBoot): array {
+    $rank = function (array $row) use ($liveBoot, $previousBoot): int {
+        if ($liveBoot !== '' && $row['boot'] === $liveBoot) {
+            return 2;
+        }
+        return $previousBoot !== null && $previousBoot !== '' && $row['boot'] === $previousBoot ? 1 : 0;
+    };
+    $kept = [];
+    $duplicates = [];
+    foreach ($rows as $row) {
+        $uuid = $row['gateway'];
+        if (!isset($kept[$uuid])) {
+            $kept[$uuid] = $row;
+        } else {
+            $duplicates[] = $uuid;
+            if ($rank($row) > $rank($kept[$uuid])) {
+                $kept[$uuid] = $row;
+            }
+        }
+    }
+    return ['rows' => array_values($kept), 'duplicates' => $duplicates];
+}
+
+/**
+ * The hold records a commit writes for the planner's held set, or null when config already holds exactly these
+ * (in any order). Every gateway held keeps its owned row, re-stamped with the live boot (when it was taken and on
+ * which WAN kept), or gets a new row taken now on its tunnel's WAN; every other row goes: released by the planner,
+ * released by hand, foreign, or a second row for one gateway. With no live boot id nothing is written, not even
+ * a prune (ruling R17). Pure.
+ *
+ * @param array               $config    wgct_collect_config() (gateways, underlays, holds_rows, previous_boot)
+ * @param array<string, true> $heldNames the planner's held set
+ * @param string              $liveBoot  the live kern.boot_id
+ * @param int                 $now       the time a new hold is taken
+ * @return list<array{gateway: string, boot: string, underlay: string, taken_at: int}>|null sorted by gateway
+ */
+function wgct_hold_rows_next(array $config, array $heldNames, string $liveBoot, int $now): ?array {
+    if ($liveBoot === '') {
+        return null;
+    }
+    $rows = wgct_dedupe_hold_rows($config['holds_rows'], $liveBoot, $config['previous_boot'])['rows'];
+    $forceDown = [];
+    foreach ($config['gateways'] as $g) {
+        $forceDown[$g['uuid']] = $g['force_down'];
+    }
+    $owned = array_flip(wgct_resolve_holds($rows, $liveBoot, $config['previous_boot'], $forceDown)['owned']);
+    /* only an owned row carries over; a hold taken on a gateway with a pruned row is a new hold */
+    $prior = [];
+    foreach ($rows as $row) {
+        if (isset($owned[$row['gateway']])) {
+            $prior[$row['gateway']] = $row;
+        }
+    }
+    $next = [];
+    foreach (array_keys($heldNames) as $name) {
+        $uuid = $config['gateways'][$name]['uuid'] ?? null;
+        if ($uuid === null) {
+            continue;
+        }
+        $underlay = (string)($config['underlays'][$name] ?? '');
+        $next[] = [
+            'gateway' => $uuid,
+            'boot' => $liveBoot,
+            'underlay' => $prior[$uuid]['underlay'] ?? (wgct_valid_gateway_name($underlay) ? $underlay : ''),
+            'taken_at' => $prior[$uuid]['taken_at'] ?? $now,
+        ];
+    }
+    $byGateway = fn (array $a, array $b): int => [$a['gateway'], $a['boot']] <=> [$b['gateway'], $b['boot']];
+    usort($next, $byGateway);
+    $stored = $config['holds_rows'];
+    usort($stored, $byGateway);
+    return $next === $stored ? null : $next;
+}
+
+/**
+ * The log line of each hold record a commit pruned, in the spec's wording (3.5). Pure.
+ *
+ * @param array $config wgct_collect_config() (foreign, duplicates) made under the commit's lock
+ * @return list<string>
+ */
+function wgct_hold_prune_lines(array $config): array {
+    $lines = [];
+    foreach ($config['foreign'] as $name => $reason) {
+        $lines[] = $reason === 'released'
+            ? "{$name}: released elsewhere; forgotten"
+            : "hold record for {$name} from another boot or box; not ours, left alone";
+    }
+    foreach ($config['duplicates'] as $name) {
+        $lines[] = "{$name}: a second hold record for the same gateway; forgotten";
+    }
+    return $lines;
+}
+
+/**
+ * Write the hold records for the planner's held set into the engine model when they differ from config. Call
+ * only inside wgct_locked_commit(), with $config from a collection made under that lock. With no live boot id
+ * nothing is written (ruling R17).
+ *
+ * @param array  $heldNames name => true
+ * @param array  $config    wgct_collect_config() made under the lock
+ * @param string $liveBoot  the live kern.boot_id
  * @return bool whether the model was serialized (the caller must save)
  */
-function wgct_commit_held(array $heldNames, array $config) {
-    $uuids = wgct_held_uuids($heldNames, $config['gateways']);
-    if ($uuids === $config['held_raw']) {
+function wgct_commit_held(array $heldNames, array $config, string $liveBoot): bool {
+    $rows = wgct_hold_rows_next($config, $heldNames, $liveBoot, time());
+    if ($rows === null) {
         return false;
     }
-    $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
-    $mdl->held = implode(',', $uuids);
-    $mdl->serializeToConfig();
+    $engine = new OPNsense\WGClientTunnels\Engine();
+    $engine->setHolds($rows);
+    $engine->serializeToConfig();
     return true;
 }
 
@@ -529,7 +695,11 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
     $heldChanged = false;
 
     /* ---- pass 1: underlay ---- */
-    if ($live['status'] === null) {
+    if (!empty($config['boot_unreadable'])) {
+        /* Without the live boot id a new hold could not be recorded and no record can be shown to be ours
+         * (ruling R17): neither take nor release a hold this tick. The tick logs this once per state. */
+        $report[] = 'underlay: kern.boot_id unreadable, pass skipped';
+    } elseif ($live['status'] === null) {
         /* Without status every WAN would read absent and every tunnel would be
          * forced down on a transient read failure. Skip the pass this tick. */
         $log[] = 'gateway status unavailable; underlay pass skipped this tick';
@@ -896,14 +1066,6 @@ function wgct_selftest() {
     $total++;
     printf("[%s] plan: status unavailable is logged and reported\n", $ok ? 'PASS' : 'FAIL');
 
-    $gws = ['tun_a' => ['uuid' => 'bbb'], 'tun_b' => ['uuid' => 'aaa']];
-    $ok = wgct_held_uuids(['tun_a' => true, 'tun_b' => true], $gws) === ['aaa', 'bbb']
-        && wgct_held_uuids(['gone' => true], $gws) === []
-        && wgct_held_uuids([], $gws) === [];
-    $fail += $ok ? 0 : 1;
-    $total++;
-    printf("[%s] held: names map to sorted uuids, unknown names drop\n", $ok ? 'PASS' : 'FAIL');
-
     $rows = [
         'WAN_A' => ['force_down' => false], 'WAN_B' => ['force_down' => false],
         'tun_a' => ['force_down' => true], 'tun_b' => ['force_down' => false],
@@ -1028,6 +1190,10 @@ function wgct_selftest() {
         ['empty output => empty', '', ''],
         ['0x with no digits => empty', "Format: Length:0 Dump:0x\n", ''],
         ['non-hex after 0x => empty', "Dump:0xzz\n", ''],
+        ['64 hex digits, the most a hold record takes => kept',
+            'Format: Length:32 Dump:0x' . str_repeat('ab', 32) . "\n", str_repeat('ab', 32)],
+        ['65 hex digits, more than a hold record takes => empty',
+            'Format: Length:33 Dump:0x' . str_repeat('ab', 32) . "c\n", ''],
     ];
     foreach ($bootCases as [$desc, $out, $exp]) {
         $got = OPNsense\WGClientTunnels\Engine::parseBootId($out);
@@ -1036,6 +1202,128 @@ function wgct_selftest() {
         $total++;
         printf("[%s] boot id: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
     }
+
+    /* ---- boot.json: the boot the mirror last ran under ---- */
+    $recordCases = [
+        ['a written record reads back as its boot id', wgct_boot_record_json($live1, 1760000000), $live1],
+        ['absent => no boot', null, null],
+        ['truncated JSON => no boot', '{"boot_id":"' . $live1, null],
+        ['a boot id that is not lower-case hex => no boot', '{"boot_id":"A1B2","at":1760000000}', null],
+        ['a boot id of 65 hex digits => no boot', '{"boot_id":"' . str_repeat('a', 65) . '","at":1760000000}', null],
+        ['an empty boot id => no boot', '{"boot_id":"","at":1760000000}', null],
+        ['no time => no boot', '{"boot_id":"' . $live1 . '"}', null],
+        ['a key more => no boot', '{"boot_id":"' . $live1 . '","at":1760000000,"x":1}', null],
+        ['an array, not an object => no boot', '["' . $live1 . '",1760000000]', null],
+    ];
+    foreach ($recordCases as [$desc, $json, $exp]) {
+        $ok = wgct_parse_boot_record($json) === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] boot record: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+    }
+    $ok = wgct_boot_record_json($live1, 1760000000) === '{"boot_id":"' . $live1 . '","at":1760000000}';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] boot record: written as {\"boot_id\", \"at\"}\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- duplicate rows for one gateway: one row is kept, so a uuid is never both owned and pruned ---- */
+    $dupCases = [
+        ['a foreign, a live and a previous-boot row => the live one is kept, the other two go',
+            [$hold($uA, $other), $hold($uA, $live1), $hold($uA, $prev1)], $live1, $prev1,
+            [$hold($uA, $live1)], [$uA, $uA], ['owned' => [$uA], 'pruned' => []]],
+        ['a foreign and a previous-boot row => the previous-boot one is kept',
+            [$hold($uA, $other), $hold($uA, $prev1)], $live1, $prev1,
+            [$hold($uA, $prev1)], [$uA], ['owned' => [$uA], 'pruned' => []]],
+        ['two foreign rows => the first is kept and pruned once',
+            [$hold($uA, $other), $hold($uA, $prev1)], $live1, null,
+            [$hold($uA, $other)], [$uA], ['owned' => [], 'pruned' => [$uA => 'foreign']]],
+        ['rows of different gateways are no duplicates',
+            [$hold($uA, $live1), $hold($uB, $other)], $live1, null,
+            [$hold($uA, $live1), $hold($uB, $other)], [], ['owned' => [$uA], 'pruned' => [$uB => 'foreign']]],
+    ];
+    foreach ($dupCases as [$desc, $rows, $liveBoot, $prevBoot, $expRows, $expDup, $expResolved]) {
+        $d = wgct_dedupe_hold_rows($rows, $liveBoot, $prevBoot);
+        $r = wgct_resolve_holds($d['rows'], $liveBoot, $prevBoot, [$uA => true, $uB => true]);
+        $ok = $d['rows'] === $expRows && $d['duplicates'] === $expDup && $r === $expResolved
+            && array_intersect($r['owned'], array_keys($r['pruned'])) === [];
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] duplicate holds: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        if (!$ok) {
+            printf("       got %s\n", json_encode([$d, $r]));
+        }
+    }
+
+    /* ---- wgct_hold_rows_next: the rows a commit writes ---- */
+    $rowsCfg = function (array $rows, ?string $prevBoot = null) use ($row, $uA, $uB, $live1) {
+        return [
+            'gateways' => ['WAN_A' => $row(['uuid' => '99999999-9999-4999-8999-999999999999']),
+                           'tun_a' => $row(['uuid' => $uA, 'force_down' => true]), 'tun_b' => $row(['uuid' => $uB, 'force_down' => true])],
+            'underlays' => ['tun_a' => 'WAN_A', 'tun_b' => 'WAN_A'],
+            'holds_rows' => $rows, 'live_boot' => $live1, 'previous_boot' => $prevBoot,
+        ];
+    };
+    $at = 1760000000;
+    $now = 1760009999;
+    $stamped = fn (string $uuid, string $boot, int $taken, string $underlay = 'WAN_A'): array =>
+        ['gateway' => $uuid, 'boot' => $boot, 'underlay' => $underlay, 'taken_at' => $taken];
+    $nextCases = [
+        ['an owned row the planner still holds => nothing to write',
+            $rowsCfg([$stamped($uA, $live1, $at)]), ['tun_a' => true], $live1, null],
+        ['the same rows in another order => nothing to write',
+            $rowsCfg([$stamped($uB, $live1, $at), $stamped($uA, $live1, $at)]), ['tun_a' => true, 'tun_b' => true], $live1, null],
+        ['a previous-boot row still held => re-stamped with the live boot, its time and WAN kept',
+            $rowsCfg([$stamped($uA, $prev1, $at, 'WAN_X')], $prev1), ['tun_a' => true], $live1,
+            [$stamped($uA, $live1, $at, 'WAN_X')]],
+        ['a hold the planner takes => a new row, taken now, on the tunnel\'s WAN',
+            $rowsCfg([]), ['tun_a' => true], $live1, [$stamped($uA, $live1, $now)]],
+        ['a hold the planner released => its row goes',
+            $rowsCfg([$stamped($uA, $live1, $at)]), [], $live1, []],
+        ['a foreign row (never in the held set) => pruned',
+            $rowsCfg([$stamped($uA, $other, $at)]), [], $live1, []],
+        ['two rows for one held gateway => one row',
+            $rowsCfg([$stamped($uA, $live1, $at), $stamped($uA, $other, $at)]), ['tun_a' => true], $live1, [$stamped($uA, $live1, $at)]],
+        ['a hold taken on a gateway whose row was pruned => a new row, taken now',
+            $rowsCfg([$stamped($uA, $other, $at, 'WAN_X')]), ['tun_a' => true], $live1, [$stamped($uA, $live1, $now)]],
+        ['a held name with no gateway => no row',
+            $rowsCfg([]), ['gone' => true], $live1, null],
+        ['(R17) no live boot id => nothing written at all, not even a prune',
+            $rowsCfg([$stamped($uA, $other, $at)]), ['tun_a' => true], '', null],
+    ];
+    foreach ($nextCases as [$desc, $cfg, $heldNames, $liveBoot, $exp]) {
+        $got = wgct_hold_rows_next($cfg, $heldNames, $liveBoot, $now);
+        $ok = $got === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] hold rows: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        if (!$ok) {
+            printf("       got %s\n", json_encode($got));
+        }
+    }
+
+    /* ---- the pruned rows' log lines, in the spec's wording ---- */
+    $ok = wgct_hold_prune_lines(['foreign' => ['tun_a' => 'released', 'tun_b' => 'foreign'], 'duplicates' => ['tun_c']]) === [
+        'tun_a: released elsewhere; forgotten',
+        'hold record for tun_b from another boot or box; not ours, left alone',
+        'tun_c: a second hold record for the same gateway; forgotten',
+    ] && wgct_hold_prune_lines(['foreign' => [], 'duplicates' => []]) === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] holds: one log line per pruned row, released and foreign in their own words\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- (R17) an unreadable live boot id: the tick neither takes nor releases a hold ---- */
+    $frozen = ['boot_unreadable' => true];
+    $plan = wgct_plan($frozen + $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none']]), [], null);
+    $ok = $plan['changes'] === [] && $plan['held'] === [] && !$plan['held_changed']
+        && in_array('underlay: kern.boot_id unreadable, pass skipped', $plan['report'], true) && $plan['log'] === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] holds: (R17) no boot id, WAN down => no hold taken, nothing logged by the plan\n", $ok ? 'PASS' : 'FAIL');
+    $plan = wgct_plan($frozen + $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]), $live(), ['tun_a' => true], null);
+    $ok = $plan['changes'] === [] && $plan['held'] === ['tun_a' => true] && !$plan['held_changed'];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] holds: (R17) no boot id, WAN up => no hold released\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

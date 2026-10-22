@@ -21,6 +21,10 @@
 #         configd's log shows no plugin action in that window. The control user's dry sentinel preview answers
 #         200 and does appear in the log, so the check can see what it looks for.
 # Case 3: two concurrent measure-mtu runs give one measurement and one refusal.
+# Case 4: the control user's settings/set POST naming `managed` and `held` (spec section 3.5, convention C1) is
+#         saved with no validation message and changes neither the settings node (its persisted_at stamp aside,
+#         which every save rewrites) nor the engine node: the settings model has no such fields. Should a change
+#         get through, the old values are posted back so the VM keeps its managed list.
 #
 # The dummy tunnel `rehearse` (bound to the second VM WAN, endpoint 192.0.2.10) provides the uuid; the first
 # VM WAN is never touched.
@@ -180,6 +184,34 @@ check "two concurrent measure-mtu: one refusal" "$refusals" 1
 # the lock is free again afterwards
 $PHP "$TUNNEL" --json measure-mtu "$WAN" "$ENDPOINT" > "$T/m3"
 check "a measurement after both: runs" "$(grep -c '"ok":true' "$T/m3")" 1
+
+# case 4: the plugin's two config nodes, the settings node without its persisted_at stamp
+nodes() {
+    $PHP -r '
+        $x = simplexml_load_file("/conf/config.xml");
+        $s = $x->OPNsense->WGClientTunnels;
+        unset($s["persisted_at"]);
+        echo $s->asXML(), "\n", (string)$x->OPNsense->WGClientTunnelsEngine->asXML(), "\n";'
+}
+# the settings node's raw value of FIELD, as a 3.7_1 config holds it
+raw_field() {
+    $PHP -r 'echo (string)simplexml_load_file("/conf/config.xml")->OPNsense->WGClientTunnels->{$argv[1]};' "$1"
+}
+FOREIGN=00000000-0000-4000-8000-0000000000f5
+OLD_MANAGED=$(raw_field managed)
+OLD_HELD=$(raw_field held)
+nodes > "$T/nodes.before"
+check "control user: a settings/set POST naming managed and held answers 200" \
+    "$(call "$CTL_CRED" settings/set -d "wgclienttunnels[managed]=$FOREIGN" -d "wgclienttunnels[held]=$FOREIGN")" 200
+check "control user: that POST is saved with no validation message" "$(cat "$T/body")" '{"result":"saved"}'
+nodes > "$T/nodes.after"
+if cmp -s "$T/nodes.before" "$T/nodes.after"; then
+    same=unchanged
+else
+    same=changed
+    call "$CTL_CRED" settings/set -d "wgclienttunnels[managed]=$OLD_MANAGED" -d "wgclienttunnels[held]=$OLD_HELD" > /dev/null
+fi
+check "control user: that POST leaves the settings node and the engine node as they were" "$same" unchanged
 
 echo "api: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]

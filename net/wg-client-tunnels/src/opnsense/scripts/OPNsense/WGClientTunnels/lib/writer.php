@@ -68,7 +68,7 @@ function wgct_model_errors(\OPNsense\Base\BaseModel $mdl, string $label): array 
  */
 function wgct_action_snapshot(): array {
     $root = Config::getInstance()->object();
-    $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
+    $engine = new \OPNsense\WGClientTunnels\Engine();
     $core = wgct_core_snapshot();
     $ports = [];
     $instancePubkeys = [];
@@ -107,8 +107,9 @@ function wgct_action_snapshot(): array {
     }
     return [
         'core' => $core,
-        'managed' => wgct_split_csv((string)$mdl->managed),
-        'held' => wgct_split_csv((string)$mdl->held),
+        'managed' => wgct_split_csv($engine->managed->getValue()),
+        /* the gateway of every hold record, owned or not: Remove drops them all */
+        'held' => array_values(array_unique(array_column($engine->holdRows(), 'gateway'))),
         'ports' => $ports,
         'gateway_fields' => $gatewayFields,
         'snat_rules' => $snat,
@@ -317,15 +318,15 @@ function wgct_write_create(array $plan, #[\SensitiveParameter] array $secret): a
     $filter->serializeToConfig();
     wgct_reset_field_caches();
 
-    $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-    $managed = wgct_split_csv((string)$mdl->managed);
+    $engine = new \OPNsense\WGClientTunnels\Engine();
+    $managed = wgct_split_csv($engine->managed->getValue());
     $managed[] = $uuid;
-    $mdl->managed = implode(',', $managed);
-    $errors = wgct_model_errors($mdl, 'plugin');
+    $engine->managed = implode(',', $managed);
+    $errors = wgct_model_errors($engine, 'plugin');
     if ($errors !== []) {
         return ['errors' => $errors, 'uuid' => ''];
     }
-    $mdl->serializeToConfig();
+    $engine->serializeToConfig();
     return ['errors' => [], 'uuid' => $uuid];
 }
 
@@ -403,7 +404,7 @@ function wgct_rebind_commit(string $uuid, string $wan, string $staleUuid, bool $
 }
 
 /**
- * Adopt's config write: the uuid joins the managed list. No routing change.
+ * Adopt's config write: the uuid joins the engine model's managed list. No routing change.
  *
  * @return array wgct_result()
  */
@@ -413,19 +414,36 @@ function wgct_adopt_commit(string $uuid, bool $dry): array {
         if ($plan['errors'] !== []) {
             return ['save' => false, 'result' => wgct_result(['errors' => $plan['errors'], 'dry' => $dry, 'uuid' => $uuid])];
         }
-        $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-        $mdl->managed = implode(',', $plan['managed']);
-        $errors = wgct_model_errors($mdl, 'plugin');
+        $engine = new \OPNsense\WGClientTunnels\Engine();
+        $engine->managed = implode(',', $plan['managed']);
+        $errors = wgct_model_errors($engine, 'plugin');
         if ($errors !== []) {
             return ['save' => false, 'result' => wgct_result(['errors' => $errors, 'dry' => $dry, 'uuid' => $uuid])];
         }
         if (!$dry) {
-            $mdl->serializeToConfig();
+            $engine->serializeToConfig();
         }
         return ['save' => !$dry, 'result' => wgct_result([
             'ok' => true, 'saved' => !$dry, 'dry' => $dry, 'changes' => $plan['changes'], 'uuid' => $uuid,
         ])];
     }, 'adopt ' . $uuid);
+}
+
+/**
+ * The hold records of the given gateways, duplicates included: what Remove deletes with them. Pure.
+ *
+ * @param array<string, array{gateway: string}> $rows     Engine::holdRows(): item uuid => row
+ * @param list<string>                          $gateways gateway uuids
+ * @return list<string> item uuids
+ */
+function wgct_hold_items_of(array $rows, array $gateways): array {
+    $items = [];
+    foreach ($rows as $item => $row) {
+        if (in_array($row['gateway'], $gateways, true)) {
+            $items[] = (string)$item;
+        }
+    }
+    return $items;
 }
 
 /**
@@ -463,12 +481,14 @@ function wgct_remove_commit(string $uuid, bool $dry): array {
         foreach ($plan['snat'] as $ruleUuid) {
             $filter->snatrules->rule->del($ruleUuid);
         }
-        $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
-        $mdl->managed = implode(',', $plan['managed']);
-        $mdl->held = implode(',', $plan['held']);
+        $engine = new \OPNsense\WGClientTunnels\Engine();
+        $engine->managed = implode(',', $plan['managed']);
+        foreach (wgct_hold_items_of($engine->holdRows(), $plan['gateways']) as $item) {
+            $engine->holds->del($item);
+        }
         $models = [
             'wireguard peers' => $client, 'wireguard instances' => $server, 'gateways' => $gateways,
-            'static routes' => $routes, 'outbound NAT' => $filter, 'plugin' => $mdl,
+            'static routes' => $routes, 'outbound NAT' => $filter, 'plugin' => $engine,
         ];
         $errors = [];
         foreach ($models as $label => $model) {
@@ -829,4 +849,69 @@ function wgct_edit_action(#[\SensitiveParameter] array $prep, bool $dry): array 
         return wgct_routing_action(fn (): array => wgct_edit_commit($prep, false, true), false);
     }
     return wgct_filter_action(fn (): array => wgct_edit_commit($prep, false, false));
+}
+
+/**
+ * Self-tests for the engine model's writers: the 3.0.0 -> 3.1.0 migration's planner (M3_1_0::plan(), loaded from
+ * beside the Engine model, as core's migration runner finds it) and Remove's choice of hold rows. Pure.
+ *
+ * @return int exit code, 0 when every case passed
+ */
+function wgct_engine_selftest(): int {
+    require_once dirname((new \ReflectionClass(\OPNsense\WGClientTunnels\Engine::class))->getFileName()) . '/Migrations/M3_1_0.php';
+    $t = ['fail' => 0, 'total' => 0];
+    $plan = [\OPNsense\WGClientTunnels\Migrations\M3_1_0::class, 'plan'];
+    $boot = 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    $iA = '0000000a-0000-4000-8000-00000000000a';
+    $iUpper = 'ABCDEF00-0000-4000-8000-0000000000AB';
+    $iX = '0000000c-0000-4000-8000-00000000000c';
+    $iD = '0000000d-0000-4000-8000-00000000000d';
+    $gA = '1111111a-1111-4111-8111-11111111111a';
+    $gX = '1111111c-1111-4111-8111-11111111111c';
+    $gD = '1111111d-1111-4111-8111-11111111111d';
+    $gWan = '1111111e-1111-4111-8111-11111111111e';
+    $gGone = '1111111f-1111-4111-8111-11111111111f';
+    $managed = [$iA, $iUpper, $iD];
+    $gateways = [$gA => true, $gX => true, $gD => false, $gWan => true];
+    $ipv4 = [
+        $iA => ['gateway' => $gA, 'underlay' => 'WAN_B'],
+        $iX => ['gateway' => $gX, 'underlay' => 'WAN_A'],
+        $iD => ['gateway' => $gD, 'underlay' => 'WAN_A'],
+    ];
+
+    $p = $plan($managed, [$gA], $gateways, $ipv4, $boot);
+    wgct_check($t, 'migrate: a held managed tunnel\'s IPv4 gateway with force_down=1 => one row, the live boot, its bound WAN',
+        $p === ['rows' => [['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B']], 'dropped' => []]);
+    $p = $plan($managed, [$gD], $gateways, $ipv4, $boot);
+    wgct_check($t, 'migrate: a managed tunnel\'s gateway that is not forced down => dropped, no row',
+        $p === ['rows' => [], 'dropped' => [$gD]]);
+    $p = $plan($managed, [$gX, $gWan, $gGone], $gateways, $ipv4, $boot);
+    wgct_check($t, 'migrate: a forced-down gateway of an unmanaged instance, a WAN gateway and a gateway that is gone => each dropped',
+        $p === ['rows' => [], 'dropped' => [$gX, $gWan, $gGone]]);
+    $p = $plan($managed, [strtoupper($gA)], $gateways, $ipv4, $boot);
+    wgct_check($t, 'migrate: a held uuid is matched as written (upper case is another uuid) => dropped',
+        $p === ['rows' => [], 'dropped' => [strtoupper($gA)]]);
+    $p = $plan($managed, [$gA, $gA], $gateways, $ipv4, $boot);
+    wgct_check($t, 'migrate: a uuid held twice => one row',
+        $p['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B']] && $p['dropped'] === []);
+    $badWan = [$iA => ['gateway' => $gA, 'underlay' => 'WAN B;']] + $ipv4;
+    wgct_check($t, 'migrate: a bound WAN the engine mask refuses => the row carries no underlay',
+        $plan($managed, [$gA], $gateways, $badWan, $boot)['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => '']]);
+    $gwBefore = $gateways;
+    $p = $plan($managed, [$gA], $gateways, $ipv4, '');
+    wgct_check($t, 'migrate: (m3) kern.boot_id unreadable => no row, the hold dropped, and nothing but rows and drops planned (force_down left as it is)',
+        $p === ['rows' => [], 'dropped' => [$gA]] && $gateways === $gwBefore);
+    wgct_check($t, 'migrate: nothing held => no row, nothing dropped',
+        $plan($managed, [], $gateways, $ipv4, $boot) === ['rows' => [], 'dropped' => []]);
+    wgct_check($t, 'migrate: a gateway of a tunnel that left the managed list => dropped',
+        $plan([$iUpper], [$gA], $gateways, $ipv4, $boot) === ['rows' => [], 'dropped' => [$gA]]);
+
+    $rows = [
+        'r1' => ['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B', 'taken_at' => 1760000000],
+        'r2' => ['gateway' => $gX, 'boot' => $boot, 'underlay' => 'WAN_A', 'taken_at' => 1760000000],
+        'r3' => ['gateway' => $gA, 'boot' => 'ffff', 'underlay' => 'WAN_B', 'taken_at' => 1760000000],
+    ];
+    wgct_check($t, 'remove: every hold row of the removed gateways goes, duplicates included, and no other row',
+        wgct_hold_items_of($rows, [$gA, $gD]) === ['r1', 'r3'] && wgct_hold_items_of($rows, []) === []);
+    return wgct_tally_report('engine', $t);
 }

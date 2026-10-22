@@ -1,6 +1,6 @@
 <model>
     <mount>//OPNsense/WGClientTunnels</mount>
-    <version>3.0.0</version>
+    <version>3.1.0</version>
     <description>WireGuard upstream tunnels settings</description>
     <items>
         <enabled type="BooleanField">
@@ -31,16 +31,5 @@
             <Default>0</Default>
             <Required>Y</Required>
         </mss_clamp>
-        <!-- WireGuard instance UUIDs the plugin manages; written by Create,
-             Adopt and Remove -->
-        <managed type="CSVListField">
-            <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
-            <MaskPerItem>Y</MaskPerItem>
-        </managed>
-        <!-- gateway UUIDs the health mirror forced down (it releases only these) -->
-        <held type="CSVListField">
-            <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
-            <MaskPerItem>Y</MaskPerItem>
-        </held>
     </items>
 </model>

@@ -48,7 +48,7 @@ $now = time();
 
 $core = wgct_core_snapshot();
 $candidates = [];
-foreach (wgct_repair_watch(wgct_derive($core, wgct_split_csv((string)$mdl->managed)), $core) as $w) {
+foreach (wgct_repair_watch(wgct_derive($core, wgct_managed()), $core) as $w) {
     $ifconfig = [];
     exec('/sbin/ifconfig ' . escapeshellarg($w['device']) . ' inet6 2>/dev/null', $ifconfig);
     $route = [];

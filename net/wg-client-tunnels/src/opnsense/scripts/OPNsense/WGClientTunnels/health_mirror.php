@@ -30,8 +30,14 @@
  * lib/tunnels.php derives each one (WireGuard instance, peer, interface
  * assignment, WAN binding, gateways) from core config every time it is
  * needed. The held set -- which IPv4 tunnels this pass 1 is holding down --
- * lives in the plugin model's `held` field as gateway UUIDs, and is saved in
- * the same Config::lock()/save() write as the force_down values it explains.
+ * lives in the engine model as hold records (gateway, the boot it was taken in,
+ * its WAN, when), saved in the same Config::lock()/save() write as the
+ * force_down values they explain. A record is ours only when its boot is the
+ * live one, or the one boot.json names at the first tick after a reboot (that
+ * tick re-stamps it); any other record is pruned with one log line and its
+ * force_down left alone (spec 2026-10-20 section 3.5). Each tick ends by
+ * writing the live boot id to boot.json. A tick that cannot read kern.boot_id
+ * takes, releases and records no hold, and says so once per state.
  *
  * Settle guard: a dpinger that has just started has no samples yet, so what it
  * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing about
@@ -152,27 +158,44 @@ if ($dryRun) {
     exit(0);
 }
 
+wgct_note_lock(WGCT_BOOT_UNREADABLE_FILE, $config['boot_unreadable'],
+    'kern.boot_id cannot be read: no hold is taken, released or recorded until it can',
+    'kern.boot_id can be read again; holds are taken and released again');
+
 if (empty($plan['changes'])) {
     foreach ($plan['log'] as $msg) {
         logMsg($logTag, $msg);
     }
-    if (wgct_held_uuids($plan['held'], $config['gateways']) !== $config['held_raw']) {
+    if (wgct_hold_rows_next($config, $plan['held'], $config['live_boot'], time()) !== null) {
         /*
-         * Held-set only (a tunnel that no longer exists, or a stale entry):
-         * a config write with no routing change, so no gateway lock. Re-plan
-         * under the config lock; if config changed meanwhile and the re-plan
-         * now wants a force_down change, save nothing -- that needs the
-         * gateway lock and an apply, which the next tick does.
+         * Hold records only (a re-stamp after a reboot, a prune, a tunnel that
+         * no longer exists): a config write with no routing change, so no
+         * gateway lock. Re-plan under the config lock; if config changed
+         * meanwhile and the re-plan now wants a force_down change, save
+         * nothing -- that needs the gateway lock and an apply, which the next
+         * tick does -- and leave boot.json as it is, so a previous-boot record
+         * not yet re-stamped is still recognised.
          */
         $live = wgct_collect_live();
-        wgct_locked_commit(function () use ($live, $settleOverride) {
+        $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
             $now = wgct_collect_config();
             $replan = wgct_plan($now, $live, array_fill_keys($now['held'], true), $settleOverride);
             if (!empty($replan['changes'])) {
-                return ['save' => false];
+                return ['save' => false, 'deferred' => true];
             }
-            return ['save' => wgct_commit_held($replan['held'], $now)];
+            return ['save' => wgct_commit_held($replan['held'], $now, $now['live_boot']), 'deferred' => false, 'config' => $now];
         });
+        if ($commit['deferred']) {
+            exit(0);
+        }
+        if ($commit['save']) {
+            foreach (wgct_hold_prune_lines($commit['config']) as $msg) {
+                logMsg($logTag, $msg);
+            }
+        }
+    }
+    if (!$config['boot_unreadable']) {
+        wgct_write_boot_record($config['live_boot']);
     }
     exit(0);
 }
@@ -188,9 +211,9 @@ if (empty($plan['changes'])) {
  *      gateway_status.php reads config, so it must never run inside the
  *      config lock taken in step 3.
  *   3. Config::lock(), which re-reads config.xml; the decisions are planned
- *      again from fresh models, including the held set, so a GUI save made
- *      while this run waited is kept. The force_down values and the held set
- *      are saved together, once.
+ *      again from fresh models, including the hold records, so a GUI save
+ *      made while this run waited is kept. The force_down values and the hold
+ *      records are saved together, once.
  *   4. Unlock, then apply and replay the alarms the hold dropped: our own
  *      and any other gateway's whose status changed meanwhile.
  *
@@ -217,12 +240,17 @@ $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
         $routingMdl->serializeToConfig();
         $save = true;
     }
-    $save = wgct_commit_held($plan['held'], $now) || $save;
-    return ['save' => $save, 'plan' => $plan];
+    $held = wgct_commit_held($plan['held'], $now, $now['live_boot']);
+    return ['save' => $held || $save, 'plan' => $plan, 'held' => $held, 'config' => $now];
 });
 $plan = $commit['plan'];
 foreach ($plan['log'] as $msg) {
     logMsg($logTag, $msg);
+}
+if ($commit['held']) {
+    foreach (wgct_hold_prune_lines($commit['config']) as $msg) {
+        logMsg($logTag, $msg);
+    }
 }
 if (!empty($plan['changes'])) {
     (new OPNsense\Core\Backend())->configdRun('interface routes configure');
@@ -230,4 +258,7 @@ if (!empty($plan['changes'])) {
 $gwLock->flock(LOCK_UN);
 if (!empty($plan['changes'])) {
     wgct_mirror_replay($plan['changes'], $before, $logTag);
+}
+if (!$commit['config']['boot_unreadable']) {
+    wgct_write_boot_record($commit['config']['live_boot']);
 }
