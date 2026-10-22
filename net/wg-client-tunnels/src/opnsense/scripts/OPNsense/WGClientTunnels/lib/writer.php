@@ -118,6 +118,8 @@ function wgct_action_snapshot(): array {
         'wireguard_enabled' => (string)$root->OPNsense->wireguard->general->enabled === '1',
         'peer_fields' => $peerFields,
         'instance_pubkeys' => $instancePubkeys,
+        /* an IPv6 gateway Create or Edit adds forced down is recorded as the mirror's hold, taken in this boot */
+        'boot_id' => \OPNsense\WGClientTunnels\Engine::liveBootId(),
     ];
 }
 
@@ -281,8 +283,11 @@ function wgct_write_create(array $plan, #[\SensitiveParameter] array $secret): a
     wgct_reset_field_caches();
 
     $gateways = new \OPNsense\Routing\Gateways();
+    $added = [];
     foreach ($plan['gateways'] as $g) {
-        $gateways->gateway_item->Add()->setNodes($g['fields']);
+        $node = $gateways->gateway_item->Add();
+        $node->setNodes($g['fields']);
+        $added[$g['name']] = (string)$node->getAttribute('uuid');
     }
     $errors = wgct_model_errors($gateways, 'gateways');
     if ($errors !== []) {
@@ -322,12 +327,25 @@ function wgct_write_create(array $plan, #[\SensitiveParameter] array $secret): a
     $managed = wgct_split_csv($engine->managed->getValue());
     $managed[] = $uuid;
     $engine->managed = implode(',', $managed);
+    wgct_add_start_holds($engine, $plan['holds'], $added);
     $errors = wgct_model_errors($engine, 'plugin');
     if ($errors !== []) {
         return ['errors' => $errors, 'uuid' => ''];
     }
     $engine->serializeToConfig();
     return ['errors' => [], 'uuid' => $uuid];
+}
+
+/**
+ * The hold records of the IPv6 gateways a Create or Edit plan adds forced down (wgct_gw6_start_holds()), taken now.
+ *
+ * @param list<array{name: string, boot: string, underlay: string}> $holds the plan's
+ * @param array<string, string>                                     $added gateway name => uuid, as just added
+ */
+function wgct_add_start_holds(\OPNsense\WGClientTunnels\Engine $engine, array $holds, array $added): void {
+    foreach ($holds as $h) {
+        $engine->addHold(['gateway' => $added[$h['name']], 'boot' => $h['boot'], 'underlay' => $h['underlay'], 'taken_at' => time()]);
+    }
 }
 
 /**
@@ -701,6 +719,7 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
         wgct_reset_field_caches();
     }
     $g = $plan['gateways'];
+    $added = [];
     if ($g['update'] !== [] || $g['add'] !== [] || $g['delete'] !== []) {
         $gateways = new \OPNsense\Routing\Gateways();
         $updated = [];
@@ -716,7 +735,9 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
             return ['gateways: ' . implode(', ', $missing) . ' vanished'];
         }
         foreach ($g['add'] as $fields) {
-            $gateways->gateway_item->Add()->setNodes($fields);
+            $node = $gateways->gateway_item->Add();
+            $node->setNodes($fields);
+            $added[$fields['name']] = (string)$node->getAttribute('uuid');
         }
         foreach ($g['delete'] as $gwUuid) {
             $gateways->gateway_item->del($gwUuid);
@@ -727,6 +748,19 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
         }
         $gateways->serializeToConfig();
         wgct_reset_field_caches();
+    }
+    /* the hold record of an IPv6 gateway added forced down; a deleted gateway's records go with it, as in Remove */
+    if ($plan['holds'] !== [] || $g['delete'] !== []) {
+        $engine = new \OPNsense\WGClientTunnels\Engine();
+        foreach (wgct_hold_items_of($engine->holdRows(), $g['delete']) as $item) {
+            $engine->holds->del($item);
+        }
+        wgct_add_start_holds($engine, $plan['holds'], $added);
+        $errors = wgct_model_errors($engine, 'plugin');
+        if ($errors !== []) {
+            return $errors;
+        }
+        $engine->serializeToConfig();
     }
     $r = $plan['routes'];
     if ($r['add'] !== [] || $r['update'] !== [] || $r['delete'] !== []) {
@@ -879,32 +913,52 @@ function wgct_engine_selftest(): int {
         $iD => ['gateway' => $gD, 'underlay' => 'WAN_A'],
     ];
 
-    $p = $plan($managed, [$gA], $gateways, $ipv4, $boot);
+    $p = $plan($managed, [$gA], $gateways, $ipv4, [], $boot);
     wgct_check($t, 'migrate: a held managed tunnel\'s IPv4 gateway with force_down=1 => one row, the live boot, its bound WAN',
         $p === ['rows' => [['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B']], 'dropped' => []]);
-    $p = $plan($managed, [$gD], $gateways, $ipv4, $boot);
+    $p = $plan($managed, [$gD], $gateways, $ipv4, [], $boot);
     wgct_check($t, 'migrate: a managed tunnel\'s gateway that is not forced down => dropped, no row',
         $p === ['rows' => [], 'dropped' => [$gD]]);
-    $p = $plan($managed, [$gX, $gWan, $gGone], $gateways, $ipv4, $boot);
+    $p = $plan($managed, [$gX, $gWan, $gGone], $gateways, $ipv4, [], $boot);
     wgct_check($t, 'migrate: a forced-down gateway of an unmanaged instance, a WAN gateway and a gateway that is gone => each dropped',
         $p === ['rows' => [], 'dropped' => [$gX, $gWan, $gGone]]);
-    $p = $plan($managed, [strtoupper($gA)], $gateways, $ipv4, $boot);
+    $p = $plan($managed, [strtoupper($gA)], $gateways, $ipv4, [], $boot);
     wgct_check($t, 'migrate: a held uuid is matched as written (upper case is another uuid) => dropped',
         $p === ['rows' => [], 'dropped' => [strtoupper($gA)]]);
-    $p = $plan($managed, [$gA, $gA], $gateways, $ipv4, $boot);
+    $p = $plan($managed, [$gA, $gA], $gateways, $ipv4, [], $boot);
     wgct_check($t, 'migrate: a uuid held twice => one row',
         $p['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B']] && $p['dropped'] === []);
     $badWan = [$iA => ['gateway' => $gA, 'underlay' => 'WAN B;']] + $ipv4;
     wgct_check($t, 'migrate: a bound WAN the engine mask refuses => the row carries no underlay',
-        $plan($managed, [$gA], $gateways, $badWan, $boot)['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => '']]);
+        $plan($managed, [$gA], $gateways, $badWan, [], $boot)['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => '']]);
     $gwBefore = $gateways;
-    $p = $plan($managed, [$gA], $gateways, $ipv4, '');
+    $p = $plan($managed, [$gA], $gateways, $ipv4, [], '');
     wgct_check($t, 'migrate: (m3) kern.boot_id unreadable => no row, the hold dropped, and nothing but rows and drops planned (force_down left as it is)',
         $p === ['rows' => [], 'dropped' => [$gA]] && $gateways === $gwBefore);
     wgct_check($t, 'migrate: nothing held => no row, nothing dropped',
-        $plan($managed, [], $gateways, $ipv4, $boot) === ['rows' => [], 'dropped' => []]);
+        $plan($managed, [], $gateways, $ipv4, [], $boot) === ['rows' => [], 'dropped' => []]);
     wgct_check($t, 'migrate: a gateway of a tunnel that left the managed list => dropped',
-        $plan([$iUpper], [$gA], $gateways, $ipv4, $boot) === ['rows' => [], 'dropped' => [$gA]]);
+        $plan([$iUpper], [$gA], $gateways, $ipv4, [], $boot) === ['rows' => [], 'dropped' => [$gA]]);
+
+    /* (p6, spec 3.5a) the IPv6 gateways pass 2 governs: 3.7_1's pass 2 rewrote their force_down every tick */
+    $gA6 = '2222222a-2222-4222-8222-22222222222a';
+    $gD6 = '2222222d-2222-4222-8222-22222222222d';
+    $gateways6 = $gateways + [$gA6 => true, $gD6 => false];
+    $ipv6 = [['gateway' => $gA6, 'underlay' => 'tun_a'], ['gateway' => $gD6, 'underlay' => 'tun_d']];
+    $p = $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, $boot);
+    wgct_check($t, 'migrate: (p6) a managed pair\'s forced IPv6 gateway => a row with the live boot, its IPv4 tunnel as underlay, after the held rows',
+        $p === ['rows' => [['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B'], ['gateway' => $gA6, 'boot' => $boot, 'underlay' => 'tun_a']],
+            'dropped' => []]);
+    wgct_check($t, 'migrate: (p6) a pair\'s IPv6 gateway that is not forced down => no row, not dropped',
+        $plan($managed, [], $gateways6, $ipv4, [['gateway' => $gD6, 'underlay' => 'tun_d']], $boot) === ['rows' => [], 'dropped' => []]);
+    wgct_check($t, 'migrate: (p6) a forced IPv6 pair gateway also named in held => one row, not dropped',
+        $plan($managed, [$gA6], $gateways6, $ipv4, $ipv6, $boot)
+            === ['rows' => [['gateway' => $gA6, 'boot' => $boot, 'underlay' => 'tun_a']], 'dropped' => []]);
+    wgct_check($t, 'migrate: (p6) an IPv4 tunnel name the engine mask refuses => the IPv6 row carries no underlay',
+        $plan($managed, [], $gateways6, $ipv4, [['gateway' => $gA6, 'underlay' => 'tun a;']], $boot)['rows']
+            === [['gateway' => $gA6, 'boot' => $boot, 'underlay' => '']]);
+    wgct_check($t, 'migrate: (p6) (m3) kern.boot_id unreadable => no IPv6 row either, the forced IPv6 gateway dropped (named) with the held one',
+        $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, '') === ['rows' => [], 'dropped' => [$gA, $gA6]]);
 
     $rows = [
         'r1' => ['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B', 'taken_at' => 1760000000],

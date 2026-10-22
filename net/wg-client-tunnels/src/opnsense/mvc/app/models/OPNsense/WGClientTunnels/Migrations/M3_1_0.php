@@ -41,8 +41,10 @@ use OPNsense\WGClientTunnels\Engine;
  * The managed list is carried byte for byte. A held gateway becomes a hold record only when it is a managed
  * tunnel's IPv4 gateway and is forced down; the record carries this boot's kern.boot_id, since a hold active at
  * the upgrade was taken in this boot. Every other held gateway is dropped and logged, its force_down left as it
- * is for a person to clear. The engine model is brought to its own version before it is written, so the outcome
- * is the same whichever of the two models core migrates first.
+ * is for a person to clear. A managed tunnel's IPv6 gateway that is forced down becomes a hold record too, its
+ * IPv4 tunnel as underlay (spec 3.5a): the 3.0.0 mirror rewrote that force_down on every tick, so it was the
+ * mirror's. The engine model is brought to its own version before it is written, so the outcome is the same
+ * whichever of the two models core migrates first.
  */
 class M3_1_0 extends BaseModelMigration
 {
@@ -53,19 +55,22 @@ class M3_1_0 extends BaseModelMigration
     private const UNDERLAY_MASK = '/^[a-zA-Z0-9_-]{1,32}$/D';
 
     /**
-     * Which held gateways become hold records. Pure.
+     * Which gateways become hold records: the held ones, then the forced IPv6 pair gateways. Pure.
      *
      * @param list<string>                                             $managed      managed instance uuids, as stored
      * @param list<string>                                             $held         held gateway uuids, as stored
      * @param array<string, bool>                                      $gateways     gateway uuid => force_down
      * @param array<string, array{gateway: string, underlay: string}> $ipv4Gateways instance uuid => its tunnel's
      *                                                                               IPv4 gateway uuid and bound WAN
+     * @param list<array{gateway: string, underlay: string}>          $ipv6Gateways the IPv6 gateways the mirror's
+     *                                                                               pass 2 governs: uuid and the
+     *                                                                               IPv4 tunnel gateway it follows
      * @param string                                                   $bootId       the live kern.boot_id, '' when
      *                                                                               it cannot be read
      * @return array{rows: list<array{gateway: string, boot: string, underlay: string}>, dropped: list<string>}
-     *         each held uuid once, in the order held: a row, or dropped
+     *         each held uuid and each forced IPv6 pair gateway once, held first: a row, or dropped
      */
-    public static function plan(array $managed, array $held, array $gateways, array $ipv4Gateways, string $bootId): array
+    public static function plan(array $managed, array $held, array $gateways, array $ipv4Gateways, array $ipv6Gateways, string $bootId): array
     {
         $tunnelGateways = [];
         foreach ($managed as $instance) {
@@ -73,16 +78,31 @@ class M3_1_0 extends BaseModelMigration
                 $tunnelGateways[$ipv4Gateways[$instance]['gateway']] = $ipv4Gateways[$instance]['underlay'];
             }
         }
+        $forced6 = [];
+        foreach ($ipv6Gateways as $g) {
+            if (!empty($gateways[$g['gateway']])) {
+                $forced6[$g['gateway']] = $g['underlay'];
+            }
+        }
+        $row = fn (string $uuid, string $underlay): array => [
+            'gateway' => $uuid, 'boot' => $bootId, 'underlay' => preg_match(self::UNDERLAY_MASK, $underlay) === 1 ? $underlay : '',
+        ];
         $plan = ['rows' => [], 'dropped' => []];
         foreach (array_values(array_unique($held)) as $uuid) {
+            if (isset($forced6[$uuid])) {
+                continue;
+            }
             if ($bootId !== '' && isset($tunnelGateways[$uuid]) && !empty($gateways[$uuid])) {
-                $underlay = $tunnelGateways[$uuid];
-                $plan['rows'][] = [
-                    'gateway' => $uuid, 'boot' => $bootId,
-                    'underlay' => preg_match(self::UNDERLAY_MASK, $underlay) === 1 ? $underlay : '',
-                ];
+                $plan['rows'][] = $row($uuid, $tunnelGateways[$uuid]);
             } else {
                 $plan['dropped'][] = $uuid;
+            }
+        }
+        foreach ($forced6 as $uuid => $underlay) {
+            if ($bootId !== '') {
+                $plan['rows'][] = $row((string)$uuid, $underlay);
+            } else {
+                $plan['dropped'][] = (string)$uuid;
             }
         }
         return $plan;
@@ -109,14 +129,15 @@ class M3_1_0 extends BaseModelMigration
         $bootId = Engine::liveBootId();
         $gateways = [];
         $ipv4Gateways = [];
+        $ipv6Gateways = [];
         $names = [];
         try {
-            [$gateways, $ipv4Gateways, $names] = self::tunnelGateways($managed);
+            [$gateways, $ipv4Gateways, $ipv6Gateways, $names] = self::tunnelGateways($managed);
         } catch (\Throwable $e) {
             wgct_log(LOG_WARNING, '[wgct-migrate] the tunnels\' gateways cannot be read (' . $e->getMessage()
                 . '); no hold is carried over');
         }
-        $plan = self::plan($managed, $held, $gateways, $ipv4Gateways, $bootId);
+        $plan = self::plan($managed, $held, $gateways, $ipv4Gateways, $ipv6Gateways, $bootId);
 
         $engine = new Engine();
         $engine->runMigrations();
@@ -138,6 +159,7 @@ class M3_1_0 extends BaseModelMigration
         foreach ($plan['rows'] as $row) {
             wgct_log(LOG_NOTICE, '[wgct-migrate] the hold of ' . $name($row['gateway']) . " is carried over, taken in boot {$bootId}");
         }
+        /* with a live boot id every forced IPv6 pair gateway has a row, so only held gateways are dropped */
         foreach ($plan['dropped'] as $uuid) {
             wgct_log(LOG_NOTICE, '[wgct-migrate] held gateway ' . $name($uuid)
                 . ' is not held by this plugin; dropped, its force_down left as it is');
@@ -145,11 +167,14 @@ class M3_1_0 extends BaseModelMigration
     }
 
     /**
-     * The gateway facts plan() takes, from the plugin's derivation of the managed tunnels.
+     * The gateway facts plan() takes, from the plugin's derivation of the managed tunnels. The IPv6 gateways are the
+     * pairs the mirror's pass 2 governs (wgct_mirror_inputs()), less a disabled one, which pass 2 leaves alone.
      *
      * @param list<string> $managed
-     * @return array{0: array<string, bool>, 1: array<string, array{gateway: string, underlay: string}>, 2: array<string, string>}
-     *         gateway uuid => force_down; instance uuid => its IPv4 gateway uuid and bound WAN; gateway uuid => name
+     * @return array{0: array<string, bool>, 1: array<string, array{gateway: string, underlay: string}>,
+     *               2: list<array{gateway: string, underlay: string}>, 3: array<string, string>}
+     *         gateway uuid => force_down; instance uuid => its IPv4 gateway uuid and bound WAN; each IPv6 pair
+     *         gateway's uuid and the IPv4 tunnel gateway it follows; gateway uuid => name
      */
     private static function tunnelGateways(array $managed): array
     {
@@ -160,13 +185,21 @@ class M3_1_0 extends BaseModelMigration
             $forceDown[$g['uuid']] = $g['force_down'];
             $names[$g['uuid']] = (string)$gwName;
         }
+        $derived = wgct_derive($core, $managed);
         $ipv4 = [];
-        foreach (wgct_derive($core, $managed)['tunnels'] as $t) {
+        foreach ($derived['tunnels'] as $t) {
             $gw = $t['gw4'] !== null ? ($core['gateways'][$t['gw4']] ?? null) : null;
             if ($gw !== null) {
                 $ipv4[$t['uuid']] = ['gateway' => $gw['uuid'], 'underlay' => (string)$t['bound_wan']];
             }
         }
-        return [$forceDown, $ipv4, $names];
+        $ipv6 = [];
+        foreach (wgct_mirror_inputs($derived)['pairs'] as $gw4Name => $gw6Name) {
+            $gw6 = $core['gateways'][$gw6Name] ?? null;
+            if ($gw6 !== null && !$gw6['disabled']) {
+                $ipv6[] = ['gateway' => $gw6['uuid'], 'underlay' => (string)$gw4Name];
+            }
+        }
+        return [$forceDown, $ipv4, $ipv6, $names];
     }
 }

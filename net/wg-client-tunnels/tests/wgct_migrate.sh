@@ -17,6 +17,8 @@
 #   - the settings node at version 3.0.0, `managed` = rehearse's instance and a synthetic upper-case uuid, in that
 #     order (case m1: a value the 3.7_1 mask accepted), `held` = rehearse's IPv4 gateway, set force_down=1 as the
 #     3.7_1 mirror leaves a hold, and WAN_B's gateway (force_down=0, and no tunnel's gateway);
+#   - an IPv6 gateway `rehearse-ipv6` on rehearse's interface (a synthetic uuid, monitoring off), force_down=1 as
+#     the 3.7_1 mirror's pass 2 leaves it while the IPv4 tunnel is unhealthy, and in no `held` list (spec 3.5a);
 #   - no engine node (scenarios A and B, a box that never ran 3.8), or an empty one at 1.0.0 (scenario C).
 # The 3.7_1 tunnel.php, from the 3.7_1 package in pkg's cache, lists the tunnels on that config. Then:
 #   A: run_migrations.php OPNsense/WGClientTunnels, as the package's +POST_INSTALL runs it (both models);
@@ -24,11 +26,11 @@
 #      brings the engine model to its own version, so the order core runs the two in does not matter;
 #   C: as A, with the engine model already migrated.
 # Each scenario then asserts: the settings node is at 3.1.0 with neither field; the engine node is at 1.0.0 with
-# the managed list byte for byte and exactly one holds row (rehearse's gateway, the live kern.boot_id, WAN_B,
-# taken during the run); force_down is as it was; one "not held by this plugin" line names WAN_B's gateway in
-# core's WireGuard log; the installed tunnel.php lists the same tunnels, findings and unmanaged instances as 3.7_1
-# did (beside the pins fields 3.8 adds), and its `held` keeps only rehearse's gateway (the other was dropped). A
-# second run changes nothing (A).
+# the managed list byte for byte and exactly two holds rows, each with the live kern.boot_id and taken during the
+# run: rehearse's gateway on WAN_B, and rehearse-ipv6 following rehearse; force_down is as it was; one "not held by
+# this plugin" line names WAN_B's gateway in core's WireGuard log; the installed tunnel.php lists the same tunnels,
+# findings and unmanaged instances as 3.7_1 did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's
+# two gateways (WAN_B's was dropped). A second run changes nothing (A).
 #
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
@@ -47,6 +49,7 @@ TUNNEL=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/tunnel.php
 PKG371=/var/cache/pkg/os-wg-client-tunnels-3.7_1.pkg
 WGLOG=/var/log/wireguard/latest.log
 UPPER=ABCDEF00-0000-4000-8000-0000000000AB
+GW6=0000a5a5-0000-4000-8000-00000000a5a5
 T=$(mktemp -d /tmp/wgct-migrate.XXXXXX)
 PASS=0
 FAIL=0
@@ -74,14 +77,14 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-# shape.php ENGINE UPPER: the config 3.7_1 leaves (see the header); ENGINE is none or empty. Prints the uuids.
+# shape.php ENGINE UPPER GW6: the config 3.7_1 leaves (see the header); ENGINE is none or empty. Prints the uuids.
 cat > "$T/shape.php" <<'PHPEOF'
 <?php
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 
 use OPNsense\Core\Config;
 
-[, $engineMode, $upper] = $argv;
+[, $engineMode, $upper, $gw6] = $argv;
 $cfg = Config::getInstance();
 $cfg->lock();
 $root = $cfg->object();
@@ -91,18 +94,34 @@ foreach ($root->OPNsense->wireguard->server->servers->server as $s) {
         $ids['instance'] = (string)$s['uuid'];
     }
 }
+$opt = '';
+$other6 = false;
 foreach ($root->OPNsense->Gateways->gateway_item as $g) {
     if ((string)$g->name === 'rehearse') {
         $ids['gw_rehearse'] = (string)$g['uuid'];
         $g->force_down = '1';
+        $opt = (string)$g->interface;
     } elseif ((string)$g->name === 'WAN_B') {
         $ids['gw_wanb'] = (string)$g['uuid'];
+    } elseif ((string)$g->name === 'rehearse-ipv6' && (string)$g['uuid'] !== $gw6) {
+        $other6 = true;
     }
 }
-if (in_array('', $ids, true)) {
+if (in_array('', $ids, true) || $opt === '' || $other6) {
     $cfg->unlock();
-    fwrite(STDERR, "rehearse or WAN_B is missing (vm_base.sh)\n");
+    fwrite(STDERR, "rehearse or WAN_B is missing (vm_base.sh), or rehearse already has an IPv6 gateway of its own\n");
     exit(1);
+}
+/* the earlier scenario's staged IPv6 gateway goes; this scenario writes it again */
+foreach ($root->xpath("//OPNsense/Gateways/gateway_item[@uuid='{$gw6}']") as $old6) {
+    unset($old6[0]);
+}
+$g6 = $root->OPNsense->Gateways->addChild('gateway_item');
+$g6->addAttribute('uuid', $gw6);
+foreach (['disabled' => '0', 'name' => 'rehearse-ipv6', 'descr' => 'rehearse-ipv6 (IPv6 tunnel)', 'interface' => $opt,
+          'ipprotocol' => 'inet6', 'gateway' => 'fd00::1:2', 'defaultgw' => '0', 'fargw' => '1', 'monitor_disable' => '1',
+          'force_down' => '1', 'priority' => '255', 'weight' => '1'] as $field => $value) {
+    $g6->addChild($field, $value);
 }
 $n = $root->OPNsense->WGClientTunnels;
 $n['version'] = '3.0.0';
@@ -143,7 +162,11 @@ switch ($argv[1]) {
         echo count($rows);
         break;
     case 'row':
-        echo implode(' ', $rows[0] ?? []);
+        foreach ($rows as $r) {
+            if ($r[0] === $argv[2]) {
+                echo implode(' ', $r);
+            }
+        }
         break;
     case 'force_down':
         foreach ($x->OPNsense->Gateways->gateway_item as $g) {
@@ -201,9 +224,10 @@ BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\
 # scenario NAME ENGINE PREFIX
 scenario() {
     name="$1"
-    ids=$($PHP "$T/shape.php" "$2" "$UPPER") || { echo "[FAIL] $name: the 3.7_1 config could not be written"; FAIL=$((FAIL + 1)); return; }
+    ids=$($PHP "$T/shape.php" "$2" "$UPPER" "$GW6") || { echo "[FAIL] $name: the 3.7_1 config could not be written"; FAIL=$((FAIL + 1)); return; }
     set -- "$@" $ids
     inst="$4"; gwr="$5"; gwb="$6"
+    held38=$($PHP -r '$h = [$argv[1], $argv[2]]; sort($h); echo json_encode($h);' "$gwr" "$GW6")
     $PHP "$T/list371.php" > "$T/before.json"
     lines=$(wc -l < "$WGLOG")
     start=$(date +%s)
@@ -217,21 +241,27 @@ scenario() {
     check "$name: the engine node is at 1.0.0" "$($PHP "$T/fact.php" engine_version)" 1.0.0
     check "$name: the engine holds the managed list byte for byte (m1: order and upper case kept)" \
         "$($PHP "$T/fact.php" engine_managed)" "$inst,$UPPER"
-    check "$name: exactly one holds row" "$($PHP "$T/fact.php" rows)" 1
-    row=$($PHP "$T/fact.php" row)
-    check "$name: the row is rehearse's gateway, the live boot id, WAN_B" "${row% *}" "$gwr $BOOT WAN_B"
+    check "$name: exactly two holds rows" "$($PHP "$T/fact.php" rows)" 2
+    row=$($PHP "$T/fact.php" row "$gwr")
+    check "$name: one row is rehearse's gateway, the live boot id, WAN_B" "${row% *}" "$gwr $BOOT WAN_B"
     taken="${row##* }"
-    check "$name: the row was taken during the migration" \
+    check "$name: that row was taken during the migration" \
         "$([ "$taken" -ge "$start" ] 2> /dev/null && [ "$taken" -le "$end" ] && echo yes || echo "no ($taken, run $start-$end)")" yes
-    check "$name: rehearse stays force_down=1, WAN_B force_down=0" \
-        "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" force_down WAN_B)" "1 0"
+    row6=$($PHP "$T/fact.php" row "$GW6")
+    check "$name: (3.5a) the other is rehearse-ipv6, forced down by the 3.7_1 pass 2: the live boot id, following rehearse" \
+        "${row6% *}" "$GW6 $BOOT rehearse"
+    taken="${row6##* }"
+    check "$name: that row was taken during the migration" \
+        "$([ "$taken" -ge "$start" ] 2> /dev/null && [ "$taken" -le "$end" ] && echo yes || echo "no ($taken, run $start-$end)")" yes
+    check "$name: rehearse and rehearse-ipv6 stay force_down=1, WAN_B force_down=0" \
+        "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" force_down WAN_B)" "1 1 0"
     check "$name: one 'not held by this plugin' line names WAN_B's gateway" \
         "$(tail -n +"$((lines + 1))" "$WGLOG" | grep -F "$gwb" | grep -c 'not held by this plugin')" 1
     lists=$($PHP "$T/lists.php" "$T/before.json" "$T/after.json")
     check "$name: tunnel.php --json list shows the same tunnels, findings and unmanaged instances as 3.7_1" \
         "$(echo "$lists" | sed -n 1p)" same
     check "$name: 3.7_1 listed both held uuids" "$(echo "$lists" | sed -n 2p)" "[\"$gwr\",\"$gwb\"]"
-    check "$name: 3.8 lists rehearse's gateway as held, and only it" "$(echo "$lists" | sed -n 3p)" "[\"$gwr\"]"
+    check "$name: 3.8 lists rehearse's two gateways as held, and only them" "$(echo "$lists" | sed -n 3p)" "$held38"
 }
 
 scenario "A (+POST_INSTALL, no engine node)" none OPNsense/WGClientTunnels
