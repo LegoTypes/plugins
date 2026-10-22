@@ -25,10 +25,10 @@ if (!is_readable(__DIR__ . '/entry.php')) {
     exit($wgctFailExit);
 }
 require_once __DIR__ . '/entry.php';
-/* a library that cannot load fails the command: a JSON failure for configd's callers, a line for a person, exit 1
- * (0 for release-holds) */
+/* a library that cannot load, or the removal marker, fails the command: a JSON failure for configd's callers, a
+ * line for a person, exit 1; release-holds exits 0 and runs on while the marker exists, as the removal runs it */
 wgct_entry_load('tunnel.php', 'wgct-cli', ['cli.php'], function (string $error) use ($wgctJson): string {
     return $wgctJson ? (string)json_encode(['ok' => false, 'errors' => [$error]]) : 'tunnel.php: ' . $error;
-}, $wgctFailExit);
+}, $wgctFailExit, $wgctCommand === 'release-holds');
 
 exit(wgct_cli_main($wgctArgs));

@@ -2143,7 +2143,7 @@ function wgct_footprint_selftest(callable $makeFw): array {
 
     wgct_check($t, 'footprint: entry.php\'s copied run directory equals WGCT_RUN_DIR',
         $safely(fn (): bool => str_contains((string)@file_get_contents(dirname(__DIR__) . '/entry.php'),
-            "\$dir = '" . WGCT_RUN_DIR . "';")));
+            "const WGCT_ENTRY_RUN_DIR = '" . WGCT_RUN_DIR . "';")));
 
     /* the hook's footprint reader (section 3.1 B-2), on temporary root-owned files */
     $d = sys_get_temp_dir() . '/wgct-footprint-' . getmypid();

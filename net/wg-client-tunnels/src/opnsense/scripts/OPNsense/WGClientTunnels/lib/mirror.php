@@ -686,6 +686,27 @@ function wgct_release_plan(array $rows, string $liveBoot, ?string $previousBoot,
 }
 
 /**
+ * The IPv6 gateways a package removal leaves forced down (ruling R31): a managed tunnel's IPv6 gateway follows its
+ * IPv4 tunnel (pass 2), so when it is forced down no hold record proves the plugin took that, and the removal
+ * leaves it as it is, failing closed (C1). Named so the owner can untick it. Pure.
+ *
+ * @param list<string>        $ipv6      the managed tunnels' IPv6 gateway names (wgct_derive()'s gw6)
+ * @param array<string, bool> $forceDown gateway name => force_down
+ * @return list<string> the forced-down IPv6 gateway names, sorted
+ */
+function wgct_release_left_down(array $ipv6, array $forceDown): array {
+    $names = [];
+    foreach ($ipv6 as $ipv6Name) {
+        if (!empty($forceDown[$ipv6Name])) {
+            $names[] = (string)$ipv6Name;
+        }
+    }
+    $names = array_values(array_unique($names));
+    sort($names);
+    return $names;
+}
+
+/**
  * Everything the decisions read from the running system. Runs
  * gateway_status.php as a subprocess. Config::lock() only holds a shared lock
  * after its reload, so a plain reader would still succeed while this process
@@ -1384,6 +1405,29 @@ function wgct_selftest() {
         $fail += $ok ? 0 : 1;
         $total++;
         printf("[%s] release plan: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        if (!$ok) {
+            printf("       got %s\n", json_encode($got));
+        }
+    }
+
+    /* ---- wgct_release_left_down: the IPv6 gateways a removal leaves forced down (ruling R31) ---- */
+    $leftCases = [
+        // description, the managed tunnels' IPv6 gateways, force_down by name, expected
+        ['a forced-down IPv6 gateway is named, one that is up is not, the IPv4 gateways never',
+            ['tun_b-ipv6', 'tun_a-ipv6'], ['tun_a' => true, 'tun_a-ipv6' => true, 'tun_b' => true, 'tun_b-ipv6' => false],
+            ['tun_a-ipv6']],
+        ['several forced-down IPv6 gateways => sorted by name',
+            ['tun_b-ipv6', 'tun_a-ipv6'], ['tun_a-ipv6' => true, 'tun_b-ipv6' => true], ['tun_a-ipv6', 'tun_b-ipv6']],
+        ['an IPv6 gateway that is gone (no force_down known) => not named',
+            ['tun_a-ipv6'], ['tun_a' => true], []],
+        ['no IPv6 gateways => nothing named', [], ['tun_a-ipv6' => true], []],
+    ];
+    foreach ($leftCases as [$desc, $ipv6, $fd, $exp]) {
+        $got = wgct_release_left_down($ipv6, $fd);
+        $ok = $got === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] release left down: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
         if (!$ok) {
             printf("       got %s\n", json_encode($got));
         }

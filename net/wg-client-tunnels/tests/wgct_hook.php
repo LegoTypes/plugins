@@ -331,6 +331,25 @@ PHP);
         @rmdir($part);
     }
 
+    /* (R30) the package removal's marker: the hook registers, reads, writes and logs nothing, library or not */
+    $fresh();
+    $put($fp, json_encode($record));
+    mkdir($run, 0700);
+    touch("$run/removing");
+    $GLOBALS['hooktest_render'] = 'ok';
+    $m = $marker();
+    $withLib = $call("$T/lib", $fp);
+    $withoutLib = $call($nolib, $fp);
+    $listing = $call($nolib, $fp, false);
+    hooktest_check($tally, '(R30) removal marker => nothing registered, with the library, without it, or for a rules listing',
+        fn (): bool => [$withLib->anchors, $withLib->rules, $withoutLib->anchors, $withoutLib->rules, $listing->anchors, $listing->rules]
+            === [[], [], [], [], [], []]);
+    hooktest_check($tally, '(R30) removal marker => no state written: the run directory holds the marker alone, the footprint is kept',
+        fn (): bool => array_map('basename', glob("$run/*") ?: []) === ['removing'] && is_file($fp));
+    hooktest_check($tally, '(R30) removal marker => nothing logged',
+        fn (): bool => $count($m, 'enforcing the footprint') === 0 && $count($m, 'no footprint') === 0);
+    @unlink("$run/removing");
+
     $fresh();
     foreach (['footprint.json', 'link.json', 'nonroot.json', 'big.json', 'shape.json', 'empty.json'] as $f) {
         @unlink("$T/$f");

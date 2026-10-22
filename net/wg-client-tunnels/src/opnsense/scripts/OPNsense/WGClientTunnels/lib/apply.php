@@ -34,9 +34,15 @@ const WGCT_CORE_ACTIONS_INTERFACE = '/usr/local/opnsense/service/conf/actions.d/
 const WGCT_CORE_ROUTING_SCRIPT = '/usr/local/etc/rc.routing_configure';
 /* as long as the replay action's `flock -w 120` waits (ruling 22) */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
-const WGCT_FLOCK = '/usr/local/bin/flock';
-/* the command of the plugin's configd action [replay_alarm], gateway names appended as one comma-separated argument */
-const WGCT_REPLAY_ALARM_COMMAND = WGCT_FLOCK . ' -o -w 120 ' . WGCT_GATEWAY_LOCK_FILE . ' ' . WGCT_CORE_ROUTING_SCRIPT . ' alarm';
+const WGCT_TIMEOUT = '/usr/bin/timeout';
+const WGCT_CONFIGCTL = '/usr/local/sbin/configctl';
+/*
+ * How long the package removal waits on one core configd action (ruling R29): the gateway lock's own bound
+ * (WGCT_GATEWAY_LOCK_WAIT_MS), which every routing writer of the plugin already waits. A routes configure or an
+ * alarm takes seconds; the bound only ends the wait of a removal stuck behind a configd that accepted the
+ * connection and never answered, while configd itself finishes the action it started.
+ */
+const WGCT_REMOVAL_CONFIGD_SECONDS = 120;
 const WGCT_ACTION_LOG_TAG = 'wgct-action';
 /*
  * Instances whose Create or Edit saved but whose apply has not completed
@@ -607,46 +613,20 @@ function wgct_replay_set_now(array $ours, ?array $before): array {
 }
 
 /**
- * Core's routing re-sync, `interface routes configure`, for a caller that cannot count on the plugin's configd
- * actions (the package removal, convention C6): through configd when it answers, otherwise core's script run
- * directly. configd answers a script action that ran with "OK"; anything else (no socket, no connection, a
- * timeout, "Execute error") counts as configd not answering, and the script is run directly, under core's gateway
- * lock as its alarm path takes it.
+ * One core configd action through configctl, bounded by timeout(1), for a caller that cannot count on the plugin's
+ * own configd actions (the package removal, convention C6). configd answers a script action that ran with "OK";
+ * no socket, no connection, "Execute error" or no answer within $seconds all count as configd not answering. When
+ * the bound runs out only this wait ends: configd finishes the action it started. configctl inherits this
+ * process's open files, a held lock included, but lives only as long as the call: it starts no daemon.
  *
- * Call it holding the gateway lock as $lock, as the mirror runs its reconfigure. The lock is released (and its
- * file closed) before anything is exec()ed from here, and flock -o keeps the lock flock(1) takes out of every
- * process the script starts, so no daemon it (re)starts inherits a lock (the hazard wgct_replay_alarm() names).
- *
- * @return string 'configd', 'direct', or 'direct, exit N' when the script failed
+ * @param list<string> $words   the action and its parameters, each one argument
+ * @param int          $seconds the bound
+ * @return bool whether configd answered OK in time
  */
-function wgct_routes_configure_core(?\SplFileObject &$lock): string {
-    $reply = trim((string)(new Backend())->configdRun('interface routes configure', false, 300));
-    $lock?->flock(LOCK_UN);
-    $lock = null;
-    if ($reply === 'OK') {
-        return 'configd';
-    }
-    exec(WGCT_FLOCK . ' -o -w 120 ' . WGCT_GATEWAY_LOCK_FILE . ' ' . WGCT_CORE_ROUTING_SCRIPT . ' > /dev/null 2>&1', $out, $rc);
-    return $rc === 0 ? 'direct' : "direct, exit {$rc}";
-}
-
-/**
- * The command the plugin's configd action [replay_alarm] wraps, run directly for a caller that cannot count on the
- * plugin's configd actions (the package removal, convention C6): first wait until gateway status shows what was
- * written, then core's alarm path for $expected's gateways, blocking on core's gateway lock. Call it holding no
- * lock: flock -o keeps the lock out of what the reconfigure starts, and this process holds none to pass on.
- *
- * @param array<string, bool> $expected name => expected force_down (wgct_replay_set_now())
- * @return bool whether the alarm path ran and exited 0
- */
-function wgct_replay_alarm_direct(array $expected, string $logTag): bool {
-    wgct_await_gateway_status($expected, $logTag);
-    $names = implode(',', array_keys($expected));
-    exec(WGCT_REPLAY_ALARM_COMMAND . ' ' . escapeshellarg($names) . ' > /dev/null 2>&1', $out, $rc);
-    if ($rc !== 0) {
-        logMsg($logTag, "alarm replay for {$names} failed: exit {$rc}");
-    }
-    return $rc === 0;
+function wgct_configctl_bounded(array $words, int $seconds): bool {
+    $command = WGCT_TIMEOUT . ' ' . $seconds . ' ' . WGCT_CONFIGCTL . ' ' . implode(' ', array_map('escapeshellarg', $words));
+    exec($command . ' 2> /dev/null', $out, $rc);
+    return $rc === 0 && trim(implode("\n", $out)) === 'OK';
 }
 
 /**

@@ -137,6 +137,14 @@ try {
     wgct_note_lock(WGCT_HEALTH_UNOPENABLE_FILE, true, 'tick skipped: health.lock cannot be opened: ' . $e->getMessage(), 'health.lock opens again');
     exit(0);
 }
+/*
+ * The package removal writes its marker while it holds health.lock (+PRE_DEINSTALL.pre), so a tick that passed
+ * entry.php's check just before the marker appeared finds the lock taken, or the marker once it has the lock:
+ * either way it ends here, and no tick re-takes a hold after the removal released it (ruling R30).
+ */
+if (is_file(WGCT_ENTRY_RUN_DIR . '/removing')) {
+    exit(0);
+}
 if ($selfLock === null) {
     wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, true, $tickMsg, 'health resumed');
     exit(0);

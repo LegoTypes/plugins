@@ -258,6 +258,27 @@ $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
 $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
 sleep 1
 check "the first run with the library back logs one recovery line and drops its marker" "$(tail -n +$((emark + 1)) "$WGLOG" | grep -c 'core_contract.php loads the plugin library again')$(ls "$E/run" | grep -c '^core_contract')" 10
+
+# R30: while the package removal's marker exists, every entry script ends at once, before any library file is
+# loaded, and logs nothing; tunnel.php answers its caller; the removal's own release-holds runs on. lib/ is missing
+# here, so a script that went past the marker check would log the library failure and leave its .libfail marker.
+rm -rf "$E/scripts/lib"
+rm -f "$E/run"/*
+: > "$E/run/removing"
+before=$(phplog_size)
+for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
+    entry_runs "rm-${script%.php}" "$script"
+    check "$script with the removal marker: two runs exit 0, nothing on stdout or stderr, nothing logged" \
+        "$erc1$erc2$(cat "$E/rm-${script%.php}".*.out "$E/rm-${script%.php}".*.err)$elines$(tail -n +$((emark + 1)) "$WGLOG" | grep -c "$script")" 0000
+done
+check "with the removal marker no script wrote a library-failure marker" "$(ls "$E/run" | grep -c libfail)" 0
+entry_runs rm-tunnel tunnel.php --json list
+check "tunnel.php --json list with the removal marker: exit 1 and a JSON failure saying the package is being removed" \
+    "$erc1$erc2$(cat "$E/rm-tunnel.1.out")" '11{"ok":false,"errors":["the package is being removed"]}'
+entry_runs rm-release tunnel.php --json release-holds
+check "tunnel.php --json release-holds runs on with the removal marker: it reaches the library load and exits 0" \
+    "$erc1$erc2$(cat "$E/rm-release.1.out")" '00{"ok":false,"errors":["plugin library file cli.php missing"]}'
+check "PHP's error log did not grow with the removal marker" "$(phplog_size)" "$before"
 rm -rf "$E"
 
 echo "state: $PASS/$((PASS + FAIL)) passed"
