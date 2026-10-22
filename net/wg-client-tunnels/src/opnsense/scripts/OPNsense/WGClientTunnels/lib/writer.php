@@ -69,6 +69,7 @@ function wgct_model_errors(\OPNsense\Base\BaseModel $mdl, string $label): array 
 function wgct_action_snapshot(): array {
     $root = Config::getInstance()->object();
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
+    $core = wgct_core_snapshot();
     $ports = [];
     $instancePubkeys = [];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $server) {
@@ -100,22 +101,18 @@ function wgct_action_snapshot(): array {
             'enabled' => (string)$rule->enabled, 'sequence' => (string)$rule->sequence, 'fields' => $fields,
         ];
     }
-    $aliases = [];
-    foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
-        $aliases[] = (string)$alias->name;
-    }
     $groups = [];
     foreach (wgct_xml_list($root, 'ifgroups', 'ifgroupentry') as $group) {
         $groups[] = (string)$group->ifname;
     }
     return [
-        'core' => wgct_core_snapshot(),
+        'core' => $core,
         'managed' => wgct_split_csv((string)$mdl->managed),
         'held' => wgct_split_csv((string)$mdl->held),
         'ports' => $ports,
         'gateway_fields' => $gatewayFields,
         'snat_rules' => $snat,
-        'aliases' => $aliases,
+        'aliases' => $core['aliases'],
         'ifgroup_names' => $groups,
         'wireguard_enabled' => (string)$root->OPNsense->wireguard->general->enabled === '1',
         'peer_fields' => $peerFields,

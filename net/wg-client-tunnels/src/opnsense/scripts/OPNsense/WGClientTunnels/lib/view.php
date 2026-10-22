@@ -67,7 +67,7 @@ function wgct_tunnel_view(): array {
                 : $peer['serveraddress'] . ($peer['serverport'] !== '' ? ':' . $peer['serverport'] : '');
         }
         $unmanaged[] = [
-            'uuid' => (string)$uuid, 'name' => $inst['name'], 'device' => 'wg' . $inst['instance'],
+            'uuid' => (string)$uuid, 'name' => $inst['name'], 'device' => wgct_device_name($inst['instance']),
             'enabled' => $inst['enabled'], 'endpoint' => $endpoint,
         ];
     }
