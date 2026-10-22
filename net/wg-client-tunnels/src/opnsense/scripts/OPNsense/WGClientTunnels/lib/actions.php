@@ -1269,6 +1269,15 @@ function wgct_actions_selftest(): int {
     ], ["2001:db8:2:100::/56 2001:db8:3::/48\n", 'junk /x 2001:db8:4::/129']);
     wgct_check($t, 'local6: global addresses with their prefixes, link-local and junk dropped, delegated prefixes split on whitespace',
         $l6 === ['2001:db8:1:1::1/64', '2001:db8:2:100::/56', '2001:db8:3::/48'] && wgct_local6_parse(null, []) === []);
+    $asked = [];
+    $files = wgct_local6_files(['igc1', '', 'vlan0.3', 'igc1'], function (string $path, int $max) use (&$asked): ?string {
+        $asked[] = [$path, $max];
+        return $path === '/tmp/igc1_prefixv6' ? "2001:db8:2:100::/56\n" : null;
+    });
+    wgct_check($t, 'local6 files: only the device list decides which names are read, each as _prefixv6 and :slaac_prefixv6 with a 4 KiB cap',
+        $asked === [['/tmp/igc1_prefixv6', 4096], ['/tmp/igc1:slaac_prefixv6', 4096], ['/tmp/vlan0.3_prefixv6', 4096], ['/tmp/vlan0.3:slaac_prefixv6', 4096]]
+        && array_values($files) === ["2001:db8:2:100::/56\n"]
+        && wgct_local6_files(['../x', 'a/b'], fn (string $p, int $m): ?string => 'x') === []);
     $core6 = $snap['core'];
     $core6['routes']['r-m'] = ['network' => '2001:db8:ffff::40/128', 'gateway' => 'WAN_A6', 'enabled' => true];
     $core6['gateways']['WAN_A6']['monitor'] = '2001:DB8:FFFF::20';

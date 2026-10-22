@@ -78,16 +78,18 @@ try {
     $wanted = wgct_wanted_render();
     $rendered = wgct_read_rendered();
 
-    /* Only counts as evidence of a failed main ruleset load when it is
-     * present, non-empty, and at least as new as the render it would
+    /* Only counts as evidence of a failed main ruleset load when it is a
+     * root-owned regular file of the shape filter.inc leaves (non-empty,
+     * at most 64 KiB, `pfctl` on the first line: wgct_read_state_file(),
+     * wgct_rules_error_shape()), and at least as new as the render it would
      * invalidate (wgct_error_file_stale: same-second counts as stale --
      * the hook stamps 'at' from inside the same filter_configure_sync that
      * runs the pfctl call filter.inc is reacting to). */
     $errorMtime = null;
-    if ($rendered !== null && is_file(WGCT_RULES_DEBUG_ERROR)) {
-        $size = @filesize(WGCT_RULES_DEBUG_ERROR);
-        $mtime = @filemtime(WGCT_RULES_DEBUG_ERROR);
-        if ($size !== false && $size > 0 && $mtime !== false && wgct_error_file_stale($mtime, $rendered['at'])) {
+    if ($rendered !== null) {
+        $errorText = wgct_read_state_file(WGCT_RULES_DEBUG_ERROR, WGCT_RULES_ERROR_MAX_BYTES);
+        $mtime = $errorText !== null ? @filemtime(WGCT_RULES_DEBUG_ERROR) : false;
+        if ($mtime !== false && wgct_rules_error_shape($errorText) && wgct_error_file_stale($mtime, $rendered['at'])) {
             $errorMtime = $mtime;
         }
     }

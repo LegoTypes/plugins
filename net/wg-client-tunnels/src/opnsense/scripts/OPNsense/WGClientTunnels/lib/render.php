@@ -354,6 +354,22 @@ function wgct_error_file_stale(int $mtime, int $renderedAt): bool {
     return $mtime >= $renderedAt;
 }
 
+/* the most /tmp/rules.debug.error may hold to count as evidence (filter.inc writes one pfctl message) */
+const WGCT_RULES_ERROR_MAX_BYTES = 65536;
+
+/**
+ * Whether the text of /tmp/rules.debug.error has the shape filter.inc leaves there (spec 3.4): not empty, and
+ * its first line names pfctl. The caller has already read it through wgct_read_state_file(), so it is a
+ * root-owned regular file of at most WGCT_RULES_ERROR_MAX_BYTES. Pure.
+ *
+ * @param string $content
+ * @return bool
+ */
+function wgct_rules_error_shape(string $content): bool {
+    $first = strstr($content, "\n", true);
+    return $content !== '' && str_contains($first === false ? $content : $first, 'pfctl');
+}
+
 /**
  * Pure normaliser for whatever json_decode() hands back for freshness.json
  * (including garbage: a hand-edited or truncated file, or one from a future
@@ -1243,6 +1259,15 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] error_file_stale: one second later => stale\n", $ok ? 'PASS' : 'FAIL');
+
+    $ok = wgct_rules_error_shape("pfctl: Syntax error in config file\n/tmp/rules.debug:12: x\n") === true
+        && wgct_rules_error_shape('pfctl: no newline') === true
+        && wgct_rules_error_shape('') === false
+        && wgct_rules_error_shape("some other text\npfctl: second line\n") === false
+        && wgct_rules_error_shape("\npfctl: after an empty first line") === false;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] rules_error_shape: non-empty with pfctl on the first line only\n", $ok ? 'PASS' : 'FAIL');
 
     $p = wgct_freshness_plan($wanted, $current, 1000, null, 1000, null);
     $ok = $p['reload'] === true && $p['anchor'] === false;

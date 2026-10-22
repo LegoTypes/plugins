@@ -123,10 +123,39 @@ function wgct_action_snapshot(): array {
     ];
 }
 
+/* the most a delegated-prefix file may hold (dhcp6c writes one prefix) */
+const WGCT_PREFIX_FILE_MAX_BYTES = 4096;
+
+/**
+ * The delegated-prefix files core writes for the devices it has (spec 3.4): exactly /tmp/<dev>_prefixv6 and
+ * /tmp/<dev>:slaac_prefixv6 per device, never a glob, so a file someone drops under another name is never read.
+ * A name that cannot be a device (a path separator, a leading dot) is skipped. Pure; $read is
+ * wgct_read_state_file() in production, which accepts only a root-owned regular file of at most the given size.
+ *
+ * @param list<mixed>                          $devices the non-empty interface devices of core's snapshot
+ * @param callable(string, int): (string|null) $read    path and byte limit => content, or null
+ * @return array<string, string> path => content, for the files that read
+ */
+function wgct_local6_files(array $devices, callable $read): array {
+    $out = [];
+    foreach (array_unique(array_map('strval', $devices)) as $dev) {
+        if (preg_match('/^[A-Za-z0-9_][A-Za-z0-9._:-]{0,31}$/', $dev) !== 1) {
+            continue;
+        }
+        foreach (["/tmp/{$dev}_prefixv6", "/tmp/{$dev}:slaac_prefixv6"] as $path) {
+            $content = $read($path, WGCT_PREFIX_FILE_MAX_BYTES);
+            if ($content !== null) {
+                $out[$path] = $content;
+            }
+        }
+    }
+    return $out;
+}
+
 /**
  * The firewall's own IPv6 networks (spec 3.5), for Create's and Edit's IPv6 monitor check: configd's ifconfig
- * dump (`interface list ifconfig`, which runs `pluginctl -D`) and the delegated prefixes dhcp6c records in
- * /tmp/<device>_prefixv6 and /tmp/<device>:slaac_prefixv6 (one glob matches both). Called only from the prepare steps, which hold no lock:
+ * dump (`interface list ifconfig`, which runs `pluginctl -D`) and the delegated prefixes dhcp6c records for the
+ * devices core knows (wgct_local6_files()). Called only from the prepare steps, which hold no lock:
  * never inside Config::lock(), never from the mirror, reconcile or the filter hook.
  *
  * @return list<string>|null null when configd's dump cannot be read or is empty (a live firewall always has lo0);
@@ -137,13 +166,8 @@ function wgct_local6_snapshot(): ?array {
     if (!is_array($dump) || $dump === []) {
         return null;
     }
-    $files = [];
-    foreach (glob('/tmp/*_prefixv6') ?: [] as $path) {
-        $content = @file_get_contents($path);
-        if (is_string($content)) {
-            $files[] = $content;
-        }
-    }
+    $devices = array_column(wgct_core_snapshot()['interfaces'], 'if');
+    $files = array_values(wgct_local6_files(array_filter($devices, fn ($dev): bool => $dev !== ''), 'wgct_read_state_file'));
     return wgct_local6_parse($dump, $files);
 }
 
