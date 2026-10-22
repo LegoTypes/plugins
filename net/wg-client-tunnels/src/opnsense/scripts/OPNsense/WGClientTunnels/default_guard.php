@@ -40,7 +40,11 @@
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
-require_once __DIR__ . '/lib/tunnels.php';
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
+}
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('default_guard.php', 'wgct-guard', ['tunnels.php']);
 
 const GUARD_TAG = 'wgct-guard';
 

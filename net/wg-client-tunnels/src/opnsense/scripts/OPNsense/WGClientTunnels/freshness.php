@@ -37,24 +37,17 @@
  * Writes no config. Usage: freshness.php [--dry]
  *
  * Never lets a \Throwable reach PHP's own error log / the GUI crash
- * reporter: render.php is checked for readability before it is required, as
- * the plugins_firewall hook does; every file its chain requires is checked
- * the same way and throws, which the try/catch around the require logs; and
- * everything after it runs inside a try/catch(\Throwable).
+ * reporter: the library loads through entry.php, which ends the run quietly,
+ * logged once, when it cannot, and everything after it runs inside a
+ * try/catch(\Throwable).
  */
 
-$wgctLib = __DIR__ . '/lib/render.php';
-if (!is_readable($wgctLib)) {
-    exec('/usr/bin/logger -t wireguard -p user.err -- ' . escapeshellarg('[wgct-render] freshness: plugin library missing') . ' > /dev/null 2>&1');
-    exit(1);
-}
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
-try {
-    require_once $wgctLib;
-} catch (\Throwable $e) {
-    exec('/usr/bin/logger -t wireguard -p user.err -- ' . escapeshellarg('[wgct-render] freshness: ' . $e->getMessage()) . ' > /dev/null 2>&1');
-    exit(1);
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
 }
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('freshness.php', 'wgct-render', ['render.php']);
 
 /* Where filter.inc leaves the error from a failed `pfctl -f /tmp/rules.debug`
  * before it restores the old ruleset (see filter.inc, ~line 399). */

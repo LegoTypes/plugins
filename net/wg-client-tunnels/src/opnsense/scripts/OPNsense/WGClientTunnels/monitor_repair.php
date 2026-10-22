@@ -19,8 +19,11 @@ require_once 'config.inc';
 require_once 'util.inc';
 require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
-require_once __DIR__ . '/lib/apply.php';
-require_once __DIR__ . '/lib/repair.php';
+if (!is_readable(__DIR__ . '/entry.php')) {
+    exit(0);
+}
+require_once __DIR__ . '/entry.php';
+wgct_entry_load('monitor_repair.php', 'wgct-monitor', ['apply.php', 'repair.php']);
 
 $stateDir = WGCT_RUN_DIR;
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
