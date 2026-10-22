@@ -16,6 +16,10 @@
 
 use OPNsense\Core\Config;
 
+/* checked first, as every require in the filter hook's chain is (render.php) */
+if (!is_readable(__DIR__ . '/addr.php')) {
+    throw new \RuntimeException('plugin library file addr.php missing');
+}
 require_once __DIR__ . '/addr.php';
 
 /* WireGuard's MTU when neither the instance nor the interface sets one. */

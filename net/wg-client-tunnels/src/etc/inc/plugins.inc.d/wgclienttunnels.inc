@@ -116,9 +116,8 @@ function wgclienttunnels_firewall($fw)
  * 3. A usable footprint's rules are registered at this hook's pin priority
  *    (the band core's Rules page groups, whatever a footprint from another
  *    version recorded), with the MSS anchor when the render did not get as
- *    far as registering it. The
- *    anchor's contents are not reloaded: pf keeps a named anchor's rules
- *    across a main ruleset load.
+ *    far as registering it. The anchor's contents are not reloaded: pf keeps
+ *    a named anchor's rules across a main ruleset load.
  * 4. A warning names the reason, once per distinct reason and outcome
  *    (fallback.logged), and fallback.json tells the views since when the
  *    footprint is enforced. A later successful render removes both and logs
@@ -126,11 +125,16 @@ function wgclienttunnels_firewall($fw)
  * 5. With no usable footprint nothing is registered, as before the
  *    footprint existed, and the same warning says there is none.
  *
- * A require_once of a file that does not exist is a fatal E_COMPILE_ERROR,
- * not a \Throwable, so the library is checked for readability first:
- * during a deploy swap window (plugin directories replaced while this file,
- * which core loads separately, stays) or after a failed deploy it can be
- * missing, and a filter reload (a gateway alarm, boot) must not die of it.
+ * During a deploy swap window (plugin directories replaced while this file,
+ * which core loads separately, stays) or after a failed deploy the library
+ * can be missing in whole or in part, and a filter reload (a gateway alarm,
+ * boot) must not die of it. What holds: this hook checks the one file it
+ * requires, render.php, for readability; every require in render.php's own
+ * chain (tunnels.php, addr.php, selftest.php) checks its file the same way and
+ * throws a \RuntimeException naming it ("plugin library file <name>
+ * missing"), which the try/catch below turns into the fallback with the
+ * reason "hook failed: <message>". So no file of the chain is ever required
+ * unchecked, whatever PHP does with a failed require.
  *
  * core also calls this hook only to list rules for display
  * (list_non_mvc_rules.php, firewall_rule_lookup.php). Rules are registered
@@ -153,7 +157,7 @@ function wgclienttunnels_firewall_at(string $libDir, string $footprint, string $
     $registered = false;
     $reason = 'the render failed';
     try {
-        if (!is_readable($libDir . '/render.php') || !is_readable($libDir . '/tunnels.php')) {
+        if (!is_readable($libDir . '/render.php')) {
             $reason = 'plugin library missing';
         } else {
             require_once $libDir . '/render.php';

@@ -12,8 +12,10 @@
  * so no plugin state, pf or config is touched. Calls that stand for a real filter reload run inside a function
  * named filter_configure_sync, the frame the hook looks for; this process loads no core filter code, so the
  * name is free. The hook logs to the WireGuard log, so log counts are of lines after a marker this test logs.
+ * The cases for a partly present library copy the working tree's lib files into a temporary directory and run
+ * the hook in a child process each, since every copy declares the same functions.
  *
- * Usage: php wgct_hook.php /path/to/wgclienttunnels.inc
+ * Usage: php wgct_hook.php /path/to/wgclienttunnels.inc /path/to/lib
  */
 
 namespace OPNsense\Firewall {
@@ -48,6 +50,17 @@ namespace {
     {
         $call();
     }
+
+    /* child mode: one hook call inside a filter reload, printing what it registered */
+    if (($argv[2] ?? '') === '--child') {
+        $fw = new \OPNsense\Firewall\Plugin();
+        filter_configure_sync(function () use ($argv, $fw): void {
+            wgclienttunnels_firewall_at($argv[3], $argv[4], $argv[5], $fw);
+        });
+        echo json_encode(['anchors' => $fw->anchors, 'rules' => $fw->rules]), "\n";
+        exit(0);
+    }
+    $treeLib = $argv[2];
 
     $tally = ['fail' => 0, 'total' => 0];
     function hooktest_check(array &$tally, string $desc, callable $case): void
@@ -289,6 +302,34 @@ PHP);
     }
     hooktest_check($tally, 'a Throwable while enforcing the footprint is caught and logged, never thrown into core',
         fn (): bool => $escaped === null && $count($m, 'the footprint fallback failed: hooktest register failure') === 1);
+
+    /* a partly present library: render.php and tunnels.php there, a file further down their require chain missing */
+    foreach (['addr.php' => ['render.php', 'tunnels.php'], 'selftest.php' => ['render.php', 'tunnels.php', 'addr.php']]
+             as $missing => $files) {
+        $fresh();
+        $part = "$T/part-" . basename($missing, '.php');
+        @mkdir($part, 0700);
+        foreach ($files as $f) {
+            copy("$treeLib/$f", "$part/$f");
+        }
+        $m = $marker();
+        $out = [];
+        exec('/usr/local/bin/php -d log_errors=0 ' . escapeshellarg(__FILE__) . ' ' . escapeshellarg($argv[1]) . ' --child '
+            . escapeshellarg($part) . ' ' . escapeshellarg($fp) . ' ' . escapeshellarg($run) . ' 2>&1', $out, $rc);
+        $got = json_decode((string)end($out), true);
+        if ($rc !== 0) {
+            printf("       the child exited %d: %s\n", $rc, trim(implode(' ', $out)));
+        }
+        hooktest_check($tally, "a library without $missing => no fatal; the anchor and the footprint's rules are registered",
+            fn (): bool => $rc === 0 && $got === ['anchors' => [['wgclienttunnels_mss', 'fw', 0, 'head']],
+                'rules' => [[99999, $wanRule], [99999, $innerRule]]]);
+        hooktest_check($tally, "a library without $missing => one warning naming the missing file",
+            fn (): bool => $count($m, "render failed (hook failed: plugin library file $missing missing); enforcing the footprint") === 1);
+        foreach ($files as $f) {
+            @unlink("$part/$f");
+        }
+        @rmdir($part);
+    }
 
     $fresh();
     foreach (['footprint.json', 'link.json', 'nonroot.json', 'big.json', 'shape.json', 'empty.json'] as $f) {
