@@ -68,16 +68,23 @@ Plugin Changelog
 
 3.8
 
-* Security release. Firewall rules are rendered fail-closed from the
-  recorded footprint, and a bound tunnel with a blocking finding is still
-  pinned, its MSS clamp included
-* The managed list and the holds live in their own model and are released
-  only by their own record, for IPv6 gateways too; the mirror leaves a
-  hand-forced IPv6 gateway alone
+* Security release. When a render fails, the firewall keeps enforcing the
+  pins last put in place and the page says so (a render-fallback
+  finding); before, the pins vanished
+* The MSS clamp applies to every enabled, assigned tunnel whose MTU is in
+  range, an unbound tunnel and one with a blocking finding included; a
+  bound tunnel with a blocking finding is still pinned
+* The managed list and the holds are kept apart from the settings, where
+  the settings API cannot change them, and are released only by their own
+  record, for IPv6 gateways too; the mirror leaves a hand-forced IPv6
+  gateway alone
+* A restored backup's holds are pruned, not released: a gateway held when
+  the backup was taken stays forced down until unticked by hand
+* A mirror tick that cannot run logs it once
 * Locks and state live under root-only directories
 * Core's /tmp files are read for their devices only
-* Actions and previews honour the read-only guard; one MTU measurement
-  runs at a time
+* Actions and previews honour the read-only guard; an MTU measurement
+  started while one runs is refused with a message
 * Apply refuses an instance the plugin does not manage
 * Values from a restored configuration, interface groups included, are
   validated again before use
