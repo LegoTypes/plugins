@@ -33,11 +33,13 @@ Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, edit, remove, rebin
   apply UUID [MODE]                   run a tunnel's apply again; without MODE, the apply its saved change still
                                       needs (apply-pending), else tunnel (Create's apply, then wireguard restart);
                                       MODE: filter, routes, first (Create's apply alone) or tunnel
+  release-holds                       the package removal's: release the gateways the health mirror's own hold
+                                      records prove it holds down, forget every record; exits 0 even when it fails
        tunnel.php --selftest
 TXT;
 /* the write actions, whose --dry validates and writes nothing; any other command refuses --dry */
 const WGCT_CLI_DRY_COMMANDS = ['create', 'edit', 'remove', 'rebind', 'adopt', 'ensure-sentinel'];
-const WGCT_CLI_OTHER_COMMANDS = ['list', 'status', 'reconcile', 'measure-mtu', 'apply'];
+const WGCT_CLI_OTHER_COMMANDS = ['list', 'status', 'reconcile', 'measure-mtu', 'apply', 'release-holds'];
 
 /**
  * @param list<string> $args argv without the script name
@@ -117,6 +119,8 @@ function wgct_cli_main(array $args): int {
             case 'apply':
                 $uuid = wgct_cli_uuid($pos[1] ?? '');
                 return wgct_cli_emit(wgct_apply_only($uuid, $pos[2] ?? null), $json);
+            case 'release-holds':
+                return wgct_cli_release_holds($json);
             default:
                 fwrite(STDERR, WGCT_CLI_USAGE . "\n");
                 return 2;
@@ -232,6 +236,123 @@ function wgct_cli_emit_mtu(array $m, bool $json): int {
     return 0;
 }
 
+/* release-holds' line when hold records exist but kern.boot_id cannot be read (ruling R17) */
+const WGCT_RELEASE_BOOT_UNREADABLE = 'deinstall: kern.boot_id cannot be read, so no hold record can be shown to be ours;'
+    . ' nothing released or forgotten, every gateway left as it is';
+
+/**
+ * `release-holds`, which +PRE_DEINSTALL runs on a real removal (spec 3.11, convention C6): under the gateway lock
+ * and Config::lock(), force_down=0 on the gateway of every owned hold record, every other record forgotten with its
+ * gateway untouched, no record kept, saved once; then core's routing re-sync and the alarm replay, without the
+ * plugin's configd actions, which the removal deletes (wgct_routes_configure_core(), wgct_replay_alarm_direct()).
+ * One line to the WireGuard log says what it did. With records but no live boot id it changes nothing (ruling
+ * R17): leaving a gateway forced down is the safe side, releasing one it cannot prove it holds is not. Never
+ * throws: a failure is logged and returned.
+ *
+ * @return array{ok: bool, saved: bool, released: list<string>, pruned: list<string>, routing: string,
+ *               replayed: list<string>, logged: string, errors: list<string>} gateway names
+ */
+function wgct_release_holds(): array {
+    $out = ['ok' => false, 'saved' => false, 'released' => [], 'pruned' => [], 'routing' => '', 'replayed' => [],
+        'logged' => '', 'errors' => []];
+    $lock = null;
+    try {
+        $before = wgct_gateway_status();
+        $lock = wgct_gateway_lock();
+        $commit = wgct_locked_commit(function (): array {
+            $engine = new \OPNsense\WGClientTunnels\Engine();
+            $gateways = wgct_core_snapshot()['gateways'];
+            $holds = wgct_engine_holds($engine, $gateways);
+            $forceDown = [];
+            $names = [];
+            foreach ($gateways as $name => $g) {
+                $forceDown[$g['uuid']] = $g['force_down'];
+                $names[$g['uuid']] = (string)$name;
+            }
+            $plan = wgct_release_plan($holds['rows'], $holds['live_boot'], $holds['previous_boot'], $forceDown);
+            $result = [
+                'save' => $holds['live_boot'] !== '' && $holds['rows'] !== [],
+                'unreadable' => $holds['live_boot'] === '' && $holds['rows'] !== [],
+                /* an owned record's gateway is forced down, so it exists */
+                'released' => array_map(fn (string $uuid): string => $names[$uuid], $plan['release']),
+                'pruned' => array_map(fn (string $uuid): string => $names[$uuid] ?? $uuid, $plan['prune']),
+            ];
+            if ($result['released'] !== []) {
+                $routing = new \OPNsense\Routing\Gateways();
+                wgct_apply_changes($routing, array_fill_keys($result['released'], false));
+                $routing->serializeToConfig();
+            }
+            if ($result['save']) {
+                $engine->setHolds([]);
+                $engine->serializeToConfig();
+            }
+            return $result;
+        }, 'wg upstream tunnels: release holds (package removal)');
+        $out['saved'] = $commit['save'];
+        $out['released'] = $commit['released'];
+        $out['pruned'] = $commit['pruned'];
+        $out['logged'] = $commit['unreadable'] ? WGCT_RELEASE_BOOT_UNREADABLE : wgct_release_log_line($commit['released'], $commit['pruned']);
+        wgct_log(LOG_NOTICE, '[' . WGCT_ACTION_LOG_TAG . '] ' . $out['logged']);
+        if ($commit['released'] !== []) {
+            $out['routing'] = wgct_routes_configure_core($lock);
+            if ($out['routing'] !== 'configd' && $out['routing'] !== 'direct') {
+                $out['errors'][] = "deinstall: the routing re-sync failed ({$out['routing']}); the released gateways take effect at the next routing reconfigure";
+            }
+        } else {
+            $lock->flock(LOCK_UN);
+            $lock = null;
+        }
+        /* every alarm routes.alarm dropped while the lock was held, the released gateways' own included */
+        $set = wgct_replay_set_now($commit['released'], $before);
+        if ($set !== []) {
+            if (wgct_replay_alarm_direct($set, WGCT_ACTION_LOG_TAG)) {
+                $out['replayed'] = array_map('strval', array_keys($set));
+            } else {
+                $out['errors'][] = 'deinstall: the alarm replay for ' . implode(', ', array_keys($set)) . ' failed';
+            }
+        }
+    } catch (\Throwable $e) {
+        $lock?->flock(LOCK_UN);
+        $out['errors'][] = 'deinstall: release-holds failed: ' . get_class($e) . ': ' . $e->getMessage();
+    }
+    foreach ($out['errors'] as $error) {
+        wgct_log(LOG_WARNING, '[' . WGCT_ACTION_LOG_TAG . '] ' . $error);
+    }
+    $out['ok'] = $out['errors'] === [];
+    return $out;
+}
+
+/**
+ * release-holds' log line. Pure.
+ *
+ * @param list<string> $released gateway names released
+ * @param list<string> $pruned   names (uuids for gateways that are gone) whose record went without a release
+ * @return string
+ */
+function wgct_release_log_line(array $released, array $pruned): string {
+    $line = $released === [] ? 'deinstall: nothing held' : 'deinstall: released ' . implode(', ', $released);
+    return $pruned === [] ? $line : $line . '; hold records forgotten, their gateways left as they are: ' . implode(', ', $pruned);
+}
+
+/**
+ * @param bool $json one JSON object instead of text
+ * @return int 0, whatever happened: the package removal must complete
+ */
+function wgct_cli_release_holds(bool $json): int {
+    $r = wgct_release_holds();
+    if ($json) {
+        echo json_encode($r, JSON_UNESCAPED_SLASHES), "\n";
+        return 0;
+    }
+    if ($r['logged'] !== '') {
+        echo $r['logged'], "\n";
+    }
+    foreach ($r['errors'] as $error) {
+        echo "ERROR: {$error}\n";
+    }
+    return 0;
+}
+
 /**
  * The list line's state note: what a tunnel that is not enforced still has. A blocked tunnel is skipped by the
  * health mirror and the monitor repair, and keeps its pins while pf holds any for it (`pinned`, wgct_pins_in_pf():
@@ -337,8 +458,9 @@ function wgct_cli_own_selftest(): int {
         && !str_contains(wgct_cli_failure_message('ensure-sentinel', 'x', true, ''), 'tunnel.php apply'));
     wgct_check($t, 'cli: --dry is taken by create, edit, remove, rebind, adopt and ensure-sentinel',
         array_filter(['create', 'edit', 'remove', 'rebind', 'adopt', 'ensure-sentinel'], fn (string $c): bool => !wgct_cli_takes_dry($c)) === []);
-    wgct_check($t, 'cli: --dry is refused, not ignored, by apply, reconcile, list, status and measure-mtu',
-        array_filter(WGCT_CLI_OTHER_COMMANDS, 'wgct_cli_takes_dry') === [] && count(WGCT_CLI_OTHER_COMMANDS) === 5);
+    wgct_check($t, 'cli: --dry is refused, not ignored, by apply, reconcile, list, status, measure-mtu and release-holds',
+        array_filter(WGCT_CLI_OTHER_COMMANDS, 'wgct_cli_takes_dry') === [] && count(WGCT_CLI_OTHER_COMMANDS) === 6
+        && in_array('release-holds', WGCT_CLI_OTHER_COMMANDS, true));
     wgct_check($t, 'cli: a list or measure-mtu failure carries no footer',
         wgct_cli_failure_message('list', 'x', true, '') === 'list failed: x.'
         && wgct_cli_failure_message('measure-mtu', 'x', true, '') === 'measure-mtu failed: x.');
@@ -351,6 +473,14 @@ function wgct_cli_own_selftest(): int {
     wgct_check($t, 'cli: list says a blocked tunnel is skipped by the mirror and the repair, and that its pins stay only when it is pinned',
         wgct_cli_state_note($row(false, true, $blocking)) === ' (blocked: mirror and repair skip it; pins in place)'
         && wgct_cli_state_note($row(false, false, $blocking)) === ' (blocked: mirror and repair skip it)');
+    wgct_check($t, 'cli: release-holds logs the gateways it released, by name',
+        wgct_release_log_line(['rehearse', 'tun_b'], []) === 'deinstall: released rehearse, tun_b');
+    wgct_check($t, 'cli: release-holds with no hold record logs "nothing held"',
+        wgct_release_log_line([], []) === 'deinstall: nothing held');
+    wgct_check($t, 'cli: release-holds names the records it forgot without touching their gateways',
+        wgct_release_log_line([], ['tun_c']) === 'deinstall: nothing held; hold records forgotten, their gateways left as they are: tun_c'
+        && wgct_release_log_line(['rehearse'], ['tun_c', 'tun_d'])
+            === 'deinstall: released rehearse; hold records forgotten, their gateways left as they are: tun_c, tun_d');
     return wgct_tally_report('cli', $t);
 }
 

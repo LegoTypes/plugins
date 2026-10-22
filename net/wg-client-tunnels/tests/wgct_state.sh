@@ -243,6 +243,9 @@ entry_runs tunnel tunnel.php --json list
 check "tunnel.php --json list without lib/: two runs exit 1 (the command failed), nothing on stderr" "$erc1$erc2$(cat "$E"/tunnel.*.err)" 11
 check "tunnel.php --json list without lib/: a JSON failure naming the missing file" "$(cat "$E/tunnel.1.out")" '{"ok":false,"errors":["plugin library file cli.php missing"]}'
 check "tunnel.php without lib/: one log line across two runs" "$elines" 1
+entry_runs release tunnel.php --json release-holds
+check "tunnel.php --json release-holds without lib/: two runs exit 0 (the package removal must complete), nothing on stderr" "$erc1$erc2$(cat "$E"/release.*.err)" 00
+check "tunnel.php --json release-holds without lib/: the same JSON failure" "$(cat "$E/release.1.out")" '{"ok":false,"errors":["plugin library file cli.php missing"]}'
 mkdir "$E/scripts/lib"
 for f in tunnels.php selftest.php; do cp -p "$LIB/$f" "$E/scripts/lib/"; done
 entry_runs guard default_guard.php

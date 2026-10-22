@@ -1,0 +1,8 @@
+#!/bin/sh
+# a real removal releases what the engine holds and removes what it added; an upgrade keeps everything
+if [ -z "${PKG_UPGRADE:-}" ] && [ -x /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh ]; then
+    /usr/local/bin/php -d log_errors=0 /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/tunnel.php --json release-holds > /dev/null 2>&1
+    /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh stop > /dev/null 2>&1
+    /sbin/pfctl -a wgclienttunnels_mss -F rules > /dev/null 2>&1
+    rm -rf /var/run/wgclienttunnels /var/db/wgclienttunnels
+fi
