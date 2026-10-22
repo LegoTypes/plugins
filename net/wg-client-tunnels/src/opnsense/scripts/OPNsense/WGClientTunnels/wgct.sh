@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Copyright (C) 2026 cayossarian (Bill Flood)
+# Copyright (C) 2026 cayossarian
 # All rights reserved.
 #
 # WireGuard upstream tunnels: the managed tunnels' IPv6 addresses, their
