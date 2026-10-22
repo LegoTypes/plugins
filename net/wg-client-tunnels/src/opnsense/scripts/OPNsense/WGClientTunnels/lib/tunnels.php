@@ -92,8 +92,12 @@ function wgct_finding($code, $detail, ?string $fix = null) {
     return ['code' => $code, 'blocking' => $blocking, 'detail' => $detail, 'fix' => $fix ?? $tableFix];
 }
 
+/* appended to a blocking finding's hint where the tunnel still renders a pin (wgct_pin_hint()); plain text */
+const WGCT_PINS_KEPT_HINT = '; its firewall pins stay in place while this stands';
+
 /**
- * A tunnel with a blocking finding is shown but skipped by every behaviour.
+ * A tunnel with a blocking finding is shown but skipped by the health mirror, the route set and the monitor
+ * repair. Its WAN pins, inner-source block and MSS clamp stay (spec 2026-10-20 section 3.1 part C).
  *
  * @param array $tunnel derived record
  * @return bool
@@ -105,6 +109,27 @@ function wgct_blocked(array $tunnel) {
         }
     }
     return false;
+}
+
+/**
+ * The tunnel with WGCT_PINS_KEPT_HINT appended to each blocking finding's hint, when the pin switches render at
+ * least one rule for it; unchanged otherwise, so an unbound tunnel or switched-off pins never claim a pin. Pure.
+ *
+ * @param array $t           derived record
+ * @param bool  $wanPins     the wan_pins switch, false while the plugin is disabled
+ * @param bool  $innerSource the inner_source switch, false while the plugin is disabled
+ * @return array the record
+ */
+function wgct_pin_hint(array $t, bool $wanPins, bool $innerSource): array {
+    if (wgct_pin_rules(wgct_pin_set(['tunnels' => [$t]], $wanPins, $innerSource)) === []) {
+        return $t;
+    }
+    foreach ($t['findings'] as $i => $f) {
+        if ($f['blocking']) {
+            $t['findings'][$i]['fix'] = $f['fix'] . WGCT_PINS_KEPT_HINT;
+        }
+    }
+    return $t;
 }
 
 /**
@@ -526,6 +551,60 @@ function wgct_stale_candidates(array $core): array {
 }
 
 /**
+ * Where a binding route's WAN pins its endpoint. Fail closed: the interface only when the gateway is saved, its
+ * interface resolves and is up, and it can carry the endpoint's family (an IPv6 endpoint needs an IPv6 gateway
+ * that is not on a 6rd/6to4 WAN; IPv4 keeps core's rule, RFC 5549); otherwise null, the block-everywhere form.
+ * A disabled gateway on an enabled interface keeps that interface. Pure.
+ *
+ * @param array  $core   wgct_core_snapshot()
+ * @param string $wan    the binding route's gateway name
+ * @param string $family the endpoint's family, inet or inet6
+ * @return array{interface: ?string, problem: ?string} the WAN interface key, and the wan-unavailable detail or null
+ */
+function wgct_binding_target(array $core, string $wan, string $family): array {
+    $wanGw = $core['gateways'][$wan] ?? null;
+    if ($wanGw === null) {
+        return ['interface' => null, 'problem' => "{$wan} is not a saved gateway; save it once on System > Gateways"];
+    }
+    $wanIf = $core['interfaces'][$wanGw['interface']] ?? null;
+    if ($family === 'inet6' && $wanGw['ipprotocol'] !== 'inet6') {
+        return ['interface' => null, 'problem' => "{$wan} is IPv4; an IPv6 endpoint needs an IPv6 gateway"];
+    }
+    if ($family === 'inet6' && in_array($wanIf['ipaddrv6'] ?? '', ['6rd', '6to4'], true)) {
+        return ['interface' => null, 'problem' => "{$wan} is on a 6rd/6to4 WAN; IPv6 over 6rd/6to4 is not supported as a binding"];
+    }
+    $up = $wanIf !== null && $wanIf['enable'];
+    return [
+        'interface' => $up ? $wanGw['interface'] : null,
+        'problem' => $wanGw['disabled'] || !$up ? "{$wan} or its interface is disabled" : null,
+    ];
+}
+
+/**
+ * The WAN pins of an instance's peers (spec 2026-10-20 section 3.1 part C): every peer, in order, whose server
+ * address is IPv4 or global IPv6 (wgct_endpoint_ip()) and has a binding route. A hostname, a ULA or a link-local
+ * endpoint, or one with no binding route, gets no pin and stops no other peer's. Pure.
+ *
+ * @param array        $core  wgct_core_snapshot()
+ * @param list<string> $peers the instance's peer uuids
+ * @param array        $ctx   indexes built by wgct_derive()
+ * @return list<array{0: string, 1: string}> [canonical endpoint, WAN interface key or '' (block everywhere)]
+ */
+function wgct_peer_pins(array $core, array $peers, array $ctx): array {
+    $pins = [];
+    foreach ($peers as $peerUuid) {
+        $peer = $core['peers'][$peerUuid] ?? null;
+        $ip = $peer !== null ? wgct_endpoint_ip($peer['serveraddress']) : null;
+        $family = $ip !== null ? wgct_ip_family($ip) : null;
+        $wan = $family !== null ? ($ctx['binding_routes'][$family][$ip] ?? null) : null;
+        if ($wan !== null) {
+            $pins[] = [$ip, wgct_binding_target($core, $wan, $family)['interface'] ?? ''];
+        }
+    }
+    return $pins;
+}
+
+/**
  * One managed tunnel. Pure.
  *
  * @param array  $core wgct_core_snapshot()
@@ -540,6 +619,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         'mtu' => WGCT_DEFAULT_MTU, 'mss' => '',
         'gw4' => null, 'monitor' => '', 'monitor6' => '', 'monitor6_mode' => null, 'gw6' => null, 'ipv6_address' => null, 'ipv6_next_hop' => null,
         'nat' => ['inet' => [], 'inet6' => []], 'groups' => [], 'findings' => [], 'enforceable' => false,
+        'pins' => ['wan' => [], 'inner' => false],
     ];
     $inst = $core['instances'][$uuid] ?? null;
     if ($inst === null) {
@@ -573,27 +653,17 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
                 $t['findings'][] = wgct_finding('stale-route', implode(', ', $ctx['stale_routes'][$family]));
             }
         } else {
-            $wan = $ctx['binding_routes'][$family][$ip];
-            $t['bound_wan'] = $wan;
-            $wanGw = $core['gateways'][$wan] ?? null;
-            $wanIf = $wanGw !== null ? ($core['interfaces'][$wanGw['interface']] ?? null) : null;
-            /* an IPv6 endpoint needs an IPv6 gateway that is not a 6rd/6to4 tunnel; IPv4 keeps core's rule (RFC 5549) */
-            $unusable = null;
-            if ($wanGw !== null && $family === 'inet6' && $wanGw['ipprotocol'] !== 'inet6') {
-                $unusable = "{$wan} is IPv4; an IPv6 endpoint needs an IPv6 gateway";
-            } elseif ($wanGw !== null && $family === 'inet6' && in_array($wanIf['ipaddrv6'] ?? '', ['6rd', '6to4'], true)) {
-                $unusable = "{$wan} is on a 6rd/6to4 WAN; IPv6 over 6rd/6to4 is not supported as a binding";
-            }
-            /* fail closed: only pin to an interface we can actually resolve, that is up, and that can carry the endpoint */
-            $t['wan_interface'] = ($wanGw !== null && $wanIf !== null && $wanIf['enable'] && $unusable === null) ? $wanGw['interface'] : null;
-            if ($wanGw === null) {
-                $t['findings'][] = wgct_finding('wan-unavailable', "{$wan} is not a saved gateway; save it once on System > Gateways");
-            } elseif ($unusable !== null) {
-                $t['findings'][] = wgct_finding('wan-unavailable', $unusable);
-            } elseif ($wanGw['disabled'] || $wanIf === null || !$wanIf['enable']) {
-                $t['findings'][] = wgct_finding('wan-unavailable', "{$wan} or its interface is disabled");
+            $t['bound_wan'] = $ctx['binding_routes'][$family][$ip];
+            $target = wgct_binding_target($core, $t['bound_wan'], $family);
+            $t['wan_interface'] = $target['interface'];
+            if ($target['problem'] !== null) {
+                $t['findings'][] = wgct_finding('wan-unavailable', $target['problem']);
             }
         }
+    }
+    /* the WAN pins of every bound peer, whatever the findings; an instance with no device runs nothing to pin */
+    if ($t['enabled'] && wgct_valid_wg_device($t['device'])) {
+        $t['pins']['wan'] = wgct_peer_pins($core, $inst['peers'], $ctx);
     }
 
     /* everything else hangs off the interface assignment */
@@ -612,6 +682,8 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     if (!$if['enable']) {
         $t['findings'][] = wgct_finding('interface-disabled', "{$opt} ({$t['device']}) is disabled");
     }
+    /* the inner-source block of a bound tunnel, whatever the findings; an unbound one stays unpinned (spec 2) */
+    $t['pins']['inner'] = $t['pins']['wan'] !== [] && $if['enable'];
 
     /* MTU: the interface value wins when set (core applies it after WireGuard starts) */
     $instMtu = $inst['mtu'] !== '' ? (int)$inst['mtu'] : WGCT_DEFAULT_MTU;
@@ -841,10 +913,11 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
 }
 
 /**
- * What the WAN pins (R1) and inner-source blocks (R7) cover. Pure; canonical
- * order so two sets compare with ===. A bound tunnel whose WAN cannot be
- * resolved to an enabled interface (wan_interface null) still gets a WAN
- * entry, with wan_if '' -- fail closed, so the handshake is blocked on every
+ * What the WAN pins (R1) and inner-source blocks (R7) cover, from each record's
+ * pins (spec 2026-10-20 section 3.1 part C): a bound tunnel is pinned whatever
+ * its findings, for every bound peer. Pure; canonical order so two sets compare
+ * with ===. A pin whose WAN cannot be resolved to an enabled interface keeps
+ * its entry with wan_if '' -- fail closed, so the handshake is blocked on every
  * interface rather than left unpinned.
  *
  * @param array $derived     wgct_derive()
@@ -856,21 +929,19 @@ function wgct_pin_set(array $derived, $wanPins, $innerSource) {
     $wan = [];
     $inner = [];
     foreach ($derived['tunnels'] as $t) {
-        if (!$t['enforceable'] || $t['interface'] === null || !wgct_valid_interface_key($t['interface'])) {
-            continue;
-        }
-        if ($innerSource) {
+        if ($innerSource && $t['pins']['inner'] && wgct_valid_interface_key($t['interface'])) {
             $inner[] = $t['interface'];
         }
-        if ($wanPins) {
-            $ip = $t['endpoint_ip'];
+        if (!$wanPins) {
+            continue;
+        }
+        foreach ($t['pins']['wan'] as [$ip, $wanIf]) {
             if (!wgct_valid_ip_field($ip)) {
                 continue;
             }
             $family = filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 'inet6' : 'inet';
             /* a WAN interface key that fails the mask is treated as unresolved: the handshake is blocked everywhere */
-            $wanIf = wgct_valid_interface_key($t['wan_interface'] ?? '') ? $t['wan_interface'] : '';
-            $wan[$wanIf . '|' . $family][] = $ip;
+            $wan[(wgct_valid_interface_key($wanIf) ? $wanIf : '') . '|' . $family][] = $ip;
         }
     }
     ksort($wan);
@@ -940,6 +1011,18 @@ function wgct_pin_rules(array $pinSet) {
 }
 
 /**
+ * Whether a tunnel's device gets the MSS clamp (spec 2026-10-20 section 3.1 part C): an enabled instance whose
+ * valid wgN device has an interface assignment, which gives its MTU, whatever its findings. The clamp is not a
+ * pin, so a tunnel with no binding route gets it too. Pure.
+ *
+ * @param array $t derived record
+ * @return bool
+ */
+function wgct_mss_applies(array $t): bool {
+    return $t['enabled'] && $t['interface'] !== null && wgct_valid_wg_device($t['device']);
+}
+
+/**
  * The MSS anchor's contents (R8): both directions, because the segment size a
  * LAN host uses is set by the SYN-ACK arriving inbound on the tunnel. A
  * max-mss below the family's minimum would make pfctl reject the whole
@@ -956,7 +1039,7 @@ function wgct_mss_lines(array $derived, $mssClamp) {
         return $lines;
     }
     foreach ($derived['tunnels'] as $t) {
-        if (!$t['enforceable'] || !wgct_valid_wg_device($t['device'])) {
+        if (!wgct_mss_applies($t)) {
             continue;
         }
         $n = (int)substr($t['device'], 2);
@@ -977,7 +1060,7 @@ function wgct_mss_lines(array $derived, $mssClamp) {
  * wgct_mss_lines()'s limits exactly: v4 only when the MTU is at least 576,
  * v6 only when the tunnel has an IPv6 address and the MTU is at least 1280.
  * Null altogether -- not an array of two nulls -- when the clamp switch is
- * off or the tunnel is not enforceable, since nothing would be rendered for
+ * off or wgct_mss_applies() is false, since nothing would be rendered for
  * it either way.
  *
  * @param array $t        derived tunnel record
@@ -985,7 +1068,7 @@ function wgct_mss_lines(array $derived, $mssClamp) {
  * @return array|null ['v4' => int|null, 'v6' => int|null], or null
  */
 function wgct_clamp_for(array $t, bool $mssClamp): ?array {
-    if (!$mssClamp || !$t['enforceable']) {
+    if (!$mssClamp || !wgct_mss_applies($t)) {
         return null;
     }
     return [
@@ -1467,7 +1550,7 @@ function wgct_tunnels_selftest() {
     $tDisabled = wgct_derive($cDisabled, ['i-a'])['tunnels'][0];
     $ok = wgct_clamp_for($tDisabled, true) === null;
     $fail += $ok ? 0 : 1; $total++;
-    printf("[%s] clamp_for: not enforceable, clamp on => null\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] clamp_for: disabled instance, clamp on => null\n", $ok ? 'PASS' : 'FAIL');
 
     $cV4Only = $base();
     $cV4Only['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
@@ -1704,12 +1787,145 @@ function wgct_tunnels_selftest() {
     printf("[%s] values: a route line with a failing field is not emitted\n", $ok ? 'PASS' : 'FAIL');
     $d = wgct_derive($invalidOf($base()), ['i-a']);
     $d['tunnels'][0]['mtu'] = '1376 -x';
-    $d['tunnels'][0]['wan_interface'] = 'opt1;';
+    $d['tunnels'][0]['pins']['wan'][0][1] = 'opt1;';
     $ok = wgct_mss_lines($d, true) === ['match on wg1 inet proto tcp all scrub (max-mss 1336)',
                                         'match on wg1 inet6 proto tcp all scrub (max-mss 1316)']
         && wgct_pin_set($d, true, false)['wan'] === [['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] values: a non-numeric MTU is cast, and a hostile WAN interface key pins fail-closed\n", $ok ? 'PASS' : 'FAIL');
+
+    /* pin by binding, not by enforceability (spec 2026-10-20 3.1 part C): a bound tunnel keeps its pins while a
+     * blocking finding stands, for every peer */
+    $p = ['fail' => 0, 'total' => 0];
+    $safely = function (callable $case): bool {
+        try {
+            return $case();
+        } catch (\Throwable $e) {
+            printf("       threw %s: %s\n", get_class($e), $e->getMessage());
+            return false;
+        }
+    };
+    $both = ['match on wg1 inet proto tcp all scrub (max-mss 1336)', 'match on wg1 inet6 proto tcp all scrub (max-mss 1316)'];
+    $pinA = ['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']];
+    /* a second peer, 198.51.100.11, bound by its own /32 to WAN_B on the wan interface */
+    $twoPeers = function (array $c) use ($gw): array {
+        $c['instances']['i-a']['peers'][] = 'p-b';
+        $c['peers']['p-b'] = ['name' => 'tun_a_b', 'serveraddress' => '198.51.100.11', 'serverport' => '51821'];
+        $c['gateways']['WAN_B'] = $gw(['interface' => 'wan', 'gateway' => '192.0.2.129']);
+        $c['routes']['r-b'] = ['network' => '198.51.100.11/32', 'gateway' => 'WAN_B', 'enabled' => true];
+        return $c;
+    };
+    wgct_check($p, 'pins: (a) not-single-peer with two peers, both bound => a WAN pin for each, the inner block and the MSS clamp',
+        $safely(function () use ($base, $twoPeers, $codes, $pinA, $both): bool {
+            $d = wgct_derive($twoPeers($base()), ['i-a']);
+            $t = $d['tunnels'][0];
+            return $codes($t) === ['not-single-peer'] && $t['enforceable'] === false
+                && $t['pins'] === ['wan' => [['198.51.100.10', 'opt1'], ['198.51.100.11', 'wan']], 'inner' => true]
+                && wgct_pin_set($d, true, true) === ['wan' => [$pinA, ['wan_if' => 'wan', 'family' => 'inet', 'endpoints' => ['198.51.100.11']]],
+                                                     'inner' => ['opt11']]
+                && count(wgct_pin_rules(wgct_pin_set($d, true, true))) === 3 && wgct_mss_lines($d, true) === $both;
+        }));
+    wgct_check($p, 'pins: (b) interface-disabled => the WAN pin stays, no inner block (core comments it out), the MSS clamp stays',
+        $safely(function () use ($base, $codes, $pinA, $both): bool {
+            $c = $base();
+            $c['interfaces']['opt11']['enable'] = false;
+            $d = wgct_derive($c, ['i-a']);
+            return $codes($d['tunnels'][0]) === ['interface-disabled']
+                && $d['tunnels'][0]['pins'] === ['wan' => [['198.51.100.10', 'opt1']], 'inner' => false]
+                && wgct_pin_set($d, true, true) === ['wan' => [$pinA], 'inner' => []] && wgct_mss_lines($d, true) === $both;
+        }));
+    wgct_check($p, 'pins: (c) ambiguous-gateway => the WAN pin, the inner block and the MSS clamp stay',
+        $safely(function () use ($base, $gw, $codes, $pinA, $both): bool {
+            $c = $base();
+            $c['gateways']['tun_a_2'] = $gw(['interface' => 'opt11']);
+            $d = wgct_derive($c, ['i-a']);
+            return $codes($d['tunnels'][0]) === ['ambiguous-gateway'] && $d['tunnels'][0]['enforceable'] === false
+                && wgct_pin_set($d, true, true) === ['wan' => [$pinA], 'inner' => ['opt11']] && wgct_mss_lines($d, true) === $both;
+        }));
+    wgct_check($p, 'pins: (d) unbound => no pin, with or without a blocking finding; the MSS clamp is not a pin and stays',
+        $safely(function () use ($base, $twoPeers, $codes, $both): bool {
+            $c = $base();
+            $c['routes']['r-a']['enabled'] = false;
+            $d = wgct_derive($c, ['i-a']);
+            $c2 = $twoPeers($c);
+            $c2['routes']['r-b']['enabled'] = false;
+            $d2 = wgct_derive($c2, ['i-a']);
+            return $codes($d['tunnels'][0]) === ['unbound'] && $d['tunnels'][0]['pins'] === ['wan' => [], 'inner' => false]
+                && wgct_pin_set($d, true, true) === ['wan' => [], 'inner' => []] && wgct_mss_lines($d, true) === $both
+                && $codes($d2['tunnels'][0]) === ['not-single-peer'] && wgct_pin_set($d2, true, true) === ['wan' => [], 'inner' => []];
+        }));
+    wgct_check($p, 'pins: (e) disabled instance => no pin, no MSS line, even with a blocking finding',
+        $safely(function () use ($base, $twoPeers): bool {
+            $c = $twoPeers($base());
+            $c['instances']['i-a']['enabled'] = false;
+            $d = wgct_derive($c, ['i-a']);
+            return $d['tunnels'][0]['pins'] === ['wan' => [], 'inner' => false]
+                && wgct_pin_set($d, true, true) === ['wan' => [], 'inner' => []] && wgct_mss_lines($d, true) === [];
+        }));
+    wgct_check($p, 'pins: (f) a binding via a disabled WAN interface or an unsaved gateway => the interface-less block, per peer',
+        $safely(function () use ($base, $twoPeers): bool {
+            $c = $base();
+            $c['interfaces']['opt1']['enable'] = false;
+            $d = wgct_derive($c, ['i-a']);
+            $c2 = $twoPeers($base());
+            $c2['routes']['r-b']['gateway'] = 'NOPE';
+            $d2 = wgct_derive($c2, ['i-a']);
+            return $d['tunnels'][0]['pins']['wan'] === [['198.51.100.10', '']]
+                && wgct_pin_set($d, true, false)['wan'] === [['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]]
+                && $d2['tunnels'][0]['pins']['wan'] === [['198.51.100.10', 'opt1'], ['198.51.100.11', '']]
+                && wgct_pin_set($d2, true, false)['wan'] === [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']],
+                                                              ['wan_if' => '', 'family' => 'inet', 'endpoints' => ['198.51.100.11']]];
+        }));
+    wgct_check($p, 'pins: (k) a hostname, fd00::1, fe80::1 and 198.51.100.10, all bound => only 198.51.100.10 is pinned, nothing throws',
+        $safely(function () use ($base, $codes, $pinA): bool {
+            $c = $base();
+            $c['instances']['i-a']['peers'] = ['p-h', 'p-u', 'p-l', 'p-a'];
+            $c['peers']['p-h'] = ['name' => 'host', 'serveraddress' => 'vpn.example.net', 'serverport' => '51820'];
+            $c['peers']['p-u'] = ['name' => 'ula', 'serveraddress' => 'fd00::1', 'serverport' => '51820'];
+            $c['peers']['p-l'] = ['name' => 'link', 'serveraddress' => 'fe80::1', 'serverport' => '51820'];
+            $c['routes']['r-u'] = ['network' => 'fd00::1/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+            $c['routes']['r-l'] = ['network' => 'fe80::1/128', 'gateway' => 'WAN_A6', 'enabled' => true];
+            $d = wgct_derive($c, ['i-a']);
+            return $codes($d['tunnels'][0]) === ['not-single-peer']
+                && $d['tunnels'][0]['pins'] === ['wan' => [['198.51.100.10', 'opt1']], 'inner' => true]
+                && wgct_pin_set($d, true, true) === ['wan' => [$pinA], 'inner' => ['opt11']];
+        }));
+    /* the hint names the kept pins only where the tunnel renders one, and only on blocking findings */
+    $fixOf = fn (array $t, string $code): string => (string)(array_values(array_filter($t['findings'], fn (array $f): bool => $f['code'] === $code))[0]['fix'] ?? '');
+    wgct_check($p, 'pins: a blocking finding on a pinned tunnel ends its hint with the plain-text suffix; a non-blocking one is unchanged',
+        $safely(function () use ($base, $twoPeers, $fixOf): bool {
+            $c = $twoPeers($base());
+            $c['interfaces']['opt11']['mss'] = '1376';
+            $t = wgct_pin_hint(wgct_derive($c, ['i-a'])['tunnels'][0], true, true);
+            return $fixOf($t, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1] . WGCT_PINS_KEPT_HINT
+                && $fixOf($t, 'legacy-mss') === WGCT_FINDINGS['legacy-mss'][1]
+                && strip_tags(WGCT_PINS_KEPT_HINT) === WGCT_PINS_KEPT_HINT && !str_contains(WGCT_PINS_KEPT_HINT, '&');
+        }));
+    wgct_check($p, 'pins: no suffix on an unbound tunnel, with the pin switches off, or where only a commented-out inner block would apply',
+        $safely(function () use ($base, $twoPeers, $fixOf): bool {
+            $c = $twoPeers($base());
+            $c['routes']['r-a']['enabled'] = false;
+            $c['routes']['r-b']['enabled'] = false;
+            $unbound = wgct_pin_hint(wgct_derive($c, ['i-a'])['tunnels'][0], true, true);
+            $off = wgct_pin_hint(wgct_derive($twoPeers($base()), ['i-a'])['tunnels'][0], false, false);
+            $c3 = $base();
+            $c3['interfaces']['opt11']['enable'] = false;
+            $innerOnly = wgct_pin_hint(wgct_derive($c3, ['i-a'])['tunnels'][0], false, true);
+            return $fixOf($unbound, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1]
+                && $fixOf($off, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1]
+                && $fixOf($innerOnly, 'interface-disabled') === WGCT_FINDINGS['interface-disabled'][1];
+        }));
+    wgct_check($p, 'pins: the view clamp follows the MSS lines: kept for a blocked bound tunnel, none for a disabled instance',
+        $safely(function () use ($base): bool {
+            $c = $base();
+            $c['interfaces']['opt11']['enable'] = false;
+            $c2 = $base();
+            $c2['instances']['i-a']['enabled'] = false;
+            return wgct_clamp_for(wgct_derive($c, ['i-a'])['tunnels'][0], true) === ['v4' => 1336, 'v6' => 1316]
+                && wgct_clamp_for(wgct_derive($c2, ['i-a'])['tunnels'][0], true) === null;
+        }));
+    $fail += $p['fail'];
+    $total += $p['total'];
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
