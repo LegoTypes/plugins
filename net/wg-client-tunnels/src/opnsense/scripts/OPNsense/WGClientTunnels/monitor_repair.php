@@ -22,7 +22,7 @@ require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/repair.php';
 
-$stateDir = '/var/run/wgclienttunnels';
+$stateDir = WGCT_RUN_DIR;
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     exit(0);
@@ -42,7 +42,7 @@ if ($self === null) {
     exit(0);
 }
 $stateFile = "{$stateDir}/monitor_repair.json";
-$state = json_decode((string)@file_get_contents($stateFile), true);
+$state = json_decode((string)wgct_read_state_file($stateFile, WGCT_STATE_MAX_BYTES), true);
 $state = (is_array($state) ? $state : []) + ['attempts' => [], 'noted' => [], 'duplicated' => []];
 $now = time();
 

@@ -28,8 +28,12 @@
 # "flock -o": only the waiting flock process holds the lock, and nothing the
 # section starts inherits it.
 
+# Every file this script writes is root's alone; the state directories are 0700 (see ensure_state_dir).
+umask 077
+
 SCRIPTS="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels"
 STATE_DIR="/var/run/wgclienttunnels"
+DB_DIR="/var/db/wgclienttunnels"
 RECORD="${STATE_DIR}/active_gateways"
 GUARD="${SCRIPTS}/default_guard.php"
 FRESHNESS="${SCRIPTS}/freshness.php"
@@ -37,6 +41,11 @@ PHP="/usr/local/bin/php"
 FLOCK="/usr/local/bin/flock"
 # core's WireGuard log takes the program name "wireguard"; the prefix tells these lines from core's
 LOGGER_TAG="wireguard"
+
+# A state directory is root 0700: -m applies only to a directory that mkdir creates, so chmod follows.
+ensure_state_dir() {
+    mkdir -p -m 700 "$1" && chmod 700 "$1"
+}
 
 log_msg() {
     logger -t "${LOGGER_TAG}" "[wgct-routes] $1"
@@ -228,7 +237,7 @@ cleanup_section() {
 # exit 75 means that wait ran out.
 with_routes_lock() {
     local rc
-    mkdir -p "${STATE_DIR}"
+    ensure_state_dir "${STATE_DIR}"
     "${FLOCK}" -E 75 -w 10 -o "${STATE_DIR}/routes.lock" "$0" "$@"
     rc=$?
     if [ "${rc}" -eq 75 ]; then
@@ -320,6 +329,7 @@ case "$1" in
     reconcile)
         # Idempotent repair pass for event hooks and cron: adds only what is
         # missing and stays silent unless it actually had to fix something.
+        ensure_state_dir "${DB_DIR}"
         with_routes_lock _routes quiet
         # Then make sure no tunnel carries a default route (see default_guard.php).
         "${PHP}" "${GUARD}"
@@ -338,7 +348,7 @@ case "$1" in
         # handler is never held up. Each request queues a detached waiter on reconcile.lock; a waiter
         # that finds the mark cleared by an earlier run exits, so a burst costs one or two reconciles
         # and a request made during a run still gets a run that sees it.
-        mkdir -p "${STATE_DIR}"
+        ensure_state_dir "${STATE_DIR}"
         : > "${STATE_DIR}/reconcile.pending"
         /usr/sbin/daemon -f "$0" _reconcile_wait
         ;;

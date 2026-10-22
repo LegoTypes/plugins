@@ -18,9 +18,9 @@ require_once __DIR__ . '/lib/apply.php';
 if (!(new \OPNsense\WGClientTunnels\WGClientTunnels())->enabled->isEqual('1')) {
     exit(0);
 }
-$state = '/var/run/wgclienttunnels';
-if (!is_dir($state)) {
-    mkdir($state, 0755, true);
+$state = WGCT_RUN_DIR;
+if (!wgct_state_dir($state)) {
+    exit(0);
 }
 $lock = fopen($state . '/core_contract.lock', 'ce');
 if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
