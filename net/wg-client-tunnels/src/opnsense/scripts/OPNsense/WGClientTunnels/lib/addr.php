@@ -11,6 +11,10 @@
  * in another notation still matches. Pure.
  */
 
+/* checked first, as every require in the filter hook's chain is (render.php) */
+if (!is_readable(__DIR__ . '/selftest.php')) {
+    throw new \RuntimeException('plugin library file selftest.php missing');
+}
 require_once __DIR__ . '/selftest.php';
 
 /**

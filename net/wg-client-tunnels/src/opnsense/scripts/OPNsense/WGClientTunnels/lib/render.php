@@ -28,10 +28,11 @@
  * first defines the functions and the other is a no-op).
  */
 
+/* Every require in the filter hook's chain (this file, tunnels.php, addr.php) checks its file first and throws,
+ * so a partly present library is one catchable exception with a plain reason, never a PHP error; the hook's
+ * try/catch turns it into its footprint fallback. */
 if (!is_readable(__DIR__ . '/tunnels.php')) {
-    /* thrown during file inclusion, not a compile error: the hook's
-     * require_once + try/catch around it can and does catch this. */
-    throw new \RuntimeException('[wgct-render] tunnels.php library missing');
+    throw new \RuntimeException('plugin library file tunnels.php missing');
 }
 require_once __DIR__ . '/tunnels.php';
 
@@ -1188,6 +1189,16 @@ function wgct_rules_looked_for(?array $rendered, ?array $fallback, ?array $footp
 function wgct_render_selftest(): int {
     $fail = 0;
     $total = 0;
+    /* what the real state files are before the cases run: no case may write them */
+    $realState = function (): array {
+        $state = [];
+        foreach ([WGCT_RENDERED_FILE, WGCT_FOOTPRINT_FILE, WGCT_FALLBACK_FILE] as $file) {
+            clearstatcache(true, $file);
+            $state[$file] = file_exists($file) ? [@md5_file($file), @filemtime($file), @fileinode($file)] : null;
+        }
+        return $state;
+    };
+    $realBefore = $realState();
 
     /* A stand-in for core's \OPNsense\Firewall\Plugin: a subclass, so it
      * satisfies wgct_render_firewall()'s parameter type, whose constructor
@@ -1205,9 +1216,11 @@ function wgct_render_selftest(): int {
     };
 
     /* $inReload stubs stand in for "inside a real filter reload"; never
-     * force it true without also stubbing $loader and $writer, or the case
-     * would run the real pfctl call and/or write the real rendered.json. */
+     * force it true without also stubbing $loader, $writer and $footprinter,
+     * or the case would run the real pfctl call and/or write the real
+     * rendered.json or footprint (the last case checks they are untouched). */
     $inReloadTrue = function () { return true; };
+    $footprinter = function (array $record): bool { return true; };
 
     $pins = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
     $mss = ['match on wg1 inet proto tcp all scrub (max-mss 1336)'];
@@ -1294,15 +1307,15 @@ function wgct_render_selftest(): int {
     printf("[%s] render_firewall: apply=true, not in a filter reload => loader and writer not called\n", $ok ? 'PASS' : 'FAIL');
 
     /* case 6: inside a (stubbed) real filter reload, the loader fails =>
-     * failed true, with pins/mss/rules kept. The writer is stubbed too, so
-     * this case cannot reach the real wgct_write_rendered(). */
+     * failed true, with pins/mss/rules kept. The writer and the footprint
+     * writer are stubbed too, so this case cannot reach the real files. */
     $fw = $makeFw();
     $rendered = null;
     $loader = function ($lines) { return false; };
     $writer = function ($r) { return true; };
     wgct_render_firewall($fw, function () use ($pins, $mss) {
         return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
-    }, true, $rendered, $loader, $writer, $inReloadTrue);
+    }, true, $rendered, $loader, $writer, $inReloadTrue, $footprinter);
     $ok = $rendered['failed'] === true && $rendered['pins'] === $pins && $rendered['mss'] === $mss
         && count($fw->rules) === 2 && $fw->anchors === [[WGCT_MSS_ANCHOR, 'fw', 'head']];
     $fail += $ok ? 0 : 1;
@@ -1310,8 +1323,8 @@ function wgct_render_selftest(): int {
     printf("[%s] render_firewall: inside a filter reload, loader fails => failed true, pins/mss/rules kept\n", $ok ? 'PASS' : 'FAIL');
 
     /* case 7: inside a (stubbed) real filter reload, the writer throws =>
-     * caught, no exception escapes. The loader is stubbed too, so this case
-     * cannot reach the real pfctl. */
+     * caught, no exception escapes. The loader and the footprint writer are
+     * stubbed too, so this case cannot reach the real pfctl or footprint. */
     $fw = $makeFw();
     $rendered = null;
     $loader = function ($lines) { return true; };
@@ -1320,7 +1333,7 @@ function wgct_render_selftest(): int {
     try {
         wgct_render_firewall($fw, function () use ($pins, $mss) {
             return ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
-        }, true, $rendered, $loader, $writer, $inReloadTrue);
+        }, true, $rendered, $loader, $writer, $inReloadTrue, $footprinter);
     } catch (\Throwable $e) {
         $escaped = $e;
     }
@@ -2035,6 +2048,11 @@ function wgct_render_selftest(): int {
     $footprint = wgct_footprint_selftest($makeFw);
     $fail += $footprint['fail'];
     $total += $footprint['total'];
+
+    $ok = $realState() === $realBefore;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] render self-test: the real rendered.json, footprint and fallback.json are untouched by every case\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
