@@ -21,6 +21,8 @@
  *     reconcile runs within routing configure), and a synchronous
  *     configctl there could re-enter configd. The hook
  *     re-renders during that reload.
+ * While the hook enforces the footprint (no rendered record, fallback.json
+ * present) the labels looked for in pf are the footprint's.
  * What pf holds is listed (pfctl -sr) only when pf's ruleset checksum or the
  * rendered pin labels differ from the last listing's (WGCT_OBSERVED_FILE),
  * or that listing counted a miss, not on every reconcile; a listing that a
@@ -118,6 +120,11 @@ try {
      * once more there too) and records nothing. */
     $live = null;
     $liveFrom = null;
+    /* The labels pf should hold: the rendered pins', or, while the hook enforces the footprint (no rendered
+     * record, fallback.json present), the footprint's (spec 2026-10-20 section 3.1 part D). */
+    $fallback = $rendered === null ? wgct_read_fallback() : null;
+    $lookFor = wgct_rules_looked_for($rendered, $fallback, $fallback !== null ? wgct_read_footprint() : null);
+    $labelsFrom = $rendered === null && $fallback !== null ? 'footprint' : 'rendered';
     $observeError = null;
     $observeTransient = false;
     /* Every pfctl call here goes through wgct_pfctl_run(): no shell, and
@@ -131,8 +138,7 @@ try {
     if ($anchorRun['rc'] !== 0) {
         $observeError = wgct_pfctl_failure('pfctl -a ' . WGCT_MSS_ANCHOR . ' -sr', $anchorRun);
     } else {
-        $pins = $rendered !== null ? $rendered['pins'] : ['wan' => [], 'inner' => []];
-        $labelsHash = wgct_pin_labels_hash($pins);
+        $labelsHash = wgct_pin_labels_hash($lookFor);
         $checksumUnreadable = false;
         $readChecksum = function () use (&$checksumUnreadable): ?string {
             $run = wgct_pfctl_run(['-si', '-v']);
@@ -166,7 +172,7 @@ try {
                     $observeError = $unobserved['error'];
                     $observeTransient = $unobserved['transient'];
                 } else {
-                    $live = wgct_live_observation($anchorLines, $ruleLines, $pins);
+                    $live = wgct_live_observation($anchorLines, $ruleLines, $lookFor);
                     $liveFrom = 'listed; checksum unreadable, nothing recorded';
                 }
             } else {
@@ -176,7 +182,7 @@ try {
                     $observeError = $unobserved['error'];
                     $observeTransient = $unobserved['transient'];
                 } else {
-                    $live = wgct_live_observation($anchorLines, $observed['lines'], $pins);
+                    $live = wgct_live_observation($anchorLines, $observed['lines'], $lookFor);
                     $liveFrom = 'listed';
                     if (!$dry) {
                         wgct_write_observed([
@@ -211,9 +217,10 @@ try {
             $plan['reason'],
             $live !== null
                 ? sprintf(
-                    '%d MSS anchor rule(s), %d rendered pin label(s) missing from pf (%s)',
+                    '%d MSS anchor rule(s), %d %s pin label(s) missing from pf (%s)',
                     $live['anchor_count'],
                     $live['missing_labels'],
+                    $labelsFrom,
                     $liveFrom
                 )
                 : 'not observed (' . $observeError . ')'

@@ -7,10 +7,11 @@
  *
  * The Tunnels view (spec 7), shared by `tunnel.php list|status` and the API:
  * managed tunnels derived from core with their clamps and findings (the
- * render-failed finding included), and the WireGuard instances the plugin
- * does not manage, for Adopt. `pinned` on each tunnel says whether the render emits
- * a pin rule for it (wgct_pinned()); a blocking finding's hint then says its pins
- * stay in place (wgct_pin_hint()). A tunnel whose Create or Edit saved but whose apply
+ * render-failed and render-fallback findings included), and the WireGuard instances the
+ * plugin does not manage, for Adopt. `pinned` on each tunnel says whether pf holds a plugin
+ * pin for it, by the render state (wgct_pins_in_pf()): what the render emits, the footprint's
+ * pins while the hook enforces them, none while render-failed shows; a blocking finding's hint
+ * then says its pins stay in place (wgct_pin_hint()). A tunnel whose Create or Edit saved but whose apply
  * has not completed carries the apply-pending finding (ruling 20). `held` names
  * the IPv4 gateways whose hold record the health mirror owns (spec 2026-10-20
  * section 3.5). Reads config; writes nothing. The pure helpers below it turn the view into the
@@ -35,9 +36,18 @@ function wgct_tunnel_view(): array {
     $wanPins = $mdl->enabled->isEqual('1') && $mdl->wan_pins->isEqual('1');
     $innerSource = $mdl->enabled->isEqual('1') && $mdl->inner_source->isEqual('1');
     $pending = wgct_read_apply_pending();
+    /* the render state comes first: it decides which pins pf holds, so what `pinned` and the hint may claim */
+    $renderState = ['finding' => null, 'pins_from' => 'render', 'rules' => []];
+    $renderLib = __DIR__ . '/render.php';
+    if (is_readable($renderLib)) {
+        require_once $renderLib;
+        $fallback = wgct_read_fallback();
+        $renderState = wgct_render_state($mdl->enabled->isEqual('1'), wgct_read_rendered(), $fallback,
+            $fallback !== null ? wgct_read_footprint() : null);
+    }
     $tunnels = [];
     foreach ($derived['tunnels'] as $t) {
-        $t['pinned'] = wgct_pinned($t, $wanPins, $innerSource);
+        $t['pinned'] = wgct_pins_in_pf($t, $renderState, $wanPins, $innerSource);
         $t = wgct_pin_hint($t, $t['pinned']);
         $t['clamp'] = wgct_clamp_for($t, $mssClamp);
         if (isset($pending[$t['uuid']])) {
@@ -48,16 +58,8 @@ function wgct_tunnel_view(): array {
         $tunnels[] = $t;
     }
     $global = $derived['global'];
-    $renderLib = __DIR__ . '/render.php';
-    if ($mdl->enabled->isEqual('1') && is_readable($renderLib)) {
-        require_once $renderLib;
-        $rendered = wgct_read_rendered();
-        if ($rendered === null || $rendered['failed']) {
-            $global[] = wgct_finding(
-                'render-failed',
-                $rendered === null ? 'no render recorded since boot or deploy, or the last filter reload could not run the plugin' : $rendered['error']
-            );
-        }
+    if ($renderState['finding'] !== null) {
+        $global[] = $renderState['finding'];
     }
     if ($mdl->enabled->isEqual('1')) {
         foreach (wgct_core_contract() as $problem) {

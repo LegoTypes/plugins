@@ -194,6 +194,10 @@ sleep 1
 sleep 5
 kill $h 2>/dev/null
 check "28 a queued reconcile that waits out its time logs that it gave up, and does not run" 'grep -q "queued reconcile skipped" "$T/log" && [ ! -s "$T/runs" ]'
+mkdir -p "$STATE/db"
+touch "$STATE/db/footprint.json" "$STATE/fallback.json" "$STATE/fallback.logged"
+"$W" stop
+check "29 stop removes the footprint, the fallback record and its log marker" '[ ! -e "$STATE/db/footprint.json" ] && [ ! -e "$STATE/fallback.json" ] && [ ! -e "$STATE/fallback.logged" ]'
 
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]

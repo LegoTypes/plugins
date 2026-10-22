@@ -10,14 +10,22 @@
  * rules in a head anchor, all derived from the managed tunnels at every filter
  * reload -- never stored in config. The hook records what it rendered in
  * WGCT_RENDERED_FILE; the reconcile (freshness.php) compares against it.
+ * A render that registered its rules also records them in WGCT_FOOTPRINT_FILE,
+ * which the hook enforces when a later render fails (spec 2026-10-20 section
+ * 3.1); the hook says so in WGCT_FALLBACK_FILE.
  *
  * core calls every *_firewall hook (this file's entry point) not only during
  * a real filter reload but also just to list rules for display
  * (scripts/filter/list_non_mvc_rules.php, www/firewall_rule_lookup.php).
- * wgct_in_filter_reload() tells the two apart from the call stack: rules
- * and the anchor are always registered (so they show up on the Rules page
- * either way), but pfctl and the rendered.json write only happen inside a
- * real filter_configure_sync.
+ * wgclienttunnels_in_filter_reload() tells the two apart from the call stack:
+ * rules and the anchor are always registered (so they show up on the Rules
+ * page either way), but pfctl and the rendered.json and footprint writes only
+ * happen inside a real filter_configure_sync.
+ *
+ * The hook's footprint and fallback readers live in the hook file itself,
+ * because they must work with this library gone; this file loads it for them
+ * (core includes it with include_once on the same path, so whichever comes
+ * first defines the functions and the other is a no-op).
  */
 
 if (!is_readable(__DIR__ . '/tunnels.php')) {
@@ -26,6 +34,15 @@ if (!is_readable(__DIR__ . '/tunnels.php')) {
     throw new \RuntimeException('[wgct-render] tunnels.php library missing');
 }
 require_once __DIR__ . '/tunnels.php';
+
+/* the filter hook, which holds the footprint and fallback readers (above) */
+const WGCT_HOOK_FILE = '/usr/local/etc/inc/plugins.inc.d/wgclienttunnels.inc';
+if (!function_exists('wgclienttunnels_read_footprint')) {
+    if (!is_readable(WGCT_HOOK_FILE)) {
+        throw new \RuntimeException('[wgct-render] ' . WGCT_HOOK_FILE . ' missing');
+    }
+    require_once WGCT_HOOK_FILE;
+}
 
 const WGCT_RUN_DIR = '/var/run/wgclienttunnels';
 
@@ -38,6 +55,15 @@ const WGCT_RENDERED_MAX_BYTES = 1048576;
 const WGCT_STATE_MAX_BYTES = 65536;
 
 const WGCT_RENDERED_FILE = WGCT_RUN_DIR . '/rendered.json';
+
+/* The rules the last render that registered them put in place, and its MSS lines (spec 2026-10-20 section 3.1
+ * part A). It survives a reboot; the hook enforces it when a render fails, and reads it with its own reader, which
+ * takes at most WGCT_FOOTPRINT_MAX_BYTES (the hook copies the path and the limit). */
+const WGCT_FOOTPRINT_FILE = WGCT_DB_DIR . '/footprint.json';
+const WGCT_FOOTPRINT_MAX_BYTES = 65536;
+
+/* The hook's note that pf enforces the footprint: {at, reason, footprint_at} (the hook copies the path) */
+const WGCT_FALLBACK_FILE = WGCT_RUN_DIR . '/fallback.json';
 
 /* freshness.php's own small state: the last filter-reload request it made,
  * so repeated staleness (e.g. a render that keeps failing) does not flood
@@ -320,16 +346,16 @@ function wgct_anchor_rule_count(array $anchorLines): int {
  *
  * @param array $anchorLines `pfctl -a wgclienttunnels_mss -sr` lines; blank lines are not rules
  * @param array $ruleLines   `pfctl -sr` lines; pf prints each rule's label as label "<32 hex>"
- * @param array $pins        the rendered record's 'pins'
+ * @param array $rules       the rule confs pf should hold (wgct_rules_looked_for())
  * @return array ['anchor_count' => int, 'missing_labels' => int] -- the
- *               anchor's rule count, and how many of the distinct labels
- *               wgct_pin_rules() builds for $pins pf does not hold
+ *               anchor's rule count, and how many of the distinct labels of
+ *               $rules pf does not hold
  */
-function wgct_live_observation(array $anchorLines, array $ruleLines, array $pins): array {
+function wgct_live_observation(array $anchorLines, array $ruleLines, array $rules): array {
     $anchorCount = wgct_anchor_rule_count($anchorLines);
     $ruleText = implode("\n", $ruleLines);
     $missing = 0;
-    foreach (array_unique(array_column(wgct_pin_rules($pins), 'label')) as $label) {
+    foreach (array_unique(array_column($rules, 'label')) as $label) {
         if (strpos($ruleText, 'label "' . $label . '"') === false) {
             $missing++;
         }
@@ -528,13 +554,13 @@ function wgct_pfctl_failure(string $what, array $run): string {
 }
 
 /**
- * Identifies the pin labels the rendered pins make freshness look for.
+ * Identifies the pin labels freshness looks for.
  *
- * @param array $pins the rendered record's 'pins'
- * @return string md5 of the sorted distinct labels of wgct_pin_rules($pins), one per line
+ * @param array $rules the rule confs pf should hold (wgct_rules_looked_for())
+ * @return string md5 of the sorted distinct labels of $rules, one per line
  */
-function wgct_pin_labels_hash(array $pins): string {
-    $labels = array_values(array_unique(array_column(wgct_pin_rules($pins), 'label')));
+function wgct_pin_labels_hash(array $rules): string {
+    $labels = array_values(array_unique(array_column($rules, 'label')));
     sort($labels, SORT_STRING);
     return md5(implode("\n", $labels));
 }
@@ -548,7 +574,7 @@ function wgct_pin_labels_hash(array $pins): string {
  *
  * @param array|null  $record     wgct_read_observed()
  * @param string|null $checksum   pf's checksum now, null when unreadable
- * @param string      $labelsHash wgct_pin_labels_hash() of the rendered pins
+ * @param string      $labelsHash wgct_pin_labels_hash() of the rules looked for
  * @return int|null the recorded missing_labels (0) to reuse, null when pf must be listed
  */
 function wgct_observed_reuse(?array $record, ?string $checksum, string $labelsHash): ?int {
@@ -819,8 +845,7 @@ function wgct_report_freshness_outcome(?string $error): void {
  * @return array ['reload' => bool, 'anchor' => bool, 'reason' => string, 'state' => array|null]
  */
 function wgct_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime, ?array $state, int $now, ?array $live): array {
-    $anchorOnlyError = $rendered !== null && $rendered['failed']
-        && strpos((string)($rendered['error'] ?? ''), 'MSS anchor load failed') === 0;
+    $anchorOnlyError = $rendered !== null && wgct_anchor_only_failure($rendered);
 
     if ($rendered === null) {
         $needReload = wgct_pins_nonempty($wanted['pins']) || !empty($wanted['mss']);
@@ -940,40 +965,33 @@ function wgct_anchor_log_plan(?string $priorFailHash, bool $success, array $mssL
 }
 
 /**
- * True iff the call stack contains filter_configure_sync -- i.e. this is a
- * real filter reload, not a rules-listing call that only wants the hook to
- * enumerate rules for display. Pure over the frames debug_backtrace() gives
- * it, so it is directly testable with a fake frame list.
- *
- * @param array $frames debug_backtrace()-shaped frames
- * @return bool
- */
-function wgct_in_filter_reload(array $frames): bool {
-    foreach ($frames as $frame) {
-        if (($frame['function'] ?? null) === 'filter_configure_sync') {
-            return true;
-        }
-    }
-    return false;
-}
-
-/**
  * The plugins_firewall hook body. Never throws.
  *
- * $wanted, $loader, $writer and $inReload are injectable so the self-test can
- * exercise every path without config, pf or the filesystem -- in particular,
- * $inReload lets a case force "inside a real filter reload" true or false
- * without a stand-in for core's filter_configure_sync (defining one globally
- * would collide with the real function in a process that has filter.inc
- * loaded, and risks triggering an actual reload).
+ * Returns whether the wanted rule set is registered: true when the render
+ * got through registering its rules (an MSS anchor load that failed after
+ * that included: the rules are in place), false when anything before or
+ * during the registration failed. On false the hook enforces the footprint
+ * instead (wgclienttunnels_firewall_at()). Inside a real filter reload a
+ * true render also records what it registered as the footprint (spec
+ * 2026-10-20 section 3.1 part A): the rules and MSS lines while the plugin
+ * is enabled, the empty footprint while it is disabled.
  *
- * @param \OPNsense\Firewall\Plugin $fw       core's firewall plugin registry
- * @param callable|null             $wanted   returns wgct_wanted_render()'s shape; default wgct_wanted_render
- * @param bool                      $apply    false keeps pfctl and the rendered.json write off
- * @param array|null                $rendered out: the record this call rendered
- * @param callable|null             $loader   (array $lines): bool; default wgct_load_mss_anchor
- * @param callable|null             $writer   (array $record): bool; default wgct_write_rendered
- * @param callable|null             $inReload (): bool; default checks the call stack for filter_configure_sync
+ * $wanted, $loader, $writer, $inReload and $footprinter are injectable so the
+ * self-test can exercise every path without config, pf or the filesystem --
+ * in particular, $inReload lets a case force "inside a real filter reload"
+ * true or false without a stand-in for core's filter_configure_sync
+ * (defining one globally would collide with the real function in a process
+ * that has filter.inc loaded, and risks triggering an actual reload).
+ *
+ * @param \OPNsense\Firewall\Plugin $fw          core's firewall plugin registry
+ * @param callable|null             $wanted      returns wgct_wanted_render()'s shape; default wgct_wanted_render
+ * @param bool                      $apply       false keeps pfctl and the rendered.json and footprint writes off
+ * @param array|null                $rendered    out: the record this call rendered
+ * @param callable|null             $loader      (array $lines): bool; default wgct_load_mss_anchor
+ * @param callable|null             $writer      (array $record): bool; default wgct_write_rendered
+ * @param callable|null             $inReload    (): bool; default checks the call stack for filter_configure_sync
+ * @param callable|null             $footprinter (array $footprint): bool; default wgct_write_footprint
+ * @return bool true when the wanted rule set is registered
  */
 function wgct_render_firewall(
     \OPNsense\Firewall\Plugin $fw,
@@ -982,42 +1000,58 @@ function wgct_render_firewall(
     ?array &$rendered = null,
     ?callable $loader = null,
     ?callable $writer = null,
-    ?callable $inReload = null
-): void {
+    ?callable $inReload = null,
+    ?callable $footprinter = null
+): bool {
     $rendered = ['at' => time(), 'failed' => false, 'error' => '', 'enabled' => false,
                  'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     $loader = $loader ?? 'wgct_load_mss_anchor';
     $writer = $writer ?? 'wgct_write_rendered';
+    $footprinter = $footprinter ?? 'wgct_write_footprint';
     $inReload = $inReload ?? function () {
-        return wgct_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
+        return wgclienttunnels_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
     };
     /* $apply already lets the self-test force pfctl/write off; it is also
      * gated on actually being inside a filter reload, so a rules-listing
      * call (list_non_mvc_rules.php, firewall_rule_lookup.php) that merely
-     * enumerates rules for display never touches pf or rendered.json. */
+     * enumerates rules for display never touches pf, rendered.json or the
+     * footprint. */
     $apply = $apply && $inReload();
+    $registered = false;
+    $rules = [];
     try {
         /* register the anchor first: a later failure (derivation, malformed
          * pins) still leaves it in the ruleset, with whatever it last
-         * loaded, instead of vanishing along with the rules. */
+         * loaded, instead of vanishing along with the rules. The hook relies
+         * on this: once the render ran, it does not register the anchor
+         * again. */
         $fw->registerAnchor(WGCT_MSS_ANCHOR, 'fw', 0, 'head');
         $w = $wanted !== null ? $wanted() : wgct_wanted_render();
-        if ($w['enabled']) {
-            foreach (wgct_pin_rules($w['pins']) as $conf) {
-                $fw->registerFilterRule(WGCT_PIN_PRIORITY, $conf);
-            }
+        /* every conf is built before the first is registered, so a malformed pin set registers none */
+        $rules = $w['enabled'] ? wgct_pin_rules($w['pins']) : [];
+        foreach ($rules as $conf) {
+            $fw->registerFilterRule(WGCT_PIN_PRIORITY, $conf);
         }
+        $registered = true;
         $rendered['enabled'] = $w['enabled'];
         $rendered['pins'] = $w['enabled'] ? $w['pins'] : ['wan' => [], 'inner' => []];
         $rendered['mss'] = $w['enabled'] ? $w['mss'] : [];
-        if ($apply && !$loader($rendered['mss'])) {
-            $rendered['failed'] = true;
-            $rendered['error'] = 'MSS anchor load failed (see syslog)';
-        }
     } catch (\Throwable $e) {
         $rendered = ['at' => time(), 'failed' => true, 'error' => $e->getMessage(), 'enabled' => false,
                      'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
         wgct_log(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
+    }
+    if ($registered && $apply) {
+        try {
+            $loaded = $loader($rendered['mss']);
+        } catch (\Throwable $e) {
+            wgct_log(LOG_ERR, '[wgct-render] loading anchor ' . WGCT_MSS_ANCHOR . ' failed: ' . $e->getMessage());
+            $loaded = false;
+        }
+        if (!$loaded) {
+            $rendered['failed'] = true;
+            $rendered['error'] = 'MSS anchor load failed (see syslog)';
+        }
     }
     if ($apply) {
         try {
@@ -1026,6 +1060,124 @@ function wgct_render_firewall(
             wgct_log(LOG_ERR, '[wgct-render] could not write ' . WGCT_RENDERED_FILE . ': ' . $e->getMessage());
         }
     }
+    if ($registered && $apply) {
+        try {
+            $footprinter(wgct_footprint_record($rendered['at'], $rules, $rendered['mss']));
+        } catch (\Throwable $e) {
+            wgct_log(LOG_ERR, '[wgct-render] could not write ' . WGCT_FOOTPRINT_FILE . ': ' . $e->getMessage());
+        }
+    }
+    return $registered;
+}
+
+/**
+ * Whether a rendered record failed only at the MSS anchor load, after its rules were registered. Pure.
+ *
+ * @param array $rendered wgct_read_rendered()'s record
+ * @return bool
+ */
+function wgct_anchor_only_failure(array $rendered): bool {
+    return $rendered['failed'] && strpos($rendered['error'], 'MSS anchor load failed') === 0;
+}
+
+/**
+ * The footprint a render records (spec 2026-10-20 section 3.1 part A): the rule confs it registered, at the
+ * priority and with the anchor it used, and the anchor's MSS lines. A disabled render records no rules and no
+ * lines: "nothing to hold", which is not "no footprint". Pure.
+ *
+ * @param int   $at    the render's time
+ * @param array $rules the confs registered (wgct_pin_rules())
+ * @param array $mss   the MSS lines
+ * @return array{at: int, priority: int, anchor: string, rules: list<array>, mss: list<string>}
+ */
+function wgct_footprint_record(int $at, array $rules, array $mss): array {
+    return ['at' => $at, 'priority' => WGCT_PIN_PRIORITY, 'anchor' => WGCT_MSS_ANCHOR,
+            'rules' => array_values($rules), 'mss' => array_values($mss)];
+}
+
+/**
+ * Never throws; an encode or write failure is logged and reported through the return value, and the previous
+ * footprint stays.
+ *
+ * @param array $record wgct_footprint_record()
+ * @return bool
+ */
+function wgct_write_footprint(array $record): bool {
+    $json = json_encode($record, JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        wgct_log(LOG_ERR, '[wgct-render] could not encode the footprint: ' . json_last_error_msg());
+        return false;
+    }
+    if (strlen($json) > WGCT_FOOTPRINT_MAX_BYTES) {
+        wgct_log(LOG_WARNING, '[wgct-render] the footprint is ' . strlen($json) . ' bytes, over the '
+            . WGCT_FOOTPRINT_MAX_BYTES . ' the hook reads, so a failed render would find none');
+    }
+    return wgct_write_file_atomic(WGCT_FOOTPRINT_FILE, $json);
+}
+
+/**
+ * @return array|null the footprint, through the hook's reader (wgclienttunnels_read_footprint()), or null
+ */
+function wgct_read_footprint(): ?array {
+    return wgclienttunnels_read_footprint(WGCT_FOOTPRINT_FILE);
+}
+
+/**
+ * @return array|null the hook's fallback note, through its reader (wgclienttunnels_read_fallback()), or null
+ */
+function wgct_read_fallback(): ?array {
+    return wgclienttunnels_read_fallback(WGCT_FALLBACK_FILE);
+}
+
+/**
+ * The render state the views show, and where the plugin's pins in pf come from (spec 2026-10-20 section 3.1
+ * part D). Pure.
+ *   - fallback.json present: the global, non-blocking render-fallback finding; pf holds the footprint's rules,
+ *     with the plugin enabled or not (the hook enforces the footprint either way);
+ *   - otherwise, with the plugin enabled, no rendered record or a failed one: render-failed. pf holds no plugin
+ *     pin unless the failure came after the rules were registered (the MSS anchor load);
+ *   - otherwise no finding, and pf holds what the render emits (wgct_pinned()).
+ *
+ * @param bool       $enabled   the plugin is enabled
+ * @param array|null $rendered  wgct_read_rendered()
+ * @param array|null $fallback  wgct_read_fallback()
+ * @param array|null $footprint wgct_read_footprint()
+ * @return array{finding: ?array, pins_from: string, rules: list<array>} pins_from is render, footprint or none;
+ *               rules are the footprint's while pins_from is footprint, else []
+ */
+function wgct_render_state(bool $enabled, ?array $rendered, ?array $fallback, ?array $footprint): array {
+    if ($fallback !== null) {
+        $detail = 'pf enforces the pins recorded at ' . date('Y-m-d H:i:s', $fallback['footprint_at'])
+            . '; the render has failed since ' . date('Y-m-d H:i:s', $fallback['at']) . ': ' . $fallback['reason'];
+        return ['finding' => wgct_finding('render-fallback', $detail), 'pins_from' => 'footprint',
+                'rules' => $footprint !== null ? $footprint['rules'] : []];
+    }
+    if ($enabled && ($rendered === null || $rendered['failed'])) {
+        $detail = $rendered === null
+            ? 'no render recorded since boot or deploy, or the last filter reload could not run the plugin'
+            : $rendered['error'];
+        return ['finding' => wgct_finding('render-failed', $detail),
+                'pins_from' => $rendered !== null && wgct_anchor_only_failure($rendered) ? 'render' : 'none',
+                'rules' => []];
+    }
+    return ['finding' => null, 'pins_from' => 'render', 'rules' => []];
+}
+
+/**
+ * The rule confs whose labels freshness looks for in pf (spec 2026-10-20 section 3.1 part D): the rendered pins'
+ * while there is a rendered record, the footprint's while the hook enforces it (no record, fallback.json present),
+ * else none. Pure.
+ *
+ * @param array|null $rendered  wgct_read_rendered()
+ * @param array|null $fallback  wgct_read_fallback()
+ * @param array|null $footprint wgct_read_footprint()
+ * @return list<array>
+ */
+function wgct_rules_looked_for(?array $rendered, ?array $fallback, ?array $footprint): array {
+    if ($rendered !== null) {
+        return wgct_pin_rules($rendered['pins']);
+    }
+    return $fallback !== null && $footprint !== null ? $footprint['rules'] : [];
 }
 
 /**
@@ -1177,18 +1329,18 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] render_firewall: writer throws inside a filter reload => caught, no exception escapes\n", $ok ? 'PASS' : 'FAIL');
 
-    /* wgct_in_filter_reload: pure helper over debug_backtrace-shaped frames */
-    $ok = wgct_in_filter_reload([['function' => 'foo'], ['function' => 'filter_configure_sync'], ['function' => 'bar']]) === true;
+    /* wgclienttunnels_in_filter_reload (the hook's): pure over debug_backtrace-shaped frames */
+    $ok = wgclienttunnels_in_filter_reload([['function' => 'foo'], ['function' => 'filter_configure_sync'], ['function' => 'bar']]) === true;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] in_filter_reload: frame present => true\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_in_filter_reload([['function' => 'foo'], ['function' => 'bar']]) === false;
+    $ok = wgclienttunnels_in_filter_reload([['function' => 'foo'], ['function' => 'bar']]) === false;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] in_filter_reload: frame absent => false\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_in_filter_reload([]) === false;
+    $ok = wgclienttunnels_in_filter_reload([]) === false;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] in_filter_reload: no frames => false\n", $ok ? 'PASS' : 'FAIL');
@@ -1486,13 +1638,13 @@ function wgct_render_selftest(): int {
         $ruleLines[] = 'block drop out log quick on ! em1 inet proto udp from any to 198.51.100.10 label "' . $label . '"';
     }
 
-    $obs = wgct_live_observation([$mss[0], '', '   '], $ruleLines, $pins);
+    $obs = wgct_live_observation([$mss[0], '', '   '], $ruleLines, wgct_pin_rules($pins));
     $ok = $obs === ['anchor_count' => 1, 'missing_labels' => 0];
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] live_observation: every rendered label in pf, blank anchor lines dropped => 1 rule, 0 missing\n", $ok ? 'PASS' : 'FAIL');
 
-    $obs = wgct_live_observation([], array_slice($ruleLines, 0, 2), $pins);
+    $obs = wgct_live_observation([], array_slice($ruleLines, 0, 2), wgct_pin_rules($pins));
     $ok = count($pinLabels) === 2 && $obs === ['anchor_count' => 0, 'missing_labels' => 1];
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1502,13 +1654,13 @@ function wgct_render_selftest(): int {
      * the label differs, so freshness sees the current rule missing and reloads the filter after an upgrade */
     $oldInnerLines = [$ruleLines[0], $ruleLines[1],
         'block drop out log quick on wg1 inet6 from ! (self) to any label "' . md5('wgct-pin-inner-' . $pins['inner'][0]) . '"'];
-    $obs = wgct_live_observation([], $oldInnerLines, $pins);
+    $obs = wgct_live_observation([], $oldInnerLines, wgct_pin_rules($pins));
     $ok = $obs === ['anchor_count' => 0, 'missing_labels' => 1];
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] live_observation: pf holds the 3.5_1 inner-source rule => its replacement counts as missing\n", $ok ? 'PASS' : 'FAIL');
 
-    $obs = wgct_live_observation([], [], $emptyPins);
+    $obs = wgct_live_observation([], [], wgct_pin_rules($emptyPins));
     $ok = $obs === ['anchor_count' => 0, 'missing_labels' => 0];
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1690,14 +1842,14 @@ function wgct_render_selftest(): int {
     ];
     $ok = array_values(array_unique(array_column(wgct_pin_rules($pinsD), 'label')))
             !== array_values(array_unique(array_column(wgct_pin_rules($pinsE), 'label')))
-        && wgct_pin_labels_hash($pinsD) === wgct_pin_labels_hash($pinsE)
-        && wgct_pin_labels_hash($pinsA) === wgct_pin_labels_hash($pinsB)
-        && preg_match('/^[0-9a-f]{32}$/', wgct_pin_labels_hash($pinsA)) === 1;
+        && wgct_pin_labels_hash(wgct_pin_rules($pinsD)) === wgct_pin_labels_hash(wgct_pin_rules($pinsE))
+        && wgct_pin_labels_hash(wgct_pin_rules($pinsA)) === wgct_pin_labels_hash(wgct_pin_rules($pinsB))
+        && preg_match('/^[0-9a-f]{32}$/', wgct_pin_labels_hash(wgct_pin_rules($pinsA))) === 1;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] labels hash: order and duplicates do not matter\n", $ok ? 'PASS' : 'FAIL');
 
-    $ok = wgct_pin_labels_hash($pinsA) !== wgct_pin_labels_hash($pinsC);
+    $ok = wgct_pin_labels_hash(wgct_pin_rules($pinsA)) !== wgct_pin_labels_hash(wgct_pin_rules($pinsC));
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] labels hash: another label changes it\n", $ok ? 'PASS' : 'FAIL');
@@ -1880,6 +2032,259 @@ function wgct_render_selftest(): int {
     }
     @rmdir($tmp);
 
+    $footprint = wgct_footprint_selftest($makeFw);
+    $fail += $footprint['fail'];
+    $total += $footprint['total'];
+
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
+}
+
+/**
+ * Self-test for the footprint (spec 2026-10-20 section 3.1 parts A, B and D): what a render records, the hook's
+ * copied literals, the hook's readers, the render state the views show and the labels freshness looks for.
+ * Writes only temporary files.
+ *
+ * @param callable $makeFw (): \OPNsense\Firewall\Plugin, wgct_render_selftest()'s recording stand-in
+ * @return array{fail: int, total: int}
+ */
+function wgct_footprint_selftest(callable $makeFw): array {
+    $t = ['fail' => 0, 'total' => 0];
+    $safely = function (callable $case): bool {
+        try {
+            return $case();
+        } catch (\Throwable $e) {
+            printf("       threw %s: %s\n", get_class($e), $e->getMessage());
+            return false;
+        }
+    };
+    $pins = ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => ['198.51.100.10']]], 'inner' => ['opt11']];
+    $emptyPins = ['wan' => [], 'inner' => []];
+    $mss = ['match on wg1 inet proto tcp all scrub (max-mss 1336)'];
+    /* a render inside a (stubbed) filter reload whose loader, writer and footprint writer are stubs */
+    $render = function (callable $wanted, ?callable $loader = null, bool $inReload = true) use ($makeFw): array {
+        $fw = $makeFw();
+        $rendered = null;
+        $footprints = [];
+        $ret = wgct_render_firewall($fw, $wanted, true, $rendered, $loader ?? fn (array $lines): bool => true,
+            fn (array $r): bool => true, fn (): bool => $inReload,
+            function (array $record) use (&$footprints): bool {
+                $footprints[] = $record;
+                return true;
+            });
+        return ['fw' => $fw, 'rendered' => $rendered, 'footprints' => $footprints, 'ret' => $ret];
+    };
+    $enabled = fn (): array => ['enabled' => true, 'pins' => $pins, 'mss' => $mss];
+
+    wgct_check($t, 'footprint: (g) a successful enabled render records the rules it registered and its MSS lines',
+        $safely(function () use ($render, $enabled, $mss): bool {
+            $r = $render($enabled);
+            $f = $r['footprints'][0] ?? [];
+            return $r['ret'] === true && count($r['footprints']) === 1 && count($r['fw']->rules) === 2
+                && array_keys($f) === ['at', 'priority', 'anchor', 'rules', 'mss'] && $f['at'] === $r['rendered']['at']
+                && $f['priority'] === WGCT_PIN_PRIORITY && $f['anchor'] === WGCT_MSS_ANCHOR
+                && $f['rules'] === array_column($r['fw']->rules, 1) && $f['mss'] === $mss;
+        }));
+    wgct_check($t, 'footprint: (h) a disabled render records the empty footprint, which is not "no footprint"',
+        $safely(function () use ($render, $emptyPins): bool {
+            $r = $render(fn (): array => ['enabled' => false, 'pins' => $emptyPins, 'mss' => []]);
+            $f = $r['footprints'][0] ?? [];
+            return $r['ret'] === true && count($r['footprints']) === 1 && $f['rules'] === [] && $f['mss'] === []
+                && $f['priority'] === WGCT_PIN_PRIORITY && $f['anchor'] === WGCT_MSS_ANCHOR;
+        }));
+    wgct_check($t, 'footprint: (i) a failed render (the derivation throws, or the pins are malformed) leaves it untouched',
+        $safely(function () use ($render): bool {
+            $threw = $render(function (): array {
+                throw new \RuntimeException('boom');
+            });
+            $bad = $render(fn (): array => ['enabled' => true, 'mss' => [],
+                'pins' => ['wan' => [['wan_if' => 'opt1', 'family' => 'inet', 'endpoints' => 'x']], 'inner' => []]]);
+            return $threw['footprints'] === [] && $threw['ret'] === false && $bad['footprints'] === [] && $bad['ret'] === false;
+        }));
+    wgct_check($t, 'footprint: (i) a rules listing (not inside a filter reload) records nothing',
+        $safely(fn (): bool => $render($enabled, null, false)['footprints'] === []));
+    wgct_check($t, 'footprint: a render whose rules are registered but whose MSS anchor load failed records them (they are in place)',
+        $safely(function () use ($render, $enabled, $pins): bool {
+            $r = $render($enabled, fn (array $lines): bool => false);
+            return $r['rendered']['failed'] === true && $r['ret'] === true && count($r['footprints']) === 1
+                && $r['footprints'][0]['rules'] === wgct_pin_rules($pins);
+        }));
+    wgct_check($t, 'footprint: (j) the hook\'s copied literals equal the pin priority, the MSS anchor and the state paths',
+        $safely(function (): bool {
+            $inc = (string)@file_get_contents(WGCT_HOOK_FILE);
+            preg_match_all('/registerFilterRule\((\d+),/', $inc, $prio);
+            preg_match_all("/registerAnchor\\('([^']*)'/", $inc, $anchor);
+            preg_match_all('/wgclienttunnels_read_state_file\(\$path, (\d+)\)/', $inc, $max);
+            return $prio[1] !== [] && array_unique($prio[1]) === [(string)WGCT_PIN_PRIORITY]
+                && $anchor[1] !== [] && array_unique($anchor[1]) === [WGCT_MSS_ANCHOR]
+                && $max[1] !== [] && array_unique($max[1]) === [(string)WGCT_FOOTPRINT_MAX_BYTES]
+                && str_contains($inc, "'" . WGCT_FOOTPRINT_FILE . "'") && str_contains($inc, "'" . WGCT_RUN_DIR . "'")
+                && WGCT_FALLBACK_FILE === WGCT_RUN_DIR . '/fallback.json' && str_contains($inc, "'/fallback.json'")
+                && WGCT_RENDERED_FILE === WGCT_RUN_DIR . '/rendered.json' && str_contains($inc, "'/rendered.json'");
+        }));
+
+    /* the hook's footprint reader (section 3.1 B-2), on temporary root-owned files */
+    $d = sys_get_temp_dir() . '/wgct-footprint-' . getmypid();
+    @mkdir($d, 0700);
+    $wanRule = [
+        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'interface' => 'opt2',
+        'interfacenot' => true, 'ipprotocol' => 'inet', 'protocol' => 'udp', 'to' => '192.0.2.10',
+        'label' => md5('wgct-pin-wan-opt2-inet'), 'descr' => 'pin',
+    ];
+    $innerRule = [
+        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'interface' => 'opt3',
+        'ipprotocol' => 'inet46', 'from' => 'opt3ip', 'from_not' => true, 'label' => md5('wgct-pin-inner-opt3-opt3ip'),
+        'descr' => 'inner',
+    ];
+    $good = ['at' => 1760000000, 'priority' => 99999, 'anchor' => 'wgclienttunnels_mss',
+             'rules' => [$wanRule, $innerRule], 'mss' => ['match on wg1 inet proto tcp all scrub (max-mss 1340)']];
+    $read = function (string $content) use ($d): mixed {
+        @unlink("$d/fp.json");
+        file_put_contents("$d/fp.json", $content);
+        return wgclienttunnels_read_footprint("$d/fp.json");
+    };
+    $with = function (array $changes) use ($good): string {
+        return json_encode(array_replace($good, $changes));
+    };
+    $rule = function (int $i, string $key, mixed $value) use ($good): string {
+        $good['rules'][$i][$key] = $value;
+        return json_encode($good);
+    };
+    $without = function (string $key) use ($good): string {
+        unset($good[$key]);
+        return json_encode($good);
+    };
+    wgct_check($t, 'footprint reader: a good footprint reads as itself',
+        $safely(fn (): bool => $read(json_encode($good)) === $good));
+    wgct_check($t, 'footprint reader: the empty footprint reads as itself',
+        $safely(fn (): bool => $read($with(['rules' => [], 'mss' => []])) === array_replace($good, ['rules' => [], 'mss' => []])));
+    wgct_check($t, 'footprint reader: (g) what a render records reads back unchanged',
+        $safely(function () use ($render, $enabled, $read): bool {
+            $f = $render($enabled)['footprints'][0] ?? null;
+            return $f !== null && $read(json_encode($f)) === $f;
+        }));
+    $bad = [
+        '(l2) 0 bytes' => '',
+        '(l2) truncated JSON' => substr(json_encode($good), 0, -12),
+        '(l2) a rules entry holding a nested array' => $rule(0, 'to', ['192.0.2.10']),
+        '(l2) the anchor Wgct_mss' => $with(['anchor' => 'Wgct_mss']),
+        'JSON null' => 'null',
+        'a JSON list' => json_encode([$good]),
+        'no mss key' => $without('mss'),
+        'no at key' => $without('at'),
+        'an extra key' => $with(['extra' => 1]),
+        'at as a string' => $with(['at' => '1760000000']),
+        'at as a float' => $with(['at' => 1760000000.5]),
+        'priority as a string' => $with(['priority' => '99999']),
+        'an anchor with a hyphen' => $with(['anchor' => 'wgct-mss']),
+        'an empty anchor' => $with(['anchor' => '']),
+        'an anchor that is a number' => $with(['anchor' => 5]),
+        'rules as an object' => $with(['rules' => ['a' => $wanRule]]),
+        'rules as a string' => $with(['rules' => 'x']),
+        'a rule that is a string' => $with(['rules' => ['x']]),
+        'an empty rule' => $with(['rules' => [[]]]),
+        'a rule key outside the fixed set' => $rule(0, 'gateway', 'WAN_A'),
+        'a rule value that is a number' => $rule(1, 'quick', 1),
+        'a rule value that is null' => $rule(1, 'descr', null),
+        'a rule that is not a block' => $rule(0, 'type', 'pass'),
+        'a rule label that is not 32 hex digits' => $rule(0, 'label', 'wgct-pin'),
+        'mss as an object' => $with(['mss' => ['a' => 'x']]),
+        'mss holding a number' => $with(['mss' => [1340]]),
+    ];
+    foreach ($bad as $what => $content) {
+        wgct_check($t, "footprint reader: $what reads as no footprint", $safely(fn (): bool => $read($content) === null));
+    }
+    @unlink("$d/fp.json");
+
+    /* the hook's fallback.json reader */
+    $readFallback = function (string $content) use ($d): mixed {
+        @unlink("$d/fallback.json");
+        file_put_contents("$d/fallback.json", $content);
+        return wgclienttunnels_read_fallback("$d/fallback.json");
+    };
+    $fb = ['at' => 1760000100, 'reason' => 'plugin library missing', 'footprint_at' => 1760000000];
+    wgct_check($t, 'fallback reader: a good record reads as itself; any other shape reads as none',
+        $safely(fn (): bool => $readFallback(json_encode($fb)) === $fb
+            && $readFallback(json_encode(array_replace($fb, ['at' => '1']))) === null
+            && $readFallback(json_encode(array_replace($fb, ['reason' => 5]))) === null
+            && $readFallback(json_encode(array_replace($fb, ['footprint_at' => null]))) === null
+            && $readFallback(json_encode($fb + ['x' => 1])) === null
+            && $readFallback(json_encode(['at' => 1, 'reason' => 'x'])) === null
+            && $readFallback('{') === null && $readFallback('') === null));
+    @unlink("$d/fallback.json");
+    @rmdir($d);
+
+    /* what the views show, and which pins pf holds, for each render state (part D) */
+    $fpAt = date('Y-m-d H:i:s', $good['at']);
+    $fbAt = date('Y-m-d H:i:s', $fb['at']);
+    $ok = ['at' => 1000, 'failed' => false, 'error' => '', 'enabled' => true, 'pins' => $pins, 'mss' => $mss];
+    $broken = ['failed' => true, 'error' => 'derivation boom'] + $ok;
+    $anchorOnly = ['failed' => true, 'error' => 'MSS anchor load failed (see syslog)'] + $ok;
+    wgct_check($t, 'render state: fallback.json present => the non-blocking render-fallback finding, pins from the footprint',
+        $safely(function () use ($fb, $good, $fpAt, $fbAt): bool {
+            $s = wgct_render_state(true, null, $fb, $good);
+            $f = $s['finding'];
+            return $f['code'] === 'render-fallback' && $f['blocking'] === false && str_contains($f['fix'], WGCT_LOG_PAGE)
+                && $f['detail'] === "pf enforces the pins recorded at $fpAt; the render has failed since $fbAt: plugin library missing"
+                && $s['pins_from'] === 'footprint' && $s['rules'] === $good['rules'];
+        }));
+    wgct_check($t, 'render state: the fallback is shown with the plugin disabled too (pf still holds those pins)',
+        $safely(fn (): bool => wgct_render_state(false, null, $fb, $good)['finding']['code'] === 'render-fallback'));
+    wgct_check($t, 'render state: fallback.json with no readable footprint => render-fallback, no footprint rules',
+        $safely(fn (): bool => wgct_render_state(true, null, $fb, null)['finding']['code'] === 'render-fallback'
+            && wgct_render_state(true, null, $fb, null)['rules'] === []));
+    wgct_check($t, 'render state: no record and no fallback => render-failed, and pf holds no plugin pins',
+        $safely(function (): bool {
+            $s = wgct_render_state(true, null, null, null);
+            return $s['finding']['code'] === 'render-failed' && $s['pins_from'] === 'none';
+        }));
+    wgct_check($t, 'render state: a failed render => render-failed with its error, no pins; an anchor-only failure keeps them',
+        $safely(function () use ($broken, $anchorOnly): bool {
+            $s = wgct_render_state(true, $broken, null, null);
+            $a = wgct_render_state(true, $anchorOnly, null, null);
+            return $s['finding']['code'] === 'render-failed' && $s['finding']['detail'] === 'derivation boom'
+                && $s['pins_from'] === 'none' && $a['finding']['code'] === 'render-failed' && $a['pins_from'] === 'render';
+        }));
+    wgct_check($t, 'render state: a current render, or the plugin disabled with no fallback => no finding, pins as rendered',
+        $safely(fn (): bool => wgct_render_state(true, $ok, null, null) === ['finding' => null, 'pins_from' => 'render', 'rules' => []]
+            && wgct_render_state(false, null, null, null) === ['finding' => null, 'pins_from' => 'render', 'rules' => []]));
+
+    $tunnel = ['uuid' => 'i-a', 'enabled' => true, 'device' => 'wg1', 'interface' => 'opt3', 'findings' => [],
+               'pins' => ['wan' => [['192.0.2.10', 'opt2']], 'inner' => true]];
+    $elsewhere = array_replace($wanRule, ['interface' => 'opt9', 'to' => '192.0.2.11,192.0.2.10']);
+    $anywhere = array_diff_key($wanRule, ['interface' => true, 'interfacenot' => true]);
+    $other = array_replace($wanRule, ['to' => '192.0.2.11']);
+    $otherInner = array_replace($innerRule, ['interface' => 'opt4', 'from' => 'opt4ip']);
+    wgct_check($t, 'footprint pinned: a tunnel is pinned when the footprint blocks its endpoint (any form) or holds its inner block',
+        $safely(fn (): bool => wgct_footprint_pinned($tunnel, [$wanRule]) && wgct_footprint_pinned($tunnel, [$elsewhere])
+            && wgct_footprint_pinned($tunnel, [$anywhere])
+            && wgct_footprint_pinned(array_replace($tunnel, ['pins' => ['wan' => [], 'inner' => false]]), [$innerRule])));
+    wgct_check($t, 'footprint pinned: another endpoint or another interface\'s inner block is not this tunnel\'s pin',
+        $safely(fn (): bool => !wgct_footprint_pinned($tunnel, [$other, $otherInner]) && !wgct_footprint_pinned($tunnel, [])));
+    $blocked = $tunnel;
+    $blocked['findings'] = [wgct_finding('not-single-peer', '2 peers')];
+    wgct_check($t, 'pins in pf: follow the render state; while render-failed shows, no tunnel claims a pin',
+        $safely(function () use ($blocked, $wanRule, $other): bool {
+            $render = ['finding' => null, 'pins_from' => 'render', 'rules' => []];
+            $none = ['finding' => null, 'pins_from' => 'none', 'rules' => []];
+            return wgct_pins_in_pf($blocked, $render, true, true) === wgct_pinned($blocked, true, true)
+                && wgct_pinned($blocked, true, true) === true
+                && wgct_pins_in_pf($blocked, $none, true, true) === false
+                && wgct_pins_in_pf($blocked, ['pins_from' => 'footprint', 'rules' => [$wanRule]] + $none, false, false) === true
+                && wgct_pins_in_pf($blocked, ['pins_from' => 'footprint', 'rules' => [$other]] + $none, true, true) === false;
+        }));
+
+    /* the labels freshness looks for in pf (part D) */
+    $rendered = $ok;
+    wgct_check($t, 'labels looked for: the rendered pins while there is a record; the footprint\'s rules while it is enforced',
+        $safely(fn (): bool => wgct_rules_looked_for($rendered, null, $good) === wgct_pin_rules($pins)
+            && wgct_rules_looked_for(null, $fb, $good) === $good['rules']
+            && wgct_rules_looked_for(null, null, $good) === []
+            && wgct_rules_looked_for(null, $fb, null) === []));
+    wgct_check($t, 'labels looked for: pf missing one of the footprint\'s two labels counts one missing',
+        $safely(function () use ($good): bool {
+            $lines = ['block drop out log quick on ! hn1 inet proto udp from any to 192.0.2.10 label "' . $good['rules'][0]['label'] . '"'];
+            return wgct_live_observation([], $lines, $good['rules']) === ['anchor_count' => 0, 'missing_labels' => 1];
+        }));
+    return $t;
 }

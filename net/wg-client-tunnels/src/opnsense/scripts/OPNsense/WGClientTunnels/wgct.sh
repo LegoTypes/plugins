@@ -16,7 +16,7 @@
 #       IPv6 monitor
 #   request_reconcile
 #       the config syshook's entry: queue a reconcile and return at once
-#   stop     remove what start added
+#   stop     remove what start added, and the footprint the filter hook falls back to
 #   status   the service line core's service framework reads
 #   routes_status
 #       per-tunnel IPv6 route and monitor state as JSON
@@ -321,6 +321,9 @@ case "$1" in
         with_routes_lock _routes
         ;;
     stop)
+        # A clean stop also ends the footprint a failed render would enforce, and the hook's note about it
+        # (spec 2026-10-20 section 3.1 part A); the next filter reload renders from config again.
+        rm -f "${DB_DIR}/footprint.json" "${STATE_DIR}/fallback.json" "${STATE_DIR}/fallback.logged"
         with_routes_lock _cleanup && log_msg "stopped"
         ;;
     restart)

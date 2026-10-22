@@ -234,7 +234,8 @@ function wgct_cli_emit_mtu(array $m, bool $json): int {
 
 /**
  * The list line's state note: what a tunnel that is not enforced still has. A blocked tunnel is skipped by the
- * health mirror and the monitor repair, and keeps its pins when the render emits any (`pinned`, wgct_pinned()). Pure.
+ * health mirror and the monitor repair, and keeps its pins while pf holds any for it (`pinned`, wgct_pins_in_pf():
+ * the render's, the footprint's while the hook enforces it, none while render-failed shows). Pure.
  *
  * @param array $t a wgct_tunnel_view() tunnel
  * @return string '' or a parenthesised note with a leading space
