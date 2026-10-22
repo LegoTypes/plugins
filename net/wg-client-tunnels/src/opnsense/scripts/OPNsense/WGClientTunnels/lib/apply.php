@@ -554,7 +554,18 @@ function wgct_write_route_todos(array $todos): void {
         if (preg_match('/^[0-9a-fA-F-]{36}$/', (string)$uuid) !== 1) {
             throw new \RuntimeException("not a route uuid: {$uuid}");
         }
-        if (file_put_contents("/tmp/delete_route_{$uuid}.todo", $network) === false) {
+        /* 'x' never opens a path that exists, a symlink included: /tmp is world-writable and
+         * rc.routing_configure acts on whatever these files say */
+        $path = "/tmp/delete_route_{$uuid}.todo";
+        $fh = @fopen($path, 'x');
+        if ($fh === false) {
+            throw new \RuntimeException(file_exists($path) || is_link($path)
+                ? "route hand-off file already exists: {$path}"
+                : "could not write the route todo for {$network}");
+        }
+        $written = fwrite($fh, $network);
+        fclose($fh);
+        if ($written !== strlen($network)) {
             throw new \RuntimeException("could not write the route todo for {$network}");
         }
     }
