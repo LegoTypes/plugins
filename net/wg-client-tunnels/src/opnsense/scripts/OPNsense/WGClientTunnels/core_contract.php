@@ -18,7 +18,7 @@ require_once __DIR__ . '/lib/apply.php';
 if (!(new \OPNsense\WGClientTunnels\WGClientTunnels())->enabled->isEqual('1')) {
     exit(0);
 }
-$state = getenv('WGCT_STATE_DIR') ?: '/var/run/wgclienttunnels';
+$state = '/var/run/wgclienttunnels';
 if (!is_dir($state)) {
     mkdir($state, 0755, true);
 }
