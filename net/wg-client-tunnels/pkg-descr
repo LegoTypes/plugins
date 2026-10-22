@@ -66,6 +66,35 @@ Features:
 Plugin Changelog
 ================
 
+3.8
+
+* Security release. Firewall rules are rendered fail-closed from the
+  recorded footprint, and a bound tunnel with a blocking finding is still
+  pinned, its MSS clamp included
+* The managed list and the holds live in their own model and are released
+  only by their own record, for IPv6 gateways too; the mirror leaves a
+  hand-forced IPv6 gateway alone
+* Locks and state live under root-only directories
+* Core's /tmp files are read for their devices only
+* Actions and previews honour the read-only guard; one MTU measurement
+  runs at a time
+* Apply refuses an instance the plugin does not manage
+* Values from a restored configuration, interface groups included, are
+  validated again before use
+* The route hand-off never writes through an existing path
+* Production scripts carry no test overrides
+* The page decodes core's escaping exactly (&amp;, &lt;, &gt;), nothing
+  more
+* Removing the package releases the holds and removes what the plugin
+  added, after stopping the plugin first; it names any IPv6 gateway it
+  leaves down and never waits on a configd that does not answer. An
+  upgrade keeps everything
+* The cron and configd entries end quietly when the plugin library
+  cannot be loaded
+* File headers name the copyright handle only
+* settings/get no longer returns the managed and held lists
+* The engine state is per box and is not part of the HA sync
+
 3.7_1
 
 * Freshness lists the ruleset only when it changed (pf's ruleset

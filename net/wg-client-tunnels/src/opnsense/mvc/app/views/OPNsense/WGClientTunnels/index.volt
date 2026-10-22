@@ -33,12 +33,14 @@
         var failedText = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
         var options = null;
 
-        /* core HTML-escapes every API reply string (Mvc/Response.php, htmlspecialchars ENT_NOQUOTES), so a
-         * server string with '>' or '&' (a peer name, a finding detail, a sentinel description) arrives as
-         * '...&gt;...'. Decode it once here; the result only ever reaches .text()/.attr('title'), which never
-         * interpret it as HTML, so decoding cannot introduce markup (review finding 2). */
+        /* plain() is the exact inverse of core's escaping. For a session client, core answers an array reply
+         * through htmlspecialchars(..., ENT_NOQUOTES) (Mvc/Response.php), which turns only '&', '<' and '>' into
+         * '&amp;', '&lt;' and '&gt;'. This undoes exactly those three, '&amp;' last so that a literal '&lt;'
+         * the server sent (escaped to '&amp;lt;') comes back as '&lt;', not '<'. It never interprets the string as
+         * HTML, so no markup can be introduced; the result only reaches .text(), .val() and .attr(), which do
+         * not parse it either. */
         function plain(s) {
-            return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
+            return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
         }
 
         /* a dialog title that may include a server-supplied name: a text node, never an HTML string --
