@@ -26,6 +26,11 @@
 #         which every save rewrites) nor the engine node: the settings model has no such fields. Should a change
 #         get through, the old values are posted back so the VM keeps its managed list.
 #
+# Case 5: an unmanaged WireGuard instance (spec section 3.6, F6): apply refuses it and does nothing. The instance
+#         is created through core's Server model with a synthetic key, a documentation-range address and
+#         enabled=0, so it has no device; the observables are configd's log (an apply would log its
+#         `wireguard restart UUID`) and `wg show all latest-handshakes`. It is removed at exit.
+#
 # The dummy tunnel `rehearse` (bound to the second VM WAN, endpoint 192.0.2.10) provides the uuid; the first
 # VM WAN is never touched.
 #
@@ -94,6 +99,52 @@ $model->serializeToConfig(false, true);
 Config::getInstance()->save();
 PHPEOF
 
+UNMANAGED_NAME=wgct-api-unmanaged
+
+cat > "$T/instance.php" <<'PHPEOF'
+<?php
+require_once 'config.inc';
+require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
+
+use OPNsense\Core\Config;
+use OPNsense\Wireguard\Server;
+
+/* instance.php create NAME PRIVKEY => its uuid; instance.php delete NAME */
+[, $mode, $name] = $argv;
+Config::getInstance()->lock();
+$model = new Server();
+if ($mode === 'create') {
+    $server = $model->servers->server->Add();
+    $uuid = $server->getAttribute('uuid');
+    $server->enabled = '0';
+    $server->name = $name;
+    $server->instance = '9';
+    $server->privkey = $argv[3];
+    $server->port = '51899';
+    $server->tunneladdress = '198.51.100.9/32';
+    foreach ($model->performValidation() as $msg) {
+        fwrite(STDERR, $msg->getMessage() . "\n");
+        Config::getInstance()->unlock();
+        exit(1);
+    }
+    $model->serializeToConfig(false, true);
+    Config::getInstance()->save();
+    echo $uuid, "\n";
+    exit(0);
+}
+foreach ($model->servers->server->iterateItems() as $uuid => $node) {
+    if ((string)$node->name === $name) {
+        $model->servers->server->del($uuid);
+    }
+}
+$model->serializeToConfig(false, true);
+Config::getInstance()->save();
+PHPEOF
+
+remove_instance() {
+    $PHP "$T/instance.php" delete "$UNMANAGED_NAME" > /dev/null 2>&1
+}
+
 remove_users() {
     for u in "$RO_USER" "$CTL_USER"; do
         $PHP "$T/user.php" delete "$u" > /dev/null 2>&1
@@ -103,6 +154,7 @@ remove_users() {
 
 cleanup() {
     remove_users
+    remove_instance
     rm -rf "$T"
 }
 trap cleanup EXIT
@@ -212,6 +264,25 @@ else
     call "$CTL_CRED" settings/set -d "wgclienttunnels[managed]=$OLD_MANAGED" -d "wgclienttunnels[held]=$OLD_HELD" > /dev/null
 fi
 check "control user: that POST leaves the settings node and the engine node as they were" "$same" unchanged
+
+# case 5
+remove_instance
+UNMANAGED=$($PHP "$T/instance.php" create "$UNMANAGED_NAME" "$(wg genkey)")
+[ -n "$UNMANAGED" ] || { echo "[FAIL] the unmanaged instance could not be created"; exit 1; }
+check "the throw-away instance is not on the managed list" \
+    "$($PHP -r 'echo substr_count((string)simplexml_load_file("/conf/config.xml")->OPNsense->WGClientTunnelsEngine->managed, $argv[1]);' "$UNMANAGED")" 0
+handshakes=$(wg show all latest-handshakes)
+lines=$(wc -l < "$LOG")
+$PHP "$TUNNEL" --json apply "$UNMANAGED" > "$T/apply"
+check "apply of an unmanaged instance: refused as not a managed tunnel" \
+    "$($PHP -r '$j = json_decode(file_get_contents($argv[1]), true); echo $j["ok"] === false ? implode("|", $j["errors"]) : "ok";' "$T/apply")" \
+    "not a managed tunnel"
+check "apply of an unmanaged instance: configd's log never names it" \
+    "$(tail -n +"$((lines + 1))" "$LOG" | grep -c "$UNMANAGED")" 0
+check "apply of an unmanaged instance: every latest handshake is unchanged" "$(wg show all latest-handshakes)" "$handshakes"
+$PHP "$TUNNEL" --json apply "$UNMANAGED" first > /dev/null
+check "apply of an unmanaged instance with a mode: configd's log still never names it" \
+    "$(tail -n +"$((lines + 1))" "$LOG" | grep -c "$UNMANAGED")" 0
 
 echo "api: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]
