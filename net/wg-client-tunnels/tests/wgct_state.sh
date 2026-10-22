@@ -126,5 +126,24 @@ check "the first run after the holder ends logs one resume line, the next none" 
 check "the resume removes the marker" "$([ -f "$RUN/health.skipped" ] && echo yes || echo no)" no
 check "no /tmp/wgct_health.lock is created by a run" "$(rm -f /tmp/wgct_health.lock; $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1; [ -e /tmp/wgct_health.lock ] && echo yes || echo no)" no
 
+# (f) a health.lock that cannot be opened (a directory stands where the file belongs) ends the tick quietly:
+# exit 0, one log line across two runs, no output (a PHP fatal would print and, outside this test's log_errors=0, reach the crash reporter); the lock is a file again afterwards
+rm -f "$RUN/health.lock" "$RUN/health.skipped" "$RUN/health.unopenable"
+mkdir "$RUN/health.lock"
+mark=$(wc -l < "$WGLOG")
+$PHP -d log_errors=0 "$MIRROR" --dry > "$T/open1.out" 2>&1
+rc1=$?
+$PHP -d log_errors=0 "$MIRROR" --dry > "$T/open2.out" 2>&1
+rc2=$?
+sleep 1
+check "two runs against an unopenable health.lock exit 0" "$rc1$rc2" 00
+check "they print nothing (no PHP fatal)" "$(cat "$T/open1.out" "$T/open2.out")" ""
+check "they log one line naming the unopenable lock" "$(tail -n +$((mark + 1)) "$WGLOG" | grep -c 'wgct-health.*tick skipped: health.lock cannot be opened')" 1
+rmdir "$RUN/health.lock"
+mark=$(wc -l < "$WGLOG")
+$PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
+sleep 1
+check "the first run with an openable lock logs one resume line" "$(tail -n +$((mark + 1)) "$WGLOG" | grep -c 'wgct-health.*health.lock opens again')" 1
+
 echo "state: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]

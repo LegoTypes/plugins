@@ -120,12 +120,20 @@ if ($snapshotOut) {
  * and leave it dead -- at which point every gateway reads a false "down".
  * If another run holds the lock, skip this tick (logged once per state); the next one catches up.
  */
-$selfLock = wgct_poll_lock(WGCT_HEALTH_LOCK_FILE, 0, 50);
-if ($selfLock === null) {
-    wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, true, 'tick skipped: another run holds health.lock', 'health resumed');
+$tickMsg = 'tick skipped: another run holds health.lock';
+try {
+    $selfLock = wgct_poll_lock(WGCT_HEALTH_LOCK_FILE, 0, 50);
+} catch (\RuntimeException | \LogicException $e) {
+    /* the lock file cannot be opened (SplFileObject throws a LogicException for a directory): quiet exit, logged once */
+    wgct_note_lock(WGCT_HEALTH_UNOPENABLE_FILE, true, 'tick skipped: health.lock cannot be opened: ' . $e->getMessage(), 'health.lock opens again');
     exit(0);
 }
-wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, false, 'tick skipped: another run holds health.lock', 'health resumed');
+if ($selfLock === null) {
+    wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, true, $tickMsg, 'health resumed');
+    exit(0);
+}
+wgct_note_lock(WGCT_HEALTH_UNOPENABLE_FILE, false, '', 'health.lock opens again');
+wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, false, $tickMsg, 'health resumed');
 
 $config = wgct_collect_config();
 if (!$config['enabled']) {
