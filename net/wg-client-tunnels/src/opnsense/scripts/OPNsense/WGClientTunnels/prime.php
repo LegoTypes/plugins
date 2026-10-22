@@ -66,7 +66,7 @@ if (in_array('--selftest', $args, true)) {
 }
 $dry = in_array('--dry', $args, true);
 
-$stateDir = '/var/run/wgclienttunnels';
+$stateDir = WGCT_RUN_DIR;
 $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     if ($dry) {
@@ -95,7 +95,7 @@ if (!$dry) {
 }
 
 $stateFile = "{$stateDir}/prime.json";
-$state = wgct_prime_state(json_decode((string)@file_get_contents($stateFile), true));
+$state = wgct_prime_state(json_decode((string)wgct_read_state_file($stateFile, WGCT_STATE_MAX_BYTES), true));
 $read = $state;
 $now = time();
 

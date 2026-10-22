@@ -27,30 +27,40 @@ if (!is_readable(__DIR__ . '/tunnels.php')) {
 }
 require_once __DIR__ . '/tunnels.php';
 
-const WGCT_RENDERED_FILE = '/var/run/wgclienttunnels/rendered.json';
+const WGCT_RUN_DIR = '/var/run/wgclienttunnels';
+
+/** the state that must survive a reboot */
+const WGCT_DB_DIR = '/var/db/wgclienttunnels';
+
+/* what each state file may hold before it reads as absent (wgct_read_state_file()); 64 KiB covers every small JSON
+ * record, the rendered record carries the pin rules of every tunnel */
+const WGCT_RENDERED_MAX_BYTES = 1048576;
+const WGCT_STATE_MAX_BYTES = 65536;
+
+const WGCT_RENDERED_FILE = WGCT_RUN_DIR . '/rendered.json';
 
 /* freshness.php's own small state: the last filter-reload request it made,
  * so repeated staleness (e.g. a render that keeps failing) does not flood
  * configd with reload requests every reconcile tick. */
-const WGCT_FRESHNESS_STATE_FILE = '/var/run/wgclienttunnels/freshness.json';
+const WGCT_FRESHNESS_STATE_FILE = WGCT_RUN_DIR . '/freshness.json';
 const WGCT_RELOAD_SUPPRESS_SECONDS = 300;
 const WGCT_RELOAD_MAX_WINDOW_SECONDS = 3600;
 
 /* The last pfctl -sr listing's result: pf's ruleset checksum and the pin-label hash it was made for, and how
  * many of those labels pf did not hold. While both are unchanged the count is reused instead of listing again. */
-const WGCT_OBSERVED_FILE = '/var/run/wgclienttunnels/observed.json';
+const WGCT_OBSERVED_FILE = WGCT_RUN_DIR . '/observed.json';
 
 /* Serializes freshness.php runs (cron minute, config syshook, monitor and
  * newwanip hooks can overlap): one run's derive -> observe -> plan -> act
  * must not interleave with another's. A run waits for the lock at most
  * WGCT_FRESHNESS_LOCK_TIMEOUT_MS, polling every WGCT_FRESHNESS_LOCK_POLL_MS. */
-const WGCT_FRESHNESS_LOCK_FILE = '/var/run/wgclienttunnels/freshness.lock';
+const WGCT_FRESHNESS_LOCK_FILE = WGCT_RUN_DIR . '/freshness.lock';
 const WGCT_FRESHNESS_LOCK_TIMEOUT_MS = 30000;
 const WGCT_FRESHNESS_LOCK_POLL_MS = 200;
 
 /* The hash of the failure freshness.php last reported, so a failure that
  * repeats every reconcile tick is logged once, and its recovery once. */
-const WGCT_FRESHNESS_ERROR_FILE = '/var/run/wgclienttunnels/freshness.err';
+const WGCT_FRESHNESS_ERROR_FILE = WGCT_RUN_DIR . '/freshness.err';
 
 /**
  * @return array ['enabled' => bool, 'pins' => wgct_pin_set(), 'mss' => list<string>]
@@ -171,8 +181,48 @@ function wgct_validate_rendered(mixed $data): ?array {
  * @return array|null the record, or null when there is none or it is malformed
  */
 function wgct_read_rendered(): ?array {
-    $raw = @file_get_contents(WGCT_RENDERED_FILE);
-    return $raw !== false ? wgct_validate_rendered(json_decode($raw, true)) : null;
+    $raw = wgct_read_state_file(WGCT_RENDERED_FILE, WGCT_RENDERED_MAX_BYTES);
+    return $raw !== null ? wgct_validate_rendered(json_decode($raw, true)) : null;
+}
+
+/**
+ * The only reader of a state file the plugin trusts (C3). The file must be a regular file (never a
+ * symlink), owned by root and no larger than $maxBytes; anything else reads as absent. PHP has no
+ * O_NOFOLLOW, so the check comes before the read; the state directories being root 0700 is what makes the
+ * remaining race unreachable.
+ *
+ * @param string $path
+ * @param int    $maxBytes
+ * @return string|null the content, or null when the file is absent or not trustworthy
+ */
+function wgct_read_state_file(string $path, int $maxBytes): ?string {
+    clearstatcache(true, $path);
+    if (is_link($path) || !is_file($path) || @fileowner($path) !== 0) {
+        return null;
+    }
+    $size = @filesize($path);
+    if ($size === false || $size > $maxBytes) {
+        return null;
+    }
+    $content = @file_get_contents($path);
+    return $content === false ? null : $content;
+}
+
+/**
+ * Create a state directory 0700 (mkdir() honours the umask, so chmod() follows), and tighten one that
+ * already exists. A path that is not a plain directory is refused.
+ *
+ * @param string $dir
+ * @return bool true when $dir is a directory with mode 0700
+ */
+function wgct_state_dir(string $dir): bool {
+    if (is_link($dir) || (file_exists($dir) && !is_dir($dir))) {
+        return false;
+    }
+    if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) {
+        return false;
+    }
+    return @chmod($dir, 0700);
 }
 
 /**
@@ -186,7 +236,10 @@ function wgct_read_rendered(): ?array {
  */
 function wgct_write_file_atomic(string $path, string $data): bool {
     $dir = dirname($path);
-    @mkdir($dir, 0755, true);
+    if (!wgct_state_dir($dir)) {
+        wgct_log(LOG_ERR, '[wgct-render] could not create ' . $dir . ' as a 0700 directory');
+        return false;
+    }
     $tmp = tempnam($dir, pathinfo($path, PATHINFO_FILENAME));
     if ($tmp === false) {
         wgct_log(LOG_ERR, '[wgct-render] could not create a temp file in ' . $dir);
@@ -339,8 +392,8 @@ function wgct_normalize_freshness_state(mixed $raw): array {
  *               already normalised -- see wgct_normalize_freshness_state().
  */
 function wgct_read_freshness_state(): array {
-    $raw = @file_get_contents(WGCT_FRESHNESS_STATE_FILE);
-    $data = $raw !== false ? json_decode($raw, true) : null;
+    $raw = wgct_read_state_file(WGCT_FRESHNESS_STATE_FILE, WGCT_STATE_MAX_BYTES);
+    $data = $raw !== null ? json_decode($raw, true) : null;
     return wgct_normalize_freshness_state($data);
 }
 
@@ -577,8 +630,8 @@ function wgct_normalize_observed(mixed $data): ?array {
  * @return array|null array{checksum: string, labels_hash: string, missing_labels: int}, null when absent or corrupt
  */
 function wgct_read_observed(): ?array {
-    $raw = @file_get_contents(WGCT_OBSERVED_FILE);
-    return wgct_normalize_observed($raw !== false ? json_decode($raw, true) : null);
+    $raw = wgct_read_state_file(WGCT_OBSERVED_FILE, WGCT_STATE_MAX_BYTES);
+    return wgct_normalize_observed($raw !== null ? json_decode($raw, true) : null);
 }
 
 /**
@@ -612,7 +665,9 @@ function wgct_write_observed(array $record): bool {
  * @throws \RuntimeException when the lock file cannot be opened
  */
 function wgct_poll_lock(string $path, int $timeoutMs, int $pollMs): ?\SplFileObject {
-    @mkdir(dirname($path), 0755, true);
+    if (dirname($path) === WGCT_RUN_DIR) {
+        wgct_state_dir(WGCT_RUN_DIR);
+    }
     /* 'e' = close-on-exec: a caller that exec()s or leaves a detached child
      * running (freshness's filter reload; anything the gateway-locked apply
      * starts) must not have that child inherit the lock */
@@ -632,8 +687,8 @@ function wgct_poll_lock(string $path, int $timeoutMs, int $pollMs): ?\SplFileObj
  * @return string|null the hash of the failure freshness.php last reported, or null
  */
 function wgct_read_freshness_error_hash(): ?string {
-    $raw = @file_get_contents(WGCT_FRESHNESS_ERROR_FILE);
-    $hash = $raw !== false ? trim($raw) : '';
+    $raw = wgct_read_state_file(WGCT_FRESHNESS_ERROR_FILE, WGCT_STATE_MAX_BYTES);
+    $hash = $raw !== null ? trim($raw) : '';
     return $hash !== '' ? $hash : null;
 }
 
@@ -1754,6 +1809,51 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] record: corrupt reads as none\n", $ok ? 'PASS' : 'FAIL');
+
+    /* the C3 reader and the state directories, on temporary files */
+    $tmp = sys_get_temp_dir() . '/wgct-state-' . getmypid();
+    mkdir($tmp, 0700);
+    file_put_contents("$tmp/good", '{"a":1}');
+    file_put_contents("$tmp/big", str_repeat('x', 100));
+    symlink("$tmp/good", "$tmp/link");
+    mkdir("$tmp/dir");
+    file_put_contents("$tmp/empty", '');
+    $read = function (string $path, int $max) {
+        return function_exists('wgct_read_state_file') ? wgct_read_state_file($path, $max) : 'undefined';
+    };
+    $cases = [
+        'state reader: a good root-owned regular file reads as its content' => $read("$tmp/good", 64) === '{"a":1}',
+        'state reader: an empty file reads as the empty string' => $read("$tmp/empty", 64) === '',
+        'state reader: a file exactly at the limit reads' => $read("$tmp/big", 100) === str_repeat('x', 100),
+        'state reader: a file over the limit reads as absent' => $read("$tmp/big", 99) === null,
+        'state reader: a symlink to a good file reads as absent' => $read("$tmp/link", 64) === null,
+        'state reader: a directory reads as absent' => $read("$tmp/dir", 64) === null,
+        'state reader: a missing file reads as absent' => $read("$tmp/missing", 64) === null,
+    ];
+    $ok = function_exists('wgct_state_dir')
+        && wgct_state_dir("$tmp/new/sub") && is_dir("$tmp/new/sub")
+        && (fileperms("$tmp/new/sub") & 0777) === 0700;
+    $cases['state dir: a new directory is created 0700 whatever the umask'] = $ok;
+    mkdir("$tmp/loose", 0755);
+    chmod("$tmp/loose", 0755);
+    $cases['state dir: an existing directory is tightened to 0700']
+        = function_exists('wgct_state_dir') && wgct_state_dir("$tmp/loose") && (fileperms("$tmp/loose") & 0777) === 0700;
+    $cases['state dir: a regular file in its place is refused']
+        = function_exists('wgct_state_dir') && wgct_state_dir("$tmp/good") === false;
+    $cases['state dir: a symlink in its place is refused']
+        = function_exists('wgct_state_dir') && wgct_state_dir("$tmp/link") === false;
+    foreach ($cases as $desc => $ok) {
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+    }
+    foreach (['new/sub', 'new', 'loose', 'dir'] as $d) {
+        @rmdir("$tmp/$d");
+    }
+    foreach (['good', 'big', 'link', 'empty'] as $f) {
+        @unlink("$tmp/$f");
+    }
+    @rmdir($tmp);
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

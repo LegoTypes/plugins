@@ -43,7 +43,7 @@ const WGCT_ACTION_LOG_TAG = 'wgct-action';
  * has no current wgN.conf after a reboot, and nothing else re-applies a saved
  * NAT or monitor change; either way it still needs Apply.
  */
-const WGCT_APPLY_PENDING_FILE = '/var/db/wgclienttunnels/apply_pending.json';
+const WGCT_APPLY_PENDING_FILE = WGCT_DB_DIR . '/apply_pending.json';
 /*
  * Create's apply (spec 6.1, amended): what core's WireGuard, assignment and
  * routes applies do, with the routes applied once BEFORE the device exists.
@@ -401,8 +401,8 @@ function wgct_pending_from_json(mixed $data): array {
  * @return array<string, array{at: int, mode: string, mark: int}> wgct_pending_from_json() of the file, [] when there is none
  */
 function wgct_read_pending_file(string $path): array {
-    $raw = is_file($path) ? file_get_contents($path) : false;
-    return wgct_pending_from_json($raw === false ? null : json_decode($raw, true));
+    $raw = wgct_read_state_file($path, WGCT_STATE_MAX_BYTES);
+    return wgct_pending_from_json($raw === null ? null : json_decode($raw, true));
 }
 
 /**
@@ -422,7 +422,7 @@ function wgct_read_apply_pending(): array {
  */
 function wgct_update_apply_pending(callable $change): void {
     $dir = dirname(WGCT_APPLY_PENDING_FILE);
-    if (!is_dir($dir) && !mkdir($dir, 0755, true) && !is_dir($dir)) {
+    if (!wgct_state_dir($dir)) {
         throw new \RuntimeException("could not create {$dir}");
     }
     $lock = new \SplFileObject(WGCT_APPLY_PENDING_FILE . '.lock', 'ce');
@@ -866,7 +866,7 @@ function wgct_core_contract(string $actions = WGCT_CORE_ACTIONS_INTERFACE, strin
  */
 function wgct_core_contract_log(array $problems, string $file, callable $log): void {
     $now = implode("\n", $problems);
-    $last = is_file($file) ? (string)file_get_contents($file) : '';
+    $last = (string)wgct_read_state_file($file, WGCT_STATE_MAX_BYTES);
     if ($now === $last) {
         return;
     }
