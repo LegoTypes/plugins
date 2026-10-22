@@ -27,7 +27,8 @@
 # the managed list byte for byte and exactly one holds row (rehearse's gateway, the live kern.boot_id, WAN_B,
 # taken during the run); force_down is as it was; one "not held by this plugin" line names WAN_B's gateway in
 # core's WireGuard log; the installed tunnel.php lists the same tunnels, findings and unmanaged instances as 3.7_1
-# did, and its `held` keeps only rehearse's gateway (the other was dropped). A second run changes nothing (A).
+# did (beside the pins fields 3.8 adds), and its `held` keeps only rehearse's gateway (the other was dropped). A
+# second run changes nothing (A).
 #
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
@@ -154,7 +155,8 @@ switch ($argv[1]) {
 }
 PHPEOF
 
-# lists.php BEFORE AFTER: "same" when both lists match once `held` is set aside, then each `held`
+# lists.php BEFORE AFTER: "same" when both lists match once `held` and the per-tunnel fields 3.8 adds (`pins`,
+# `pinned`: spec 2026-10-20 section 3.1 part C) are set aside, then each `held`
 cat > "$T/lists.php" <<'PHPEOF'
 <?php
 $a = json_decode((string)file_get_contents($argv[1]), true);
@@ -166,6 +168,14 @@ if (!is_array($a) || !is_array($b)) {
 $ha = $a['held'] ?? null;
 $hb = $b['held'] ?? null;
 unset($a['held'], $b['held']);
+$strip = function (array $list): array {
+    foreach (array_keys($list['tunnels'] ?? []) as $i) {
+        unset($list['tunnels'][$i]['pins'], $list['tunnels'][$i]['pinned']);
+    }
+    return $list;
+};
+$a = $strip($a);
+$b = $strip($b);
 echo $a === $b && $a['tunnels'] !== [] ? 'same' : 'different', "\n", json_encode($ha), "\n", json_encode($hb), "\n";
 PHPEOF
 
