@@ -92,7 +92,7 @@ function wgct_finding($code, $detail, ?string $fix = null) {
     return ['code' => $code, 'blocking' => $blocking, 'detail' => $detail, 'fix' => $fix ?? $tableFix];
 }
 
-/* appended to a blocking finding's hint where the tunnel still renders a pin (wgct_pin_hint()); plain text */
+/* appended to a blocking finding's hint where the tunnel still renders a pin (wgct_pinned()); plain text */
 const WGCT_PINS_KEPT_HINT = '; its firewall pins stay in place while this stands';
 
 /**
@@ -112,16 +112,28 @@ function wgct_blocked(array $tunnel) {
 }
 
 /**
- * The tunnel with WGCT_PINS_KEPT_HINT appended to each blocking finding's hint, when the pin switches render at
- * least one rule for it; unchanged otherwise, so an unbound tunnel or switched-off pins never claim a pin. Pure.
+ * Whether the render emits at least one pin rule for the tunnel under the pin switches, so an unbound tunnel or
+ * switched-off pins never claim a pin. Pure.
  *
  * @param array $t           derived record
  * @param bool  $wanPins     the wan_pins switch, false while the plugin is disabled
  * @param bool  $innerSource the inner_source switch, false while the plugin is disabled
+ * @return bool
+ */
+function wgct_pinned(array $t, bool $wanPins, bool $innerSource): bool {
+    return wgct_pin_rules(wgct_pin_set(['tunnels' => [$t]], $wanPins, $innerSource)) !== [];
+}
+
+/**
+ * The tunnel with WGCT_PINS_KEPT_HINT appended to each blocking finding's hint when it is pinned; unchanged
+ * otherwise. Pure.
+ *
+ * @param array $t      derived record
+ * @param bool  $pinned wgct_pinned()
  * @return array the record
  */
-function wgct_pin_hint(array $t, bool $wanPins, bool $innerSource): array {
-    if (wgct_pin_rules(wgct_pin_set(['tunnels' => [$t]], $wanPins, $innerSource)) === []) {
+function wgct_pin_hint(array $t, bool $pinned): array {
+    if (!$pinned) {
         return $t;
     }
     foreach ($t['findings'] as $i => $f) {
@@ -1896,7 +1908,8 @@ function wgct_tunnels_selftest() {
         $safely(function () use ($base, $twoPeers, $fixOf): bool {
             $c = $twoPeers($base());
             $c['interfaces']['opt11']['mss'] = '1376';
-            $t = wgct_pin_hint(wgct_derive($c, ['i-a'])['tunnels'][0], true, true);
+            $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+            $t = wgct_pin_hint($t, wgct_pinned($t, true, true));
             return $fixOf($t, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1] . WGCT_PINS_KEPT_HINT
                 && $fixOf($t, 'legacy-mss') === WGCT_FINDINGS['legacy-mss'][1]
                 && strip_tags(WGCT_PINS_KEPT_HINT) === WGCT_PINS_KEPT_HINT && !str_contains(WGCT_PINS_KEPT_HINT, '&');
@@ -1906,14 +1919,17 @@ function wgct_tunnels_selftest() {
             $c = $twoPeers($base());
             $c['routes']['r-a']['enabled'] = false;
             $c['routes']['r-b']['enabled'] = false;
-            $unbound = wgct_pin_hint(wgct_derive($c, ['i-a'])['tunnels'][0], true, true);
-            $off = wgct_pin_hint(wgct_derive($twoPeers($base()), ['i-a'])['tunnels'][0], false, false);
+            $hinted = fn (array $t, bool $wanPins, bool $innerSource): array => wgct_pin_hint($t, wgct_pinned($t, $wanPins, $innerSource));
+            $unbound = $hinted(wgct_derive($c, ['i-a'])['tunnels'][0], true, true);
+            $off = $hinted(wgct_derive($twoPeers($base()), ['i-a'])['tunnels'][0], false, false);
             $c3 = $base();
             $c3['interfaces']['opt11']['enable'] = false;
-            $innerOnly = wgct_pin_hint(wgct_derive($c3, ['i-a'])['tunnels'][0], false, true);
+            $t3 = wgct_derive($c3, ['i-a'])['tunnels'][0];
+            $innerOnly = $hinted($t3, false, true);
             return $fixOf($unbound, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1]
                 && $fixOf($off, 'not-single-peer') === WGCT_FINDINGS['not-single-peer'][1]
-                && $fixOf($innerOnly, 'interface-disabled') === WGCT_FINDINGS['interface-disabled'][1];
+                && $fixOf($innerOnly, 'interface-disabled') === WGCT_FINDINGS['interface-disabled'][1]
+                && !wgct_pinned($t3, false, true) && wgct_pinned($t3, true, false);
         }));
     wgct_check($p, 'pins: the view clamp follows the MSS lines: kept for a blocked bound tunnel, none for a disabled instance',
         $safely(function () use ($base): bool {
