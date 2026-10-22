@@ -37,6 +37,7 @@ function logMsg($tag, $msg) {
 /* The tick lock and the markers that make a skipped tick log once per state. */
 const WGCT_HEALTH_LOCK_FILE = WGCT_RUN_DIR . '/health.lock';
 const WGCT_HEALTH_SKIPPED_FILE = WGCT_RUN_DIR . '/health.skipped';
+const WGCT_HEALTH_UNOPENABLE_FILE = WGCT_RUN_DIR . '/health.unopenable';
 const WGCT_GATEWAY_SKIPPED_FILE = WGCT_RUN_DIR . '/gateway.skipped';
 
 /**
