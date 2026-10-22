@@ -9,21 +9,24 @@
  * managed tunnels derived from core with their clamps and findings (the
  * render-failed finding included), and the WireGuard instances the plugin
  * does not manage, for Adopt. A tunnel whose Create or Edit saved but whose apply
- * has not completed carries the apply-pending finding (ruling 20). Reads
- * config; writes nothing. The pure helpers below it turn the view into the
+ * has not completed carries the apply-pending finding (ruling 20). `held` names
+ * the IPv4 gateways whose hold record the health mirror owns (spec 2026-10-20
+ * section 3.5). Reads config; writes nothing. The pure helpers below it turn the view into the
  * API's tunnel records and the Tunnels grid's flat rows.
  */
 
 require_once __DIR__ . '/tunnels.php';
 require_once __DIR__ . '/apply.php';
+require_once __DIR__ . '/mirror.php';
 
 /**
  * @return array{tunnels: list<array>, global: list<array>, unmanaged: list<array{uuid: string, name: string, device: string, enabled: bool, endpoint: string}>, held: list<string>, core: array}
  */
 function wgct_tunnel_view(): array {
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
+    $engine = new \OPNsense\WGClientTunnels\Engine();
     $core = wgct_core_snapshot();
-    $managed = wgct_split_csv((string)$mdl->managed);
+    $managed = wgct_split_csv($engine->managed->getValue());
     $derived = wgct_derive($core, $managed);
     $mssClamp = $mdl->mss_clamp->isEqual('1');
     $pending = wgct_read_apply_pending();
@@ -71,7 +74,7 @@ function wgct_tunnel_view(): array {
             'enabled' => $inst['enabled'], 'endpoint' => $endpoint,
         ];
     }
-    return ['tunnels' => $tunnels, 'global' => $global, 'unmanaged' => $unmanaged, 'held' => wgct_split_csv((string)$mdl->held), 'core' => $core];
+    return ['tunnels' => $tunnels, 'global' => $global, 'unmanaged' => $unmanaged, 'held' => wgct_engine_holds($engine, $core['gateways'])['owned'], 'core' => $core];
 }
 
 /**

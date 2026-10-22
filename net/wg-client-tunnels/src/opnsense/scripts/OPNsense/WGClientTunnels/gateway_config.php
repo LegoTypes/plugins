@@ -19,6 +19,6 @@ $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
 $enabled = $mdl->enabled->isEqual('1');
 $ipv6Routes = $mdl->ipv6_routes->isEqual('1');
 $derived = $enabled && $ipv6Routes
-    ? wgct_derive(wgct_core_snapshot(), wgct_split_csv((string)$mdl->managed))
+    ? wgct_derive(wgct_core_snapshot(), wgct_managed())
     : ['tunnels' => [], 'global' => []];
 echo implode(PHP_EOL, wgct_route_lines($derived, $enabled, $ipv6Routes)) . PHP_EOL;

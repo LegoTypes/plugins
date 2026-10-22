@@ -100,7 +100,7 @@ $read = $state;
 $now = time();
 
 $core = wgct_core_snapshot();
-$watch = wgct_repair_watch(wgct_derive($core, wgct_split_csv((string)$mdl->managed)), $core);
+$watch = wgct_repair_watch(wgct_derive($core, wgct_managed()), $core);
 $status = wgct_gateway_status();
 if ($status === null) {
     if ($dry) {

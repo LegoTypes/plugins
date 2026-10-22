@@ -396,6 +396,15 @@ function wgct_core_snapshot() {
 }
 
 /**
+ * The WireGuard instances the plugin manages, in order, from the engine model (spec 3.5): the API cannot edit it.
+ *
+ * @return list<string> instance uuids
+ */
+function wgct_managed(): array {
+    return wgct_split_csv((new \OPNsense\WGClientTunnels\Engine())->managed->getValue());
+}
+
+/**
  * Core's dpinger defaults as the derivation uses them: the threshold entries that are whole numbers. Pure.
  *
  * @param mixed $raw whatever GatewayField::getDpingerDefaults() returned

@@ -71,7 +71,7 @@ function wgct_wanted_render(): array {
     if (!$enabled) {
         return ['enabled' => false, 'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     }
-    $derived = wgct_derive(wgct_core_snapshot(), wgct_split_csv((string)$mdl->managed));
+    $derived = wgct_derive(wgct_core_snapshot(), wgct_managed());
     return [
         'enabled' => true,
         'pins' => wgct_pin_set($derived, $mdl->wan_pins->isEqual('1'), $mdl->inner_source->isEqual('1')),
