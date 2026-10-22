@@ -34,7 +34,8 @@ Usage: tunnel.php [--json] [--dry] COMMAND   (--dry: create, edit, remove, rebin
                                       needs (apply-pending), else tunnel (Create's apply, then wireguard restart);
                                       MODE: filter, routes, first (Create's apply alone) or tunnel
   release-holds                       the package removal's: release the gateways the health mirror's own hold
-                                      records prove it holds down, forget every record; exits 0 even when it fails
+                                      records prove it holds down (an IPv6 gateway only when its tunnel is
+                                      healthy), forget every other record; exits 0 even when it fails
        tunnel.php --selftest
 TXT;
 /* the write actions, whose --dry validates and writes nothing; any other command refuses --dry */
@@ -249,12 +250,14 @@ const WGCT_RELEASE_CONFIGD_DOWN = 'deinstall: configd not answering; routing app
  * `release-holds`, which +PRE_DEINSTALL runs on a real removal (spec 3.11, convention C6; rulings R29-R31), while
  * the removal marker keeps every other entry point of the plugin stopped:
  *
- * 1. Under the gateway lock and Config::lock(): force_down=0 on the gateway of every owned hold record, every other
- *    record forgotten with its gateway untouched, no record kept, saved once. With records but no live boot id it
- *    changes nothing (ruling R17): leaving a gateway forced down is the safe side, releasing one it cannot prove it
- *    holds is not.
- * 2. One line to the WireGuard log says what it released and forgot, and names the managed tunnels' IPv6 gateways
- *    it leaves forced down (ruling R31: they follow their tunnel and have no hold record).
+ * 1. Under the gateway lock, outside Config::lock(): the dpinger readings, from their sockets alone (no configd).
+ *    Then under Config::lock(): force_down=0 on the gateway of every owned hold record, except an IPv6 gateway
+ *    whose tunnel pass 2 would not bring up now (wgct_release_plan(), spec 3.5a): that one stays forced down and
+ *    keeps its record. Every other record is forgotten with its gateway untouched, saved once. With records but no
+ *    live boot id it changes nothing (ruling R17): leaving a gateway forced down is the safe side, releasing one it
+ *    cannot prove it holds is not.
+ * 2. One line to the WireGuard log says what it released and forgot, and names the IPv6 gateways it leaves forced
+ *    down (ruling R31, narrowed by spec 3.5a).
  * 3. Only when something was released: core's `interface routes configure` through configctl, still under the
  *    gateway lock, as the mirror runs its reconfigure. Then the lock is released and the alarms dropped while it was
  *    held, the released gateways' own included, are replayed through core's `interface routes alarm`. Each configd
@@ -275,40 +278,44 @@ function wgct_release_holds(): array {
     try {
         $before = wgct_gateway_status();
         $lock = wgct_gateway_lock(true);
-        $commit = wgct_locked_commit(function (): array {
+        $readings = wgct_collect_dpinger();
+        $commit = wgct_locked_commit(function () use ($readings): array {
             $engine = new \OPNsense\WGClientTunnels\Engine();
-            /* the tunnels' part alone: the rest asks configd while it loads, which may not answer (ruling R29) */
+            /*
+             * The tunnels' part alone: the rest asks configd while it loads, which may not answer (ruling R29).
+             * The pairs are the mirror's: every finding that blocks a tunnel comes from this part.
+             */
             $core = wgct_core_tunnel_snapshot();
+            $pairs = wgct_mirror_inputs(wgct_derive($core, wgct_split_csv($engine->managed->getValue())))['pairs'];
             $holds = wgct_engine_holds($engine, $core['gateways']);
-            $forceDown = [];
-            $forceDownByName = [];
             $names = [];
             foreach ($core['gateways'] as $name => $g) {
-                $forceDown[$g['uuid']] = $g['force_down'];
-                $forceDownByName[(string)$name] = $g['force_down'];
                 $names[$g['uuid']] = (string)$name;
             }
-            $plan = wgct_release_plan($holds['rows'], $holds['live_boot'], $holds['previous_boot'], $forceDown);
-            $ipv6 = array_values(array_filter(array_column(wgct_derive($core, wgct_split_csv($engine->managed->getValue()))['tunnels'], 'gw6'),
-                fn (?string $name): bool => $name !== null));
+            $plan = wgct_release_plan($holds['rows'], $holds['live_boot'], $holds['previous_boot'], $core['gateways'], $pairs, $readings);
+            /* an owned record's gateway is forced down, so it exists */
+            $kept = array_map(fn (string $uuid): string => $names[$uuid], $plan['keep']);
+            sort($kept);
+            /* the kept records, re-stamped with the live boot as a tick would; every other record goes */
+            $rows = wgct_hold_rows_next(['gateways' => $core['gateways'], 'underlays' => [], 'pairs' => $pairs,
+                'holds_rows' => $holds['rows'], 'previous_boot' => $holds['previous_boot']],
+                array_fill_keys($kept, true), $holds['live_boot'], time());
             $result = [
-                'save' => $holds['live_boot'] !== '' && $holds['rows'] !== [],
                 'unreadable' => $holds['live_boot'] === '' && $holds['rows'] !== [],
-                /* an owned record's gateway is forced down, so it exists */
                 'released' => array_map(fn (string $uuid): string => $names[$uuid], $plan['release']),
                 'pruned' => array_map(fn (string $uuid): string => $names[$uuid] ?? $uuid, $plan['prune']),
-                'left_down' => wgct_release_left_down($ipv6, $forceDownByName),
+                'left_down' => $kept,
             ];
             if ($result['released'] !== []) {
                 $routing = new \OPNsense\Routing\Gateways();
                 wgct_apply_changes($routing, array_fill_keys($result['released'], false));
                 $routing->serializeToConfig();
             }
-            if ($result['save']) {
-                $engine->setHolds([]);
+            if ($rows !== null) {
+                $engine->setHolds($rows);
                 $engine->serializeToConfig();
             }
-            return $result;
+            return ['save' => $result['released'] !== [] || $rows !== null] + $result;
         }, 'wg upstream tunnels: release holds (package removal)');
         $out['saved'] = $commit['save'];
         $out['released'] = $commit['released'];
@@ -356,16 +363,17 @@ function wgct_release_holds(): array {
  *
  * @param list<string> $released gateway names released
  * @param list<string> $pruned   names (uuids for gateways that are gone) whose record went without a release
- * @param list<string> $leftDown the managed tunnels' IPv6 gateways left forced down (wgct_release_left_down())
+ * @param list<string> $leftDown the IPv6 gateways kept forced down with their record (wgct_release_plan()'s keep)
  * @return string
  */
 function wgct_release_log_line(array $released, array $pruned, array $leftDown): string {
-    $line = $released === [] ? 'deinstall: nothing held' : 'deinstall: released ' . implode(', ', $released);
+    $line = $released !== [] ? 'deinstall: released ' . implode(', ', $released)
+        : ($leftDown === [] ? 'deinstall: nothing held' : 'deinstall: nothing released');
     if ($pruned !== []) {
         $line .= '; hold records forgotten, their gateways left as they are: ' . implode(', ', $pruned);
     }
     if ($leftDown !== []) {
-        $line .= '; left forced down (IPv6, follows its tunnel): ' . implode(', ', $leftDown);
+        $line .= '; left forced down (IPv6, its tunnel is not healthy): ' . implode(', ', $leftDown);
     }
     return $line;
 }
@@ -517,10 +525,10 @@ function wgct_cli_own_selftest(): int {
         wgct_release_log_line([], ['tun_c'], []) === 'deinstall: nothing held; hold records forgotten, their gateways left as they are: tun_c'
         && wgct_release_log_line(['rehearse'], ['tun_c', 'tun_d'], [])
             === 'deinstall: released rehearse; hold records forgotten, their gateways left as they are: tun_c, tun_d');
-    wgct_check($t, 'cli: release-holds names the IPv6 gateways it leaves forced down (R31)',
-        wgct_release_log_line(['tun_a'], [], ['tun_a-ipv6']) === 'deinstall: released tun_a; left forced down (IPv6, follows its tunnel): tun_a-ipv6'
+    wgct_check($t, 'cli: release-holds names the IPv6 gateways it keeps forced down because their tunnel is not healthy (R31, narrowed by spec 3.5a)',
+        wgct_release_log_line(['tun_a'], [], ['tun_a-ipv6']) === 'deinstall: released tun_a; left forced down (IPv6, its tunnel is not healthy): tun_a-ipv6'
         && wgct_release_log_line([], ['tun_c'], ['tun_a-ipv6', 'tun_b-ipv6'])
-            === 'deinstall: nothing held; hold records forgotten, their gateways left as they are: tun_c; left forced down (IPv6, follows its tunnel): tun_a-ipv6, tun_b-ipv6');
+            === 'deinstall: nothing released; hold records forgotten, their gateways left as they are: tun_c; left forced down (IPv6, its tunnel is not healthy): tun_a-ipv6, tun_b-ipv6');
     return wgct_tally_report('cli', $t);
 }
 

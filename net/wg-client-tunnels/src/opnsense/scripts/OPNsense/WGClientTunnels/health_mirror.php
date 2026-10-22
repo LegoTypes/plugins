@@ -22,6 +22,8 @@
  *    tunnel's loss crosses that gateway's losshigh (recovering at losslow,
  *    holding in between, exactly as dpinger does), when its dpinger socket is
  *    missing, or when the IPv4 gateway itself is force_down (pass 1, or by hand).
+ *    As in pass 1, only a force_down this pass set itself is ever released: an
+ *    IPv6 gateway forced down by hand is left alone (spec 2026-10-20 3.5a).
  *
  * Keeping tunnel gateways out of the default-gateway election is NOT this
  * script's job: the sentinel gateways and default_guard.php do that.
@@ -29,10 +31,11 @@
  * Tunnels come from the plugin's managed list, not a fixed naming convention:
  * lib/tunnels.php derives each one (WireGuard instance, peer, interface
  * assignment, WAN binding, gateways) from core config every time it is
- * needed. The held set -- which IPv4 tunnels this pass 1 is holding down --
- * lives in the engine model as hold records (gateway, the boot it was taken in,
- * its WAN, when), saved in the same Config::lock()/save() write as the
- * force_down values they explain. A record is ours only when its boot is the
+ * needed. The held set -- which IPv4 tunnels pass 1 and which IPv6 gateways
+ * pass 2 is holding down -- lives in the engine model as hold records (gateway,
+ * the boot it was taken in, its underlay: the WAN of an IPv4 tunnel, the IPv4
+ * tunnel of an IPv6 gateway; when), saved in the same Config::lock()/save()
+ * write as the force_down values they explain. A record is ours only when its boot is the
  * live one, or the one boot.json names at the first tick after a reboot (that
  * tick re-stamps it); any other record is pruned with one log line and its
  * force_down left alone (spec 2026-10-20 section 3.5). Each tick ends by

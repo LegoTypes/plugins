@@ -21,6 +21,12 @@
 #      no hold record are saved, routing is skipped and one line says configd is not answering.
 #  d2. release-holds with nothing held and configd still stopped: it ends well within its bound, makes no configd
 #      call and logs "nothing held" alone.
+#   p. An IPv6 gateway pass 2 holds (spec 3.5a, case p7): rehearse gets an IPv6 gateway `rehearse-ipv6` through
+#      core's gateway model (monitoring off), and one mirror tick takes its hold, since rehearse's monitor never
+#      answers (100% loss). With that reading settled, release-holds keeps rehearse-ipv6 forced down with its record
+#      and names it ("left forced down (IPv6, its tunnel is not healthy)"). Then rehearse's monitor is pointed at
+#      its own tunnel address, which the firewall answers itself (0% loss): once that reading has settled,
+#      release-holds releases rehearse-ipv6 and forgets its record. The config of before the case is put back.
 #   f. A mirror tick that needs a change waits for the gateway lock (held by flock for 70 s, WAN_B forced down and
 #      no hold taken yet) while it holds health.lock; the .pre meanwhile gives up on health.lock after 60 s, writes
 #      the marker and runs release-holds. Once the gateway lock is free the tick stops at the marker: no hold record,
@@ -101,20 +107,32 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-# gw.php set NAME 0|1: a gateway's force_down in its settings, as System > Gateways saves it
+# gw.php NAME FIELD=VALUE...: a gateway's settings, as System > Gateways saves them; with NAME rehearse-ipv6 and no
+# such gateway, the gateway is added on rehearse's interface first (case p)
 cat > "$T/gw.php" <<'PHPEOF'
 <?php
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
-[, $name, $value] = $argv;
+$name = $argv[1];
 $cfg = \OPNsense\Core\Config::getInstance();
 $cfg->lock();
 $m = new \OPNsense\Routing\Gateways();
-$found = false;
+$byName = [];
 foreach ($m->gateway_item->iterateItems() as $g) {
-    if ((string)$g->name === $name) {
-        $g->force_down = $value;
-        $found = true;
+    $byName[(string)$g->name] = $g;
+}
+if (!isset($byName[$name]) && $name === 'rehearse-ipv6' && isset($byName['rehearse'])) {
+    $byName[$name] = $m->gateway_item->Add();
+    $byName[$name]->setNodes(['disabled' => '0', 'name' => $name, 'descr' => "{$name} (IPv6 tunnel)",
+        'interface' => (string)$byName['rehearse']->interface, 'ipprotocol' => 'inet6', 'gateway' => 'fd00::1:2',
+        'defaultgw' => '0', 'fargw' => '1', 'monitor_disable' => '1', 'force_down' => '0']);
+}
+$found = isset($byName[$name]);
+if ($found) {
+    foreach (array_slice($argv, 2) as $kv) {
+        [$field, $value] = explode('=', $kv, 2);
+        $byName[$name]->$field = $value;
     }
+    $found = count($m->performValidation()) === 0;
 }
 if ($found) {
     $m->serializeToConfig();
@@ -143,6 +161,19 @@ switch ($argv[1]) {
             }
         }
         break;
+    case 'address':
+        /* an instance's IPv4 tunnel address, without its prefix length */
+        foreach ($x->OPNsense->wireguard->server->servers->server as $s) {
+            if ((string)$s->name === $argv[2]) {
+                foreach (explode(',', (string)$s->tunneladdress) as $a) {
+                    if (!str_contains($a, ':')) {
+                        echo explode('/', trim($a))[0];
+                        break;
+                    }
+                }
+            }
+        }
+        break;
 }
 PHPEOF
 
@@ -165,11 +196,11 @@ facts() {
 }
 # hold: WAN_B forced down in its settings and applied, then one mirror tick takes the hold on rehearse
 hold() {
-    $PHP "$T/gw.php" WAN_B 1 && /usr/local/sbin/configctl interface routes configure > /dev/null
+    $PHP "$T/gw.php" WAN_B force_down=1 && /usr/local/sbin/configctl interface routes configure > /dev/null
     $PHP "$MIRROR" > /dev/null 2>&1
 }
 release_wan_b() {
-    $PHP "$T/gw.php" WAN_B 0 && /usr/local/sbin/configctl interface routes configure > /dev/null
+    $PHP "$T/gw.php" WAN_B force_down=0 && /usr/local/sbin/configctl interface routes configure > /dev/null
 }
 # settle: wait (at most 90 s) until no tick, prime, reconcile or routing configure is running
 settle() {
@@ -178,6 +209,17 @@ settle() {
         sleep 1
         n=$((n + 1))
     done
+}
+# settled NAME: wait (at most 150 s) until NAME's dpinger has run past its settle window (60 s: no time_period set)
+settled() {
+    n=0
+    while [ "$n" -lt 150 ]; do
+        age=$($PHP -r '$m = @filemtime("/var/run/dpinger_" . $argv[1] . ".sock"); echo $m === false ? -1 : time() - $m;' "$1")
+        [ "$age" -ge 65 ] && return 0
+        sleep 1
+        n=$((n + 1))
+    done
+    return 1
 }
 
 service cron stop > /dev/null 2>&1
@@ -257,8 +299,56 @@ check "d2: one line: deinstall: nothing held" "$(deinstall_lines "$mark")" "dein
 service configd start > /dev/null 2>&1
 release_wan_b
 
+# p. an IPv6 gateway pass 2 holds (spec 3.5a, p7)
+settle
+cp /conf/config.xml "$T/before-p.xml"
+$PHP "$T/gw.php" rehearse-ipv6 && /usr/local/sbin/configctl interface routes configure > /dev/null
+settle
+GW6=$($PHP "$T/fact.php" uuid rehearse-ipv6)
+check "p: rehearse-ipv6 added on rehearse's interface, not forced down; no hold record" \
+    "$([ -n "$GW6" ] && echo added) $($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" rows)" "added 0 0"
+check "p: rehearse's reading has settled" "$(settled rehearse && echo settled || echo settling)" settled
+$PHP "$MIRROR" > /dev/null 2>&1
+settle
+check "p: one mirror tick holds rehearse-ipv6 (rehearse reads 100% loss): force_down=1 and one hold record for it; rehearse untouched" \
+    "$($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" rows) $($PHP "$T/fact.php" row_gateway) $($PHP "$T/fact.php" force_down rehearse)" \
+    "1 1 $GW6 0"
+check "p: that tick's own apply restarted rehearse's monitor; its reading has settled again" "$(settled rehearse && echo settled || echo settling)" settled
+check "p: the mirror reads rehearse unhealthy" "$($PHP "$MIRROR" --dry | grep -c 'rehearse-ipv6 .*IPv4 unhealthy; rehearse 100% loss')" 1
+mark=$(wc -l < "$WGLOG")
+$PHP "$TUNNEL" --json release-holds > "$T/p1.json"
+rc=$?
+sleep 1
+check "p: release-holds with rehearse unhealthy: exit 0, ok, nothing released, nothing pruned, rehearse-ipv6 left down, nothing saved" \
+    "$rc $($PHP "$T/json.php" ok < "$T/p1.json") [$($PHP "$T/json.php" released < "$T/p1.json")] [$($PHP "$T/json.php" pruned < "$T/p1.json")] $($PHP "$T/json.php" left_down < "$T/p1.json") $($PHP "$T/json.php" saved < "$T/p1.json")" \
+    "0 true [] [] rehearse-ipv6 false"
+check "p: rehearse-ipv6 stays force_down=1 with its hold record" \
+    "$($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" rows) $($PHP "$T/fact.php" row_gateway)" "1 1 $GW6"
+check "p: one line names it: left forced down (IPv6, its tunnel is not healthy)" "$(deinstall_lines "$mark")" \
+    "deinstall: nothing released; left forced down (IPv6, its tunnel is not healthy): rehearse-ipv6"
+# rehearse's monitor pointed at its own tunnel address: the firewall answers it, so rehearse reads 0% loss
+$PHP "$T/gw.php" rehearse monitor="$($PHP "$T/fact.php" address rehearse)" monitor_noroute=1 \
+    && /usr/local/sbin/configctl interface routes configure > /dev/null
+settle
+check "p: rehearse's new reading has settled" "$(settled rehearse && echo settled || echo settling)" settled
+check "p: the mirror reads rehearse healthy" "$($PHP "$MIRROR" --dry | grep -c 'rehearse-ipv6 .*IPv4 healthy; rehearse 0% loss')" 1
+mark=$(wc -l < "$WGLOG")
+$PHP "$TUNNEL" --json release-holds > "$T/p2.json"
+rc=$?
+sleep 1
+check "p: release-holds with rehearse healthy: exit 0, ok, saved, rehearse-ipv6 released, nothing pruned or left down, routing through configd" \
+    "$rc $($PHP "$T/json.php" ok < "$T/p2.json") $($PHP "$T/json.php" saved < "$T/p2.json") $($PHP "$T/json.php" released < "$T/p2.json") [$($PHP "$T/json.php" pruned < "$T/p2.json")] [$($PHP "$T/json.php" left_down < "$T/p2.json")] $($PHP "$T/json.php" routing < "$T/p2.json")" \
+    "0 true true rehearse-ipv6 [] [] configd"
+check "p: rehearse-ipv6 force_down=0 and no hold record; rehearse, WAN_B and WAN_DHCP untouched" \
+    "$($PHP "$T/fact.php" force_down rehearse-ipv6) $(facts)" "0 0 0 0 0"
+check "p: one line: deinstall: released rehearse-ipv6" "$(deinstall_lines "$mark")" "deinstall: released rehearse-ipv6"
+$PHP "$T/restore.php" "$T/before-p.xml" && /usr/local/sbin/configctl interface routes configure > /dev/null
+settle
+check "p: the config of before the case is back: no rehearse-ipv6, rehearse's own monitor, nothing held" \
+    "[$($PHP "$T/fact.php" uuid rehearse-ipv6)] $(facts)" "[] 0 0 0 0"
+
 # f. a tick waiting on the gateway lock while the .pre runs (review fix I2)
-$PHP "$T/gw.php" WAN_B 1 && /usr/local/sbin/configctl interface routes configure > /dev/null
+$PHP "$T/gw.php" WAN_B force_down=1 && /usr/local/sbin/configctl interface routes configure > /dev/null
 settle
 check "f: WAN_B forced down, no hold taken yet" "$(facts)" "0 0 1 0"
 /usr/local/bin/flock -o /tmp/filter_reload_gateway.lock sleep 70 &

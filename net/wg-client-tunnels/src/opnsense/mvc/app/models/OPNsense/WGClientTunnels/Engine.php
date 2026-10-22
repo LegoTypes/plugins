@@ -92,10 +92,20 @@ class Engine extends BaseModel
             $this->holds->del($item);
         }
         foreach ($rows as $row) {
-            $this->holds->Add()->setNodes([
-                'gateway' => $row['gateway'], 'boot' => $row['boot'],
-                'underlay' => $row['underlay'], 'taken_at' => (string)$row['taken_at'],
-            ]);
+            $this->addHold($row);
         }
+    }
+
+    /**
+     * Add one hold record.
+     *
+     * @param array{gateway: string, boot: string, underlay: string, taken_at: int} $row
+     */
+    public function addHold(array $row): void
+    {
+        $this->holds->Add()->setNodes([
+            'gateway' => $row['gateway'], 'boot' => $row['boot'],
+            'underlay' => $row['underlay'], 'taken_at' => (string)$row['taken_at'],
+        ]);
     }
 }

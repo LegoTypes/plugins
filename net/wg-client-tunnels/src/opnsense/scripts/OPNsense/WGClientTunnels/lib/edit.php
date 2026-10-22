@@ -356,7 +356,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         'instance' => [], 'peer_uuid' => '', 'peer' => [], 'swap_keys' => false,
         'gateways' => ['update' => [], 'add' => [], 'delete' => []],
         'routes' => ['add' => [], 'update' => [], 'delete' => []],
-        'nat' => ['add' => [], 'delete' => []], 'replay' => [], 'kernel_routes' => [],
+        'nat' => ['add' => [], 'delete' => []], 'replay' => [], 'kernel_routes' => [], 'holds' => [],
     ];
     if (!in_array($uuid, $snap['managed'], true)) {
         $plan['errors']['general'] = 'not a managed tunnel';
@@ -592,7 +592,8 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
                 'disabled' => '0', 'name' => $name6, 'interface' => $opt, 'ipprotocol' => 'inet6',
                 'gateway' => $next6, 'defaultgw' => '0', 'fargw' => '1', 'force_down' => '1',
             ], wgct_gw6_monitor_fields($name6, $monitor6, $snap['gateway_fields'][(string)$t['gw4']] ?? []));
-            $c[] = "gateway {$name6} {$next6} on {$opt}, monitor {$monitor6}, starts forced down (the health mirror releases it)";
+            $plan['holds'] = wgct_gw6_start_holds($snap['boot_id'], $name6, (string)$t['gw4']);
+            $c[] = "gateway {$name6} {$next6} on {$opt}, monitor {$monitor6}, " . wgct_gw6_start_text($plan['holds'], $name6);
             $need['tunnel'] = true;
         }
     }
@@ -1038,6 +1039,17 @@ function wgct_edit_selftest(): int {
         && ($g6['monitor'] ?? '') === '2001:db8:ffff::32' && ($g6['monitor_noroute'] ?? '') === '1' && ($g6['monitor_disable'] ?? '') === '0' && count($p['nat']['add']) === 1
         && $p['nat']['add'][0]['ipprotocol'] === 'inet6' && $p['swap_keys'] === false
         && $p['routes'] === ['add' => [], 'update' => [], 'delete' => []] && $p['replay'] === ['tun_b', 'tun_b-ipv6']);
+    wgct_check($t, 'edit: (3.5a) the IPv6 gateway turned on starts forced down as the mirror\'s hold: a record with the live boot, following tun_b',
+        $p['holds'] === [['name' => 'tun_b-ipv6', 'boot' => $snap['boot_id'], 'underlay' => 'tun_b']]);
+    $s = $snap;
+    $s['boot_id'] = '';
+    $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'monitor6' => '2001:db8:ffff::32', 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
+        $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]), $s);
+    wgct_check($t, 'edit: (3.5a) kern.boot_id unreadable => still forced down, no hold record, and the change list says to untick it by hand',
+        $p['errors'] === [] && $p['holds'] === [] && (($p['gateways']['add'][0] ?? [])['force_down'] ?? '') === '1'
+        && $has($p['changes'], 'kern.boot_id cannot be read, so the health mirror cannot record this hold: untick force_down on tun_b-ipv6 once the tunnel is up'));
+    wgct_check($t, 'edit: (3.5a) IPv6 off and an edit that adds no IPv6 gateway => no hold record',
+        $plan(['ipv6' => false] + $keepA)['holds'] === [] && $plan(['monitor6' => '2001:db8:ffff::30'] + $keepA)['holds'] === []);
 
     /* ---- the IPv6 monitor (spec 3.7) ---- */
     $r0 = wgct_edit_request(['monitor6' => ''], $u);

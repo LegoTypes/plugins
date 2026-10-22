@@ -12,7 +12,8 @@
  *                              losshigh, losslow, time_period]
  *   config.underlays  IPv4 tunnel gateway name => WAN gateway name
  *   config.pairs      IPv4 tunnel gateway name => its IPv6 gateway name
- *   config.held       gateway names held down by pass 1: the owned hold records
+ *   config.held       gateway names held down by pass 1 (IPv4 tunnels) or pass 2 (their IPv6
+ *                     gateways): the owned hold records
  *   config.foreign    name (uuid when the gateway is gone) => 'released' | 'foreign',
  *                     the hold records the next commit prunes (wgct_resolve_holds())
  *   config.duplicates names with a second hold record, which the next commit drops
@@ -133,6 +134,29 @@ function wgct_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled 
         return false;               // at/below low watermark => up
     }
     return $currentDown;            // between watermarks => hold (hysteresis)
+}
+
+/**
+ * Pass 2's decision for one IPv6 tunnel gateway: forced down while its IPv4 tunnel is forced down, otherwise as
+ * that tunnel's loss says (wgct_decide_down(): dpinger's hysteresis and the settle guard). Pure.
+ *
+ * @param string   $ipv4Name       the IPv4 tunnel gateway it follows
+ * @param array    $ipv4           that gateway's config row
+ * @param bool     $ipv4Forced     its force_down as it stands, pass 1's decisions included
+ * @param bool     $currentDown    the IPv6 gateway's force_down now (the hysteresis memory)
+ * @param array    $readings       dpinger readings: 'loss' and 'sock_age', each name => int|null (wgct_collect_dpinger())
+ * @param int|null $settleOverride --settle=N
+ * @return array{down: bool, why: string, loss: ?int, settled: bool, age: ?int, window: int, low: int, high: int}
+ */
+function wgct_ipv6_decide(string $ipv4Name, array $ipv4, bool $ipv4Forced, bool $currentDown, array $readings, ?int $settleOverride): array {
+    [$low, $high] = wgct_watermarks($ipv4);
+    [$settled, $age, $window] = wgct_settled($ipv4, $readings['sock_age'][$ipv4Name] ?? null, $settleOverride);
+    $loss = $readings['loss'][$ipv4Name] ?? null;
+    $down = $ipv4Forced || wgct_decide_down($loss, $high, $low, $currentDown, $settled);
+    return [
+        'down' => $down, 'why' => $ipv4Forced ? 'IPv4 force_down' : ($down ? 'IPv4 unhealthy' : 'IPv4 healthy'),
+        'loss' => $loss, 'settled' => $settled, 'age' => $age, 'window' => $window, 'low' => $low, 'high' => $high,
+    ];
 }
 
 /**
@@ -573,11 +597,11 @@ function wgct_dedupe_hold_rows(array $rows, string $liveBoot, ?string $previousB
 /**
  * The hold records a commit writes for the planner's held set, or null when config already holds exactly these
  * (in any order). Every gateway held keeps its owned row, re-stamped with the live boot (when it was taken and on
- * which WAN kept), or gets a new row taken now on its tunnel's WAN; every other row goes: released by the planner,
- * released by hand, foreign, or a second row for one gateway. With no live boot id nothing is written, not even
- * a prune (ruling R17). Pure.
+ * which underlay kept), or gets a new row taken now: an IPv4 tunnel's on its WAN, an IPv6 gateway's on the IPv4
+ * tunnel it follows (spec 3.5a); every other row goes: released by the planner, released by hand, foreign, or a
+ * second row for one gateway. With no live boot id nothing is written, not even a prune (ruling R17). Pure.
  *
- * @param array               $config    wgct_collect_config() (gateways, underlays, holds_rows, previous_boot)
+ * @param array               $config    wgct_collect_config() (gateways, underlays, pairs, holds_rows, previous_boot)
  * @param array<string, true> $heldNames the planner's held set
  * @param string              $liveBoot  the live kern.boot_id
  * @param int                 $now       the time a new hold is taken
@@ -600,13 +624,14 @@ function wgct_hold_rows_next(array $config, array $heldNames, string $liveBoot, 
             $prior[$row['gateway']] = $row;
         }
     }
+    $follows = array_flip($config['pairs']);
     $next = [];
     foreach (array_keys($heldNames) as $name) {
         $uuid = $config['gateways'][$name]['uuid'] ?? null;
         if ($uuid === null) {
             continue;
         }
-        $underlay = (string)($config['underlays'][$name] ?? '');
+        $underlay = (string)($config['underlays'][$name] ?? $follows[$name] ?? '');
         $next[] = [
             'gateway' => $uuid,
             'boot' => $liveBoot,
@@ -662,48 +687,61 @@ function wgct_commit_held(array $heldNames, array $config, string $liveBoot): bo
 }
 
 /**
- * What a package removal does with the hold records (spec 3.11): the gateway of every owned record is released,
- * every other record is forgotten with its gateway untouched, and the engine model keeps no record. With no live
- * boot id no record can be shown to be ours (ruling R17): nothing is released and nothing forgotten, so every
- * gateway stays as it is and the records stay for a human to judge. Pure.
+ * What a package removal does with the hold records (spec 3.11, 3.5a). The gateway of every owned record is
+ * released, except an IPv6 gateway pass 2 holds: that one is released only when pass 2, evaluated now on the live
+ * readings, would bring it up (its IPv4 tunnel not forced down and reading healthy, wgct_ipv6_decide()). Otherwise
+ * it stays forced down and its record is kept (ruling R31, narrowed): released then, it would be eligible while its
+ * tunnel is dead, and with monitoring off for good. No readings, or no managed tunnel it follows, keep it too.
+ * Every other record is forgotten with its gateway untouched. With no live boot id no record can be shown to be
+ * ours (ruling R17): nothing is released, kept or forgotten, so every gateway stays as it is and the records stay
+ * for a human to judge. Pure.
  *
  * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows the records as stored
- * @param string              $liveBoot     the live kern.boot_id as hex, '' when unreadable
- * @param ?string             $previousBoot boot.json's boot id when it names another boot than the live one
- * @param array<string, bool> $forceDown    gateway uuid => force_down
- * @return array{release: list<string>, prune: list<string>} sorted gateway uuids: those to set force_down=0, and
- *         those whose record goes without a write to the gateway; each gateway in one list at most
+ * @param string                $liveBoot     the live kern.boot_id as hex, '' when unreadable
+ * @param ?string               $previousBoot boot.json's boot id when it names another boot than the live one
+ * @param array<string, array>  $gateways     core snapshot gateways by name: uuid, ipprotocol, force_down and the
+ *                                            loss watermarks and time_period pass 2 reads
+ * @param array<string, string> $pairs        IPv4 tunnel gateway name => its IPv6 gateway name (wgct_mirror_inputs())
+ * @param ?array                $readings     dpinger readings (wgct_collect_dpinger()), null when unavailable
+ * @return array{release: list<string>, prune: list<string>, keep: list<string>} sorted gateway uuids: those to set
+ *         force_down=0, those whose record goes without a write to the gateway, and the IPv6 gateways left forced
+ *         down with their record; each gateway in one list at most
  */
-function wgct_release_plan(array $rows, string $liveBoot, ?string $previousBoot, array $forceDown): array {
+function wgct_release_plan(array $rows, string $liveBoot, ?string $previousBoot, array $gateways, array $pairs, ?array $readings): array {
     if ($liveBoot === '') {
-        return ['release' => [], 'prune' => []];
+        return ['release' => [], 'prune' => [], 'keep' => []];
+    }
+    $forceDown = [];
+    $names = [];
+    foreach ($gateways as $name => $g) {
+        $forceDown[$g['uuid']] = $g['force_down'];
+        $names[$g['uuid']] = (string)$name;
     }
     $deduped = wgct_dedupe_hold_rows($rows, $liveBoot, $previousBoot)['rows'];
     $resolved = wgct_resolve_holds($deduped, $liveBoot, $previousBoot, $forceDown);
-    $prune = array_map('strval', array_keys($resolved['pruned']));
-    sort($prune);
-    return ['release' => $resolved['owned'], 'prune' => $prune];
-}
-
-/**
- * The IPv6 gateways a package removal leaves forced down (ruling R31): a managed tunnel's IPv6 gateway follows its
- * IPv4 tunnel (pass 2), so when it is forced down no hold record proves the plugin took that, and the removal
- * leaves it as it is, failing closed (C1). Named so the owner can untick it. Pure.
- *
- * @param list<string>        $ipv6      the managed tunnels' IPv6 gateway names (wgct_derive()'s gw6)
- * @param array<string, bool> $forceDown gateway name => force_down
- * @return list<string> the forced-down IPv6 gateway names, sorted
- */
-function wgct_release_left_down(array $ipv6, array $forceDown): array {
-    $names = [];
-    foreach ($ipv6 as $ipv6Name) {
-        if (!empty($forceDown[$ipv6Name])) {
-            $names[] = (string)$ipv6Name;
+    $follows = array_flip($pairs);
+    $release = [];
+    $keep = [];
+    /* an owned record's gateway is forced down, so it exists */
+    foreach ($resolved['owned'] as $uuid) {
+        $name = $names[$uuid];
+        if ($gateways[$name]['ipprotocol'] !== 'inet6') {
+            $release[] = $uuid;
+            continue;
+        }
+        $ipv4Name = $follows[$name] ?? null;
+        $ipv4 = $ipv4Name !== null ? ($gateways[$ipv4Name] ?? null) : null;
+        $up = $readings !== null && $ipv4 !== null
+            && !wgct_ipv6_decide($ipv4Name, $ipv4, $ipv4['force_down'], true, $readings, null)['down'];
+        if ($up) {
+            $release[] = $uuid;
+        } else {
+            $keep[] = $uuid;
         }
     }
-    $names = array_values(array_unique($names));
-    sort($names);
-    return $names;
+    $prune = array_map('strval', array_keys($resolved['pruned']));
+    sort($prune);
+    return ['release' => $release, 'prune' => $prune, 'keep' => $keep];
 }
 
 /**
@@ -718,6 +756,17 @@ function wgct_release_left_down(array $ipv6, array $forceDown): array {
  * @return array see the file header
  */
 function wgct_collect_live() {
+    return ['status' => wgct_gateway_status()] + wgct_collect_dpinger();
+}
+
+/**
+ * The dpinger readings pass 2 decides from, read from each running dpinger's control socket: no subprocess, no
+ * config and no configd, so the package removal reads them too (spec 3.5a, ruling R29). Called outside
+ * Config::lock(), as wgct_collect_live() is.
+ *
+ * @return array{loss: array<string, ?int>, sock_age: array<string, ?int>} by gateway name
+ */
+function wgct_collect_dpinger(): array {
     $loss = [];
     $age = [];
     foreach (glob('/var/run/dpinger_*.sock') ?: [] as $sock) {
@@ -725,7 +774,7 @@ function wgct_collect_live() {
         $loss[$name] = wgct_read_loss($name);
         $age[$name] = wgct_socket_age($sock);
     }
-    return ['status' => wgct_gateway_status(), 'loss' => $loss, 'sock_age' => $age];
+    return ['loss' => $loss, 'sock_age' => $age];
 }
 
 /**
@@ -733,7 +782,8 @@ function wgct_collect_live() {
  *
  * @param array    $config         wgct_collect_config()
  * @param array    $live           wgct_collect_live()
- * @param array    $held           name => true, tunnels pass 1 holds down
+ * @param array    $held           name => true, the gateways the mirror holds down: IPv4 tunnels (pass 1) and
+ *                                 their IPv6 gateways (pass 2)
  * @param int|null $settleOverride --settle=N
  * @return array ['changes' => name => bool force_down, 'held' => name => true,
  *                'held_changed' => bool, 'report' => string[], 'log' => string[]]
@@ -818,53 +868,52 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
     }
 
     /* ---- pass 2: IPv6 follows its own IPv4 tunnel ---- */
-    foreach ($config['pairs'] as $ipv4Name => $ipv6Name) {
-        $ipv4 = $gws[$ipv4Name] ?? null;
-        $gw6 = $gws[$ipv6Name] ?? null;
-        /*
-         * A disabled gateway is already out of the default-gateway election and out
-         * of every gateway group, so force_down would not change its effect, and
-         * writing it would reconfigure routing for nothing. Leave it alone.
-         */
-        if ($ipv4 === null || $gw6 === null || $gw6['disabled']) {
-            continue;
-        }
-        [$lossLow, $lossHigh] = wgct_watermarks($ipv4);
-        [$settled, $sockAge, $settleWindow] = wgct_settled(
-            $ipv4,
-            $live['sock_age'][$ipv4Name] ?? null,
-            $settleOverride
-        );
-        $lossVal = $live['loss'][$ipv4Name] ?? null;
-        $currentDown = $forced[$ipv6Name];
-        $ipv4Forced = $forced[$ipv4Name];     // includes pass 1's decisions
-        $down = $ipv4Forced || wgct_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled);
-        $lossStr = $lossVal === null ? 'no-data' : "{$lossVal}% loss";
-        $why = $ipv4Forced ? 'IPv4 force_down' : ($down ? 'IPv4 unhealthy' : 'IPv4 healthy');
-
-        $report[] = sprintf(
-            'ipv6     %-22s force_down %s -> %s  (%s; %s %s%s)',
-            $ipv6Name,
-            $currentDown ? '1' : '0',
-            $down ? '1' : '0',
-            $why,
-            $ipv4Name,
-            $lossStr,
-            $settled ? '' : "; settling {$sockAge}/{$settleWindow}s"
-        );
-        if ($down !== $currentDown) {
-            $forced[$ipv6Name] = $down;
-            $changes[$ipv6Name] = $down;
+    if (!empty($config['boot_unreadable'])) {
+        /* as pass 1 (ruling R17): no hold is taken or released without the live boot id */
+        $report[] = 'ipv6: kern.boot_id unreadable, pass skipped';
+    } else {
+        foreach ($config['pairs'] as $ipv4Name => $ipv6Name) {
+            $ipv4 = $gws[$ipv4Name] ?? null;
+            $gw6 = $gws[$ipv6Name] ?? null;
+            /*
+             * A disabled gateway is already out of the default-gateway election and out
+             * of every gateway group, so force_down would not change its effect, and
+             * writing it would reconfigure routing for nothing. Leave it alone.
+             */
+            if ($ipv4 === null || $gw6 === null || $gw6['disabled']) {
+                continue;
+            }
+            /* a force_down no record of this pass explains is a person's: left alone, as pass 1 does (spec 3.5a) */
+            $isHeld = isset($held[$ipv6Name]);
+            $manual = $gw6['force_down'] && !$isHeld;
+            $currentDown = $forced[$ipv6Name];
+            $d = wgct_ipv6_decide($ipv4Name, $ipv4, $forced[$ipv4Name], $currentDown, $live, $settleOverride);
+            $lossStr = $d['loss'] === null ? 'no-data' : "{$d['loss']}% loss";
+            $reading = sprintf('%s; %s %s%s', $d['why'], $ipv4Name, $lossStr, $d['settled'] ? '' : "; settling {$d['age']}/{$d['window']}s");
+            $report[] = $manual
+                ? sprintf('ipv6     %-22s force_down 1 -> manual force_down, left alone  (%s)', $ipv6Name, $reading)
+                : sprintf('ipv6     %-22s force_down %s -> %s  (%s)', $ipv6Name, $currentDown ? '1' : '0', $d['down'] ? '1' : '0', $reading);
+            if ($manual || $d['down'] === $isHeld) {
+                continue;
+            }
+            if ($d['down']) {
+                $held[$ipv6Name] = true;
+            } else {
+                unset($held[$ipv6Name]);
+            }
+            $heldChanged = true;
+            $forced[$ipv6Name] = $d['down'];
+            $changes[$ipv6Name] = $d['down'];
             $log[] = sprintf(
                 '%s: %s (%s; %s %s; watermarks %d/%d%s)',
                 $ipv6Name,
-                $down ? 'force_down' : 'online',
-                $why,
+                $d['down'] ? 'force_down' : 'online',
+                $d['why'],
                 $ipv4Name,
                 $lossStr,
-                $lossLow,
-                $lossHigh,
-                $settled ? '' : "; dpinger settling {$sockAge}/{$settleWindow}s"
+                $d['low'],
+                $d['high'],
+                $d['settled'] ? '' : "; dpinger settling {$d['age']}/{$d['window']}s"
             );
         }
     }
@@ -1031,33 +1080,33 @@ function wgct_selftest() {
             $config(), $live(), [], [], []],
         ['WAN down => tunnel held, IPv6 follows',
             $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none']]), [],
-            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a']],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
         ['WAN back, settled => release tunnel and IPv6',
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(), ['tun_a'],
+            $live(), ['tun_a', 'tun_a-ipv6'],
             ['tun_a' => false, 'tun_a-ipv6' => false], []],
         ['WAN back, unsettled => keep holding',
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(['sock_age' => ['WAN_A' => 5, 'tun_a' => 600]]), ['tun_a'],
-            [], ['tun_a']],
+            $live(['sock_age' => ['WAN_A' => 5, 'tun_a' => 600]]), ['tun_a', 'tun_a-ipv6'],
+            [], ['tun_a', 'tun_a-ipv6']],
         ['manual force_down on tunnel => left alone, IPv6 follows it',
             $config(['tun_a' => ['force_down' => true]]),
             $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none']]), [],
-            ['tun_a-ipv6' => true], []],
+            ['tun_a-ipv6' => true], ['tun_a-ipv6']],
         ['status unavailable => pass 1 skipped, pass 2 still runs',
             $config(), $live(['status' => null, 'loss' => ['tun_a' => 30]]), ['tun_a'],
-            ['tun_a-ipv6' => true], ['tun_a']],
+            ['tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
         ['held gateway that no longer exists => forgotten',
             $config(), $live(), ['gone'], [], []],
         ['disabled IPv6 gateway => untouched',
             $config(['tun_a-ipv6' => ['disabled' => true]]),
             $live(['loss' => ['tun_a' => 100]]), [], [], []],
-        ['IPv4 loss in band, IPv6 down => hold',
+        ['IPv4 loss in band, IPv6 held down => hold',
             $config(['tun_a-ipv6' => ['force_down' => true]]),
-            $live(['loss' => ['tun_a' => 15]]), [], [], []],
+            $live(['loss' => ['tun_a' => 15]]), ['tun_a-ipv6'], [], ['tun_a-ipv6']],
         ['no dpinger data for IPv4, settled socket => IPv6 down',
             $config(), $live(['loss' => []]), [],
-            ['tun_a-ipv6' => true], []],
+            ['tun_a-ipv6' => true], ['tun_a-ipv6']],
         ['no dpinger socket for IPv4 (restarting) => IPv6 unchanged',
             $config(), $live(['loss' => [], 'sock_age' => ['WAN_A' => 600]]), [],
             [], []],
@@ -1069,27 +1118,27 @@ function wgct_selftest() {
             [], []],
         ['every dpinger just restarted, tunnel held, WAN reads up => still held',
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(['sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), ['tun_a'],
-            [], ['tun_a']],
+            $live(['sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), ['tun_a', 'tun_a-ipv6'],
+            [], ['tun_a', 'tun_a-ipv6']],
         ['WAN forced down in config while every dpinger restarts => tunnel held at once, IPv6 follows',
             $config(['WAN_A' => ['force_down' => true]]),
             $live(['status' => ['WAN_A' => 'force_down', 'tun_a' => 'down'], 'sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), [],
-            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a']],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
         ['WAN still down once settled => tunnel held',
             $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none'], 'sock_age' => ['WAN_A' => 60, 'tun_a' => 600]]), [],
-            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a']],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
         ['unmonitored WAN back up (no dpinger socket) => release tunnel and IPv6',
             $config(['WAN_A' => ['monitor_disable' => true], 'tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
+            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a', 'tun_a-ipv6'],
             ['tun_a' => false, 'tun_a-ipv6' => false], []],
         ['unmonitored WAN absent from status => keep holding',
             $config(['WAN_A' => ['monitor_disable' => true], 'tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(['status' => ['tun_a' => 'none'], 'sock_age' => ['tun_a' => 600]]), ['tun_a'],
-            [], ['tun_a']],
+            $live(['status' => ['tun_a' => 'none'], 'sock_age' => ['tun_a' => 600]]), ['tun_a', 'tun_a-ipv6'],
+            [], ['tun_a', 'tun_a-ipv6']],
         ['monitored WAN with no socket yet => keep holding (unchanged)',
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
-            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a'],
-            [], ['tun_a']],
+            $live(['sock_age' => ['tun_a' => 600]]), ['tun_a', 'tun_a-ipv6'],
+            [], ['tun_a', 'tun_a-ipv6']],
         ['monitored IPv6 gateway reading 100% loss while its IPv4 tunnel is healthy => pass 2 leaves it (core owns its own status)',
             $config(['tun_a-ipv6' => ['monitor_disable' => false]]),
             $live(['status' => ['WAN_A' => 'none', 'tun_a' => 'none', 'tun_a-ipv6' => 'down'],
@@ -1214,14 +1263,23 @@ function wgct_selftest() {
     }
 
     /* (a) and (f) through the planner: only owned rows reach its held set */
-    $heldCfg = $config(['tun_a' => ['uuid' => $uA, 'force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]);
-    $owned = wgct_resolve_holds([$hold($uA, $live1)], $live1, null, [$uA => true])['owned'];
-    $heldNames = [];
-    foreach ($heldCfg['gateways'] as $name => $g) {
-        if (in_array($g['uuid'], $owned, true)) {
-            $heldNames[$name] = true;
+    $heldCfg = $config(['tun_a' => ['uuid' => $uA, 'force_down' => true], 'tun_a-ipv6' => ['uuid' => $uB, 'force_down' => true]]);
+    /* the planner's held set from hold records, as wgct_collect_config() makes it: the owned rows, by name */
+    $heldOf = function (array $gateways, array $rows, string $liveBoot, ?string $prevBoot): array {
+        $forceDown = [];
+        $names = [];
+        foreach ($gateways as $name => $g) {
+            $forceDown[$g['uuid']] = $g['force_down'];
+            $names[$g['uuid']] = $name;
         }
-    }
+        $rows = wgct_dedupe_hold_rows($rows, $liveBoot, $prevBoot)['rows'];
+        $held = [];
+        foreach (wgct_resolve_holds($rows, $liveBoot, $prevBoot, $forceDown)['owned'] as $uuid) {
+            $held[$names[$uuid]] = true;
+        }
+        return $held;
+    };
+    $heldNames = $heldOf($heldCfg['gateways'], [$hold($uA, $live1), $hold($uB, $live1)], $live1, null);
     $plan = wgct_plan($heldCfg, $live(), $heldNames, null);
     $ok = $plan['changes'] === ['tun_a' => false, 'tun_a-ipv6' => false] && $plan['held'] === [];
     $fail += $ok ? 0 : 1;
@@ -1314,7 +1372,7 @@ function wgct_selftest() {
         return [
             'gateways' => ['WAN_A' => $row(['uuid' => '99999999-9999-4999-8999-999999999999']),
                            'tun_a' => $row(['uuid' => $uA, 'force_down' => true]), 'tun_b' => $row(['uuid' => $uB, 'force_down' => true])],
-            'underlays' => ['tun_a' => 'WAN_A', 'tun_b' => 'WAN_A'],
+            'underlays' => ['tun_a' => 'WAN_A', 'tun_b' => 'WAN_A'], 'pairs' => [],
             'holds_rows' => $rows, 'live_boot' => $live1, 'previous_boot' => $prevBoot,
         ];
     };
@@ -1374,33 +1432,121 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] holds: (R17) no boot id, WAN down => no hold taken, nothing logged by the plan\n", $ok ? 'PASS' : 'FAIL');
-    $plan = wgct_plan($frozen + $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]), $live(), ['tun_a' => true], null);
-    $ok = $plan['changes'] === [] && $plan['held'] === ['tun_a' => true] && !$plan['held_changed'];
+    $plan = wgct_plan($frozen + $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]), $live(),
+        ['tun_a' => true, 'tun_a-ipv6' => true], null);
+    $ok = $plan['changes'] === [] && $plan['held'] === ['tun_a' => true, 'tun_a-ipv6' => true] && !$plan['held_changed'];
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] holds: (R17) no boot id, WAN up => no hold released\n", $ok ? 'PASS' : 'FAIL');
 
-    /* ---- wgct_release_plan: what a package removal does with the hold records (spec 3.11) ---- */
+    /* ---- spec 3.5a: pass 2 holds its IPv6 gateways by record, as pass 1 does ---- */
+    /* the pair tun_a / tun_a-ipv6 on WAN_A with uuids, hold records and boots: a wgct_collect_config() as the tick sees it */
+    $pairCfg = function (array $gw = [], array $rows = []) use ($config, $uA, $uB, $uC, $live1): array {
+        $o = [];
+        foreach (['WAN_A' => $uC, 'tun_a' => $uA, 'tun_a-ipv6' => $uB] as $name => $uuid) {
+            $o[$name] = ($gw[$name] ?? []) + ['uuid' => $uuid];
+        }
+        return $config($o) + ['holds_rows' => $rows, 'live_boot' => $live1, 'previous_boot' => null, 'boot_unreadable' => false];
+    };
+    $ipv6Report = fn (array $plan): string => implode("\n", array_filter($plan['report'], fn (string $l): bool => str_contains($l, 'tun_a-ipv6')));
+    $sick = $live(['loss' => ['WAN_A' => 0, 'tun_a' => 100]]);
+
+    $cfg = $pairCfg(['tun_a-ipv6' => ['force_down' => true]]);
+    $plan = wgct_plan($cfg, $live(), $heldOf($cfg['gateways'], $cfg['holds_rows'], $live1, null), null);
+    $ok = $plan['changes'] === [] && $plan['held'] === [] && !$plan['held_changed']
+        && str_contains($ipv6Report($plan), 'manual force_down, left alone') && $plan['log'] === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p1) a hand-forced IPv6 pair gateway with no record, its IPv4 healthy, is left alone and reported manual\n", $ok ? 'PASS' : 'FAIL');
+    if (!$ok) {
+        printf("       changes %s held %s report %s\n", json_encode($plan['changes']), json_encode($plan['held']), json_encode($ipv6Report($plan)));
+    }
+
+    $cfg = $pairCfg();
+    $plan = wgct_plan($cfg, $sick, $heldOf($cfg['gateways'], [], $live1, null), null);
+    $rows = wgct_hold_rows_next($cfg, $plan['held'], $live1, $now);
+    $ok = $plan['changes'] === ['tun_a-ipv6' => true] && $plan['held'] === ['tun_a-ipv6' => true] && $plan['held_changed']
+        && $rows === [$stamped($uB, $live1, $now, 'tun_a')];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p2) a pass-2 down decision takes the hold: force_down=1 and a row with the live boot, its IPv4 tunnel as underlay\n", $ok ? 'PASS' : 'FAIL');
+    if (!$ok) {
+        printf("       changes %s held %s rows %s\n", json_encode($plan['changes']), json_encode($plan['held']), json_encode($rows));
+    }
+
+    $cfg = $pairCfg(['tun_a-ipv6' => ['force_down' => true]], [$stamped($uB, $live1, $at, 'tun_a')]);
+    $plan = wgct_plan($cfg, $live(), $heldOf($cfg['gateways'], $cfg['holds_rows'], $live1, null), null);
+    $rows = wgct_hold_rows_next($cfg, $plan['held'], $live1, $now);
+    $ok = $plan['changes'] === ['tun_a-ipv6' => false] && $plan['held'] === [] && $plan['held_changed'] && $rows === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p3) an up decision releases an owned row: force_down=0 and the row removed (a row-less one is p1's: left alone)\n", $ok ? 'PASS' : 'FAIL');
+    if (!$ok) {
+        printf("       changes %s held %s rows %s\n", json_encode($plan['changes']), json_encode($plan['held']), json_encode($rows));
+    }
+    $cfg = $pairCfg(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]],
+        [$stamped($uA, $live1, $at), $stamped($uB, $live1, $at, 'tun_a')]);
+    $plan = wgct_plan($cfg, $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'force_down']]),
+        $heldOf($cfg['gateways'], $cfg['holds_rows'], $live1, null), null);
+    $ok = $plan['changes'] === [] && $plan['held'] === ['tun_a' => true, 'tun_a-ipv6' => true]
+        && wgct_hold_rows_next($cfg, $plan['held'], $live1, $now) === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p3) an owned IPv6 row whose IPv4 tunnel is held stays: nothing written\n", $ok ? 'PASS' : 'FAIL');
+
+    $cfg = $pairCfg(['tun_a-ipv6' => ['force_down' => true]], [$stamped($uB, $other, $at, 'tun_a')]);
+    $plan = wgct_plan($cfg, $live(), $heldOf($cfg['gateways'], $cfg['holds_rows'], $live1, null), null);
+    $rows = wgct_hold_rows_next($cfg, $plan['held'], $live1, $now);
+    $ok = $plan['changes'] === [] && $plan['held'] === [] && $rows === []
+        && str_contains($ipv6Report($plan), 'manual force_down, left alone');
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p4) a foreign IPv6 row is pruned and its gateway untouched (force_down stays 1)\n", $ok ? 'PASS' : 'FAIL');
+    if (!$ok) {
+        printf("       changes %s held %s rows %s\n", json_encode($plan['changes']), json_encode($plan['held']), json_encode($rows));
+    }
+
+    $cfg = ['boot_unreadable' => true] + $pairCfg();
+    $plan = wgct_plan($cfg, $sick, [], null);
+    $ok = $plan['changes'] === [] && $plan['held'] === [] && $plan['log'] === []
+        && in_array('ipv6: kern.boot_id unreadable, pass skipped', $plan['report'], true);
+    $cfg = ['boot_unreadable' => true] + $pairCfg(['tun_a-ipv6' => ['force_down' => true]]);
+    $plan = wgct_plan($cfg, $live(), ['tun_a-ipv6' => true], null);
+    $ok = $ok && $plan['changes'] === [] && $plan['held'] === ['tun_a-ipv6' => true] && !$plan['held_changed'];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] ipv6 holds: (p5) no live boot id => pass 2 takes no hold (IPv4 unhealthy) and releases none (IPv4 healthy), and says so\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- wgct_release_plan: what a package removal does with the hold records (spec 3.11, 3.5a) ---- */
+    /* IPv4 tunnel gateways named after their uuids' first digit, force_down as given */
+    $ipv4Gws = function (array $forceDown) use ($row): array {
+        $gws = [];
+        foreach ($forceDown as $uuid => $down) {
+            $gws['tun_' . $uuid[0]] = $row(['uuid' => $uuid, 'force_down' => $down]);
+        }
+        return $gws;
+    };
     $releaseCases = [
-        // description, rows, live, previous, force_down, expected
+        // description, rows, live, previous, gateways, expected
         ['an owned forced row => its gateway is released',
-            [$hold($uA, $live1)], $live1, null, [$uA => true], ['release' => [$uA], 'prune' => []]],
+            [$hold($uA, $live1)], $live1, null, $ipv4Gws([$uA => true]), ['release' => [$uA], 'prune' => [], 'keep' => []]],
         ['a previous-boot forced row before the first tick after a reboot => released',
-            [$hold($uA, $prev1)], $live1, $prev1, [$uA => true], ['release' => [$uA], 'prune' => []]],
+            [$hold($uA, $prev1)], $live1, $prev1, $ipv4Gws([$uA => true]), ['release' => [$uA], 'prune' => [], 'keep' => []]],
         ['a foreign row => pruned, its gateway untouched',
-            [$hold($uA, $other)], $live1, $prev1, [$uA => true], ['release' => [], 'prune' => [$uA]]],
+            [$hold($uA, $other)], $live1, $prev1, $ipv4Gws([$uA => true]), ['release' => [], 'prune' => [$uA], 'keep' => []]],
         ['a row whose gateway was released by hand => pruned, nothing released',
-            [$hold($uA, $live1)], $live1, null, [$uA => false], ['release' => [], 'prune' => [$uA]]],
+            [$hold($uA, $live1)], $live1, null, $ipv4Gws([$uA => false]), ['release' => [], 'prune' => [$uA], 'keep' => []]],
         ['no rows => nothing held: nothing released, nothing pruned',
-            [], $live1, $prev1, [$uA => true], ['release' => [], 'prune' => []]],
+            [], $live1, $prev1, $ipv4Gws([$uA => true]), ['release' => [], 'prune' => [], 'keep' => []]],
         ['mixed rows with a duplicate => each gateway once, released or pruned, sorted',
             [$hold($uC, $live1), $hold($uB, $other), $hold($uA, $other), $hold($uA, $live1)], $live1, null,
-            [$uA => true, $uB => true, $uC => true], ['release' => [$uA, $uC], 'prune' => [$uB]]],
+            $ipv4Gws([$uA => true, $uB => true, $uC => true]), ['release' => [$uA, $uC], 'prune' => [$uB], 'keep' => []]],
         ['(R17) no live boot id => nothing released and nothing pruned, every gateway left as it is',
-            [$hold($uA, $live1), $hold($uB, $other)], '', $prev1, [$uA => true, $uB => true], ['release' => [], 'prune' => []]],
+            [$hold($uA, $live1), $hold($uB, $other)], '', $prev1, $ipv4Gws([$uA => true, $uB => true]),
+            ['release' => [], 'prune' => [], 'keep' => []]],
     ];
-    foreach ($releaseCases as [$desc, $rows, $liveBoot, $prevBoot, $fd, $exp]) {
-        $got = wgct_release_plan($rows, $liveBoot, $prevBoot, $fd);
+    foreach ($releaseCases as [$desc, $rows, $liveBoot, $prevBoot, $gws, $exp]) {
+        $got = wgct_release_plan($rows, $liveBoot, $prevBoot, $gws, [], null);
         $ok = $got === $exp;
         $fail += $ok ? 0 : 1;
         $total++;
@@ -1410,24 +1556,50 @@ function wgct_selftest() {
         }
     }
 
-    /* ---- wgct_release_left_down: the IPv6 gateways a removal leaves forced down (ruling R31) ---- */
-    $leftCases = [
-        // description, the managed tunnels' IPv6 gateways, force_down by name, expected
-        ['a forced-down IPv6 gateway is named, one that is up is not, the IPv4 gateways never',
-            ['tun_b-ipv6', 'tun_a-ipv6'], ['tun_a' => true, 'tun_a-ipv6' => true, 'tun_b' => true, 'tun_b-ipv6' => false],
-            ['tun_a-ipv6']],
-        ['several forced-down IPv6 gateways => sorted by name',
-            ['tun_b-ipv6', 'tun_a-ipv6'], ['tun_a-ipv6' => true, 'tun_b-ipv6' => true], ['tun_a-ipv6', 'tun_b-ipv6']],
-        ['an IPv6 gateway that is gone (no force_down known) => not named',
-            ['tun_a-ipv6'], ['tun_a' => true], []],
-        ['no IPv6 gateways => nothing named', [], ['tun_a-ipv6' => true], []],
+    /* (p7) an owned IPv6 row is released only when pass 2, evaluated now, would bring its gateway up */
+    $v6Row = $stamped($uB, $live1, $at, 'tun_a');
+    $v4Row = $stamped($uA, $live1, $at);
+    $readings = fn (?int $loss, ?int $age): array => ['loss' => ['tun_a' => $loss], 'sock_age' => ['tun_a' => $age]];
+    $pairs = ['tun_a' => 'tun_a-ipv6'];
+    $v6Cases = [
+        // description, rows, gateways, pairs, dpinger readings, expected, live boot
+        ['(p7) its IPv4 tunnel is held => the IPv4 released, the IPv6 kept forced down with its row',
+            [$v4Row, $v6Row], $pairCfg(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 600), ['release' => [$uA], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) its IPv4 tunnel reads unhealthy (100% loss) => kept',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(100, 600), ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) its IPv4 tunnel is not held and reads healthy => released',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 600), ['release' => [$uB], 'prune' => [], 'keep' => []], $live1],
+        ['(p7) its IPv4 tunnel forced down by hand => kept, as pass 2 would',
+            [$v6Row], $pairCfg(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 600), ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) IPv4 loss between the watermarks => kept (hysteresis: the hold stands)',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(15, 600), ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) its IPv4 monitor still settling => kept',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 5), ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) no live readings => kept (fail closed)',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            null, ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) an IPv6 gateway no managed tunnel pairs any more => kept: pass 2 would not bring it up',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], [],
+            $readings(0, 600), ['release' => [], 'prune' => [], 'keep' => [$uB]], $live1],
+        ['(p7) a foreign IPv6 row => pruned, never kept or released',
+            [$stamped($uB, $other, $at, 'tun_a')], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 600), ['release' => [], 'prune' => [$uB], 'keep' => []], $live1],
+        ['(p7) (R17) no live boot id => nothing released, pruned or kept',
+            [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
+            $readings(0, 600), ['release' => [], 'prune' => [], 'keep' => []], ''],
     ];
-    foreach ($leftCases as [$desc, $ipv6, $fd, $exp]) {
-        $got = wgct_release_left_down($ipv6, $fd);
+    foreach ($v6Cases as [$desc, $rows, $gws, $prs, $dp, $exp, $liveBoot]) {
+        $got = wgct_release_plan($rows, $liveBoot, null, $gws, $prs, $dp);
         $ok = $got === $exp;
         $fail += $ok ? 0 : 1;
         $total++;
-        printf("[%s] release left down: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        printf("[%s] release plan: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
         if (!$ok) {
             printf("       got %s\n", json_encode($got));
         }

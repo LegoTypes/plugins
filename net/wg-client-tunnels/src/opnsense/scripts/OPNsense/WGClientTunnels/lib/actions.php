@@ -348,6 +348,35 @@ function wgct_retoken(string $text, array $map): string {
 }
 
 /**
+ * The hold record of an IPv6 tunnel gateway that Create or Edit adds forced down: the health mirror's pass 2 then
+ * owns that force_down and releases it once the IPv4 tunnel reads healthy (spec 3.5a). With no live boot id no hold
+ * can be recorded, so there is none, and the gateway stays forced down until a person unticks it. Pure.
+ *
+ * @param string $bootId   the live kern.boot_id (the action snapshot's boot_id), '' when unreadable
+ * @param string $gw6Name  the IPv6 gateway added
+ * @param string $gw4Name  the IPv4 tunnel gateway it follows, the record's underlay
+ * @return list<array{name: string, boot: string, underlay: string}>
+ */
+function wgct_gw6_start_holds(string $bootId, string $gw6Name, string $gw4Name): array {
+    if ($bootId === '') {
+        return [];
+    }
+    return [['name' => $gw6Name, 'boot' => $bootId, 'underlay' => wgct_valid_gateway_name($gw4Name) ? $gw4Name : '']];
+}
+
+/**
+ * How the change list says an IPv6 gateway starts: forced down as the mirror's hold, or, when no hold could be
+ * recorded (wgct_gw6_start_holds()), forced down for a person to untick. Pure.
+ *
+ * @param list<array{name: string}> $holds the plan's hold records
+ */
+function wgct_gw6_start_text(array $holds, string $gw6Name): string {
+    return in_array($gw6Name, array_column($holds, 'name'), true)
+        ? 'starts forced down (the health mirror releases it)'
+        : "starts forced down; kern.boot_id cannot be read, so the health mirror cannot record this hold: untick force_down on {$gw6Name} once the tunnel is up";
+}
+
+/**
  * Everything Create will write, or why it cannot (spec 6.1). Pure.
  *
  * @param array $snap the action snapshot (see Task 3 Interfaces)
@@ -361,6 +390,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     $plan = [
         'errors' => [], 'changes' => [], 'n' => 0, 'device' => '', 'opt' => '', 'descr' => '', 'unique' => false, 'ipv6' => false,
         'instance' => [], 'peer' => [], 'gateways' => [], 'route' => ['action' => 'none', 'uuid' => '', 'fields' => []], 'nat' => [],
+        'holds' => [],
     ];
     $name = $req['name'];
     $name6 = $name . '-ipv6';
@@ -603,6 +633,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
             'disabled' => '0', 'name' => $name6, 'interface' => $opt, 'ipprotocol' => 'inet6',
             'gateway' => $next6, 'defaultgw' => '0', 'fargw' => '1', 'force_down' => '1',
         ], wgct_gw6_monitor_fields($name6, $monitor6, $plan['gateways'][0]['fields']))];
+        $plan['holds'] = wgct_gw6_start_holds($snap['boot_id'], $name6, $name);
     }
     if ($tpl !== null) {
         /* a description naming the template's device or interface names the new tunnel's instead */
@@ -644,7 +675,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     $c[] = "interface {$opt} ({$descr}) -> {$device}, enabled";
     foreach ($plan['gateways'] as $g) {
         $c[] = $g['fields']['force_down'] === '1'
-            ? "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, monitor {$g['fields']['monitor']}, starts forced down (the health mirror releases it)"
+            ? "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, monitor {$g['fields']['monitor']}, " . wgct_gw6_start_text($plan['holds'], $g['name'])
             : "gateway {$g['name']} {$g['fields']['gateway']} on {$opt}, monitor {$monitor}";
     }
     $c[] = match ($plan['route']['action']) {
@@ -1050,6 +1081,7 @@ function wgct_actions_fixture(): array {
         'wireguard_enabled' => true,
         /* the firewall's own IPv6 networks (wgct_local6_snapshot()): a LAN /64 and a delegated /56 */
         'local6' => ['2001:db8:1:1::1/64', '2001:db8:2:100::/56'],
+        'boot_id' => 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     ];
 }
 
@@ -1115,6 +1147,17 @@ function wgct_actions_selftest(): int {
         $q['errors'] === [] && array_intersect_key($g6q, array_flip(WGCT_THRESHOLD_FIELDS)) === array_fill_keys(WGCT_THRESHOLD_FIELDS, ''));
     wgct_check($t, 'create: (h) the change list names the IPv6 monitor',
         $has(wgct_plan_create($snap, $req, $conf)['changes'], 'gateway tun_c-ipv6 fd00::3:2 on opt4, monitor 2001:db8:ffff::12, starts forced down'));
+    wgct_check($t, 'create: (3.5a) the IPv6 gateway starts forced down as the mirror\'s hold: a record with the live boot, following tun_c',
+        $p['holds'] === [['name' => 'tun_c-ipv6', 'boot' => $snap['boot_id'], 'underlay' => 'tun_c']]
+        && $has($p['changes'], 'starts forced down (the health mirror releases it)'));
+    wgct_check($t, 'create: (3.5a) IPv6 off => no hold record',
+        wgct_plan_create($snap, ['ipv6' => false, 'monitor6' => ''] + $req, $conf)['holds'] === []);
+    $s = $snap;
+    $s['boot_id'] = '';
+    $q = wgct_plan_create($s, $req, $conf);
+    wgct_check($t, 'create: (3.5a) kern.boot_id unreadable => still forced down, no hold record, and the change list says to untick it by hand',
+        $q['errors'] === [] && $q['holds'] === [] && ($q['gateways'][1]['fields']['force_down'] ?? '') === '1'
+        && $has($q['changes'], 'kern.boot_id cannot be read, so the health mirror cannot record this hold: untick force_down on tun_c-ipv6 once the tunnel is up'));
     wgct_check($t, 'create: the endpoint route is added via the bound WAN',
         $p['route'] === ['action' => 'add', 'uuid' => '', 'fields' => ['network' => '198.51.100.12/32', 'gateway' => 'WAN_A', 'descr' => 'wireguard - tun_c', 'enabled' => '1']]);
     wgct_check($t, 'create: template NAT copied whole (destination and description kept), enabled rules only, in sequence order',
