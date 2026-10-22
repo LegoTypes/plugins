@@ -146,12 +146,15 @@ function wgct_xml_list(\SimpleXMLElement $root, string ...$path): array {
  */
 const WGCT_GATEWAY_NAME_MASK = '/^[a-zA-Z0-9_-]{1,32}$/D';
 const WGCT_INTERFACE_KEY_MASK = '/^[a-z0-9]+$/D';
+/* an interface group's key is its name: core's GroupNameField (Firewall/FieldTypes/GroupNameField.php, lines 57-64)
+ * allows letters, digits and underscores, at most 15 characters, and no leading or trailing digit */
+const WGCT_INTERFACE_GROUP_MASK = '/^[a-zA-Z_]([a-zA-Z0-9_]{0,13}[a-zA-Z_])?$/D';
 const WGCT_INTERFACE_DEVICE_MASK = '/^[a-zA-Z0-9_.-]*$/D';
 /* AliasNameField's own shape: a letter, or an underscore before a letter, then up to 29 more word characters */
 const WGCT_ALIAS_NAME_MASK = '/^([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9])[_a-zA-Z0-9]{0,29}))$/D';
-/* the per-interface network aliases core itself adds to the model (__lan_network, __opt1_network, ...), which the
- * field's user-facing mask would refuse */
-const WGCT_ALIAS_INTERNAL_MASK = '/^__[a-z0-9]+_network$/D';
+/* the per-interface network aliases core itself adds to the model (__lan_network, __GroupA_network, ...), which the
+ * field's user-facing mask would refuse: "__", a valid interface key, "_network" */
+const WGCT_ALIAS_INTERNAL_MASK = '/^__(.+)_network$/D';
 
 /**
  * @param mixed $v a value read from config
@@ -163,10 +166,10 @@ function wgct_valid_gateway_name(mixed $v): bool {
 
 /**
  * @param mixed $v a value read from config
- * @return bool an interface assignment key (wan, lan, opt1, ...)
+ * @return bool an interface assignment key (wan, lan, opt1, ...) or an interface group name
  */
 function wgct_valid_interface_key(mixed $v): bool {
-    return is_string($v) && preg_match(WGCT_INTERFACE_KEY_MASK, $v) === 1;
+    return is_string($v) && (preg_match(WGCT_INTERFACE_KEY_MASK, $v) === 1 || preg_match(WGCT_INTERFACE_GROUP_MASK, $v) === 1);
 }
 
 /**
@@ -174,7 +177,11 @@ function wgct_valid_interface_key(mixed $v): bool {
  * @return bool an alias name core accepts
  */
 function wgct_valid_alias_name(mixed $v): bool {
-    return is_string($v) && (preg_match(WGCT_ALIAS_NAME_MASK, $v) === 1 || preg_match(WGCT_ALIAS_INTERNAL_MASK, $v) === 1);
+    if (!is_string($v)) {
+        return false;
+    }
+    return preg_match(WGCT_ALIAS_NAME_MASK, $v) === 1
+        || (preg_match(WGCT_ALIAS_INTERNAL_MASK, $v, $m) === 1 && wgct_valid_interface_key($m[1]));
 }
 
 /**
@@ -1635,6 +1642,37 @@ function wgct_tunnels_selftest() {
         && !str_contains($g[0]['detail'], 'bad alias') && !str_contains($g[0]['detail'], 'opt1;');
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] values: one global finding names the fields, never the values\n", $ok ? 'PASS' : 'FAIL');
+    /* interface groups (core: Firewall/Group.xml ifname is a GroupNameField): mixed case, underscores, 15 characters at
+     * most, no leading or trailing digit; the key and the device name are the group name */
+    $group = fn (string $n): array => ['if' => $n, 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
+    $raw = $base();
+    $raw['interfaces']['GroupA'] = $group('GroupA');
+    $raw['interfaces']['Group_B'] = $group('Group_B');
+    $raw['aliases'] = ['__GroupA_network', '__Group_B_network', '__lan_network'];
+    $c = $invalidOf($raw);
+    $ok = $c['invalid'] === [] && $c['interfaces'] === $raw['interfaces'] && $c['aliases'] === $raw['aliases']
+        && wgct_derive($c, ['i-a'])['global'] === [];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: interface groups GroupA and Group_B and their __<group>_network aliases pass, no finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    foreach (['Group A', 'Group;B', 'Grp9', '9Grp', 'GroupNameTooLong', 'Group-B', "GroupA\n"] as $bad) {
+        $raw['interfaces'][$bad] = $group($bad);
+    }
+    $raw['interfaces']['Fifteen_Chars_ab'] = $group('Fifteen_Chars_ab');
+    $raw['interfaces']['Fifteen_Chars_a'] = $group('Fifteen_Chars_a');
+    $raw['aliases'] = ['__Group A_network', '__Group;B_network', '__Grp9_network', '__GroupNameTooLong_network', '__GroupA_net'];
+    $c = $invalidOf($raw);
+    $ok = array_keys($c['interfaces']) === array_merge(array_keys($base()['interfaces']), ['Fifteen_Chars_a'])
+        && $c['aliases'] === [] && $findingFor($c, 'interface key') && $findingFor($c, 'alias name');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a group key or alias with a space, semicolon, edge digit or more than 15 characters => dropped, finding\n", $ok ? 'PASS' : 'FAIL');
+    $raw = $base();
+    $raw['groups']['bad grp'] = ['tun_a'];
+    $raw['groups']['grp_ok'] = ['tun_a', 'x;y'];
+    $c = $invalidOf($raw);
+    $ok = !isset($c['groups']['bad grp']) && $c['groups']['grp_ok'] === ['tun_a'] && $findingFor($c, 'gateway name');
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] values: a gateway group name with a space => dropped, finding\n", $ok ? 'PASS' : 'FAIL');
     /* use-time checks on hand-built records: nothing a hostile field carries reaches a line */
     $d = wgct_derive($invalidOf($base()), ['i-a']);
     $d['tunnels'][0]['device'] = "wg1\nblock all";
