@@ -422,6 +422,50 @@ function wgct_held_uuids(array $heldNames, array $gateways) {
 }
 
 /**
+ * Decide which hold records are ours, by the boot each was taken in (spec 3.5, convention C1). Pure.
+ *
+ * A record proves a hold only when its boot is one the plugin itself observed:
+ *
+ *   boot                               gateway force_down   result
+ *   the live boot                      1                    owned
+ *   the live boot                      0                    pruned 'released' (taken off by hand)
+ *   boot.json's previous boot          1                    owned (ours from before the reboot)
+ *   boot.json's previous boot          0                    pruned 'released' (as the row above)
+ *   any other boot, whatever force_down                     pruned 'foreign' (restored or edited config)
+ *
+ * A gateway missing from $forceDown reads as not forced down. With no live boot id nothing is owned and
+ * every row is foreign. A previous boot equal to the live one is no previous boot. The caller re-stamps
+ * every owned row with the live boot id and passes a previous boot only on the first tick after a reboot.
+ * A force_down gateway with no row is manual and never reaches this function.
+ *
+ * @param array<int, array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows
+ * @param string $liveBoot     the live kern.boot_id as hex, '' when unreadable
+ * @param ?string $previousBoot boot.json's boot id when it names another boot than the live one
+ * @param array<string, bool> $forceDown gateway uuid => force_down
+ * @return array{owned: list<string>, pruned: array<string, string>} sorted owned uuids; uuid => 'released'|'foreign'
+ */
+function wgct_resolve_holds(array $rows, string $liveBoot, ?string $previousBoot, array $forceDown): array {
+    $owned = [];
+    $pruned = [];
+    foreach ($rows as $row) {
+        $uuid = $row['gateway'];
+        $boot = $row['boot'];
+        $isLive = $liveBoot !== '' && $boot === $liveBoot;
+        $isPrevious = $liveBoot !== '' && $previousBoot !== null && $previousBoot !== ''
+            && $previousBoot !== $liveBoot && $boot === $previousBoot;
+        if (!$isLive && !$isPrevious) {
+            $pruned[$uuid] = 'foreign';
+        } elseif (empty($forceDown[$uuid])) {
+            $pruned[$uuid] = 'released';
+        } else {
+            $owned[] = $uuid;
+        }
+    }
+    sort($owned);
+    return ['owned' => $owned, 'pruned' => $pruned];
+}
+
+/**
  * Serialize the held set into the plugin model when it differs from config.
  * Call only inside wgct_locked_commit(), with $config from a collection
  * made under that lock.
@@ -894,6 +938,103 @@ function wgct_selftest() {
         $fail += $ok ? 0 : 1;
         $total++;
         printf("[%s] skip log plan: %s\n", $ok ? 'PASS' : 'FAIL', $label);
+    }
+
+    /* ---- wgct_resolve_holds: who owns a hold record (spec 3.5) ---- */
+    $live1 = 'a1b2c3d4e5f60718';
+    $prev1 = '0123456789abcdef';
+    $other = 'fedcba9876543210';
+    $uA = '11111111-1111-4111-8111-111111111111';
+    $uB = '22222222-2222-4222-8222-222222222222';
+    $uC = '33333333-3333-4333-8333-333333333333';
+    $hold = function (string $uuid, string $boot) {
+        return ['gateway' => $uuid, 'boot' => $boot, 'underlay' => 'WAN_A', 'taken_at' => 1760000000];
+    };
+    $holdCases = [
+        // description, rows, live, previous, force_down, expected
+        ['(a) live boot, force_down=1 => owned',
+            [$hold($uA, $live1)], $live1, null, [$uA => true], ['owned' => [$uA], 'pruned' => []]],
+        ['(b) live boot, force_down=0 => pruned as released by hand',
+            [$hold($uA, $live1)], $live1, null, [$uA => false], ['owned' => [], 'pruned' => [$uA => 'released']]],
+        ['(c) previous boot at the first tick after a reboot, force_down=1 => owned',
+            [$hold($uA, $prev1)], $live1, $prev1, [$uA => true], ['owned' => [$uA], 'pruned' => []]],
+        ['(c2) previous boot, force_down=0 => pruned as released by hand',
+            [$hold($uA, $prev1)], $live1, $prev1, [$uA => false], ['owned' => [], 'pruned' => [$uA => 'released']]],
+        ['(d) the same row at a later tick (boot.json already live) => foreign',
+            [$hold($uA, $prev1)], $live1, null, [$uA => true], ['owned' => [], 'pruned' => [$uA => 'foreign']]],
+        ['(e) any other boot id => foreign, whatever force_down',
+            [$hold($uA, $other), $hold($uB, $other)], $live1, $prev1, [$uA => true, $uB => false],
+            ['owned' => [], 'pruned' => [$uA => 'foreign', $uB => 'foreign']]],
+        ['(g) boot.json unreadable (no previous boot) => every non-live row is foreign',
+            [$hold($uA, $prev1), $hold($uB, $live1), $hold($uC, $other)], $live1, null,
+            [$uA => true, $uB => true, $uC => true],
+            ['owned' => [$uB], 'pruned' => [$uA => 'foreign', $uC => 'foreign']]],
+        ['(m3) the live boot id unreadable => nothing owned, every row foreign',
+            [$hold($uA, $prev1), $hold($uB, $live1)], '', $prev1, [$uA => true, $uB => true],
+            ['owned' => [], 'pruned' => [$uA => 'foreign', $uB => 'foreign']]],
+        ['previous boot equal to the live one is not a second chance',
+            [$hold($uA, $other)], $live1, $live1, [$uA => true], ['owned' => [], 'pruned' => [$uA => 'foreign']]],
+        ['owned uuids come back sorted; mixed rows each take their own row of the table',
+            [$hold($uC, $live1), $hold($uA, $prev1), $hold($uB, $live1)], $live1, $prev1,
+            [$uA => true, $uB => false, $uC => true],
+            ['owned' => [$uA, $uC], 'pruned' => [$uB => 'released']]],
+        ['a row whose gateway is gone (no force_down known) on the live boot => released',
+            [$hold($uA, $live1)], $live1, null, [], ['owned' => [], 'pruned' => [$uA => 'released']]],
+        ['no rows => nothing owned, nothing pruned',
+            [], $live1, $prev1, [$uA => true], ['owned' => [], 'pruned' => []]],
+    ];
+    foreach ($holdCases as [$desc, $rows, $liveBoot, $prevBoot, $fd, $exp]) {
+        $got = wgct_resolve_holds($rows, $liveBoot, $prevBoot, $fd);
+        ksort($got['pruned']);
+        ksort($exp['pruned']);
+        $ok = $got === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] holds: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+        if (!$ok) {
+            printf("       got %s\n", json_encode($got));
+        }
+    }
+
+    /* (a) and (f) through the planner: only owned rows reach its held set */
+    $heldCfg = $config(['tun_a' => ['uuid' => $uA, 'force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]);
+    $owned = wgct_resolve_holds([$hold($uA, $live1)], $live1, null, [$uA => true])['owned'];
+    $heldNames = [];
+    foreach ($heldCfg['gateways'] as $name => $g) {
+        if (in_array($g['uuid'], $owned, true)) {
+            $heldNames[$name] = true;
+        }
+    }
+    $plan = wgct_plan($heldCfg, $live(), $heldNames, null);
+    $ok = $plan['changes'] === ['tun_a' => false, 'tun_a-ipv6' => false] && $plan['held'] === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] holds: (a) an owned row is released when the WAN is up\n", $ok ? 'PASS' : 'FAIL');
+    $plan = wgct_plan($heldCfg, $live(), [], null);
+    $ok = $plan['changes'] === [] && $plan['held'] === [];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] holds: (f) force_down=1 with no row is manual and untouched\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- Engine::parseBootId: kern.boot_id as sysctl -x -n prints it ---- */
+    $bootCases = [
+        ['sysctl -x output => the hex after Dump:0x',
+            "Format: Length:16 Dump:0xa1b2c3d4e5f60718293a4b5c6d7e8f90\n", 'a1b2c3d4e5f60718293a4b5c6d7e8f90'],
+        ['leading zeros are kept',
+            "Format: Length:16 Dump:0x00ab03d4e5f60718293a4b5c6d7e8f90\n", '00ab03d4e5f60718293a4b5c6d7e8f90'],
+        ['upper-case dump => lower case',
+            "Format: Length:16 Dump:0xA1B2C3D4E5F60718293A4B5C6D7E8F90\n", 'a1b2c3d4e5f60718293a4b5c6d7e8f90'],
+        ['garbage => empty', "no such oid\n", ''],
+        ['empty output => empty', '', ''],
+        ['0x with no digits => empty', "Format: Length:0 Dump:0x\n", ''],
+        ['non-hex after 0x => empty', "Dump:0xzz\n", ''],
+    ];
+    foreach ($bootCases as [$desc, $out, $exp]) {
+        $got = OPNsense\WGClientTunnels\Engine::parseBootId($out);
+        $ok = $got === $exp;
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] boot id: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
     }
 
     printf("%d/%d passed\n", $total - $fail, $total);

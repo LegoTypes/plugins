@@ -1,0 +1,27 @@
+<model>
+    <mount>//OPNsense/WGClientTunnelsEngine</mount>
+    <version>1.0.0</version>
+    <description>WireGuard upstream tunnels engine state</description>
+    <items>
+        <managed type="CSVListField">
+            <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
+            <MaskPerItem>Y</MaskPerItem>
+        </managed>
+        <holds type="ArrayField">
+            <gateway type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
+            </gateway>
+            <boot type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-f]{1,64}$/</Mask>
+            </boot>
+            <underlay type="TextField">
+                <Mask>/^[a-zA-Z0-9_-]{1,32}$/</Mask>
+            </underlay>
+            <taken_at type="IntegerField">
+                <Required>Y</Required>
+            </taken_at>
+        </holds>
+    </items>
+</model>
