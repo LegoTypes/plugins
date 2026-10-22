@@ -61,6 +61,7 @@
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
 require_once __DIR__ . '/lib/mirror.php';
+require_once __DIR__ . '/lib/apply.php';
 
 $logTag = 'wgct-health';
 
@@ -111,18 +112,20 @@ if ($snapshotOut) {
 }
 
 /*
- * Single-instance guard. Cron fires this script four times a minute
+ * Single-instance guard (health.lock under /var/run). Cron fires this script four times a minute
  * (0/15/30/45s). A tick that changes a gateway blocks below until a full
  * routing reconfigure completes (dpinger torn down and rebuilt), which can
  * outlast the 15s spacing. Two overlapping runs would issue overlapping
  * reconfigures, and those race dpinger's teardown against another's rebuild
  * and leave it dead -- at which point every gateway reads a false "down".
- * If another run holds the lock, skip this tick; the next one catches up.
+ * If another run holds the lock, skip this tick (logged once per state); the next one catches up.
  */
-$selfLock = fopen('/tmp/wgct_health.lock', 'ce');
-if ($selfLock === false || !flock($selfLock, LOCK_EX | LOCK_NB)) {
+$selfLock = wgct_poll_lock(WGCT_HEALTH_LOCK_FILE, 0, 50);
+if ($selfLock === null) {
+    wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, true, 'tick skipped: another run holds health.lock', 'health resumed');
     exit(0);
 }
+wgct_note_lock(WGCT_HEALTH_SKIPPED_FILE, false, 'tick skipped: another run holds health.lock', 'health resumed');
 
 $config = wgct_collect_config();
 if (!$config['enabled']) {
@@ -170,7 +173,7 @@ if (empty($plan['changes'])) {
  * A change is needed. Commit it in the order every config writer follows
  * (spec 2026-09-24 section 4.6):
  *
- *   1. /tmp/filter_reload_gateway.lock -- applying force_down is a full
+ *   1. core's gateway lock (/tmp/filter_reload_gateway.lock) -- applying force_down is a full
  *      routing reconfigure, which restarts every dpinger; overlapping
  *      reconfigures leave dpinger dead. Same lock routes.alarm uses.
  *   2. Live readings, collected again: the wait for the lock can be long, and
@@ -183,18 +186,18 @@ if (empty($plan['changes'])) {
  *   4. Unlock, then apply and replay the alarms the hold dropped: our own
  *      and any other gateway's whose status changed meanwhile.
  *
- * If the gateway lock itself cannot be taken, leave the change for the next
- * tick rather than save a force_down we would not apply.
+ * If the gateway lock is still held after wgct_gateway_lock()'s bounded wait, leave
+ * the change for the next tick rather than save a force_down we would not apply.
  */
 /* status before the lock, so an alarm routes.alarm drops while we hold it can be replayed after */
 $before = wgct_gateway_status();
-$gwLock = fopen('/tmp/filter_reload_gateway.lock', 'ce');
-if ($gwLock === false || !flock($gwLock, LOCK_EX)) {
-    if ($gwLock !== false) {
-        fclose($gwLock);
-    }
+try {
+    $gwLock = wgct_gateway_lock();
+} catch (\RuntimeException $e) {
+    wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, true, 'gateway change left for the next tick: ' . $e->getMessage(), 'gateway lock available again');
     exit(0);
 }
+wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, false, '', 'gateway lock available again');
 $live = wgct_collect_live();
 $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
     $now = wgct_collect_config();
@@ -216,8 +219,7 @@ foreach ($plan['log'] as $msg) {
 if (!empty($plan['changes'])) {
     (new OPNsense\Core\Backend())->configdRun('interface routes configure');
 }
-flock($gwLock, LOCK_UN);
-fclose($gwLock);
+$gwLock->flock(LOCK_UN);
 if (!empty($plan['changes'])) {
     wgct_mirror_replay($plan['changes'], $before, $logTag);
 }

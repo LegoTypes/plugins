@@ -25,12 +25,53 @@
 use OPNsense\Core\Config;
 
 require_once __DIR__ . '/tunnels.php';
+require_once __DIR__ . '/render.php';
 
 /* Used only when a gateway has no time_period configured. */
 const SETTLE_FALLBACK_SECONDS = 60;
 
 function logMsg($tag, $msg) {
     wgct_log(LOG_NOTICE, "[$tag] $msg");
+}
+
+/* The tick lock and the markers that make a skipped tick log once per state. */
+const WGCT_HEALTH_LOCK_FILE = WGCT_RUN_DIR . '/health.lock';
+const WGCT_HEALTH_SKIPPED_FILE = WGCT_RUN_DIR . '/health.skipped';
+const WGCT_GATEWAY_SKIPPED_FILE = WGCT_RUN_DIR . '/gateway.skipped';
+
+/**
+ * What a tick does about a lock it could not take, once per state (the shape of wgct_failure_log_plan()).
+ *
+ * @param bool $skipped      whether this tick could not take the lock
+ * @param bool $markerExists whether the marker of an earlier skip is present
+ * @return array{log: ?string, marker: 'write'|'remove'|'keep'} log is 'skip' on the first skip,
+ *         'resume' on the first success after one, null otherwise
+ */
+function wgct_skip_log_plan(bool $skipped, bool $markerExists): array {
+    if ($skipped) {
+        return $markerExists ? ['log' => null, 'marker' => 'keep'] : ['log' => 'skip', 'marker' => 'write'];
+    }
+    return $markerExists ? ['log' => 'resume', 'marker' => 'remove'] : ['log' => null, 'marker' => 'keep'];
+}
+
+/**
+ * Apply wgct_skip_log_plan() for one lock: log the change of state, keep the marker in step.
+ *
+ * @param string $marker  the marker file of this lock
+ * @param bool   $skipped whether this tick could not take the lock
+ * @param string $skipMsg logged on the first skip
+ * @param string $resumeMsg logged on the first success after a skip
+ */
+function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $resumeMsg): void {
+    $plan = wgct_skip_log_plan($skipped, wgct_read_state_file($marker, 16) !== null);
+    if ($plan['log'] !== null) {
+        logMsg('wgct-health', $plan['log'] === 'skip' ? $skipMsg : $resumeMsg);
+    }
+    if ($plan['marker'] === 'write') {
+        wgct_write_file_atomic($marker, "skipped\n");
+    } elseif ($plan['marker'] === 'remove') {
+        @unlink($marker);
+    }
 }
 
 /**
@@ -840,6 +881,19 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] replay: without a before-status the mirror's own changes are still replayed, as written\n", $ok ? 'PASS' : 'FAIL');
+
+    $skipCases = [
+        ['not skipped, no marker: nothing logged, no marker', false, false, null, 'keep'],
+        ['skipped, no marker: the skip is logged and the marker written', true, false, 'skip', 'write'],
+        ['skipped, marker present: still skipped, nothing logged', true, true, null, 'keep'],
+        ['not skipped, marker present: resumed is logged and the marker removed', false, true, 'resume', 'remove'],
+    ];
+    foreach ($skipCases as [$label, $skipped, $marker, $log, $action]) {
+        $ok = wgct_skip_log_plan($skipped, $marker) === ['log' => $log, 'marker' => $action];
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] skip log plan: %s\n", $ok ? 'PASS' : 'FAIL', $label);
+    }
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;
