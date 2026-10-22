@@ -8,8 +8,9 @@
  * The Tunnels view (spec 7), shared by `tunnel.php list|status` and the API:
  * managed tunnels derived from core with their clamps and findings (the
  * render-failed finding included), and the WireGuard instances the plugin
- * does not manage, for Adopt. A blocking finding's hint says so when the tunnel's
- * pins stay in place (wgct_pin_hint()). A tunnel whose Create or Edit saved but whose apply
+ * does not manage, for Adopt. `pinned` on each tunnel says whether the render emits
+ * a pin rule for it (wgct_pinned()); a blocking finding's hint then says its pins
+ * stay in place (wgct_pin_hint()). A tunnel whose Create or Edit saved but whose apply
  * has not completed carries the apply-pending finding (ruling 20). `held` names
  * the IPv4 gateways whose hold record the health mirror owns (spec 2026-10-20
  * section 3.5). Reads config; writes nothing. The pure helpers below it turn the view into the
@@ -36,7 +37,8 @@ function wgct_tunnel_view(): array {
     $pending = wgct_read_apply_pending();
     $tunnels = [];
     foreach ($derived['tunnels'] as $t) {
-        $t = wgct_pin_hint($t, $wanPins, $innerSource);
+        $t['pinned'] = wgct_pinned($t, $wanPins, $innerSource);
+        $t = wgct_pin_hint($t, $t['pinned']);
         $t['clamp'] = wgct_clamp_for($t, $mssClamp);
         if (isset($pending[$t['uuid']])) {
             $record = $pending[$t['uuid']];

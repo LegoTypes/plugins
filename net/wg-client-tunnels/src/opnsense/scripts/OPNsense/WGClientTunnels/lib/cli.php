@@ -233,6 +233,23 @@ function wgct_cli_emit_mtu(array $m, bool $json): int {
 }
 
 /**
+ * The list line's state note: what a tunnel that is not enforced still has. A blocked tunnel is skipped by the
+ * health mirror and the monitor repair, and keeps its pins when the render emits any (`pinned`, wgct_pinned()). Pure.
+ *
+ * @param array $t a wgct_tunnel_view() tunnel
+ * @return string '' or a parenthesised note with a leading space
+ */
+function wgct_cli_state_note(array $t): string {
+    if ($t['enforceable']) {
+        return '';
+    }
+    if (!wgct_blocked($t)) {
+        return ' (not enforced)';
+    }
+    return ' (blocked: mirror and repair skip it' . ($t['pinned'] ? '; pins in place)' : ')');
+}
+
+/**
  * @param bool $json
  * @param bool $findingsOnly `status`: findings only
  * @return int
@@ -262,7 +279,7 @@ function wgct_cli_list(bool $json, bool $findingsOnly): int {
                 "%-18s %-5s %-6s endpoint %-22s WAN %-12s mtu %d gw4 %s gw6 %s%s%s%s  %s\n",
                 $t['name'] !== '' ? $t['name'] : $t['uuid'], $t['device'], (string)$t['interface'], $t['endpoint'],
                 (string)$t['bound_wan'], $t['mtu'], (string)$t['gw4'], (string)$t['gw6'],
-                $t['enabled'] ? '' : ' (disabled)', $t['enforceable'] ? '' : ' (not enforced)', $clamp, $t['uuid']
+                $t['enabled'] ? '' : ' (disabled)', wgct_cli_state_note($t), $clamp, $t['uuid']
             );
         } elseif ($t['findings'] !== []) {
             printf("%s:\n", $t['name'] !== '' ? $t['name'] : $t['uuid']);
@@ -324,6 +341,15 @@ function wgct_cli_own_selftest(): int {
     wgct_check($t, 'cli: a list or measure-mtu failure carries no footer',
         wgct_cli_failure_message('list', 'x', true, '') === 'list failed: x.'
         && wgct_cli_failure_message('measure-mtu', 'x', true, '') === 'measure-mtu failed: x.');
+    $row = fn (bool $enforceable, bool $pinned, array $findings): array
+        => ['enforceable' => $enforceable, 'pinned' => $pinned, 'findings' => $findings];
+    $blocking = [wgct_finding('not-single-peer', '2 peers')];
+    wgct_check($t, 'cli: list notes nothing for an enforced tunnel and "(not enforced)" for an unblocked one that is not',
+        wgct_cli_state_note($row(true, true, [])) === ''
+        && wgct_cli_state_note($row(false, false, [wgct_finding('unbound', 'x')])) === ' (not enforced)');
+    wgct_check($t, 'cli: list says a blocked tunnel is skipped by the mirror and the repair, and that its pins stay only when it is pinned',
+        wgct_cli_state_note($row(false, true, $blocking)) === ' (blocked: mirror and repair skip it; pins in place)'
+        && wgct_cli_state_note($row(false, false, $blocking)) === ' (blocked: mirror and repair skip it)');
     return wgct_tally_report('cli', $t);
 }
 
