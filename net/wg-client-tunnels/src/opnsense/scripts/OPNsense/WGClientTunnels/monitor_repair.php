@@ -89,6 +89,11 @@ $result = wgct_repair_run($candidates, [
             $log('cannot open the gateway lock: ' . $e->getMessage());
             return false;
         }
+        /* the removal marker, checked again once the lock is held (ruling R30): the repair starts nothing */
+        if ($lock !== null && wgct_removing()) {
+            $lock->flock(LOCK_UN);
+            $lock = null;
+        }
         return $lock !== null;
     },
     'unlock' => function () use (&$lock): void {

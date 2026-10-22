@@ -365,17 +365,45 @@ function wgct_dry_flag(mixed $value): ?bool {
     return null;
 }
 
+/* the package removal's marker (+PRE_DEINSTALL.pre); entry.php checks the same file before any library loads */
+const WGCT_REMOVING_FILE = WGCT_RUN_DIR . '/removing';
+
 /**
+ * A gateway-locked writer found the package removal's marker once it had the lock: it saved nothing.
+ */
+final class WgctRemovingException extends \RuntimeException
+{
+}
+
+/**
+ * @return bool whether the package removal's marker exists (ruling R30)
+ */
+function wgct_removing(): bool {
+    return is_file(WGCT_REMOVING_FILE);
+}
+
+/**
+ * Core's gateway lock, for a writer that changes routing. The removal marker is checked again once the lock is
+ * held: the removal writes it before its release-holds takes this lock, so a writer that was waiting here (up to
+ * WGCT_GATEWAY_LOCK_WAIT_MS, longer than the removal waits for the mirror's lock) can never re-take a hold the
+ * removal released, whatever the timing (ruling R30). Only release-holds passes $removal.
+ *
+ * @param bool $removal the caller is the package removal's own release-holds
  * @return \SplFileObject the gateway lock, held until LOCK_UN or the object is released
+ * @throws WgctRemovingException when the removal marker exists (the lock is released again)
  * @throws \RuntimeException when it is still held elsewhere after WGCT_GATEWAY_LOCK_WAIT_MS
  */
-function wgct_gateway_lock(): \SplFileObject {
+function wgct_gateway_lock(bool $removal = false): \SplFileObject {
     $file = wgct_poll_lock(WGCT_GATEWAY_LOCK_FILE, WGCT_GATEWAY_LOCK_WAIT_MS, 200);
     if ($file === null) {
         $seconds = intdiv(WGCT_GATEWAY_LOCK_WAIT_MS, 1000);
         throw new \RuntimeException(
             WGCT_GATEWAY_LOCK_FILE . " is still held after {$seconds} s (fstat -f " . WGCT_GATEWAY_LOCK_FILE . ' names the holder); nothing was changed'
         );
+    }
+    if (!$removal && wgct_removing()) {
+        $file->flock(LOCK_UN);
+        throw new WgctRemovingException('the package is being removed; nothing was changed');
     }
     return $file;
 }
@@ -598,6 +626,7 @@ function wgct_replay_after_hold(array $ours, ?array $before): array {
 
 /**
  * The replay set once the gateway lock is released (wgct_replay_set()), from config as saved and status as it is now.
+ * Only the gateways are read (wgct_core_tunnel_snapshot()): the rest of the snapshot asks configd while it loads.
  *
  * @param list<string>               $ours   gateway names the action wrote
  * @param array<string, string>|null $before gateway status taken before the lock
@@ -606,7 +635,7 @@ function wgct_replay_after_hold(array $ours, ?array $before): array {
 function wgct_replay_set_now(array $ours, ?array $before): array {
     Config::getInstance()->forceReload();
     $forceDown = [];
-    foreach (wgct_core_snapshot()['gateways'] as $name => $g) {
+    foreach (wgct_core_tunnel_snapshot()['gateways'] as $name => $g) {
         $forceDown[(string)$name] = $g['force_down'];
     }
     return wgct_replay_set($ours, $before, wgct_gateway_status(), $forceDown);
@@ -1153,5 +1182,11 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'log: an unknown priority logs at notice', str_contains(wgct_log_command(99, 'x'), ' -p user.notice '));
     wgct_check($t, 'log: warning and info map to their names',
         str_contains(wgct_log_command(LOG_WARNING, 'x'), ' -p user.warning ') && str_contains(wgct_log_command(LOG_INFO, 'x'), ' -p user.info '));
+    $entry = (string)@file_get_contents(dirname(__DIR__) . '/entry.php');
+    $shell = (string)@file_get_contents(dirname(__DIR__) . '/wgct.sh');
+    wgct_check($t, 'apply: entry.php and wgct.sh name the removal marker WGCT_REMOVING_FILE names',
+        WGCT_REMOVING_FILE === WGCT_RUN_DIR . '/removing' && str_contains($entry, "\$dir . '/removing'")
+        && str_contains($entry, "const WGCT_ENTRY_RUN_DIR = '" . WGCT_RUN_DIR . "';")
+        && str_contains($shell, 'STATE_DIR="' . WGCT_RUN_DIR . '"') && str_contains($shell, '"${STATE_DIR}/removing"'));
     return wgct_tally_report('apply', $t);
 }
