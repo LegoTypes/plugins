@@ -39,8 +39,9 @@
  * live one, or the one boot.json names at the first tick after a reboot (that
  * tick re-stamps it); any other record is pruned with one log line and its
  * force_down left alone (spec 2026-10-20 section 3.5). Each tick ends by
- * writing the live boot id to boot.json. A tick that cannot read kern.boot_id
- * takes, releases and records no hold, and says so once per state.
+ * recording the live boot id in boot.json, written only when it names another
+ * boot. A tick that cannot read kern.boot_id takes, releases and records no
+ * hold, and says so once per state.
  *
  * Settle guard: a dpinger that has just started has no samples yet, so what it
  * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing about
@@ -209,7 +210,7 @@ if (empty($plan['changes'])) {
         }
     }
     if (!$config['boot_unreadable']) {
-        wgct_write_boot_record($config['live_boot']);
+        wgct_record_boot($config['live_boot']);
     }
     exit(0);
 }
@@ -277,5 +278,5 @@ if (!empty($plan['changes'])) {
     wgct_mirror_replay($plan['changes'], $before, $logTag);
 }
 if (!$commit['config']['boot_unreadable']) {
-    wgct_write_boot_record($commit['config']['live_boot']);
+    wgct_record_boot($commit['config']['live_boot']);
 }

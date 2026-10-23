@@ -50,8 +50,9 @@ const WGCT_HEALTH_UNOPENABLE_FILE = WGCT_RUN_DIR . '/health.unopenable';
 const WGCT_GATEWAY_SKIPPED_FILE = WGCT_RUN_DIR . '/gateway.skipped';
 const WGCT_BOOT_UNREADABLE_FILE = WGCT_RUN_DIR . '/boot.unreadable';
 
-/* The boot the mirror last ran under, written at the end of every tick: after a reboot it still names the
- * previous boot until the first tick, which is how that tick knows the records of that boot are its own. */
+/* The boot the mirror last ran under, recorded at the end of a tick when it names another one (wgct_record_boot()):
+ * after a reboot it still names the previous boot until the first tick, which is how that tick knows the records
+ * of that boot are its own. */
 const WGCT_BOOT_FILE = WGCT_DB_DIR . '/boot.json';
 const WGCT_BOOT_FILE_MAX_BYTES = 256;
 
@@ -512,10 +513,26 @@ function wgct_boot_record_json(string $bootId, int $at): string {
 }
 
 /**
- * Record the boot this tick ran under (the C3 writer: root, 0600, in the 0700 state directory).
+ * Record the boot the mirror runs under in boot.json, at the end of a tick.
+ *
+ * @return bool whether boot.json names $bootId now
  */
-function wgct_write_boot_record(string $bootId): bool {
-    return wgct_write_file_atomic(WGCT_BOOT_FILE, wgct_boot_record_json($bootId, time()));
+function wgct_record_boot(string $bootId): bool {
+    return wgct_record_boot_at(WGCT_BOOT_FILE, $bootId);
+}
+
+/**
+ * wgct_record_boot() at $path (the self-test's temporary file). The file is written (the C3 writer: root, 0600, in a
+ * 0700 directory) only when it does not name $bootId already, read through the C3 reader: a boot id changes once
+ * per boot, and a tick runs four times a minute, so a write each tick would only wear persistent storage.
+ *
+ * @return bool whether $path names $bootId now
+ */
+function wgct_record_boot_at(string $path, string $bootId): bool {
+    if (wgct_parse_boot_record(wgct_read_state_file($path, WGCT_BOOT_FILE_MAX_BYTES)) === $bootId) {
+        return true;
+    }
+    return wgct_write_file_atomic($path, wgct_boot_record_json($bootId, time()));
 }
 
 /**
@@ -1338,6 +1355,38 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] boot record: written as {\"boot_id\", \"at\"}\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- boot.json is written only when it does not name the boot already (a temporary file, never the real one) ---- */
+    $bootDir = rtrim(sys_get_temp_dir(), '/') . '/wgct-boot-selftest.' . getmypid();
+    $bootPath = "{$bootDir}/boot.json";
+    $bootStat = function () use ($bootPath): ?array {
+        clearstatcache(true, $bootPath);
+        return is_file($bootPath) ? ['inode' => fileinode($bootPath), 'mtime' => filemtime($bootPath),
+            'boot' => wgct_parse_boot_record((string)file_get_contents($bootPath))] : null;
+    };
+    $written = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
+    $unchanged = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
+    $changed = wgct_record_boot_at($bootPath, $prev1) ? $bootStat() : null;
+    @unlink($bootPath);
+    $missing = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
+    file_put_contents($bootPath, '{"boot_id":');
+    $unreadable = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
+    @unlink($bootPath);
+    @rmdir($bootDir);
+    $bootWrites = [
+        ['no boot.json yet => written with the boot id', $written !== null && $written['boot'] === $live1],
+        ['(M4) boot.json already naming the boot => not written again: the same file (inode) and content',
+            $written !== null && $unchanged === $written],
+        ['boot.json naming another boot => rewritten with the live one',
+            $changed !== null && $written !== null && $changed['inode'] !== $written['inode'] && $changed['boot'] === $prev1],
+        ['boot.json removed => written again', $missing !== null && $missing['boot'] === $live1],
+        ['boot.json unreadable (truncated JSON) => written again', $unreadable !== null && $unreadable['boot'] === $live1],
+    ];
+    foreach ($bootWrites as [$desc, $ok]) {
+        $fail += $ok ? 0 : 1;
+        $total++;
+        printf("[%s] boot record: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
+    }
 
     /* ---- duplicate rows for one gateway: one row is kept, so a uuid is never both owned and pruned ---- */
     $dupCases = [
