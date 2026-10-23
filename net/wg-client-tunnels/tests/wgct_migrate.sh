@@ -286,10 +286,18 @@ BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\
 S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
 RUN=/var/run/wgclienttunnels
 RECORD="$RUN/active_gateways"
+# PHP's error log, as core's GUI crash reporter reads it
+PHPLOG=/var/lib/php/tmp/PHP_errors.log
 RECORD_PLANTED=""
 USERS="$(dirname "$0")/wgct_user.php"
 SET_USER=wgct-migrate-set
 REFUSED='the plugin settings are not migrated to 3.1.0 yet'
+
+# drained WHEN: the reconcile a config save queued has ended (wgct_settle.sh reconcile_drained); a timeout is a FAIL
+# of its own, with what still runs
+drained() {
+    reconcile_drained 150 || { FAIL=$((FAIL + 1)); echo "[FAIL] $1: a queued reconcile was still queued or running 150 s later"; }
+}
 
 # others MARK: the plugin's log lines since MARK other than the route set's, or -1 when MARK is missing
 others() {
@@ -383,6 +391,14 @@ pending() {
     check "pending: (M1) the settings API's set refuses (core's UserException: HTTP 500 with the reason) and logs it once" \
         "$code $(grep -c "$REFUSED" "$T/set.body") $(lcount wireguard "$mark" -e "settings refused: $REFUSED")" "500 1 1"
     check "pending: (M1) the settings node keeps 3.7_1's managed list and holds for the migration" "$($PHP "$T/fact.php" settings)" "3.0.0 managed:yes held:yes"
+    # (N4) each run that refused keeps its own marker, named after it, and none is named like wgct.sh's queued-reconcile
+    # mark
+    markers=""
+    for r in tick apply action release-holds settings monitor-repair routes; do
+        [ -f "$RUN/$r.awaiting-migration" ] || markers="$markers no-$r"
+    done
+    check "pending: (N4) every refusing run left its own marker <run>.awaiting-migration, and no *.pending but reconcile.pending" \
+        "[${markers# }] $(ls "$RUN" | grep '[.]pending$' | grep -c -v '^reconcile[.]pending$')" "[] 0"
     remove_set_user
     # (N6) with the health mirror off in the 3.0.0 node, a tick ends quietly: a mirror that is off would not have run
     cp /conf/config.xml "$T/n.xml"
@@ -393,25 +409,30 @@ pending() {
     check "pending: (N6) with the health mirror off, a tick exits 0 and logs no refusal" \
         "$t1 $(lcount wireguard "$mark" -e 'tick refused')" "0 0"
     $PHP "$T/restore.php" "$T/n.xml"
+    drained "after N6"
     # (N1) 3.7_1's managed list unreadable: the route set's helper and the prime tick end quietly. They run with the
-    # production ini here (log_errors on), as wgct.sh and cron run them: nothing may reach PHP's error log.
-    PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+    # production ini here (log_errors on), as wgct.sh and cron run them: nothing may reach PHP's error log. The window
+    # opens before the config save: the reconcile its syshook queues runs the route set too, and may log the failure
+    # first; parse_error keeps that at one line, whichever run logs it.
     log0=$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)
     [ -f "$RECORD" ] && cp -p "$RECORD" "$T/record.n1"
-    $PHP "$T/tweak.php" managed-unreadable
     rm -f "$RUN/parse_error"
+    mark=$(lmark wireguard)
+    $PHP "$T/tweak.php" managed-unreadable
     /usr/local/bin/php "$S/gateway_config.php" > "$T/gc.out" 2> /dev/null; gc=$?
     check "pending: (N1) with 3.7_1's managed list unreadable, gateway_config.php exits non-zero with nothing on stdout" \
         "$([ "$gc" -ne 0 ] && echo non-zero || echo 0) [$(cat "$T/gc.out")]" "non-zero []"
-    mark=$(lmark wireguard)
     "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
+    # the reconcile the save queued has ended before the route and log checks
+    drain=$(reconcile_drained 150 && echo drained)
     check "pending: (N1) then wgct.sh configure_routes twice logs 'gateway_config.php failed' once and changes no route" \
-        "$(lcount wireguard "$mark" -e 'wgct-routes. gateway_config.php failed') $(lcount wireguard "$mark" -e 'wgct-routes. \(added\|removed\) ') $({ [ -f "$T/record.n1" ] && cmp -s "$RECORD" "$T/record.n1"; } || { [ ! -f "$T/record.n1" ] && [ ! -f "$RECORD" ]; } && echo kept || echo changed)" \
-        "1 0 kept"
+        "$(lcount wireguard "$mark" -e 'wgct-routes. gateway_config.php failed') $(lcount wireguard "$mark" -e 'wgct-routes. added ' -e 'wgct-routes. removed ') $({ [ -f "$T/record.n1" ] && cmp -s "$RECORD" "$T/record.n1"; } || { [ ! -f "$T/record.n1" ] && [ ! -f "$RECORD" ]; } && echo kept || echo changed) $drain" \
+        "1 0 kept drained"
     /usr/local/bin/php "$S/prime.php" > /dev/null 2>&1; pr=$?
     check "pending: (N1) then prime.php exits 0, and PHP's error log did not grow" \
         "$pr $(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "0 $log0"
     $PHP "$T/restore.php" "$T/n.xml"
+    drained "after N1"
     rm -f "$RUN/parse_error" "$T/record.n1"
     pend_mark=$(lmark wireguard)
 }
@@ -440,12 +461,8 @@ scenario() {
     $PHP "$MIGRATE" "$prefix" > "$T/migrate.out" 2>&1
     end=$(date +%s)
     echo "    $name: run_migrations.php said: $(tr '\n' ';' < "$T/migrate.out")"
-    # whatever the migration's save set off has ended before the list is read (at most 30 s)
-    n=0
-    while [ "$n" -lt 300 ] && in_flight; do
-        sleep 0.1
-        n=$((n + 1))
-    done
+    # whatever the migration's save set off has ended before the list is read
+    settle 30 || { FAIL=$((FAIL + 1)); echo "[FAIL] $name: a run was still in flight 30 s after the migration"; }
     $PHP "$TUNNEL" --json list > "$T/after.json"
 
     check "$name: the settings node is at 3.1.0 with neither managed nor held" "$($PHP "$T/fact.php" settings)" "3.1.0 managed:no held:no"
