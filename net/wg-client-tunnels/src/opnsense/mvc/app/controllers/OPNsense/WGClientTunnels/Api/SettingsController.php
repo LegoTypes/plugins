@@ -29,9 +29,31 @@
 namespace OPNsense\WGClientTunnels\Api;
 
 use OPNsense\Base\ApiMutableModelControllerBase;
+use OPNsense\Base\UserException;
 
 class SettingsController extends ApiMutableModelControllerBase
 {
     protected static $internalModelName = 'wgclienttunnels';
     protected static $internalModelClass = '\OPNsense\WGClientTunnels\WGClientTunnels';
+
+    /* the plugin's library: wgct_pending_refuses() */
+    private const MIRROR_LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/mirror.php';
+
+    /**
+     * Core's set, refused while the settings wait for their 3.1.0 migration (ruling R37): this model no longer
+     * declares the managed list and the holds 3.7_1 stored in its node, so a save then would drop them before the
+     * migration carries them over. Logged once per state, as every refused writer is.
+     *
+     * @throws UserException while the migration is pending
+     */
+    public function setAction()
+    {
+        if ($this->request->isPost()) {
+            require_once self::MIRROR_LIB;
+            if (wgct_pending_refuses('settings', 'wgct-action')) {
+                throw new UserException(WGCT_MIGRATION_PENDING, gettext('WireGuard Upstream Tunnels'));
+            }
+        }
+        return parent::setAction();
+    }
 }
