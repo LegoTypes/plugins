@@ -26,13 +26,13 @@ declare(strict_types=1);
  */
 function uu_forward_addr_ok(string $value): bool
 {
-    if (preg_match('/^[0-9a-f:.]+(@\d{1,5})?(#[A-Za-z0-9.-]+)?$/iD', $value) !== 1) {
+    if (preg_match('/^([0-9a-f:.]+)(@\d{1,5})?(#[A-Za-z0-9.-]+)?$/iD', $value, $m) !== 1) {
         return false;
     }
-    return inet_pton(strtok($value, '@#') ?: '') !== false;
+    return inet_pton($m[1]) !== false;
 }
 
-/** Whether a configuration option name is a plain name (letters, digits, hyphens), as one may be named in a problem. */
+/** Whether a configuration option name is a plain name (lower-case letters, digits, hyphens), as one may be named in a problem. */
 function uu_zone_option_name_ok(string $option): bool
 {
     return preg_match('/^[a-z0-9-]+$/D', $option) === 1;
