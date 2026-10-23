@@ -399,29 +399,74 @@ function uu_live_root(): ?array
 }
 
 /**
- * Unbound's generated configuration files, in file-name order (ruling R9, convention C3): a symbolic link, anything
- * but a regular file and an unreadable file are skipped, and a file over UU_FILE_MAX_BYTES gives its first
- * UU_FILE_MAX_BYTES up to the last line end in them, so a large blocklist file still counts and a line the cut
- * falls in (a forward-addr) is dropped whole, never shortened into another value. The files are core's, written
- * as root, but the directory belongs to Unbound's chroot. $dir is for the tests.
+ * Unbound's generated configuration files, in file-name order, as zone_read.py reads them (rulings R9 and R43,
+ * convention C3): no path in the directory is resolved through a link, so no device behind one is ever looked up
+ * (devfs clones tun and tap interfaces on a lookup); a link, anything but a regular file and an unreadable file
+ * are skipped, and a file over UU_FILE_MAX_BYTES gives its first UU_FILE_MAX_BYTES up to the last line end in
+ * them, so a large blocklist file still counts and a line the cut falls in (a forward-addr) is dropped whole. The
+ * files are core's, written as root, but the directory belongs to Unbound's chroot, which uid unbound can write.
+ * The helper runs from its argv (no shell) under UU_ZONE_READ_SECONDS; a helper that cannot start, runs past that
+ * (it is killed), exits non-zero or prints anything but a JSON list of base64 strings gives no texts. $dir and
+ * $helper are for the tests.
  *
  * @return list<string>
  */
-function uu_zone_texts(string $dir = '/var/unbound/etc'): array
+function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR__ . '/../zone_read.py'): array
 {
-    $texts = [];
-    $files = glob($dir . '/*.conf') ?: [];
-    sort($files);
-    foreach ($files as $file) {
-        $read = uu_read_regular_file($file);
-        $text = $read['text'];
-        if ($text === null) {
-            continue;
+    $pipes = [];
+    $proc = @proc_open([UU_PYTHON, '-I', $helper, $dir, (string)UU_FILE_MAX_BYTES],
+        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        return [];
+    }
+    $deadline = hrtime(true) + UU_ZONE_READ_SECONDS * 1000000000;
+    $out = '';
+    $exit = null;
+    try {
+        stream_set_blocking($pipes[1], false);
+        while (!feof($pipes[1])) {
+            $left = $deadline - hrtime(true);
+            $ready = [$pipes[1]];
+            $none = null;
+            if ($left <= 0
+                || @stream_select($ready, $none, $none, intdiv($left, 1000000000), intdiv($left % 1000000000, 1000))
+                === false) {
+                return [];
+            }
+            $out .= (string)fread($pipes[1], 65536);
         }
-        if ($read['problem'] !== null) {
-            /* the first UU_FILE_MAX_BYTES of a larger file: cut after its last line end */
-            $end = strrpos($text, "\n");
-            $text = $end === false ? '' : substr($text, 0, $end + 1);
+        $status = proc_get_status($proc);
+        while ($status['running'] && hrtime(true) < $deadline) {
+            usleep(10000);
+            $status = proc_get_status($proc);
+        }
+        if ($status['running']) {
+            return [];
+        }
+        $exit = $status['exitcode'];
+    } finally {
+        fclose($pipes[1]);
+        if ($exit === null) {
+            proc_terminate($proc, 9);
+        }
+        proc_close($proc);
+    }
+    if ($exit !== 0) {
+        return [];
+    }
+    try {
+        $doc = json_decode($out, false, 2, JSON_THROW_ON_ERROR);
+    } catch (\JsonException) {
+        return [];
+    }
+    if (!is_array($doc)) {
+        return [];
+    }
+    $texts = [];
+    foreach ($doc as $entry) {
+        $text = is_string($entry) ? base64_decode($entry, true) : false;
+        if ($text === false) {
+            return [];
         }
         $texts[] = $text;
     }

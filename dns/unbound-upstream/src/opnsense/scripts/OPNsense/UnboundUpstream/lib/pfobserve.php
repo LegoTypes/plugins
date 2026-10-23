@@ -291,7 +291,7 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
 function uu_rules_record_load(string $path): ?array
 {
     $read = uu_read_regular_file($path);
-    if ($read['problem'] !== null || $read['text'] === null) {
+    if ($read['text'] === null) {
         return null;
     }
     $doc = json_decode($read['text'], true);

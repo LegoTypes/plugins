@@ -64,9 +64,10 @@ function uu_run_dir(string $dir = UU_RUN_DIR): void
 /**
  * A file the plugin trusts, read as a regular file only (convention C3): the path is no symbolic link and a regular
  * file (lstat), and the file opened is the one checked (the same device and inode), so a swap between the check and
- * the open is refused, and the open never blocks. A missing path, or one below a directory this process cannot
- * search, has no text and no problem. A file over maxBytes gives its first maxBytes as text, with the problem; a
- * reader that needs the whole file treats every problem as absent.
+ * the open is refused, and the open never blocks. The open still follows a link swapped in after the lstat, so this
+ * reader is for files in a directory only root can write (UU_RUN_DIR); Unbound's goes through zone_read.py (ruling
+ * R43). A missing path, or one below a directory this process cannot search, has no text and no problem; with a
+ * problem there is no text either.
  *
  * @return array{text: ?string, problem: ?string} problem: 'a symbolic link', 'not a regular file', 'larger than
  *     1 MiB' (the default limit) or 'unreadable'
@@ -103,7 +104,7 @@ function uu_read_regular_file(string $path, int $maxBytes = UU_FILE_MAX_BYTES): 
         if (strlen($text) > $maxBytes) {
             $limit = $maxBytes > 0 && $maxBytes % 1048576 === 0
                 ? intdiv($maxBytes, 1048576) . ' MiB' : "$maxBytes bytes";
-            return ['text' => substr($text, 0, $maxBytes), 'problem' => "larger than $limit"];
+            return ['text' => null, 'problem' => "larger than $limit"];
         }
         return ['text' => $text, 'problem' => null];
     } finally {
@@ -325,7 +326,7 @@ function uu_state_from_doc(array $doc): ?array
 function uu_state_read(string $path): array
 {
     $read = uu_read_regular_file($path);
-    if ($read['problem'] !== null || $read['text'] === null) {
+    if ($read['text'] === null) {
         return ['state' => uu_state_new(), 'problem' => $read['problem']];
     }
     $doc = json_decode($read['text'], true);

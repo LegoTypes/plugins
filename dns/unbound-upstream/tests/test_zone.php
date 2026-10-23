@@ -124,5 +124,69 @@ uu_register_suite('zone', function (): int {
                 && uu_root_zone($got)['addrs'] === [];
         }));
 
+    /* ruling R43: no path in the directory is resolved through a link, so no device is ever looked up */
+    uu_check($t, '(z2) zone texts: a directory reached through a symbolic link reads as nothing; the real one is read',
+        uu_scratch_case(function (string $dir): bool {
+            $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
+            mkdir($dir . '/real');
+            file_put_contents($dir . '/real/a.conf', $root);
+            symlink($dir . '/real', $dir . '/link');
+            return uu_zone_texts($dir . '/link') === [] && uu_zone_texts($dir . '/real') === [$root];
+        }));
+    uu_check($t, '(z3) zone texts: a *.conf link to /dev/tun is skipped and clones no tun interface',
+        uu_scratch_case(function (string $dir): bool {
+            $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
+            file_put_contents($dir . '/a.conf', $root);
+            $ifaces = function (): ?array {
+                $out = [];
+                $rc = 1;
+                exec('/sbin/ifconfig -l', $out, $rc);
+                return $rc === 0 && count($out) === 1 ? explode(' ', trim($out[0])) : null;
+            };
+            /* the interfaces before the link exists, and the link made by ln(1): PHP's symlink() resolves its target,
+             * and that lookup alone clones a tun interface (the VM probe in the Task 3 report) */
+            $before = $ifaces();
+            $rc = 1;
+            exec('/bin/ln -s /dev/tun ' . escapeshellarg($dir . '/b.conf'), result_code: $rc);
+            $got = $rc === 0 && is_link($dir . '/b.conf') ? uu_zone_texts($dir) : null;
+            $after = $ifaces();
+            $cloned = $before === null || $after === null ? [] : array_diff($after, $before);
+            foreach ($cloned as $name) {
+                if (preg_match('/^tun[0-9]+$/', $name) === 1) {
+                    printf("  destroying %s, cloned by the read\n", $name);
+                    exec('/sbin/ifconfig ' . escapeshellarg($name) . ' destroy');
+                }
+            }
+            return $before !== null && $after === $before && $got === [$root];
+        }));
+    uu_check($t, 'zone texts: the bytes come back exactly (not UTF-8 too), and a dot file is not listed, as glob(3)',
+        uu_scratch_case(function (string $dir): bool {
+            $text = "# \xff\xfe latin-1 \xe9\n" . "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
+            file_put_contents($dir . '/a.conf', $text);
+            file_put_contents($dir . '/.hidden.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
+            return uu_zone_texts($dir) === [$text];
+        }));
+    $helpers = [
+        'that runs past its time limit' => "import time\ntime.sleep(30)\n",
+        'that prints bad JSON' => "print('not json')\n",
+        'that exits non-zero' => "import sys\nprint('[]')\nsys.exit(3)\n",
+        'that prints an object, not a list' => "print('{\"0\": \"eA==\"}')\n",
+        'that prints a list holding a non-string' => "print('[1]')\n",
+        'that prints an entry that is not base64' => "print('[\"%%%\"]')\n",
+        'that does not exist' => null,
+    ];
+    foreach ($helpers as $what => $code) {
+        uu_check($t, "(z4) zone texts: a helper $what gives no texts, within 8 s",
+            uu_scratch_case(function (string $dir) use ($code): bool {
+                file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
+                if ($code !== null) {
+                    file_put_contents($dir . '/helper.py', $code);
+                }
+                $t0 = hrtime(true);
+                $got = uu_zone_texts($dir, $dir . '/helper.py');
+                return $got === [] && hrtime(true) - $t0 < 8 * 1000000000;
+            }));
+    }
+
     return uu_tally_report('zone', $t);
 });
