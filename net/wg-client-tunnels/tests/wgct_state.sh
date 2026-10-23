@@ -210,8 +210,8 @@ check "a nobody-owned rules.debug.error with a future mtime leaves freshness at 
 # error is reported with the new monitor already stored, and a second edit puts the old one back. The symlink
 # itself may be gone by then (the failed edit still runs the routes step, which consumes hand-off files), so
 # only its target is checked.
-UUID=$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["uuid"]; } }')
-OLDMON=$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["monitor"]; } }')
+UUID=$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -d log_errors=0 -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["uuid"]; } }')
+OLDMON=$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -d log_errors=0 -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["monitor"]; } }')
 GWUUID=$($PHP -d log_errors=0 -r '$x = simplexml_load_file("/conf/config.xml"); foreach ($x->OPNsense->Gateways->gateway_item as $g) { if ((string)$g->name === "rehearse") { echo $g["uuid"]; } }')
 if [ -n "$UUID" ] && [ -n "$OLDMON" ] && [ -n "$GWUUID" ]; then
     TODO=$($PHP -d log_errors=0 -r 'require_once "'"$LIB"'/apply.php"; echo "/tmp/delete_route_" . wgct_route_todo_key($argv[1], $argv[2]) . ".todo";' "$GWUUID" "$OLDMON")
@@ -225,7 +225,7 @@ if [ -n "$UUID" ] && [ -n "$OLDMON" ] && [ -n "$GWUUID" ]; then
     check "the symlink's target is unchanged" "$(cat "$T/f8.target")" harmless
     cleanup_planted
     echo "{\"uuid\":\"$UUID\",\"monitor\":\"$OLDMON\"}" | $PHP -d log_errors=0 "$TUNNEL" --json edit > "$T/f8r.out" 2>&1
-    check "the second edit restores the dummy tunnel's monitor" "$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["monitor"]; } }')" "$OLDMON"
+    check "the second edit restores the dummy tunnel's monitor" "$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -d log_errors=0 -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["monitor"]; } }')" "$OLDMON"
 else
     check "the dummy tunnel rehearse and its gateway are found for the F8 case" "uuid=$UUID monitor=$OLDMON gateway=$GWUUID" "found"
 fi
@@ -234,7 +234,7 @@ fi
 # the WireGuard log, nothing in PHP's error log (core's GUI crash reporter reads it). They run from a copy of the
 # script directory without lib/, never the installed one; the copy's entry.php keeps its markers in a directory
 # of this test's own, so the VM's cron runs never see them. php runs with the production ini here (log_errors on).
-PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+PHPLOG=$($PHP -d log_errors=0 -r 'echo ini_get("error_log");')
 E="$T/entry"
 mkdir -p "$E/run"
 cp -Rp "$(dirname "$SRC")" "$E/scripts"
