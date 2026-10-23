@@ -255,6 +255,17 @@ USERS="$(dirname "$0")/wgct_user.php"
 SET_USER=wgct-migrate-set
 REFUSED='the plugin settings are not migrated to 3.1.0 yet'
 
+# others MARK: the plugin's log lines since MARK other than the route set's, or -1 when MARK is missing
+others() {
+    o_all=$(lcount wireguard "$1" -e '\[wgct-')
+    o_routes=$(lcount wireguard "$1" -e '\[wgct-routes\]')
+    if [ "$o_all" -lt 0 ] || [ "$o_routes" -lt 0 ]; then
+        echo -1
+    else
+        echo $((o_all - o_routes))
+    fi
+}
+
 # pending INST: the checks of the window before the migration (see the header); config.xml is 3.7_1's
 pending() {
     service cron stop > /dev/null
@@ -270,13 +281,17 @@ pending() {
     rm -f "$RUN"/*.pending
     cp /conf/config.xml "$T/pending.xml"
     mark=$(lmark wireguard)
+    # the window opens: a gateway alarm from an earlier test (dpinger reports up to a minute late) can run the route
+    # set through the plugin's hook at any point from here, and its one refusal is logged then; so the route set's
+    # line is counted over the whole window, and the listing's own check leaves the route set's lines out
+    open=$mark
     $PHP "$TUNNEL" --json list > "$T/pending-list.json"
     check "pending: (M1) the 3.8 list shows the tunnels, findings and unmanaged instances 3.7_1 lists (the managed list 3.7_1 stored)" \
         "$($PHP "$T/lists.php" "$T/before.json" "$T/pending-list.json" | sed -n 1p)" same
     $PHP "$S/health_mirror.php" --dry > "$T/dry.out" 2>&1
     check "pending: (M1) health_mirror.php --dry says the tick refuses" "$(grep -c "the tick refuses: $REFUSED" "$T/dry.out")" 1
     check "pending: (M1) the listing and --dry write nothing: config.xml as it was, no marker, no log line" \
-        "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed) $(ls "$RUN" | grep -c '[.]pending$') $(lcount wireguard "$mark" -e '\[wgct-')" "same 0 0"
+        "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed) $(ls "$RUN" | grep '[.]pending$' | grep -c -v '^routes[.]pending$') $(others "$mark")" "same 0 0"
     mark=$(lmark wireguard)
     $PHP "$S/health_mirror.php"; t1=$?
     $PHP "$S/health_mirror.php"; t2=$?
@@ -300,8 +315,14 @@ pending() {
     mark=$(lmark wireguard)
     "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
     $PHP "$S/monitor_repair.php"; $PHP "$S/monitor_repair.php"
-    check "pending: (M1) the route set and the monitor repair refuse, each logged once" \
-        "$(lcount wireguard "$mark" -e "wgct-routes. route set refused: $REFUSED") $(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")" "1 1"
+    rm1=$(lcount wireguard "$open" -e "wgct-routes. route set refused: $REFUSED")
+    rm2=$(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")
+    rm3=$([ -f "$RUN/routes.pending" ] && echo marker || echo none)
+    check "pending: (M1) the route set and the monitor repair refuse, each logged once" "$rm1 $rm2 $rm3" "1 1 marker"
+    if [ "$rm1 $rm2 $rm3" != "1 1 marker" ]; then
+        echo "      | $RUN: $(ls "$RUN" | tr '\n' ' ')"
+        lwindow wireguard "$mark" | sed 's/^/      | /'
+    fi
     check "pending: (M1) nothing refused changed config.xml" "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed)" same
     cred=$($PHP "$USERS" create "$SET_USER" page-vpn-wgclienttunnels) && configctl auth sync user "$SET_USER" > /dev/null 2>&1
     mark=$(lmark wireguard)
