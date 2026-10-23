@@ -6,8 +6,9 @@
 
 <script>
     $(document).ready(function () {
+        /* the exact inverse of core's htmlspecialchars(..., ENT_NOQUOTES): &lt; &gt; and &amp; back, nothing else decoded */
         function plain(s) {
-            return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
+            return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
         }
         function yesno(b) {
             return b ? "{{ lang._('yes') }}" : "{{ lang._('no') }}";

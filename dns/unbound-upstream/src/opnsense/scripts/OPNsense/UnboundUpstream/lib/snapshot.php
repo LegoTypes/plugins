@@ -76,7 +76,7 @@ function uu_parse_forward(string $out): ?array
     }
     $addrs = preg_split('/\s+/', $text) ?: [];
     foreach ($addrs as $addr) {
-        if (preg_match('/^[0-9a-f:.]+(@\d+)?(#\S+)?$/i', $addr) !== 1 || preg_match('/\d|:/', $addr) !== 1) {
+        if (!uu_forward_addr_ok($addr)) {
             return null;
         }
     }

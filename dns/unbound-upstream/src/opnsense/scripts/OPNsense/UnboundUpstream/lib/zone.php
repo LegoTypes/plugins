@@ -20,6 +20,25 @@ declare(strict_types=1);
  */
 
 /**
+ * Whether a forward-addr value, as Unbound prints and takes it, is an address with an optional port and an optional
+ * authentication name and nothing else (convention C5), so text from Unbound never reaches the page or the log
+ * unchecked.
+ */
+function uu_forward_addr_ok(string $value): bool
+{
+    if (preg_match('/^[0-9a-f:.]+(@\d{1,5})?(#[A-Za-z0-9.-]+)?$/iD', $value) !== 1) {
+        return false;
+    }
+    return inet_pton(strtok($value, '@#') ?: '') !== false;
+}
+
+/** Whether a configuration option name is a plain name (letters, digits, hyphens), as one may be named in a problem. */
+function uu_zone_option_name_ok(string $option): bool
+{
+    return preg_match('/^[a-z0-9-]+$/D', $option) === 1;
+}
+
+/**
  * One configuration line without its comment, split into [option, value] with surrounding quotes removed;
  * null for a blank or comment-only line. A clause header such as "server:" has an empty value.
  *
@@ -116,11 +135,18 @@ function uu_root_zone(?array $texts): array
     $problems = [];
     foreach ($roots[0]['lines'] as [$option, $value]) {
         if ($option === 'forward-addr') {
-            $addrs[] = $value;
+            if (uu_forward_addr_ok($value)) {
+                $addrs[] = $value;
+            } elseif (!in_array('forward-addr value', $problems, true)) {
+                $problems[] = 'forward-addr value';
+            }
         } elseif ($option === 'forward-tls-upstream') {
             $tls = in_array(strtolower($value), ['yes', '1', 'true'], true);
-        } elseif (!in_array($option, $problems, true)) {
-            $problems[] = $option;
+        } else {
+            $named = uu_zone_option_name_ok($option) ? $option : 'unknown option';
+            if (!in_array($named, $problems, true)) {
+                $problems[] = $named;
+            }
         }
     }
     if (count($roots) > 1) {

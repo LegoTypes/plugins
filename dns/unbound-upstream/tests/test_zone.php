@@ -81,6 +81,25 @@ uu_register_suite('zone', function (): int {
     uu_check($t, 'any other option on the root zone is a problem named by its option',
         $z['shape'] === 'unrestorable' && $z['problems'] === ['forward-no-cache']);
 
+    $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53@853#x;y\n"]);
+    uu_check($t, '(f2) a forward-addr that is not an address with port and name is unrestorable, the text never named',
+        $z['shape'] === 'unrestorable' && $z['problems'] === ['forward-addr value']);
+    $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n  forward-addr: 198.51.100.1<b>\n"
+        . "  forward-addr: 999.1.1.1\n"]);
+    uu_check($t, '(f2) two bad forward-addr values give the one problem once',
+        $z['shape'] === 'unrestorable' && $z['problems'] === ['forward-addr value']);
+    $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n  fo<o>: yes\n"]);
+    uu_check($t, '(f3) an option that is not a plain name is "unknown option", the text never named',
+        $z['shape'] === 'unrestorable' && $z['problems'] === ['unknown option']
+        && strpos(implode(' ', $z['problems']), 'fo<o>') === false);
+    $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n  forward-first: yes\n"
+        . "  a b: 1\n  c<d: 1\n"]);
+    uu_check($t, '(f3) forward-first is still named, and two bad option names give "unknown option" once',
+        $z['problems'] === ['forward-first', 'unknown option']);
+    uu_check($t, '(f3) an option name is admitted by shape: a trailing LF never passes',
+        uu_zone_option_name_ok('forward-first') && !uu_zone_option_name_ok("forward-first\n")
+        && !uu_zone_option_name_ok('fo<o>'));
+
     $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-tls-upstream: no\n  forward-addr: 192.0.2.53\n"]);
     uu_check($t, 'forward-tls-upstream: no is not tls', $z['shape'] === 'one' && !$z['tls']);
 
