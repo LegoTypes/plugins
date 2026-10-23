@@ -707,6 +707,33 @@ uu_register_suite('apply', function (): int {
         $p['action'] === 'fallback' && uu_test_acts($r['calls']) === [] && $st['mode'] === 'tunnel'
         && uu_test_logged($r['calls'], LOG_ERR, 'forward-first'));
 
+    /* ruling R44: with the zone configuration unreadable, neither a fallback nor a stop guesses: no forward_remove .
+     * (Unbound would recurse over the WAN in place of the configured forwarders), no forward_add, the route kept */
+    $runs = null;
+    try {
+        $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+        $s['probes']['wg-a'] = $settledDown;
+        $s['probes']['wg-b'] = $settledDown;
+        $s['zone'] = uu_root_zone(null);
+        $s['contract_input']['zone'] = $s['zone'];
+        $runs = [];
+        foreach ([false, true] as $stop) {
+            $s['settings']['enabled'] = !$stop;
+            $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+            $r = uu_test_io($s, $all);
+            $runs[] = [$p, $r, uu_apply($p, $s, $r['io'])];
+        }
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    }
+    foreach (['fallback' => 0, 'stop' => 1] as $action => $i) {
+        uu_check($t, "zone configuration unreadable, $action: no forwarders call and no route call, still tunnel, "
+            . 'logged as an error naming it',
+            $runs !== null && $runs[$i][0]['action'] === $action && uu_test_acts($runs[$i][1]['calls']) === []
+            && $runs[$i][2]['mode'] === 'tunnel'
+            && uu_test_logged($runs[$i][1]['calls'], LOG_ERR, 'configuration unreadable'));
+    }
+
     // The control channel.
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $s['unbound']['control_ok'] = false;

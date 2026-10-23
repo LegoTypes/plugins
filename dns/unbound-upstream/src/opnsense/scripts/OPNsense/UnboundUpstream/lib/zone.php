@@ -11,7 +11,8 @@ declare(strict_types=1);
  *
  * Reads the forward zones out of Unbound's generated configuration and reports whether the root zone has a
  * shape forward_add can restore: no "." zone, or exactly one whose only options are forward-addr and
- * forward-tls-upstream. Anything else is "unrestorable" and its problems are named.
+ * forward-tls-upstream. Anything else is "unrestorable" and its problems are named, and so is a configuration that
+ * could not be read (ruling R44): it is never "no . zone", which restores as recursion over the WAN.
  *
  * ZoneBlock = array{name: string, lines: list<array{0: string, 1: string}>}  (lines are [option, value])
  * Zone      = array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}
@@ -87,13 +88,17 @@ function uu_parse_forward_zones(string $text): array
 }
 
 /**
- * The shape of the "." zone across the generated files, given in file-name order.
+ * The shape of the "." zone across the generated files, given in file-name order; null (uu_zone_texts() could not
+ * read them) is unrestorable, "configuration unreadable".
  *
- * @param list<string> $texts
+ * @param ?list<string> $texts
  * @return array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}
  */
-function uu_root_zone(array $texts): array
+function uu_root_zone(?array $texts): array
 {
+    if ($texts === null) {
+        return ['shape' => 'unrestorable', 'addrs' => [], 'tls' => false, 'problems' => ['configuration unreadable']];
+    }
     $roots = [];
     foreach ($texts as $text) {
         foreach (uu_parse_forward_zones($text) as $zone) {

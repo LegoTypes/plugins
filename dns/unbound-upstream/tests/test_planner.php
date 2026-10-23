@@ -320,6 +320,22 @@ uu_register_suite('planner', function (): int {
         && uu_test_reason_has($inTunnel['reasons'], 'fib sync delay unreadable')
         && uu_test_reason_has($inFallback['reasons'], 'fib sync delay unreadable'));
 
+    /* ruling R44: a zone read that failed never lets the plan enter tunnel mode, and in tunnel it falls back */
+    $plans = null;
+    try {
+        $s = uu_test_snapshot();
+        $s['zone'] = uu_root_zone(null);
+        $s['contract_input']['zone'] = $s['zone'];
+        $plans = [uu_plan($s, uu_test_plan_state(null, $usable)),
+                  uu_plan(uu_test_in_tunnel($s, 'wg-a'), uu_test_plan_state('wg-a', $usable))];
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    }
+    uu_check($t, 'zone configuration unreadable: in fallback → none, in tunnel → fallback, the reason named',
+        $plans !== null && $plans[0]['action'] === 'none' && $plans[1]['action'] === 'fallback'
+        && uu_test_reason_has($plans[0]['reasons'], 'configuration unreadable')
+        && uu_test_reason_has($plans[1]['reasons'], 'configuration unreadable'));
+
     $s = uu_test_snapshot();
     $s['route'] = ['present' => true, 'gateway' => '192.168.1.254', 'interface' => 'igc0', 'reject' => false,
                    'ours' => false];

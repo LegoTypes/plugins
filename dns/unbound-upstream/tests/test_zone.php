@@ -125,14 +125,43 @@ uu_register_suite('zone', function (): int {
         }));
 
     /* ruling R43: no path in the directory is resolved through a link, so no device is ever looked up */
-    uu_check($t, '(z2) zone texts: a directory reached through a symbolic link reads as nothing; the real one is read',
+    uu_check($t, '(z2) zone texts: a directory reached through a symbolic link is a failed read (null), never no '
+        . 'zone; the real one is read',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
             mkdir($dir . '/real');
             file_put_contents($dir . '/real/a.conf', $root);
             symlink($dir . '/real', $dir . '/link');
-            return uu_zone_texts($dir . '/link') === [] && uu_zone_texts($dir . '/real') === [$root];
+            return uu_zone_texts($dir . '/link') === null && uu_zone_texts($dir . '/real') === [$root];
         }));
+    /* ruling R44: the helper tells "could not look" from "nothing there" */
+    $helperRun = function (string $dir): array {
+        $out = [];
+        $rc = -1;
+        $helper = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/zone_read.py';
+        exec(UU_PYTHON . ' -I ' . escapeshellarg($helper) . ' ' . escapeshellarg($dir) . ' 1048576 2>/dev/null', $out,
+            $rc);
+        return [$rc, implode("\n", $out)];
+    };
+    uu_check($t, 'zone_read.py: a DIR reached through a link or missing exits 1 with nothing on stdout; an empty '
+        . 'directory it reaches exits 0 with []',
+        uu_scratch_case(function (string $dir) use ($helperRun): bool {
+            mkdir($dir . '/real');
+            symlink($dir . '/real', $dir . '/link');
+            return $helperRun($dir . '/link') === [1, ''] && $helperRun($dir . '/none') === [1, '']
+                && $helperRun($dir . '/real') === [0, '[]'];
+        }));
+    $try = function (callable $case): bool {
+        try {
+            return (bool)$case();
+        } catch (\Throwable $e) {
+            printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+            return false;
+        }
+    };
+    uu_check($t, 'zone: a read that failed (null) is unrestorable, "configuration unreadable", never shape none',
+        $try(fn (): bool => uu_root_zone(null) === ['shape' => 'unrestorable', 'addrs' => [], 'tls' => false,
+            'problems' => ['configuration unreadable']]));
     uu_check($t, '(z3) zone texts: a *.conf link to /dev/tun is skipped and clones no tun interface',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
@@ -166,25 +195,39 @@ uu_register_suite('zone', function (): int {
             file_put_contents($dir . '/.hidden.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
             return uu_zone_texts($dir) === [$text];
         }));
+    /* the helper's output, decoded strictly: a JSON list of base64 strings, anything else a failed read */
+    $outputs = [
+        'bad JSON' => 'not json',
+        'nothing' => '',
+        'null' => 'null',
+        'an object, not a list' => '{"0": "eA=="}',
+        'a list holding a non-string' => '[1]',
+        'a nested list' => '[["eA=="]]',
+        'an entry that is not base64' => '["%%%"]',
+    ];
+    foreach ($outputs as $what => $out) {
+        uu_check($t, "(z4) zone decode: $what is a failed read (null)",
+            $try(fn (): bool => uu_zone_decode($out) === null));
+    }
+    uu_check($t, 'zone decode: a list of base64 strings is their bytes, in order; an empty list is no files',
+        $try(fn (): bool => uu_zone_decode("[\"eA==\", \"\", \"/w==\"]\n") === ['x', '', "\xff"]
+            && uu_zone_decode('[]') === []));
+    /* the bounded runner: each failure is null, never no files */
     $helpers = [
-        'that runs past its time limit' => "import time\ntime.sleep(30)\n",
-        'that prints bad JSON' => "print('not json')\n",
+        'that runs past its 1 s limit is killed' => "import time\ntime.sleep(30)\n",
         'that exits non-zero' => "import sys\nprint('[]')\nsys.exit(3)\n",
-        'that prints an object, not a list' => "print('{\"0\": \"eA==\"}')\n",
-        'that prints a list holding a non-string' => "print('[1]')\n",
-        'that prints an entry that is not base64' => "print('[\"%%%\"]')\n",
         'that does not exist' => null,
     ];
     foreach ($helpers as $what => $code) {
-        uu_check($t, "(z4) zone texts: a helper $what gives no texts, within 8 s",
+        uu_check($t, "(z4) zone texts: a helper $what is a failed read (null), within 3 s",
             uu_scratch_case(function (string $dir) use ($code): bool {
                 file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
                 if ($code !== null) {
                     file_put_contents($dir . '/helper.py', $code);
                 }
                 $t0 = hrtime(true);
-                $got = uu_zone_texts($dir, $dir . '/helper.py');
-                return $got === [] && hrtime(true) - $t0 < 8 * 1000000000;
+                $got = uu_zone_texts($dir, $dir . '/helper.py', 1);
+                return $got === null && hrtime(true) - $t0 < 3 * 1000000000;
             }));
     }
 

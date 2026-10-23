@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/contract.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/zone.php';
 
 /**
  * A contract input that passes, with a restorable single root zone.
@@ -111,6 +112,20 @@ uu_register_suite('contract', function (): int {
     $c = uu_contract($in);
     uu_check($t, 'unrestorable zone: failure lists the problems',
         !$c['ok'] && $c['failures'] === ['root zone cannot be restored: second . zone, forward-first']);
+
+    /* ruling R44: a zone read that failed refuses tunnel mode; it is never read as no root zone */
+    $c = null;
+    try {
+        $in = uu_test_contract_input();
+        $in['zone'] = uu_root_zone(null);
+        $c = uu_contract($in);
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    }
+    uu_check($t, 'zone configuration unreadable: tunnel refused, "root zone cannot be restored: configuration '
+        . 'unreadable", no recursion note',
+        $c !== null && !$c['ok'] && $c['failures'] === ['root zone cannot be restored: configuration unreadable']
+        && $c['notes'] === []);
 
     $in = uu_test_contract_input();
     $in['zone'] = ['shape' => 'none', 'addrs' => [], 'tls' => false, 'problems' => []];
