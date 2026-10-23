@@ -314,7 +314,10 @@ others() {
 pending() {
     # the ticks and the reconcile cron started before it stopped: each would run the route set or the mirror, and log
     # its one refusal before the checks below mark the log; a round still asleep is ended (wgct_settle.sh)
-    n=$(cron_quiesce)
+    if ! n=$(cron_quiesce); then
+        FAIL=$((FAIL + 1))
+        echo "[FAIL] pending: cron stopped and its runs ended within 90 s"
+    fi
     echo "    waited ${n} s for the runs cron started"
     check "pending: no run cron started is left" \
         "$(pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null && echo running || echo none)" none

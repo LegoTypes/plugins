@@ -25,10 +25,15 @@
 #                         dpinger's average holds only probes sent since its start
 #   gw_quiet [MAX]        wait (at most MAX s, default 120) until WAN_B reads up and is not forced down in config.xml,
 #                         every monitored gateway's status is the one core's gateway watcher last acted on (no alarm
-#                         pending), core is done with the newest config save's hooks (its
-#                         /conf/event_config_changed.json is past the newest /conf/backup file, or that save is 5 s
-#                         old: core's trigger skips an event while it runs, and a save made with configd stopped
-#                         raises none), no reconcile is queued and nothing above runs
+#                         pending), core has run the config hooks of every config save, no reconcile is queued and
+#                         nothing above runs. A save reaches the plugin's hook through core's own path (syslog,
+#                         configctl, configd, trigger_config_changed_events.py, rc.syshook config); core records the
+#                         newest save it ran hooks for in /conf/event_config_changed.json. Core never raises the
+#                         event of a save made while configd was stopped, and its trigger skips one while it runs,
+#                         so when a save's hooks have not run and nothing runs, gw_quiet drives core's trigger itself
+#                         (configctl system event config_changed), as the next save would: it runs the hooks of every
+#                         save not yet run, so a delivery still on its way finds nothing left to run.
+#   ws_hooks              "done" or "due", the newest /conf/backup save's stamp and the one core last ran hooks for
 # Each wait returns 1 when it times out, after printing "      | " lines with what it waited on (what still runs, the
 # gateway state); the caller's check turns that into a FAIL.
 # Their own variables are named ws_*, so a test's are left alone.
@@ -115,6 +120,20 @@ gw_settled() {
     return 1
 }
 
+ws_hooks() {
+    $WS_PHP -r '
+        /* the stamps as core reads them: a backup file name config-<stamp>.xml, last_processed_stamp rounded to 4 places */
+        $done = json_decode((string)@file_get_contents("/conf/event_config_changed.json"), true);
+        $last = round((float)($done["last_processed_stamp"] ?? 0), 4);
+        $newest = 0.0;
+        foreach (glob("/conf/backup/config-*.xml") ?: [] as $f) {
+            if (preg_match("/config-([0-9]+(\\.[0-9]+)?)\\.xml$/", $f, $m)) {
+                $newest = max($newest, round((float)str_replace("_", "", $m[1]), 4));
+            }
+        }
+        printf("%s %.4f %.4f\n", $newest > $last ? "due" : "done", $newest, $last);'
+}
+
 # ws_gateways: "quiet" when WAN_B reads up and is not forced down in config.xml, and the gateway watcher's last state
 # of every monitored gateway is its status now; else one line naming what is not
 ws_gateways() {
@@ -136,23 +155,6 @@ ws_gateways() {
         if ($forced !== "0" && $forced !== "") {
             $why[] = $forced === "absent" ? "no WAN_B gateway in config.xml" : "WAN_B is forced down in config.xml";
         }
-        /* a config save reaches the plugin through core: syslog, configd, rc.syshook config, request_reconcile */
-        $done = json_decode((string)@file_get_contents("/conf/event_config_changed.json"), true);
-        $last = round((float)($done["last_processed_stamp"] ?? 0), 4);
-        $newest = 0.0;
-        $newestFile = "";
-        foreach (glob("/conf/backup/config-*.xml") ?: [] as $f) {
-            if (preg_match("/config-([0-9]+(\\.[0-9]+)?)\\.xml$/", $f, $m)) {
-                $stamp = round((float)str_replace("_", "", $m[1]), 4);
-                if ($stamp > $newest) {
-                    $newest = $stamp;
-                    $newestFile = $f;
-                }
-            }
-        }
-        if ($newest > $last && time() - (int)@filemtime($newestFile) < 5) {
-            $why[] = "core has not run the config hooks of the newest config save yet";
-        }
         if (file_exists("/var/run/wgclienttunnels/reconcile.pending")) {
             $why[] = "a reconcile is queued (reconcile.pending)";
         }
@@ -168,12 +170,17 @@ gw_quiet() {
     ws_max=${1:-120}
     ws_end=$(($(date +%s) + ws_max))
     while [ "$(date +%s)" -lt "$ws_end" ]; do
-        if ! in_flight && [ "$(ws_gateways)" = quiet ] && ! in_flight; then
-            return 0
+        if ! in_flight; then
+            ws_h=$(ws_hooks)
+            if [ "${ws_h%% *}" = due ]; then
+                /usr/local/sbin/configctl system event config_changed > /dev/null 2>&1
+            elif [ "$(ws_gateways)" = quiet ] && ! in_flight && [ "$(ws_hooks | cut -d' ' -f1)" = done ]; then
+                return 0
+            fi
         fi
         sleep 0.25
     done
-    echo "      | gw_quiet: not quiet within ${ws_max} s: $(ws_gateways)"
+    echo "      | gw_quiet: not quiet within ${ws_max} s: $(ws_gateways); config hooks $(ws_hooks)"
     $WS_PHP /usr/local/opnsense/scripts/routes/gateway_status.php | $WS_PHP -r '
         foreach (json_decode(stream_get_contents(STDIN), true) as $n => $g) {
             echo "      |   $n: {$g["status"]} loss {$g["loss"]} delay {$g["delay"]} monitor {$g["monitor"]}\n";
