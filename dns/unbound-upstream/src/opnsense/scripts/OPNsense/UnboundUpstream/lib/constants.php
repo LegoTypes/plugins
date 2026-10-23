@@ -25,6 +25,7 @@ const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this lo
                                            * the delete: the VM measured the last send to the resolver within 13 ms
                                            * of the flush (without it, retries ran up to 14.5 s) */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
+const UU_FAILBACK_DEFAULT = 120;          /* the model's failback_delay default, used for a value that is not digits */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
 const UU_BLOCK_TABLE = '__unboundupstream_block'; /* the counting block's table, in core's __ namespace, which no
                                                      * alias can take (spec section 3.6c, P7) */
@@ -44,9 +45,9 @@ const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect ti
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
 const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the model's notify_url <Mask>, byte for byte:
                                           * what the stored value must match to be used */
-const UU_PROBE_NAME_MASK = '/^(\.|([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.?)$/';
-                                         /* the model's probe_name <Mask>, byte for byte (tests/test_model.php holds
-                                          * the two equal) */
+/* the model's probe_name <Mask>, byte for byte (tests/test_model.php holds the two equal) */
+const UU_PROBE_NAME_MASK =
+    '/^(\.|([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.?)$/';
 const UU_SYSLOG_IDENT = 'dnsupstream';   /* the program name every log line carries; syslog-ng's program() is an
                                            * unanchored regex, so it must contain no other log's pattern (core's
                                            * resolver log is program("unbound")); unboundupstream.inc's syslog and

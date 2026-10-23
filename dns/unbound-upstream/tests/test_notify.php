@@ -49,6 +49,8 @@ uu_register_suite('notify', function (): int {
     uu_check($t, 'url_ok: refuses file, gopher and a URL with a space',
         !uu_notify_url_ok('file:///etc/passwd') && !uu_notify_url_ok('gopher://198.51.100.20/')
             && !uu_notify_url_ok('http://198.51.100.20/a b'));
+    uu_check($t, 'url_ok: a trailing newline never passes the mask',
+        !uu_notify_url_ok("https://198.51.100.20/x\n") && uu_notify_url_checked("https://198.51.100.20/x\n")['url'] === null);
     uu_check($t, 'url_ok: accepts http with a port and path, and https with userinfo',
         uu_notify_url_ok('http://198.51.100.20:8123/api/webhook/example')
             && uu_notify_url_ok('https://user:pw@198.51.100.20/x'));

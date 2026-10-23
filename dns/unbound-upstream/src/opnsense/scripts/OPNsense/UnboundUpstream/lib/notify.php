@@ -36,10 +36,13 @@ function uu_notify_body(array $st): string
         JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 }
 
-/** Whether the URL is an http or https URL, as the settings model's Mask admits it. */
+/**
+ * Whether the URL is an http or https URL, as the settings model's Mask admits it; 'D' keeps a trailing newline
+ * out, which the Mask's own $ would let through.
+ */
 function uu_notify_url_ok(string $url): bool
 {
-    return preg_match(UU_NOTIFY_URL_MASK, $url) === 1;
+    return preg_match(UU_NOTIFY_URL_MASK . 'D', $url) === 1;
 }
 
 /**

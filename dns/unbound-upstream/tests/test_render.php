@@ -150,5 +150,13 @@ uu_register_suite('render', function (): int {
         });
     uu_check($t, 'an invalid resolver address renders nothing and is logged', $fw->rules === [] && count($logged) === 1);
 
+    $logged = [];
+    uu_render_firewall($fw, function (): array {
+        throw new RuntimeException("bad\x1b[0m\tvalue");
+    }, function (string $msg) use (&$logged): void {
+        $logged[] = $msg;
+    });
+    uu_check($t, 'the failure line carries no control characters', $logged === ['rules not rendered: bad?[0m?value']);
+
     return uu_tally_report('render', $t);
 });

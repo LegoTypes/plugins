@@ -22,6 +22,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/logline.php';
 
 /** The pf label of a member interface's pass rule; the status reads its counters by it. */
 function uu_label_pass(string $opt): string
@@ -134,7 +135,7 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         if ($log !== null) {
             $log($msg);
         } else {
-            exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p local4.err -- ' . escapeshellarg($msg) . ' > /dev/null 2>&1');
+            uu_logger($msg, 'err');
         }
     };
     try {
@@ -152,13 +153,13 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
             $counting = true;
         } catch (\Throwable $e) {
             $counting = false;
-            $emit('rules: counting block not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage()));
+            $emit('rules: counting block not rendered: ' . uu_log_text($e->getMessage()));
         }
         foreach (uu_rule_confs($w['resolver'], $w['members'], $counting) as $conf) {
             $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
         }
     } catch (\Throwable $e) {
-        $msg = 'rules not rendered: ' . str_replace(["\r", "\n"], '; ', $e->getMessage());
+        $msg = 'rules not rendered: ' . uu_log_text($e->getMessage());
         $emit($msg);
     }
 }

@@ -181,6 +181,8 @@ uu_register_suite('wiring', function (): int {
     }
     uu_check($t, 'both log paths (openlog in evaluate, logger in hooks) reach the plugin log and not the resolver log',
         substr_count(uu_test_log_dir('unboundupstream'), $mark) === 2 && !str_contains(uu_test_log_dir('resolver'), $mark));
+    uu_check($t, 'the hook file cleans what it logs with the same function as the scripts',
+        unboundupstream_clean("a\x1bb\nc") === 'a?b; c' && unboundupstream_clean('plain') === 'plain');
     uu_check($t, 'cron is empty while the plugin is disabled', unboundupstream_cron() === []);
     uu_check($t, 'services is empty while the plugin is disabled', unboundupstream_services() === []);
 

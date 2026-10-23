@@ -54,6 +54,22 @@ function unboundupstream_configure()
 }
 
 /**
+ * A message as one clean line, by the plugin's own cleaner (lib/logline.php, which loads nothing else). The text is
+ * withheld when the library is missing: it may carry anything.
+ */
+function unboundupstream_clean(string $msg): string
+{
+    $lib = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/logline.php';
+    if (!function_exists('uu_log_text')) {
+        if (!is_readable($lib)) {
+            return 'message withheld, the plugin library is missing';
+        }
+        require_once $lib;
+    }
+    return uu_log_text($msg);
+}
+
+/**
  * Queue one evaluation, detached.
  */
 function unboundupstream_queue(bool $verbose = false): void
@@ -68,7 +84,7 @@ function unboundupstream_queue(bool $verbose = false): void
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . $e->getMessage());
+        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . unboundupstream_clean($e->getMessage()));
     }
 }
 
@@ -96,7 +112,7 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . $e->getMessage());
+        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . unboundupstream_clean($e->getMessage()));
     }
 }
 
@@ -106,7 +122,8 @@ function unboundupstream_cron()
     try {
         $enabled = (new \OPNsense\UnboundUpstream\UnboundUpstream())->enabled->isEqual('1');
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot read its settings for cron: ' . $e->getMessage());
+        syslog(LOG_ERR, 'unboundupstream: cannot read its settings for cron: '
+            . unboundupstream_clean($e->getMessage()));
         $enabled = false;
     }
     if ($enabled) {
@@ -131,7 +148,7 @@ function unboundupstream_firewall($fw)
         uu_render_firewall($fw);
     } catch (\Throwable $e) {
         exec('/usr/bin/logger -t dnsupstream -p local4.err -- '
-            . escapeshellarg('render hook failed: ' . str_replace("\n", '; ', $e->getMessage()))
+            . escapeshellarg('render hook failed: ' . unboundupstream_clean($e->getMessage()))
             . ' > /dev/null 2>&1');
     }
 }
