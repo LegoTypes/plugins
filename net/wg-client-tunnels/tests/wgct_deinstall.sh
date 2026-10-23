@@ -184,33 +184,13 @@ $v = is_array($r) ? ($r[$argv[1]] ?? null) : null;
 echo is_array($v) ? implode(',', $v) : (is_bool($v) ? ($v ? 'true' : 'false') : (string)$v);
 PHPEOF
 
-# wglog: core's WireGuard log, the newest two daily files: syslog starts a new one at midnight, and latest.log
-# can still name the old one for a while after that
-wglog() {
-    cat $(ls /var/log/wireguard/wireguard_*.log | tail -2)
-}
-# lmark: log a unique marker line and wait (at most 10 s) until syslog has written it; prints its name
-lmark() {
-    m="wgct-deinstalltest-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')."
-    /usr/bin/logger -t wireguard -- "[wgct-deinstalltest] marker $m"
-    n=0
-    while [ "$n" -lt 100 ] && ! wglog | grep -qF -- "marker $m"; do
-        sleep 0.1
-        n=$((n + 1))
-    done
-    echo "$m"
-}
-# lafter MARK: the WireGuard log lines after MARK, up to a closing marker logged and waited for now (the plugin
-# logs through logger(1) too, so every line logged before it is written before it)
-lafter() {
-    end=$(lmark)
-    wglog | awk -v a="marker $1" -v b="marker $end" 'index($0, b) { exit } f { print } index($0, a) { f = 1 }'
-}
+. "$(dirname "$0")/wgct_marks.sh"
+
 status_of() {
     /usr/local/opnsense/scripts/routes/gateway_status.php | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d[$argv[1]]["status"] ?? "absent";' "$1"
 }
 deinstall_lines() {
-    lafter "$1" | grep -F '[wgct-action] deinstall:' | sed 's/.*\[wgct-action\] //'
+    lwindow wireguard "$1" | grep -F -e '[wgct-action] deinstall:' -e 'wgct-marks: marker missing' | sed 's/.*\[wgct-action\] //'
 }
 facts() {
     echo "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" rows) $($PHP "$T/fact.php" force_down WAN_B) $($PHP "$T/fact.php" force_down WAN_DHCP)"
@@ -259,7 +239,7 @@ hold
 check "a: one mirror tick holds rehearse: force_down=1 and one hold record for its gateway" \
     "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" rows) $($PHP "$T/fact.php" row_gateway)" "1 1 $RGW"
 check "a: gateway status shows rehearse force_down" "$(status_of rehearse)" force_down
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/a.json"
 rc=$?
 sleep 1
@@ -271,7 +251,7 @@ check "a: rehearse force_down=0 and no hold record; WAN_B still forced down, WAN
 check "a: routing re-synced: gateway status no longer shows rehearse force_down" \
     "$([ "$(status_of rehearse)" != force_down ] && echo yes || echo no)" yes
 check "a: one line in the WireGuard log: deinstall: released rehearse" "$(deinstall_lines "$mark")" "deinstall: released rehearse"
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/a2.json"
 rc=$?
 sleep 1
@@ -288,7 +268,7 @@ settle
 check "d: the hold's own apply has finished" "$(pgrep -f "$PENDING|rc[.]routing_configure" > /dev/null && echo running || echo done)" done
 service configd stop > /dev/null 2>&1
 check "d: configd is stopped: no socket" "$([ -S /var/run/configd.socket ] && echo socket || echo none)" none
-mark=$(lmark)
+mark=$(lmark wireguard)
 start=$(date +%s)
 $PHP "$TUNNEL" --json release-holds > "$T/d.json"
 rc=$?
@@ -305,7 +285,7 @@ check "d: two lines: the release, then configd not answering" "$(deinstall_lines
     "deinstall: released rehearse|deinstall: configd not answering; routing applies the release at its next configure|"
 
 # d2. nothing held, configd still stopped (review fix I1)
-mark=$(lmark)
+mark=$(lmark wireguard)
 start=$(date +%s)
 $PHP "$TUNNEL" --json release-holds > "$T/d2.json"
 rc=$?
@@ -336,7 +316,7 @@ check "p: one mirror tick holds rehearse-ipv6 (rehearse reads 100% loss): force_
     "1 1 $GW6 0"
 check "p: that tick's own apply restarted rehearse's monitor; its reading has settled again" "$(settled rehearse && echo settled || echo settling)" settled
 check "p: the mirror reads rehearse unhealthy" "$($PHP "$MIRROR" --dry | grep -c 'rehearse-ipv6 .*IPv4 unhealthy; rehearse 100% loss')" 1
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/p1.json"
 rc=$?
 sleep 1
@@ -353,7 +333,7 @@ $PHP "$T/gw.php" rehearse monitor="$($PHP "$T/fact.php" address rehearse)" monit
 settle
 check "p: rehearse's new reading has settled" "$(settled rehearse && echo settled || echo settling)" settled
 check "p: the mirror reads rehearse healthy" "$($PHP "$MIRROR" --dry | grep -c 'rehearse-ipv6 .*IPv4 healthy; rehearse 0% loss')" 1
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/p2.json"
 rc=$?
 sleep 1
@@ -375,7 +355,7 @@ check "f: WAN_B forced down, no hold taken yet" "$(facts)" "0 0 1 0"
 /usr/local/bin/flock -o /tmp/filter_reload_gateway.lock sleep 70 &
 HOLDER=$!
 sleep 1
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP "$MIRROR" > "$T/f.tick" 2>&1 &
 TICK=$!
 sleep 5
@@ -392,7 +372,7 @@ echo "    f: the .pre took ${took} s (60 s for health.lock, then release-holds b
 check "f: the .pre exits 0 and leaves the marker" "$rc $([ -f "$MARKER" ] && echo marker || echo none)" "0 marker"
 check "f: after the tick got the gateway lock: no hold record, rehearse not forced down; WAN_B still forced down, WAN_DHCP untouched" \
     "$(facts)" "0 0 1 0"
-check "f: no tick took a hold" "$(lafter "$mark" | grep -c '\[wgct-health\] rehearse: force_down')" 0
+check "f: no tick took a hold" "$(lcount wireguard "$mark" -- '\[wgct-health\] rehearse: force_down')" 0
 check "f: release-holds found nothing held" "$(deinstall_lines "$mark")" "deinstall: nothing held"
 # an install after this removal: the marker goes, the state is rendered again
 sh "$DIR/+POST_INSTALL.post"
@@ -416,7 +396,7 @@ pins_before=$(pins)
 check "b: rehearse held, the footprint names its pins and pf holds them, the MSS anchor has rules" \
     "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" rows) $([ -n "$labels" ] && echo labels) $pins_before $([ -s "$T/anchor.before" ] && echo anchor)" \
     "1 1 labels $(echo $labels | wc -w | tr -d ' ') anchor"
-mark=$(lmark)
+mark=$(lmark wireguard)
 PKG_UPGRADE=true sh "$DIR/+PRE_DEINSTALL.pre"
 rc=$?
 sleep 1
@@ -443,7 +423,7 @@ rm -f "$T/stop" "$T/ticks"
 ) &
 LOOP=$!
 sleep 2
-mark=$(lmark)
+mark=$(lmark wireguard)
 ticks_before=$(wc -l < "$T/ticks" | tr -d ' ')
 env -u PKG_UPGRADE sh "$DIR/+PRE_DEINSTALL.pre"
 rc=$?
@@ -455,11 +435,11 @@ check "c: sh +PRE_DEINSTALL.pre exits 0, with mirror ticks running all the while
     "$rc $([ "$ticks_before" -gt 0 ] && [ "$ticks_during" -gt 0 ] && echo ticking || echo "no ticks ($ticks_before, $ticks_during)")" "0 ticking"
 check "c: rehearse force_down=0 and no hold record after every tick; WAN_B still forced down, WAN_DHCP untouched" "$(facts)" "0 0 1 0"
 check "c: no tick took a hold after the release" \
-    "$(lafter "$mark" | grep -c '\[wgct-health\] rehearse: force_down')" 0
+    "$(lcount wireguard "$mark" -- '\[wgct-health\] rehearse: force_down')" 0
 check "c: one line in the WireGuard log: deinstall: released rehearse" "$(deinstall_lines "$mark")" "deinstall: released rehearse"
 check "c: the removal marker is there, both state directories still are (the .post removes them), the MSS anchor is empty" \
     "$([ -f "$MARKER" ] && echo marker) $([ -d "$RUN" ] && [ -d "$DB" ] && echo dirs) $(pfctl -a "$ANCHOR" -sr 2> /dev/null | wc -l | tr -d ' ')" "marker dirs 0"
-mark=$(lmark)
+mark=$(lmark wireguard)
 rm -f "$RUN/reconcile.pending"
 "$S/wgct.sh" request_reconcile
 "$S/wgct.sh" configure_routes
@@ -469,7 +449,7 @@ sleep 3
 check "c: with the marker, request_reconcile queues nothing, and reconcile and a filter reload render no anchor or footprint" \
     "$([ -e "$RUN/reconcile.pending" ] && echo queued || echo none) $(pfctl -a "$ANCHOR" -sr 2> /dev/null | wc -l | tr -d ' ') $([ -e "$DB/footprint.json" ] && echo footprint || echo none)" "none 0 none"
 check "c: the minute reconcile says the package is being removed, once per run" \
-    "$(lafter "$mark" | grep -c 'the package is being removed')" 1
+    "$(lcount wireguard "$mark" -- 'the package is being removed')" 1
 sh "$DIR/+POST_DEINSTALL.post"
 check "c: sh +POST_DEINSTALL.post exits 0 and removes both state directories, the marker with them" \
     "$? $([ -e "$DB" ] || [ -e "$RUN" ] && echo present || echo gone)" "0 gone"

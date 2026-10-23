@@ -53,28 +53,7 @@ T=$(mktemp -d /tmp/wgct-migrate.XXXXXX)
 PASS=0
 FAIL=0
 
-# wglog: core's WireGuard log, the newest two daily files: syslog starts a new one at midnight, and latest.log
-# can still name the old one for a while after that
-wglog() {
-    cat $(ls /var/log/wireguard/wireguard_*.log | tail -2)
-}
-# lmark: log a unique marker line and wait (at most 10 s) until syslog has written it; prints its name
-lmark() {
-    m="wgct-migratetest-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')."
-    /usr/bin/logger -t wireguard -- "[wgct-migratetest] marker $m"
-    n=0
-    while [ "$n" -lt 100 ] && ! wglog | grep -qF -- "marker $m"; do
-        sleep 0.1
-        n=$((n + 1))
-    done
-    echo "$m"
-}
-# lafter MARK: the WireGuard log lines after MARK, up to a closing marker logged and waited for now (the plugin
-# logs through logger(1) too, so every line logged before it is written before it)
-lafter() {
-    end=$(lmark)
-    wglog | awk -v a="marker $1" -v b="marker $end" 'index($0, b) { exit } f { print } index($0, a) { f = 1 }'
-}
+. "$(dirname "$0")/wgct_marks.sh"
 
 check() {
     if [ "$2" = "$3" ]; then
@@ -251,7 +230,7 @@ scenario() {
     inst="$4"; gwr="$5"; gwb="$6"
     held38=$($PHP -r '$h = [$argv[1], $argv[2]]; sort($h); echo json_encode($h);' "$gwr" "$GW6")
     $PHP "$T/list371.php" > "$T/before.json"
-    mark=$(lmark)
+    mark=$(lmark wireguard)
     start=$(date +%s)
     $PHP "$MIGRATE" "$3" > "$T/migrate.out" 2>&1
     end=$(date +%s)
@@ -278,7 +257,7 @@ scenario() {
     check "$name: rehearse and rehearse-ipv6 stay force_down=1, WAN_B force_down=0" \
         "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" force_down WAN_B)" "1 1 0"
     check "$name: one 'not held by this plugin' line names WAN_B's gateway" \
-        "$(lafter "$mark" | grep -F "$gwb" | grep -c 'not held by this plugin')" 1
+        "$(lcount wireguard "$mark" -e "$gwb.*not held by this plugin" -e "not held by this plugin.*$gwb")" 1
     lists=$($PHP "$T/lists.php" "$T/before.json" "$T/after.json")
     check "$name: tunnel.php --json list shows the same tunnels, findings and unmanaged instances as 3.7_1" \
         "$(echo "$lists" | sed -n 1p)" same

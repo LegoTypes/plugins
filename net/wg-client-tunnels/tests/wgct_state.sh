@@ -20,7 +20,8 @@
 # The mirror cases (spec section 3.2, lock bullets) run the copy's health_mirror.php with --dry, which still
 # takes health.lock and writes the skip markers but changes no gateway. Log counts are of the lines between two
 # marker lines this test logs through syslog: the closing one is waited for, and the plugin logs through
-# logger(1) as well, so every line a case caused is in the log before it, whatever syslog's latency.
+# logger(1) as well, so every line a case caused is in the log before it, whatever syslog's latency
+# (wgct_marks.sh, beside this file).
 #
 # Usage: wgct_state.sh /path/to/wgct.sh   (its lib/ directory beside it)
 
@@ -45,28 +46,7 @@ check() {
     fi
 }
 
-# wglog: core's WireGuard log, the newest two daily files: syslog starts a new one at midnight, and latest.log
-# can still name the old one for a while after that
-wglog() {
-    cat $(ls /var/log/wireguard/wireguard_*.log | tail -2)
-}
-# lmark: log a unique marker line and wait (at most 10 s) until syslog has written it; prints its name
-lmark() {
-    m="wgct-statetest-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')."
-    /usr/bin/logger -t wireguard -- "[wgct-statetest] marker $m"
-    n=0
-    while [ "$n" -lt 100 ] && ! wglog | grep -qF -- "marker $m"; do
-        sleep 0.1
-        n=$((n + 1))
-    done
-    echo "$m"
-}
-# lcount MARK BRE: the lines between MARK and a closing marker, logged and waited for now, that match BRE
-lcount() {
-    end=$(lmark)
-    wglog | awk -v a="marker $1" -v b="marker $end" 'index($0, b) { exit } f { print } index($0, a) { f = 1 }' \
-        | grep -c -- "$2"
-}
+. "$(dirname "$0")/wgct_marks.sh"
 
 stop_holder() {
     [ -n "$HOLDER" ] && kill "$HOLDER" > /dev/null 2>&1
@@ -146,7 +126,7 @@ while [ "$n" -lt 100 ] && /usr/local/bin/flock -n "$RUN/health.lock" true; do
     sleep 0.1
     n=$((n + 1))
 done
-mark=$(lmark)
+mark=$(lmark wireguard)
 slow=0
 for i in 1 2 3; do
     t0=$(date +%s)
@@ -156,14 +136,14 @@ for i in 1 2 3; do
     [ $(($(date +%s) - t0)) -le 1 ] || slow=1
 done
 check "three runs against a held health.lock each exit 0 within a second" "$slow" 0
-check "three skipped runs log one skip line" "$(lcount "$mark" 'wgct-health.*tick skipped: another run holds health.lock')" 1
+check "three skipped runs log one skip line" "$(lcount wireguard "$mark" -- 'wgct-health.*tick skipped: another run holds health.lock')" 1
 check "the skip leaves its marker" "$([ -f "$RUN/health.skipped" ] && echo yes || echo no)" yes
 stop_holder
 wait 2> /dev/null
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
 $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
-check "the first run after the holder ends logs one resume line, the next none" "$(lcount "$mark" 'wgct-health.*health resumed')" 1
+check "the first run after the holder ends logs one resume line, the next none" "$(lcount wireguard "$mark" -- 'wgct-health.*health resumed')" 1
 check "the resume removes the marker" "$([ -f "$RUN/health.skipped" ] && echo yes || echo no)" no
 check "no /tmp/wgct_health.lock is created by a run" "$(rm -f /tmp/wgct_health.lock; $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1; [ -e /tmp/wgct_health.lock ] && echo yes || echo no)" no
 
@@ -171,18 +151,18 @@ check "no /tmp/wgct_health.lock is created by a run" "$(rm -f /tmp/wgct_health.l
 # exit 0, one log line across two runs, no output (a PHP fatal would print and, outside this test's log_errors=0, reach the crash reporter); the lock is a file again afterwards
 rm -f "$RUN/health.lock" "$RUN/health.skipped" "$RUN/health.unopenable"
 mkdir "$RUN/health.lock"
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP -d log_errors=0 "$MIRROR" --dry > "$T/open1.out" 2>&1
 rc1=$?
 $PHP -d log_errors=0 "$MIRROR" --dry > "$T/open2.out" 2>&1
 rc2=$?
 check "two runs against an unopenable health.lock exit 0" "$rc1$rc2" 00
 check "they print nothing (no PHP fatal)" "$(cat "$T/open1.out" "$T/open2.out")" ""
-check "they log one line naming the unopenable lock" "$(lcount "$mark" 'wgct-health.*tick skipped: health.lock cannot be opened')" 1
+check "they log one line naming the unopenable lock" "$(lcount wireguard "$mark" -- 'wgct-health.*tick skipped: health.lock cannot be opened')" 1
 rmdir "$RUN/health.lock"
-mark=$(lmark)
+mark=$(lmark wireguard)
 $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
-check "the first run with an openable lock logs one resume line" "$(lcount "$mark" 'wgct-health.*health.lock opens again')" 1
+check "the first run with an openable lock logs one resume line" "$(lcount wireguard "$mark" -- 'wgct-health.*health.lock opens again')" 1
 
 # F4 (spec section 3.4): core's /tmp files are read for the devices core has and in the shape core writes.
 TUNNEL="$(dirname "$SRC")/tunnel.php"
@@ -265,10 +245,10 @@ phplog_size() { stat -f %z "$PHPLOG" 2>/dev/null || echo 0; }
 entry_runs() {
     # entry_runs <label> <script> [args]: two runs, their exit codes, output and log lines after a mark
     label=$1; script=$2; shift 2
-    emark=$(lmark)
+    emark=$(lmark wireguard)
     $PHP "$E/scripts/$script" "$@" > "$E/$label.1.out" 2> "$E/$label.1.err"; erc1=$?
     $PHP "$E/scripts/$script" "$@" > "$E/$label.2.out" 2> "$E/$label.2.err"; erc2=$?
-    elines=$(lcount "$emark" "\[wgct-[a-z]*\] $script cannot load the plugin library")
+    elines=$(lcount wireguard "$emark" -- "\[wgct-[a-z]*\] $script cannot load the plugin library")
 }
 before=$(phplog_size)
 for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
@@ -287,14 +267,14 @@ check "tunnel.php --json release-holds without lib/: the same JSON failure" "$(c
 mkdir "$E/scripts/lib"
 for f in tunnels.php selftest.php; do cp -p "$LIB/$f" "$E/scripts/lib/"; done
 entry_runs guard default_guard.php
-check "default_guard.php with lib/addr.php missing: exit 0, no output, one new line naming addr.php" "$erc1$erc2$(cat "$E"/guard.*.out "$E"/guard.*.err)$(lcount "$emark" 'default_guard.php cannot load the plugin library (plugin library file addr.php missing)')" 001
+check "default_guard.php with lib/addr.php missing: exit 0, no output, one new line naming addr.php" "$erc1$erc2$(cat "$E"/guard.*.out "$E"/guard.*.err)$(lcount wireguard "$emark" -- 'default_guard.php cannot load the plugin library (plugin library file addr.php missing)')" 001
 check "PHP's error log ($PHPLOG) did not grow" "$(phplog_size)" "$before"
 rm -rf "$E/scripts/lib"
 cp -Rp "$LIB" "$E/scripts/lib"
-emark=$(lmark)
+emark=$(lmark wireguard)
 $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
 $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
-check "the first run with the library back logs one recovery line and drops its marker" "$(lcount "$emark" 'core_contract.php loads the plugin library again')$(ls "$E/run" | grep -c '^core_contract')" 10
+check "the first run with the library back logs one recovery line and drops its marker" "$(lcount wireguard "$emark" -- 'core_contract.php loads the plugin library again')$(ls "$E/run" | grep -c '^core_contract')" 10
 
 # R30: while the package removal's marker exists, every entry script ends at once, before any library file is
 # loaded, and logs nothing; tunnel.php answers its caller; the removal's own release-holds runs on. lib/ is missing
@@ -306,7 +286,7 @@ before=$(phplog_size)
 for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
     entry_runs "rm-${script%.php}" "$script"
     check "$script with the removal marker: two runs exit 0, nothing on stdout or stderr, nothing logged" \
-        "$erc1$erc2$(cat "$E/rm-${script%.php}".*.out "$E/rm-${script%.php}".*.err)$elines$(lcount "$emark" "$script")" 0000
+        "$erc1$erc2$(cat "$E/rm-${script%.php}".*.out "$E/rm-${script%.php}".*.err)$elines$(lcount wireguard "$emark" -- "$script")" 0000
 done
 check "with the removal marker no script wrote a library-failure marker" "$(ls "$E/run" | grep -c libfail)" 0
 entry_runs rm-tunnel tunnel.php --json list
