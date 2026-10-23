@@ -33,8 +33,9 @@
 # rehearse's gateway on WAN_B, and (A to C) rehearse-ipv6 following rehearse; in D one line names rehearse-ipv6 as
 # left forced down as manual; force_down is as it was; one "not held by this plugin" line names WAN_B's gateway in
 # core's WireGuard log; the installed tunnel.php lists the same tunnels, findings and unmanaged instances as 3.7_1
-# did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped).
-# A second run changes nothing (A).
+# did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped);
+# boot.json, removed before the run, names the live boot (M3: a reboot before the mirror's first tick still finds
+# the carried rows its own). A second run changes nothing (A). boot.json is backed up first and put back at exit.
 #
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
@@ -70,6 +71,8 @@ check() {
 }
 
 cp -p /conf/config.xml "$T/config.xml"
+BOOTJSON=/var/db/wgclienttunnels/boot.json
+[ -f "$BOOTJSON" ] && cp -p "$BOOTJSON" "$T/boot.json"
 cat > "$T/restore.php" <<'PHPEOF'
 <?php
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
@@ -77,6 +80,7 @@ exit(\OPNsense\Core\Config::getInstance()->restoreBackup($argv[1]) ? 0 : 1);
 PHPEOF
 cleanup() {
     $PHP "$T/restore.php" "$T/config.xml" || echo "[FAIL] config.xml could not be restored from $T/config.xml"
+    if [ -f "$T/boot.json" ]; then cp -p "$T/boot.json" "$BOOTJSON"; else rm -f "$BOOTJSON"; fi
     rm -rf "$T/pkg"
 }
 trap cleanup EXIT
@@ -244,6 +248,7 @@ scenario() {
         held38="[\"$gwr\"]"
     fi
     $PHP "$T/list371.php" > "$T/before.json"
+    rm -f "$BOOTJSON"
     mark=$(lmark wireguard)
     start=$(date +%s)
     $PHP "$MIGRATE" "$3" > "$T/migrate.out" 2>&1
@@ -274,6 +279,8 @@ scenario() {
         check "$name: (R35) one line names rehearse-ipv6 as left forced down as manual" \
             "$(lcount wireguard "$mark" -e "rehearse-ipv6 ($GW6) left forced down as manual: the 3.7_1 health mirror was off")" 1
     fi
+    check "$name: (M3) boot.json, removed before the run, names the live boot" \
+        "$($PHP -r '$r = json_decode((string)@file_get_contents($argv[1]), true); echo is_array($r) ? ($r["boot_id"] ?? "no boot_id") : "absent";' "$BOOTJSON")" "$BOOT"
     check "$name: rehearse and rehearse-ipv6 stay force_down=1, WAN_B force_down=0" \
         "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" force_down WAN_B)" "1 1 0"
     check "$name: one 'not held by this plugin' line names WAN_B's gateway" \
