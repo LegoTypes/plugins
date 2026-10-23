@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Copyright (C) 2026 cayossarian (Bill Flood)
+# Copyright (C) 2026 cayossarian
 # All rights reserved.
 # BSD 2-Clause License
 #
