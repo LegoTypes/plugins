@@ -8,7 +8,8 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * The live snapshot against the test VM's gateways (spec section 3.2). Runs only where core and the VM's
- * proton_test_grp exist; elsewhere it registers a suite that skips. Read-only.
+ * proton_test_grp exist; elsewhere it registers a suite that skips. Read-only, except that a snapshot makes the
+ * plugin's run directory 0700 if it is missing or another mode (ruling R10).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
