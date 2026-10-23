@@ -12,6 +12,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
 
 /**
  * Field names with a validation message, after applying $values to a fresh model.
@@ -72,6 +73,14 @@ uu_register_suite('model', function (): int {
         $t,
         'notify_url is a plain setting: the page shows the saved URL, and Saving it empty clears it',
         $shown === $hook && $m->notify_url->getValue() === ''
+    );
+
+    $xml = simplexml_load_file(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
+    uu_check(
+        $t,
+        'the XML masks of notify_url and probe_name are UU_NOTIFY_URL_MASK and UU_PROBE_NAME_MASK, byte for byte',
+        $xml !== false && (string)$xml->items->notify_url->Mask === UU_NOTIFY_URL_MASK
+            && (string)$xml->items->probe_name->Mask === UU_PROBE_NAME_MASK
     );
 
     $bad = ['59', '3601'];

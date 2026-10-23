@@ -269,5 +269,31 @@ uu_register_suite('snapshot', function (): int {
         $o['rules'] === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null,
                          'record' => null] && !in_array('-vsr', $calls, true));
 
+    $good = ['resolver' => '192.0.2.1', 'probe_name' => '.', 'failback_delay' => '120',
+             'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'];
+    $clean = fn (array $over): array => uu_settings_clean($over + $good);
+    $one = function (array $over, string $key, $want) use ($clean): bool {
+        $r = $clean($over);
+        return $r['settings'][$key] === $want && count($r['problems']) === 1;
+    };
+    uu_check($t, 'settings_clean: the defaults pass unchanged with no problem',
+        uu_settings_clean($good) === ['settings' => ['resolver' => '192.0.2.1', 'probe_name' => '.',
+            'failback_delay' => 120, 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'], 'problems' => []]);
+    uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
+        $one(['resolver' => '192.0.2.1/32'], 'resolver', '') && $one(['resolver' => 'resolver.example'], 'resolver', '')
+            && $one(['resolver' => '2001:db8::1'], 'resolver', ''));
+    uu_check($t, 'settings_clean: a probe name with a space is the root, one problem',
+        $one(['probe_name' => 'a b'], 'probe_name', '.'));
+    uu_check($t, 'settings_clean: failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, one problem each',
+        $one(['failback_delay' => '10'], 'failback_delay', 60)
+            && $one(['failback_delay' => '99999'], 'failback_delay', UU_FAILBACK_DELAY_MAX));
+    uu_check($t, 'settings_clean: a group id that is not a UUID is none, one problem',
+        $one(['group_uuid' => 'not-a-uuid'], 'group_uuid', ''));
+    uu_check($t, 'settings_clean: an empty group id (none chosen) is not a problem',
+        $clean(['group_uuid' => ''])['problems'] === []);
+    $r = $clean(['resolver' => 'secret.example', 'probe_name' => 'a b secret']);
+    uu_check($t, 'settings_clean: no problem quotes the value',
+        count($r['problems']) === 2 && !str_contains(implode(' ', $r['problems']), 'secret'));
+
     return uu_tally_report('snapshot', $t);
 });

@@ -44,6 +44,9 @@ const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect ti
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
 const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the model's notify_url <Mask>, byte for byte:
                                           * what the stored value must match to be used */
+const UU_PROBE_NAME_MASK = '/^(\.|([a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.)*[a-zA-Z0-9_]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9_])?\.?)$/';
+                                         /* the model's probe_name <Mask>, byte for byte (tests/test_model.php holds
+                                          * the two equal) */
 const UU_SYSLOG_IDENT = 'dnsupstream';   /* the program name every log line carries; syslog-ng's program() is an
                                            * unanchored regex, so it must contain no other log's pattern (core's
                                            * resolver log is program("unbound")); unboundupstream.inc's syslog and

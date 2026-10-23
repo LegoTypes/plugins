@@ -46,10 +46,6 @@ uu_register_suite('notify', function (): int {
     uu_check($t, 'curl: the body is posted and the two timeouts are the constants',
         $opts[CURLOPT_POSTFIELDS] === '{}' && $opts[CURLOPT_CONNECTTIMEOUT] === UU_NOTIFY_CONNECT_SECONDS
             && $opts[CURLOPT_TIMEOUT] === UU_NOTIFY_TIMEOUT_SECONDS);
-
-    $model = simplexml_load_file(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
-    uu_check($t, 'url_ok: the mask is the settings model\'s notify_url Mask, byte for byte',
-        $model !== false && (string)$model->items->notify_url->Mask === UU_NOTIFY_URL_MASK);
     uu_check($t, 'url_ok: refuses file, gopher and a URL with a space',
         !uu_notify_url_ok('file:///etc/passwd') && !uu_notify_url_ok('gopher://198.51.100.20/')
             && !uu_notify_url_ok('http://198.51.100.20/a b'));
