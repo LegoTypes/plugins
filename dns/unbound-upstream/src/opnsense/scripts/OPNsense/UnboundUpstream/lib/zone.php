@@ -32,7 +32,10 @@ function uu_forward_addr_ok(string $value): bool
     return inet_pton($m[1]) !== false;
 }
 
-/** Whether a configuration option name is a plain name (lower-case letters, digits, hyphens), as one may be named in a problem. */
+/**
+ * Whether a configuration option name is a plain name (lower-case letters, digits, hyphens), as one may be named in a
+ * problem.
+ */
 function uu_zone_option_name_ok(string $option): bool
 {
     return preg_match('/^[a-z0-9-]+$/D', $option) === 1;
