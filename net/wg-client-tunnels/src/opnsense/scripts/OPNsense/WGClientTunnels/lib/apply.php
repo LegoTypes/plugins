@@ -53,6 +53,8 @@ const WGCT_ACTION_LOG_TAG = 'wgct-action';
  * NAT or monitor change; either way it still needs Apply.
  */
 const WGCT_APPLY_PENDING_FILE = WGCT_DB_DIR . '/apply_pending.json';
+/* the longest an update of that record waits for another one: its critical section is a read and a rename */
+const WGCT_APPLY_PENDING_LOCK_WAIT_MS = 10000;
 /*
  * Create's apply (spec 6.1, amended): what core's WireGuard, assignment and
  * routes applies do, with the routes applied once BEFORE the device exists.
@@ -450,20 +452,40 @@ function wgct_read_apply_pending(): array {
 }
 
 /**
- * Change the pending record read-modify-write, serialized on a close-on-exec
- * lock beside the file (so a mark and a settle never lose each other's write, and
+ * The pending record's lock: close-on-exec, beside the file, waited for at most $timeoutMs (every wait the plugin
+ * makes is bounded; Config::lock() is core's).
+ *
+ * @param string $path      the lock file
+ * @param int    $timeoutMs WGCT_APPLY_PENDING_LOCK_WAIT_MS (the self-test's shorter wait)
+ * @return \SplFileObject the lock, held until LOCK_UN or the object is released
+ * @throws \RuntimeException when it is still held elsewhere after $timeoutMs, or cannot be opened
+ */
+function wgct_apply_pending_lock(string $path, int $timeoutMs): \SplFileObject {
+    $lock = wgct_poll_lock($path, $timeoutMs, 50);
+    if ($lock === null) {
+        throw new \RuntimeException("{$path} is still held after {$timeoutMs} ms; the apply-pending record was not changed");
+    }
+    return $lock;
+}
+
+/**
+ * Change the pending record read-modify-write, serialized on its lock
+ * (wgct_apply_pending_lock(), so a mark and a settle never lose each other's write, and
  * a settle never clears a mark it did not see: wgct_pending_settle()); written
- * atomically, and only when the change changed something.
+ * atomically, and only when the change changed something. A lock still held after
+ * WGCT_APPLY_PENDING_LOCK_WAIT_MS throws, as every other bounded wait does: a mark's
+ * caller notes it in its result (wgct_mark_after_save()), a settle's fails its command,
+ * whose record then still says apply-pending, so the next apply settles it.
  *
  * @param callable(array<string, array{at: int, mode: string, mark: int}>): array<string, array{at: int, mode: string, mark: int}> $change
+ * @throws \RuntimeException when the record's directory cannot be made, its lock is still held, or it cannot be written
  */
 function wgct_update_apply_pending(callable $change): void {
     $dir = dirname(WGCT_APPLY_PENDING_FILE);
     if (!wgct_state_dir($dir)) {
         throw new \RuntimeException("could not create {$dir}");
     }
-    $lock = new \SplFileObject(WGCT_APPLY_PENDING_FILE . '.lock', 'ce');
-    $lock->flock(LOCK_EX);
+    $lock = wgct_apply_pending_lock(WGCT_APPLY_PENDING_FILE . '.lock', WGCT_APPLY_PENDING_LOCK_WAIT_MS);
     try {
         $all = wgct_read_apply_pending();
         $after = $change($all);
@@ -1182,6 +1204,29 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'log: an unknown priority logs at notice', str_contains(wgct_log_command(99, 'x'), ' -p user.notice '));
     wgct_check($t, 'log: warning and info map to their names',
         str_contains(wgct_log_command(LOG_WARNING, 'x'), ' -p user.warning ') && str_contains(wgct_log_command(LOG_INFO, 'x'), ' -p user.info '));
+    /* (M5) the apply-pending record's lock is waited for a bounded time: a temporary lock file, held by a second open */
+    $lockDir = rtrim(sys_get_temp_dir(), '/') . '/wgct-pending-selftest.' . getmypid();
+    @mkdir($lockDir, 0700);
+    $lockPath = "{$lockDir}/apply_pending.json.lock";
+    $holder = new \SplFileObject($lockPath, 'c');
+    $holder->flock(LOCK_EX);
+    $started = hrtime(true);
+    $timedOut = null;
+    try {
+        wgct_apply_pending_lock($lockPath, 200);
+    } catch (\RuntimeException $e) {
+        $timedOut = $e->getMessage();
+    }
+    $waitedMs = intdiv(hrtime(true) - $started, 1000000);
+    wgct_check($t, 'apply: (M5) the apply-pending lock held elsewhere => a RuntimeException naming it after the bounded wait, not a wait forever',
+        $timedOut === "{$lockPath} is still held after 200 ms; the apply-pending record was not changed" && $waitedMs >= 200 && $waitedMs < 5000);
+    $holder->flock(LOCK_UN);
+    $taken = wgct_apply_pending_lock($lockPath, 200);
+    wgct_check($t, 'apply: (M5) the lock free => taken at once', $taken->flock(LOCK_EX | LOCK_NB));
+    $taken->flock(LOCK_UN);
+    unset($holder, $taken);
+    @unlink($lockPath);
+    @rmdir($lockDir);
     $entry = (string)@file_get_contents(dirname(__DIR__) . '/entry.php');
     $shell = (string)@file_get_contents(dirname(__DIR__) . '/wgct.sh');
     wgct_check($t, 'apply: entry.php and wgct.sh name the removal marker WGCT_REMOVING_FILE names',
