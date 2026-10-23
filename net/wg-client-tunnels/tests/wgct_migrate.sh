@@ -38,7 +38,8 @@
 # the carried rows its own). A second run changes nothing (A). boot.json is backed up first and put back at exit.
 #
 # Before scenario A's migration runs, the window between pkg installing 3.8's files and the migration (M1, ruling
-# R37), with cron stopped from then on (started again at exit): the 3.8 list shows the tunnels and findings 3.7_1 lists, and the
+# R37), with cron stopped from then on (started again at exit) and the runs it already started waited out, so none
+# of them logs a refusal before the checks look: the 3.8 list shows the tunnels and findings 3.7_1 lists, and the
 # listing writes nothing (config.xml as it was, no marker, no log line); a mirror tick, apply, an action (adopt, and
 # a dry remove), release-holds, the route set, the monitor repair and the settings API's set each refuse, change
 # nothing, and log the refusal once (each run twice where it repeats; --dry only says so). After the migration the
@@ -257,6 +258,15 @@ REFUSED='the plugin settings are not migrated to 3.1.0 yet'
 # pending INST: the checks of the window before the migration (see the header); config.xml is 3.7_1's
 pending() {
     service cron stop > /dev/null
+    # the ticks and the reconcile cron started before it stopped (a `sleep 45 && …` shell runs on): each would run
+    # the route set or the mirror, and log its one refusal before the checks below mark the log
+    n=0
+    while [ "$n" -lt 90 ] && pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null; do
+        sleep 1
+        n=$((n + 1))
+    done
+    echo "    waited ${n} s for the runs cron started"
+    check "pending: no run cron started is left" "$([ "$n" -lt 90 ] && echo none || echo running)" none
     rm -f "$RUN"/*.pending
     cp /conf/config.xml "$T/pending.xml"
     mark=$(lmark wireguard)
