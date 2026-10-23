@@ -272,7 +272,7 @@ uu_register_suite('snapshot', function (): int {
     $good = ['resolver' => '192.0.2.1', 'probe_name' => '.', 'failback_delay' => '120',
              'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'];
     $clean = fn (array $over): array => uu_settings_clean($over + $good);
-    $one = function (array $over, string $key, $want) use ($clean): bool {
+    $one = function (array $over, string $key, string|int $want) use ($clean): bool {
         $r = $clean($over);
         return $r['settings'][$key] === $want && count($r['problems']) === 1;
     };
@@ -291,6 +291,13 @@ uu_register_suite('snapshot', function (): int {
         $one(['group_uuid' => 'not-a-uuid'], 'group_uuid', ''));
     uu_check($t, 'settings_clean: an empty group id (none chosen) is not a problem',
         $clean(['group_uuid' => ''])['problems'] === []);
+    uu_check($t, 'settings_clean: a failback_delay that is not digits is the default 120, one problem, value not quoted',
+        $one(['failback_delay' => '120abc'], 'failback_delay', 120) && $one(['failback_delay' => '1e2'], 'failback_delay', 120)
+            && $one(['failback_delay' => ''], 'failback_delay', 120) && $one(['failback_delay' => '-5'], 'failback_delay', 120)
+            && !str_contains(implode(' ', $clean(['failback_delay' => '120abc'])['problems']), '120abc'));
+    uu_check($t, 'settings_clean: a trailing newline never passes the probe name or the group id masks',
+        $one(['probe_name' => "example.org\n"], 'probe_name', '.')
+            && $one(['group_uuid' => "0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60\n"], 'group_uuid', ''));
     $r = $clean(['resolver' => 'secret.example', 'probe_name' => 'a b secret']);
     uu_check($t, 'settings_clean: no problem quotes the value',
         count($r['problems']) === 2 && !str_contains(implode(' ', $r['problems']), 'secret'));

@@ -375,17 +375,22 @@ function uu_settings_clean(array $raw): array
         $resolver = '';
     }
     $probe = $raw['probe_name'];
-    if (preg_match(UU_PROBE_NAME_MASK, $probe) !== 1) {
+    if (preg_match(UU_PROBE_NAME_MASK . 'D', $probe) !== 1) {
         $problems[] = 'settings: probe name is not a host name or "."; probing the root';
         $probe = '.';
     }
-    $delay = (int)$raw['failback_delay'];
-    if ($delay < 60 || $delay > UU_FAILBACK_DELAY_MAX) {
-        $problems[] = 'settings: failback delay is outside 60 to ' . UU_FAILBACK_DELAY_MAX . ' seconds; clamped';
-        $delay = max(60, min(UU_FAILBACK_DELAY_MAX, $delay));
+    if (preg_match('/^\d+$/D', $raw['failback_delay']) !== 1) {
+        $problems[] = 'settings: failback delay is not a number of seconds; using ' . UU_FAILBACK_DEFAULT;
+        $delay = UU_FAILBACK_DEFAULT;
+    } else {
+        $delay = (int)$raw['failback_delay'];
+        if ($delay < 60 || $delay > UU_FAILBACK_DELAY_MAX) {
+            $problems[] = 'settings: failback delay is outside 60 to ' . UU_FAILBACK_DELAY_MAX . ' seconds; clamped';
+            $delay = max(60, min(UU_FAILBACK_DELAY_MAX, $delay));
+        }
     }
     $uuid = $raw['group_uuid'];
-    if ($uuid !== '' && preg_match('/^[0-9a-f-]{36}$/', $uuid) !== 1) {
+    if ($uuid !== '' && preg_match('/^[0-9a-f-]{36}$/D', $uuid) !== 1) {
         $problems[] = 'settings: gateway group is not an id; evaluating as none chosen';
         $uuid = '';
     }
