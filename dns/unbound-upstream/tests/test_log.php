@@ -32,6 +32,14 @@ uu_register_suite('log', function (): int {
         uu_blocked_line(9, 2) === 'blocked 2 resolver packets on a non-member path since the counting table was created'
         && uu_blocked_line(9, 0) === null);
 
+    uu_check($t, 'log text: tab, ESC, NUL, DEL and a C1 pair each become ?',
+        uu_log_text("a\tb") === 'a?b' && uu_log_text("a\x1Bb") === 'a?b' && uu_log_text("a\0b") === 'a?b'
+            && uu_log_text("a\x7Fb") === 'a?b' && uu_log_text("a\xC2\x85b") === 'a?b');
+    uu_check($t, 'log text: CR and LF become "; "', uu_log_text("a\nb") === 'a; b' && uu_log_text("a\r\nb") === 'a; ; b');
+    uu_check($t, 'log text: invalid UTF-8 and plain text are unchanged, and the result is never null',
+        uu_log_text("a\xFFb") === "a\xFFb" && uu_log_text('plain text, 10.2.0.1: ok') === 'plain text, 10.2.0.1: ok'
+            && uu_log_text("\xC3\xA9") === "\xC3\xA9");
+
     uu_check($t, 'route flags from route get', uu_status_route_flags(uu_snapshot_fixture('route_get_member.txt'))
         === ['UP', 'GATEWAY', 'HOST', 'DONE', 'STATIC']);
     uu_check($t, 'route flags: none for empty output', uu_status_route_flags('') === []);

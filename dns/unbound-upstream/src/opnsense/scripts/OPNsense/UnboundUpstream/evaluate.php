@@ -165,7 +165,7 @@ function uu_with_lock(callable $fn): int
  */
 function uu_evaluate(?string $stop, array $named): int
 {
-    $settings = uu_settings();
+    $settings = uu_settings(true);
     if ($stop === null && $settings['enabled'] && is_file(UU_REMOVING_PATH)) {
         /* every minute after a deinstall that stopped partway: worth the noise */
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '

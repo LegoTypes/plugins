@@ -357,17 +357,66 @@ function uu_route_adopt(array $s, ?array $installed): array
 }
 
 /**
- * The plugin's settings. The group is the NAME of the gateway group the stored UUID points at, '' when the
- * group is gone or none is chosen.
+ * The settings as the scripts use them, checked again (convention C7): a restored configuration bypasses the
+ * model's masks. A resolver that is not IPv4 is '' (unset), a probe name outside UU_PROBE_NAME_MASK is '.', a
+ * failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per
+ * substitution; none quotes the value.
+ *
+ * @param array{resolver: string, probe_name: string, failback_delay: string, group_uuid: string} $raw
+ * @return array{settings: array{resolver: string, probe_name: string, failback_delay: int, group_uuid: string},
+ *     problems: list<string>}
+ */
+function uu_settings_clean(array $raw): array
+{
+    $problems = [];
+    $resolver = $raw['resolver'];
+    if ($resolver !== '' && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+        $problems[] = 'settings: resolver is not an IPv4 address; evaluating as unset';
+        $resolver = '';
+    }
+    $probe = $raw['probe_name'];
+    if (preg_match(UU_PROBE_NAME_MASK, $probe) !== 1) {
+        $problems[] = 'settings: probe name is not a host name or "."; probing the root';
+        $probe = '.';
+    }
+    $delay = (int)$raw['failback_delay'];
+    if ($delay < 60 || $delay > UU_FAILBACK_DELAY_MAX) {
+        $problems[] = 'settings: failback delay is outside 60 to ' . UU_FAILBACK_DELAY_MAX . ' seconds; clamped';
+        $delay = max(60, min(UU_FAILBACK_DELAY_MAX, $delay));
+    }
+    $uuid = $raw['group_uuid'];
+    if ($uuid !== '' && preg_match('/^[0-9a-f-]{36}$/', $uuid) !== 1) {
+        $problems[] = 'settings: gateway group is not an id; evaluating as none chosen';
+        $uuid = '';
+    }
+    return ['settings' => ['resolver' => $resolver, 'probe_name' => $probe, 'failback_delay' => $delay,
+                           'group_uuid' => $uuid], 'problems' => $problems];
+}
+
+/**
+ * The plugin's settings, cleaned by uu_settings_clean(). The group is the NAME of the gateway group the stored
+ * UUID points at, '' when the group is gone or none is chosen. $warn logs each substitution at LOG_WARNING: the
+ * evaluations pass it, status (polled every 30 s) and record do not (ruling R8).
  *
  * @return array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string}
  */
-function uu_settings(): array
+function uu_settings(bool $warn = false): array
 {
     uu_load_core();
     $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
-    $uuid = $mdl->gateway_group->getValue();
+    $clean = uu_settings_clean([
+        'resolver' => $mdl->resolver->getValue(),
+        'probe_name' => $mdl->probe_name->getValue(),
+        'failback_delay' => $mdl->failback_delay->getValue(),
+        'group_uuid' => $mdl->gateway_group->getValue(),
+    ]);
+    if ($warn) {
+        foreach ($clean['problems'] as $problem) {
+            uu_log($problem, LOG_WARNING);
+        }
+    }
+    $uuid = $clean['settings']['group_uuid'];
     $group = '';
     foreach ((new \OPNsense\Routing\GatewayGroups())->gateway_group->iterateItems() as $key => $item) {
         if ($uuid !== '' && (string)$key === $uuid) {
@@ -378,9 +427,9 @@ function uu_settings(): array
         'enabled' => $mdl->enabled->isEqual('1'),
         'dry_run' => $mdl->dry_run->isEqual('1'),
         'group' => $group,
-        'resolver' => $mdl->resolver->getValue(),
-        'failback_delay' => (int)$mdl->failback_delay->getValue(),
-        'probe_name' => $mdl->probe_name->getValue(),
+        'resolver' => $clean['settings']['resolver'],
+        'failback_delay' => $clean['settings']['failback_delay'],
+        'probe_name' => $clean['settings']['probe_name'],
     ];
 }
 

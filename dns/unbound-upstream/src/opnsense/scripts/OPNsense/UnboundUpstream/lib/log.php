@@ -17,6 +17,17 @@ require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/contract.php';
 
 /**
+ * A log line as one printable line (convention C7, H3): CR and LF become "; ", every other control byte
+ * (0x00-0x1F, 0x7F) and every UTF-8 C1 pair (U+0080 to U+009F) becomes "?". No /u: bytes that are not UTF-8 pass
+ * through untouched instead of making the result null.
+ */
+function uu_log_text(string $msg): string
+{
+    $msg = str_replace(["\r", "\n"], '; ', $msg);
+    return (string)preg_replace('/[\x00-\x1F\x7F]|\xC2[\x80-\x9F]/', '?', $msg);
+}
+
+/**
  * Log from evaluate.php's own process as program UU_SYSLOG_IDENT at local4, which the plugin's syslog-ng filter
  * selects. Never from a hook: openlog() inside core's process would replace core's own syslog ident (uu_logger()).
  */
@@ -27,7 +38,7 @@ function uu_log(string $msg, int $prio = LOG_NOTICE): void
         openlog(UU_SYSLOG_IDENT, LOG_PID, LOG_LOCAL4);
         $open = true;
     }
-    syslog($prio, str_replace(["\r", "\n"], '; ', $msg));
+    syslog($prio, uu_log_text($msg));
 }
 
 /**
@@ -39,7 +50,7 @@ function uu_log(string $msg, int $prio = LOG_NOTICE): void
 function uu_logger(string $msg, string $level = 'notice'): void
 {
     exec('/usr/bin/logger -t ' . UU_SYSLOG_IDENT . ' -p ' . escapeshellarg('local4.' . $level) . ' -- '
-        . escapeshellarg(str_replace(["\r", "\n"], '; ', $msg)) . ' > /dev/null 2>&1');
+        . escapeshellarg(uu_log_text($msg)) . ' > /dev/null 2>&1');
 }
 
 /**
