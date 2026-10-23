@@ -4,7 +4,7 @@ if [ -z "${PKG_UPGRADE:-}" ] && [ -x /usr/local/opnsense/scripts/OPNsense/WGClie
     mkdir -p -m 700 /var/run/wgclienttunnels
     # The removal marker is written under the health mirror's lock, so a tick in flight ends first (waited for at
     # most 60 s) and no later tick re-takes a hold; every entry point of the plugin stops while the marker exists.
-    # +POST_DEINSTALL.post removes the state directories, +POST_INSTALL.post the marker.
+    # +POST_DEINSTALL.post removes the state directories, +POST_INSTALL.pre the marker.
     (
         /usr/local/bin/flock -w 60 9 || true
         touch /var/run/wgclienttunnels/removing || true

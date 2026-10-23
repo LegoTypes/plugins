@@ -6,7 +6,7 @@
 #
 # VM test of what a package removal does (spec 2026-10-20 section 3.11, convention C6, rulings R29-R31):
 # `tunnel.php --json release-holds` and the plugin's +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and
-# +POST_INSTALL.post, run against the plugin vm_overlay.sh put onto the installed package. Root on the disposable
+# +POST_INSTALL.pre, run against the plugin vm_overlay.sh put onto the installed package. Root on the disposable
 # test VM only, never on a firewall. The real `pkg delete` and `pkg add -f` halves run on the CI-built package
 # (spec section 6 step 2), not here.
 #
@@ -38,12 +38,12 @@
 #      releases rehearse and no tick re-takes the hold; the removal marker stays, the MSS anchor is empty; with the
 #      marker wgct.sh reconcile, request_reconcile and a filter reload rebuild nothing; +POST_DEINSTALL.post then
 #      removes both state directories.
-#   e. +POST_INSTALL.post deletes a removal marker.
+#   e. +POST_INSTALL.pre deletes a removal marker.
 # At exit, even on failure: configd running, the removal marker gone, config.xml put back as it was at the start
 # through core's Config::restoreBackup(), routing re-synced, the state rebuilt (wgct.sh reconcile, a filter reload,
 # one mirror tick) and cron started.
 #
-# Usage: wgct_deinstall.sh DIR   (DIR holds +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and +POST_INSTALL.post)
+# Usage: wgct_deinstall.sh DIR   (DIR holds +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and +POST_INSTALL.pre)
 
 set -u
 DIR="$1"
@@ -375,7 +375,7 @@ check "f: after the tick got the gateway lock: no hold record, rehearse not forc
 check "f: no tick took a hold" "$(lcount wireguard "$mark" -- '\[wgct-health\] rehearse: force_down')" 0
 check "f: release-holds found nothing held" "$(deinstall_lines "$mark")" "deinstall: nothing held"
 # an install after this removal: the marker goes, the state is rendered again
-sh "$DIR/+POST_INSTALL.post"
+sh "$DIR/+POST_INSTALL.pre"
 "$S/wgct.sh" reconcile > /dev/null 2>&1
 /usr/local/sbin/configctl filter reload > /dev/null
 sleep 2
@@ -459,8 +459,8 @@ release_wan_b
 # e. an install after a removal that stopped partway
 mkdir -p -m 700 "$RUN"
 : > "$MARKER"
-sh "$DIR/+POST_INSTALL.post"
-check "e: sh +POST_INSTALL.post exits 0 and deletes the removal marker" "$? $([ -e "$MARKER" ] && echo marker || echo none)" "0 none"
+sh "$DIR/+POST_INSTALL.pre"
+check "e: sh +POST_INSTALL.pre exits 0 and deletes the removal marker" "$? $([ -e "$MARKER" ] && echo marker || echo none)" "0 none"
 
 echo "deinstall: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]

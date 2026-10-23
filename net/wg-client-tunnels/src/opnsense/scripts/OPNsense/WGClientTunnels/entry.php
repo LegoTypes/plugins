@@ -14,7 +14,7 @@
  * entry script checks that this file is readable before it requires it.
  *
  * While the package removal's marker exists (WGCT_ENTRY_RUN_DIR/removing, written by +PRE_DEINSTALL.pre and
- * deleted by +POST_INSTALL.post), every entry script ends here at once, before any library file is loaded, so
+ * deleted by +POST_INSTALL.pre), every entry script ends here at once, before any library file is loaded, so
  * nothing re-takes a hold or rebuilds what the removal takes away (spec 2026-10-20 section 3.11, ruling R30).
  * It logs nothing (the minute reconcile says each minute that the marker is there); a command that answers its
  * caller prints its failure. Only the removal's own release-holds runs on.
