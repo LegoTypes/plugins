@@ -11,7 +11,9 @@
  * registered, and calls wgclienttunnels_firewall_at() with a temporary library, footprint and run directory,
  * so no plugin state, pf or config is touched. Calls that stand for a real filter reload run inside a function
  * named filter_configure_sync, the frame the hook looks for; this process loads no core filter code, so the
- * name is free. The hook logs to the WireGuard log, so log counts are of lines after a marker this test logs.
+ * name is free. The hook logs to the WireGuard log, so log counts are of the lines between a marker this test
+ * logs before the case and a closing one it logs after it and waits for: the hook logs through logger(1) as
+ * well, so every line the case caused is in the log before the closing marker, whatever syslog's latency.
  * The cases for a partly present library copy the working tree's lib files into a temporary directory and run
  * the hook in a child process each, since every copy declares the same functions.
  *
@@ -41,7 +43,18 @@ namespace OPNsense\Firewall {
 }
 
 namespace {
-    const HOOKTEST_LOG = '/var/log/wireguard/latest.log';
+    /* core's WireGuard log: the newest two daily files (syslog starts a new one at midnight, and latest.log can
+     * still name the old one for a while after that) */
+    function hooktest_log_lines(): array
+    {
+        $files = glob('/var/log/wireguard/wireguard_*.log') ?: [];
+        sort($files);
+        $lines = [];
+        foreach (array_slice($files, -2) as $f) {
+            $lines = array_merge($lines, @file($f, FILE_IGNORE_NEW_LINES) ?: []);
+        }
+        return $lines;
+    }
 
     require_once $argv[1];
 
@@ -122,25 +135,30 @@ namespace {
         }
         return $fw;
     };
-    /* the WireGuard log lines after this case's marker that contain $needle */
+    /* a marker line in the WireGuard log, unique to this call */
     $marker = function () use ($tag): string {
         $m = $tag . '-' . bin2hex(random_bytes(4));
         exec('/usr/bin/logger -t wireguard -- ' . escapeshellarg('[wgct-hooktest] marker ' . $m));
         return $m;
     };
-    $count = function (string $m, string $needle): int {
-        sleep(2);
-        $lines = @file(HOOKTEST_LOG, FILE_IGNORE_NEW_LINES) ?: [];
-        $after = null;
-        foreach ($lines as $i => $line) {
-            if (str_contains($line, 'marker ' . $m)) {
-                $after = $i;
+    /* the WireGuard log lines between this case's marker and a closing one that contain $needle; -1 when either
+     * marker is missing after 15 s */
+    $count = function (string $m, string $needle) use ($marker): int {
+        $end = $marker();
+        for ($try = 0; $try < 150; $try++) {
+            $lines = hooktest_log_lines();
+            $from = null;
+            foreach ($lines as $i => $line) {
+                if (str_contains($line, 'marker ' . $m)) {
+                    $from = $i;
+                } elseif (str_contains($line, 'marker ' . $end)) {
+                    return $from === null ? -1 : count(array_filter(array_slice($lines, $from + 1, $i - $from - 1),
+                        fn (string $l): bool => str_contains($l, $needle)));
+                }
             }
+            usleep(100000);
         }
-        if ($after === null) {
-            return -1;
-        }
-        return count(array_filter(array_slice($lines, $after + 1), fn (string $l): bool => str_contains($l, $needle)));
+        return -1;
     };
     $fallback = fn (): ?array => is_file("$run/fallback.json") ? json_decode((string)file_get_contents("$run/fallback.json"), true) : null;
     $registeredFootprint = fn (\OPNsense\Firewall\Plugin $fw): bool
