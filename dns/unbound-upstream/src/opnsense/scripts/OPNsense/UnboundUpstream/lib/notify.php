@@ -43,37 +43,60 @@ function uu_notify_url_ok(string $url): bool
 }
 
 /**
- * The notify URL while notify is on, else null. A stored value that fails the mask (a restored config, a hand edit)
- * is never used: one warning, no notification.
+ * What a stored notify URL means: the URL to use, or no URL and, for a value that fails the mask (a restored config,
+ * a hand edit), the warning to log. An empty value is no URL and no problem.
+ *
+ * @return array{url: ?string, problem: ?string}
  */
+function uu_notify_url_checked(string $stored): array
+{
+    if ($stored === '') {
+        return ['url' => null, 'problem' => null];
+    }
+    if (!uu_notify_url_ok($stored)) {
+        return ['url' => null,
+            'problem' => 'notify: the stored URL is not an http or https URL; no notification is sent'];
+    }
+    return ['url' => $stored, 'problem' => null];
+}
+
+/** The notify URL while notify is on, else null; a stored value that fails the mask is logged once and not used. */
 function uu_notify_url(): ?string
 {
     uu_load_core();
     $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
-    if (!$mdl->notify->isEqual('1') || $mdl->notify_url->isEmpty()) {
+    if (!$mdl->notify->isEqual('1')) {
         return null;
     }
-    $url = $mdl->notify_url->getValue();
-    if (!uu_notify_url_ok($url)) {
-        uu_log('notify: the stored URL is not an http or https URL; no notification is sent', LOG_WARNING);
-        return null;
+    $checked = uu_notify_url_checked($mdl->notify_url->getValue());
+    if ($checked['problem'] !== null) {
+        uu_log($checked['problem'], LOG_WARNING);
     }
-    return $url;
+    return $checked['url'];
 }
 
 /**
- * curl's options for the POST. Only http and https, on the request and on any redirect (none is followed); the _STR
- * keys exist from PHP 8.3 with curl 7.85, the bitmask keys before them.
+ * curl's protocol options: only http and https, on the request and on any redirect. The _STR keys exist from PHP 8.3
+ * with curl 7.85, the bitmask keys before them.
+ *
+ * @return array<int, mixed>
+ */
+function uu_notify_protocol_options(bool $strKeys): array
+{
+    return $strKeys
+        ? [CURLOPT_PROTOCOLS_STR => 'http,https', CURLOPT_REDIR_PROTOCOLS_STR => 'http,https']
+        : [CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS];
+}
+
+/**
+ * curl's options for the POST; no redirect is followed.
  *
  * @return array<int, mixed>
  */
 function uu_notify_curl_options(string $body): array
 {
-    $protocols = defined('CURLOPT_PROTOCOLS_STR')
-        ? [CURLOPT_PROTOCOLS_STR => 'http,https', CURLOPT_REDIR_PROTOCOLS_STR => 'http,https']
-        : [CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS];
-    return $protocols + [
+    return uu_notify_protocol_options(defined('CURLOPT_PROTOCOLS_STR')) + [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => $body,
         CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
