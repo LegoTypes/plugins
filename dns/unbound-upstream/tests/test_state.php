@@ -7,11 +7,13 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state under /var/run (spec section 3.3): round trip and every way a file can be unusable.
+ * Runtime state under /var/run (spec section 3.3): round trip and every way a file can be unusable, the path read
+ * as a regular file only, and the run directory's mode (convention C3).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
+require_once __DIR__ . '/scratch.php';
 
 function uu_test_state_dir(): string
 {
@@ -212,6 +214,74 @@ uu_register_suite('state', function (): int {
         is_array($rt) && uu_state_from_doc($rt) === $s
         && is_array($badAt) && uu_state_from_doc($badAt) === null
         && is_array($badType) && uu_state_from_doc($badType) === null);
+
+    /* convention C3: only a regular file of at most UU_FILE_MAX_BYTES is read; anything else is a new state, and
+     * the read names why */
+    $valid = (string)json_encode($s);
+    $reads = function (string $kind, string $problem) use ($valid, $new): bool {
+        return uu_scratch_case(function (string $dir) use ($kind, $problem, $valid, $new): bool {
+            uu_scratch_place($kind, $dir . '/state.json', $valid);
+            return uu_state_read($dir . '/state.json') === ['state' => $new, 'problem' => $problem]
+                && uu_state_load($dir . '/state.json') === $new;
+        });
+    };
+    uu_check($t, '(s1) read: a symbolic link to a valid state file is a new state, "a symbolic link"',
+        $reads('link', 'a symbolic link'));
+    uu_check($t, '(s2) read: a directory at the path is a new state, "not a regular file"',
+        $reads('dir', 'not a regular file'));
+    uu_check($t, '(s3) read: a valid state padded to 1 MiB + 1 byte is a new state, "larger than 1 MiB"',
+        $reads('large', 'larger than 1 MiB'));
+    uu_check($t, '(s4) read: a missing path is a new state with no problem',
+        uu_scratch_case(fn (string $dir): bool
+            => uu_state_read($dir . '/state.json') === ['state' => $new, 'problem' => null]));
+    uu_check($t, 'read: a path below a missing directory is a new state with no problem',
+        uu_scratch_case(fn (string $dir): bool
+            => uu_state_read($dir . '/run/state.json') === ['state' => $new, 'problem' => null]));
+    uu_check($t, 'read: a valid state padded to exactly 1 MiB is read, with no problem',
+        uu_scratch_case(function (string $dir) use ($valid, $s): bool {
+            file_put_contents($dir . '/state.json', str_pad($valid, UU_SCRATCH_MIB, ' '));
+            return uu_state_read($dir . '/state.json') === ['state' => $s, 'problem' => null];
+        }));
+    uu_check($t, 'read: a file that is not JSON is a new state, "not JSON"',
+        uu_scratch_case(function (string $dir) use ($valid, $new): bool {
+            file_put_contents($dir . '/state.json', substr($valid, 0, 20));
+            return uu_state_read($dir . '/state.json') === ['state' => $new, 'problem' => 'not JSON'];
+        }));
+    uu_check($t, 'read: JSON of another shape is a new state, "not this version\'s shape"',
+        uu_scratch_case(function (string $dir) use ($wrong, $new): bool {
+            file_put_contents($dir . '/state.json', json_encode($wrong));
+            return uu_state_read($dir . '/state.json') === ['state' => $new, 'problem' => 'not this version\'s shape'];
+        }));
+
+    /* the run directory: created 0700, an existing one put back to 0700, and anything but a directory refused */
+    uu_check($t, '(s5) run dir: an existing 0755 directory is left 0700',
+        uu_scratch_case(function (string $dir): bool {
+            mkdir($dir . '/run');
+            chmod($dir . '/run', 0755);
+            uu_run_dir($dir . '/run');
+            clearstatcache();
+            return (fileperms($dir . '/run') & 07777) === 0700;
+        }));
+    uu_check($t, 'run dir: a missing directory is created 0700',
+        uu_scratch_case(function (string $dir): bool {
+            uu_run_dir($dir . '/run');
+            return is_dir($dir . '/run') && !is_link($dir . '/run') && (fileperms($dir . '/run') & 07777) === 0700;
+        }));
+    $refuses = function (callable $place): bool {
+        return uu_scratch_case(function (string $dir) use ($place): bool {
+            $place($dir);
+            try {
+                uu_run_dir($dir . '/run');
+            } catch (\RuntimeException) {
+                return true;
+            }
+            return false;
+        });
+    };
+    uu_check($t, 'run dir: a symbolic link to a directory throws',
+        $refuses(fn (string $dir): bool => mkdir($dir . '/real', 0700) && symlink($dir . '/real', $dir . '/run')));
+    uu_check($t, 'run dir: a regular file at the path throws',
+        $refuses(fn (string $dir): bool => file_put_contents($dir . '/run', 'x') === 1));
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

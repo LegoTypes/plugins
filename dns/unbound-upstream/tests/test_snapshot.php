@@ -9,12 +9,13 @@ declare(strict_types=1);
  *
  * Live snapshot parsers (spec section 3.2): route get, unbound-control forward, sysctl, ps, group tiers; and the pf
  * observation the snapshot makes through an injected pfctl (section 3.6c): what it reads, and that a status never
- * lists the ruleset.
+ * lists the ruleset; and the pfctl runner, whose stderr file lives in the root-only run directory (convention C3).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
 require_once __DIR__ . '/test_verdict.php';
+require_once __DIR__ . '/scratch.php';
 
 function uu_snapshot_fixture(string $name): string
 {
@@ -184,18 +185,46 @@ uu_register_suite('snapshot', function (): int {
         }));
     /*
      * the runner on a stand-in binary: a pfctl that exits non-zero, or is killed mid-listing, keeps the stdout it
-     * printed and gets a "pfctl: exit N" line on stderr, so its listing is unusable
+     * printed and gets a "pfctl: exit N" line on stderr, so its listing is unusable; each in a scratch run directory
      */
-    $exit3 = uu_pfctl_run(['-c', 'printf partial; exit 3'], '/bin/sh');
     uu_check($t, 'runner: a non-zero exit keeps stdout and adds "pfctl: exit 3" to stderr, so a listing is unusable',
-        $exit3['out'] === 'partial' && str_contains($exit3['err'], 'pfctl: exit 3')
-        && !uu_pf_listing_usable($exit3['err']));
-    $killed = uu_pfctl_run(['-c', 'printf partial; kill -9 $$'], '/bin/sh');
+        uu_scratch_case(function (string $dir): bool {
+            $exit3 = uu_pfctl_run(['-c', 'printf partial; exit 3'], '/bin/sh', $dir);
+            return $exit3['out'] === 'partial' && str_contains($exit3['err'], 'pfctl: exit 3')
+                && !uu_pf_listing_usable($exit3['err']);
+        }));
     uu_check($t, 'runner: a pfctl killed mid-listing makes the listing unusable',
-        $killed['out'] === 'partial' && !uu_pf_listing_usable($killed['err']));
-    $clean = uu_pfctl_run(['-c', 'printf whole; echo "No ALTQ support in kernel" >&2'], '/bin/sh');
+        uu_scratch_case(function (string $dir): bool {
+            $killed = uu_pfctl_run(['-c', 'printf partial; kill -9 $$'], '/bin/sh', $dir);
+            return $killed['out'] === 'partial' && !uu_pf_listing_usable($killed['err']);
+        }));
     uu_check($t, 'runner: exit 0 with only an ALTQ notice on stderr is a usable listing, the streams apart',
-        $clean === ['out' => 'whole', 'err' => "No ALTQ support in kernel\n"] && uu_pf_listing_usable($clean['err']));
+        uu_scratch_case(function (string $dir): bool {
+            $clean = uu_pfctl_run(['-c', 'printf whole; echo "No ALTQ support in kernel" >&2'], '/bin/sh', $dir);
+            return $clean === ['out' => 'whole', 'err' => "No ALTQ support in kernel\n"]
+                && uu_pf_listing_usable($clean['err']);
+        }));
+    /* convention C3: the stderr file lives in the run directory it is given, never in /tmp; tempnam() falls back
+     * to the system temporary directory when that one is unusable, which is refused */
+    $stub = function (string $dir): string {
+        file_put_contents($dir . '/stub.sh', "#!/bin/sh\nls \"\$1\"\n");
+        chmod($dir . '/stub.sh', 0700);
+        return $dir . '/stub.sh';
+    };
+    uu_check($t, '(t1) runner: the stderr file is a uu_pfctl* file in the run directory while pfctl runs, gone after',
+        uu_scratch_case(function (string $dir) use ($stub): bool {
+            $run = uu_pfctl_run([$dir], $stub($dir), $dir);
+            $listed = preg_grep('/^uu_pfctl/', explode("\n", $run['out'])) ?: [];
+            return count($listed) === 1 && $run['err'] === '' && (glob($dir . '/uu_pfctl*') ?: []) === [];
+        }));
+    uu_check($t, '(t2) runner: a run directory that does not exist is "no temporary file for its stderr", and no '
+        . 'uu_pfctl file is left in /tmp',
+        uu_scratch_case(function (string $dir) use ($stub): bool {
+            $before = glob('/tmp/uu_pfctl*') ?: [];
+            $run = uu_pfctl_run([], $stub($dir), '/nonexistent/uu');
+            return $run === ['out' => '', 'err' => 'pfctl: no temporary file for its stderr']
+                && (glob('/tmp/uu_pfctl*') ?: []) === $before;
+        }));
     [$o, $calls] = $observe(null, false, $outputs);
     uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '
         . 'the ruleset is never listed',
