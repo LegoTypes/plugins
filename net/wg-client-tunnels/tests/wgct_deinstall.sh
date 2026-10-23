@@ -239,7 +239,7 @@ check "start: rehearse and WAN_B are not forced down, no hold record, WAN_DHCP n
     "$(facts) $([ -e "$MARKER" ] && echo marker || echo none)" "0 0 0 0 none"
 check "start: no tick or reconcile started by cron is still pending" \
     "$(pgrep -f "$PENDING" > /dev/null && echo pending || echo none)" none
-phplog=$(stat -f %z "$PHPLOG")
+phplog=$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)
 
 # a. release-holds with rehearse held
 hold
@@ -472,7 +472,7 @@ check "c: the minute reconcile says the package is being removed, once per run" 
 sh "$DIR/+POST_DEINSTALL.post"
 check "c: sh +POST_DEINSTALL.post exits 0 and removes both state directories, the marker with them" \
     "$? $([ -e "$DB" ] || [ -e "$RUN" ] && echo present || echo gone)" "0 gone"
-check "PHP's error log did not grow" "$(stat -f %z "$PHPLOG")" "$phplog"
+check "PHP's error log did not grow" "$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "$phplog"
 release_wan_b
 
 # e. an install after a removal that stopped partway
