@@ -40,9 +40,10 @@
 # Before scenario A's migration runs, the window between pkg installing 3.8's files and the migration (M1, ruling
 # R37), with cron stopped from then on (started again at exit): the 3.8 list shows the tunnels and findings 3.7_1 lists, and the
 # listing writes nothing (config.xml as it was, no marker, no log line); a mirror tick, apply, an action (adopt, and
-# a dry remove), release-holds, the route set and the monitor repair each refuse, change nothing, and log the
-# refusal once (each run twice where it repeats; --dry only says so). After the migration the first action logs
-# that it runs again.
+# a dry remove), release-holds, the route set, the monitor repair and the settings API's set each refuse, change
+# nothing, and log the refusal once (each run twice where it repeats; --dry only says so). After the migration the
+# first action logs that it runs again. The set runs as a temporary API user with the plugin's page privilege
+# (tests/wgct_user.php), deleted again.
 #
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
@@ -85,8 +86,13 @@ cat > "$T/restore.php" <<'PHPEOF'
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 exit(\OPNsense\Core\Config::getInstance()->restoreBackup($argv[1]) ? 0 : 1);
 PHPEOF
+remove_set_user() {
+    $PHP "$(dirname "$0")/wgct_user.php" delete wgct-migrate-set > /dev/null 2>&1
+    configctl auth sync user wgct-migrate-set > /dev/null 2>&1
+}
 cleanup() {
     $PHP "$T/restore.php" "$T/config.xml" || echo "[FAIL] config.xml could not be restored from $T/config.xml"
+    remove_set_user
     rm -f /var/run/wgclienttunnels/*.pending
     service cron status > /dev/null 2>&1 || service cron start > /dev/null
     if [ -f "$T/boot.json" ]; then cp -p "$T/boot.json" "$BOOTJSON"; else rm -f "$BOOTJSON"; fi
@@ -244,6 +250,8 @@ BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\
 
 S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
 RUN=/var/run/wgclienttunnels
+USERS="$(dirname "$0")/wgct_user.php"
+SET_USER=wgct-migrate-set
 REFUSED='the plugin settings are not migrated to 3.1.0 yet'
 
 # pending INST: the checks of the window before the migration (see the header); config.xml is 3.7_1's
@@ -285,6 +293,15 @@ pending() {
     check "pending: (M1) the route set and the monitor repair refuse, each logged once" \
         "$(lcount wireguard "$mark" -e "wgct-routes. route set refused: $REFUSED") $(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")" "1 1"
     check "pending: (M1) nothing refused changed config.xml" "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed)" same
+    cred=$($PHP "$USERS" create "$SET_USER" page-vpn-wgclienttunnels) && configctl auth sync user "$SET_USER" > /dev/null 2>&1
+    mark=$(lmark wireguard)
+    code=$(curl -sk -m 60 -o "$T/set.body" -w '%{http_code}' -u "$cred" -X POST -d 'wgclienttunnels[enabled]=1' \
+        https://127.0.0.1/api/wgclienttunnels/settings/set)
+    curl -sk -m 60 -o /dev/null -u "$cred" -X POST -d 'wgclienttunnels[enabled]=1' https://127.0.0.1/api/wgclienttunnels/settings/set
+    check "pending: (M1) the settings API's set refuses (core's UserException: HTTP 500 with the reason) and logs it once" \
+        "$code $(grep -c "$REFUSED" "$T/set.body") $(lcount wireguard "$mark" -e "settings refused: $REFUSED")" "500 1 1"
+    check "pending: (M1) the settings node keeps 3.7_1's managed list and holds for the migration" "$($PHP "$T/fact.php" settings)" "3.0.0 managed:yes held:yes"
+    remove_set_user
     pend_mark=$(lmark wireguard)
 }
 

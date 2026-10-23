@@ -62,43 +62,7 @@ check() {
 
 . "$(dirname "$0")/wgct_marks.sh"
 
-cat > "$T/user.php" <<'PHPEOF'
-<?php
-require_once 'config.inc';
-require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
-
-use OPNsense\Auth\User;
-use OPNsense\Core\Config;
-
-/* user.php create NAME PRIVS => "key:secret"; user.php delete NAME */
-[, $mode, $name] = $argv;
-Config::getInstance()->lock();
-$model = new User();
-if ($mode === 'create') {
-    $user = $model->user->Add();
-    $user->name = $name;
-    $user->scope = 'user';
-    $user->password = $model->generatePasswordHash(bin2hex(random_bytes(24)));
-    $user->priv = $argv[3];
-    $key = $user->apikeys->add();
-    foreach ($model->performValidation() as $msg) {
-        fwrite(STDERR, $msg->getMessage() . "\n");
-        Config::getInstance()->unlock();
-        exit(1);
-    }
-    $model->serializeToConfig(false, true);
-    Config::getInstance()->save();
-    echo $key['key'], ':', $key['secret'], "\n";
-    exit(0);
-}
-foreach ($model->user->iterateItems() as $uuid => $node) {
-    if ((string)$node->name === $name) {
-        $model->user->del($uuid);
-    }
-}
-$model->serializeToConfig(false, true);
-Config::getInstance()->save();
-PHPEOF
+USERS="$(dirname "$0")/wgct_user.php"
 
 UNMANAGED_NAME=wgct-api-unmanaged
 
@@ -148,7 +112,7 @@ remove_instance() {
 
 remove_users() {
     for u in "$RO_USER" "$CTL_USER"; do
-        $PHP "$T/user.php" delete "$u" > /dev/null 2>&1
+        $PHP "$USERS" delete "$u" > /dev/null 2>&1
         configctl auth sync user "$u" > /dev/null 2>&1
     done
 }
@@ -164,7 +128,7 @@ trap cleanup EXIT
 remove_users
 
 make_user() {
-    $PHP "$T/user.php" create "$1" "$2" || return 1
+    $PHP "$USERS" create "$1" "$2" || return 1
     configctl auth sync user "$1" > /dev/null 2>&1
 }
 
