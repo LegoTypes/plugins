@@ -35,21 +35,35 @@ uu_register_suite('notify', function (): int {
 
     $opts = uu_notify_curl_options('{}');
     uu_check($t, 'curl: only http and https, on the first request and on a redirect; no redirect is followed',
-        $opts[CURLOPT_PROTOCOLS_STR] === 'http,https' && $opts[CURLOPT_REDIR_PROTOCOLS_STR] === 'http,https'
-            && $opts[CURLOPT_FOLLOWLOCATION] === false);
+        array_intersect_key($opts, uu_notify_protocol_options(defined('CURLOPT_PROTOCOLS_STR')))
+            === uu_notify_protocol_options(defined('CURLOPT_PROTOCOLS_STR')) && $opts[CURLOPT_FOLLOWLOCATION] === false);
+    uu_check($t, 'curl: the string arm sets both keys to http,https',
+        !defined('CURLOPT_PROTOCOLS_STR') || uu_notify_protocol_options(true)
+            === [CURLOPT_PROTOCOLS_STR => 'http,https', CURLOPT_REDIR_PROTOCOLS_STR => 'http,https']);
+    uu_check($t, 'curl: the bitmask arm sets both keys to http and https only',
+        uu_notify_protocol_options(false) === [CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS]);
     uu_check($t, 'curl: the body is posted and the two timeouts are the constants',
         $opts[CURLOPT_POSTFIELDS] === '{}' && $opts[CURLOPT_CONNECTTIMEOUT] === UU_NOTIFY_CONNECT_SECONDS
             && $opts[CURLOPT_TIMEOUT] === UU_NOTIFY_TIMEOUT_SECONDS);
 
-    $xml = (string)file_get_contents(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
+    $model = simplexml_load_file(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
     uu_check($t, 'url_ok: the mask is the settings model\'s notify_url Mask, byte for byte',
-        str_contains($xml, '<Mask>' . UU_NOTIFY_URL_MASK . '</Mask>'));
+        $model !== false && (string)$model->items->notify_url->Mask === UU_NOTIFY_URL_MASK);
     uu_check($t, 'url_ok: refuses file, gopher and a URL with a space',
         !uu_notify_url_ok('file:///etc/passwd') && !uu_notify_url_ok('gopher://198.51.100.20/')
             && !uu_notify_url_ok('http://198.51.100.20/a b'));
     uu_check($t, 'url_ok: accepts http with a port and path, and https with userinfo',
         uu_notify_url_ok('http://198.51.100.20:8123/api/webhook/example')
             && uu_notify_url_ok('https://user:pw@198.51.100.20/x'));
+
+    $bad = 'file:///etc/passwd';
+    uu_check($t, 'checked: a stored value that fails the mask gives no URL and the warning text',
+        uu_notify_url_checked($bad) === ['url' => null,
+            'problem' => 'notify: the stored URL is not an http or https URL; no notification is sent']);
+    uu_check($t, 'checked: a good value is the URL with no problem; an empty one is neither',
+        uu_notify_url_checked('https://198.51.100.20/x') === ['url' => 'https://198.51.100.20/x', 'problem' => null]
+            && uu_notify_url_checked('') === ['url' => null, 'problem' => null]);
 
     uu_check($t, 'failure line: a 4xx answer names scheme, host and port, and points at the Notify URL',
         uu_notify_failure_line('http://198.51.100.20:8123/api/webhook/example', 'HTTP 404')
