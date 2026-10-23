@@ -33,10 +33,14 @@ uu_register_suite('snapshot_vm', function (): int {
     uu_check($t, 'tiers best first', $s['tiers'] === [['wg-test-429'], ['wg-test-529']]);
     $a = $s['members']['wg-test-429'] ?? null;
     $b = $s['members']['wg-test-529'] ?? null;
-    uu_check($t, 'members: device, next hop and defaulted time period from the gateway record',
+    $core = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true)['wg-test-429'] ?? [];
+    $timers = ['time_period' => (int)($core['current_time_period'] ?? -1), 'interval' => (int)($core['current_interval'] ?? -1),
+               'loss_interval' => (int)($core['current_loss_interval'] ?? -1), 'losshigh' => (int)($core['current_losshigh'] ?? -1)];
+    uu_check($t, 'members: device, next hop and monitor timers as core resolves them',
         $a !== null && $b !== null && array_keys($s['members']) === ['wg-test-429', 'wg-test-529']
         && $a['if'] === 'wg1' && $b['if'] === 'wg2' && $a['next_hop'] === '10.2.0.4' && $b['next_hop'] === '10.2.0.5'
-        && $a['time_period'] === 60 && $a['interval'] === 1 && $a['loss_interval'] === 4 && $a['losshigh'] === 20
+        && min($timers) >= 0 && $a['time_period'] === $timers['time_period'] && $a['interval'] === $timers['interval']
+        && $a['loss_interval'] === $timers['loss_interval'] && $a['losshigh'] === $timers['losshigh']
         && !$a['disabled'] && !$a['force_down'] && !$a['monitor_disable'] && $a['interface'] !== '');
     uu_check($t, 'probes for both members', array_keys($s['probes']) === ['wg-test-429', 'wg-test-529']
         && is_string($s['probes']['wg-test-429']['status']) && is_string($s['probes']['wg-test-429']['loss'])
