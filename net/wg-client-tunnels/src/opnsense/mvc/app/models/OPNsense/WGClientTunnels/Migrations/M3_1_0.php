@@ -42,9 +42,11 @@ use OPNsense\WGClientTunnels\Engine;
  * tunnel's IPv4 gateway and is forced down; the record carries this boot's kern.boot_id, since a hold active at
  * the upgrade was taken in this boot. Every other held gateway is dropped and logged, its force_down left as it
  * is for a person to clear. A managed tunnel's IPv6 gateway that is forced down becomes a hold record too, its
- * IPv4 tunnel as underlay (spec 3.5a): the 3.0.0 mirror rewrote that force_down on every tick, so it was the
- * mirror's. The engine model is brought to its own version before it is written, so the outcome is the same
- * whichever of the two models core migrates first.
+ * IPv4 tunnel as underlay (spec 3.5a), but only when the 3.0.0 mirror ran (the plugin and its health mirror both
+ * on): only then did it rewrite that force_down on every tick, so only then was it the mirror's. With either off,
+ * such a gateway is a person's or Create's, and is left forced down as manual, logged once by name (ruling R35).
+ * The engine model is brought to its own version before it is written, so the outcome is the same whichever of the
+ * two models core migrates first.
  */
 class M3_1_0 extends BaseModelMigration
 {
@@ -65,12 +67,17 @@ class M3_1_0 extends BaseModelMigration
      * @param list<array{gateway: string, underlay: string}>          $ipv6Gateways the IPv6 gateways the mirror's
      *                                                                               pass 2 governs: uuid and the
      *                                                                               IPv4 tunnel gateway it follows
+     * @param bool                                                     $enabled      the 3.0.0 plugin switch
+     * @param bool                                                     $healthMirror the 3.0.0 health mirror switch
      * @param string                                                   $bootId       the live kern.boot_id, '' when
      *                                                                               it cannot be read
-     * @return array{rows: list<array{gateway: string, boot: string, underlay: string}>, dropped: list<string>}
-     *         each held uuid and each forced IPv6 pair gateway once, held first: a row, or dropped
+     * @return array{rows: list<array{gateway: string, boot: string, underlay: string}>, dropped: list<string>,
+     *               manual: list<string>}
+     *         each held uuid and each forced IPv6 pair gateway once, held first: a row, dropped, or (a forced IPv6
+     *         pair gateway while the 3.0.0 mirror did not run) left forced down as manual
      */
-    public static function plan(array $managed, array $held, array $gateways, array $ipv4Gateways, array $ipv6Gateways, string $bootId): array
+    public static function plan(array $managed, array $held, array $gateways, array $ipv4Gateways, array $ipv6Gateways,
+        bool $enabled, bool $healthMirror, string $bootId): array
     {
         $tunnelGateways = [];
         foreach ($managed as $instance) {
@@ -87,7 +94,7 @@ class M3_1_0 extends BaseModelMigration
         $row = fn (string $uuid, string $underlay): array => [
             'gateway' => $uuid, 'boot' => $bootId, 'underlay' => preg_match(self::UNDERLAY_MASK, $underlay) === 1 ? $underlay : '',
         ];
-        $plan = ['rows' => [], 'dropped' => []];
+        $plan = ['rows' => [], 'dropped' => [], 'manual' => []];
         foreach (array_values(array_unique($held)) as $uuid) {
             if (isset($forced6[$uuid])) {
                 continue;
@@ -99,13 +106,56 @@ class M3_1_0 extends BaseModelMigration
             }
         }
         foreach ($forced6 as $uuid => $underlay) {
-            if ($bootId !== '') {
+            if (!$enabled || !$healthMirror) {
+                $plan['manual'][] = (string)$uuid;
+            } elseif ($bootId !== '') {
                 $plan['rows'][] = $row((string)$uuid, $underlay);
             } else {
                 $plan['dropped'][] = (string)$uuid;
             }
         }
         return $plan;
+    }
+
+    /**
+     * What the migration logs for its plan. Pure.
+     *
+     * @param array{rows: list<array{gateway: string}>, dropped: list<string>, manual: list<string>} $plan plan()'s
+     * @param list<string>          $held          held gateway uuids, as stored
+     * @param string                $bootId        the live kern.boot_id, '' when it cannot be read
+     * @param string|null           $gatewaysError why the tunnels' gateways cannot be read; then nothing is planned
+     *                                             and each held gateway is left as it is
+     * @param array<string, string> $names         gateway uuid => name
+     * @return list<array{0: int, 1: string}> priority and line, in order
+     */
+    public static function report(array $plan, array $held, string $bootId, ?string $gatewaysError, array $names): array
+    {
+        $name = fn (string $uuid): string => isset($names[$uuid]) ? "{$names[$uuid]} ({$uuid})" : $uuid;
+        $keep = fn (array $uuids): string => implode(', ', array_map($name, $uuids)) . ' keep their force_down until it is cleared by hand';
+        if ($gatewaysError !== null) {
+            $held = array_values(array_unique($held));
+            return [[LOG_WARNING, "[wgct-migrate] the tunnels' gateways cannot be read ({$gatewaysError}), so no hold is carried over"
+                . ($held !== [] ? '; ' . $keep($held) : '')]];
+        }
+        $lines = [];
+        if ($plan['manual'] !== []) {
+            $lines[] = [LOG_NOTICE, '[wgct-migrate] ' . implode(', ', array_map($name, $plan['manual']))
+                . ' left forced down as manual: the 3.7_1 health mirror was off'];
+        }
+        if ($bootId === '') {
+            if ($plan['dropped'] !== []) {
+                $lines[] = [LOG_WARNING, '[wgct-migrate] kern.boot_id cannot be read, so no hold is carried over; ' . $keep($plan['dropped'])];
+            }
+            return $lines;
+        }
+        foreach ($plan['rows'] as $row) {
+            $lines[] = [LOG_NOTICE, '[wgct-migrate] the hold of ' . $name($row['gateway']) . " is carried over, taken in boot {$bootId}"];
+        }
+        /* with a live boot id a forced IPv6 pair gateway has a row or is manual, so only held gateways are dropped */
+        foreach ($plan['dropped'] as $uuid) {
+            $lines[] = [LOG_NOTICE, '[wgct-migrate] held gateway ' . $name($uuid) . ' is not held by this plugin; dropped, its force_down left as it is'];
+        }
+        return $lines;
     }
 
     /**
@@ -127,17 +177,16 @@ class M3_1_0 extends BaseModelMigration
         $managed = wgct_split_csv($managedRaw);
         $held = wgct_split_csv((string)$node->held);
         $bootId = Engine::liveBootId();
-        $gateways = [];
-        $ipv4Gateways = [];
-        $ipv6Gateways = [];
+        $plan = ['rows' => [], 'dropped' => [], 'manual' => []];
         $names = [];
+        $gatewaysError = null;
         try {
             [$gateways, $ipv4Gateways, $ipv6Gateways, $names] = self::tunnelGateways($managed);
+            $plan = self::plan($managed, $held, $gateways, $ipv4Gateways, $ipv6Gateways,
+                (string)$node->enabled === '1', (string)$node->health_mirror === '1', $bootId);
         } catch (\Throwable $e) {
-            wgct_log(LOG_WARNING, '[wgct-migrate] the tunnels\' gateways cannot be read (' . $e->getMessage()
-                . '); no hold is carried over');
+            $gatewaysError = $e->getMessage();
         }
-        $plan = self::plan($managed, $held, $gateways, $ipv4Gateways, $ipv6Gateways, $bootId);
 
         $engine = new Engine();
         $engine->runMigrations();
@@ -148,21 +197,8 @@ class M3_1_0 extends BaseModelMigration
         $engine->setHolds(array_map(fn (array $row): array => $row + ['taken_at' => $now], $plan['rows']));
         $engine->serializeToConfig();
 
-        $name = fn (string $uuid): string => isset($names[$uuid]) ? "{$names[$uuid]} ({$uuid})" : $uuid;
-        if ($bootId === '') {
-            if ($plan['dropped'] !== []) {
-                wgct_log(LOG_WARNING, '[wgct-migrate] kern.boot_id cannot be read, so no hold is carried over; '
-                    . implode(', ', array_map($name, $plan['dropped'])) . ' keep their force_down until it is cleared by hand');
-            }
-            return;
-        }
-        foreach ($plan['rows'] as $row) {
-            wgct_log(LOG_NOTICE, '[wgct-migrate] the hold of ' . $name($row['gateway']) . " is carried over, taken in boot {$bootId}");
-        }
-        /* with a live boot id every forced IPv6 pair gateway has a row, so only held gateways are dropped */
-        foreach ($plan['dropped'] as $uuid) {
-            wgct_log(LOG_NOTICE, '[wgct-migrate] held gateway ' . $name($uuid)
-                . ' is not held by this plugin; dropped, its force_down left as it is');
+        foreach (self::report($plan, $held, $bootId, $gatewaysError, $names) as [$priority, $line]) {
+            wgct_log($priority, $line);
         }
     }
 
