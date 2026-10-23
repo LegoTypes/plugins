@@ -240,16 +240,16 @@ else
 fi
 check "control user: that POST leaves the settings node and the engine node as they were" "$same" unchanged
 
-# case 4b
-PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+# case 4b (PHP's error log as core's GUI crash reporter reads it)
+PHPLOG=/var/lib/php/tmp/PHP_errors.log
 log0=$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)
-cron_quiesce > /dev/null
+cq=$(cron_quiesce) && cq=cron-quiet
 mv "$MIRROR_LIB" "$T/mirror.php.off"
 code=$(call "$CTL_CRED" settings/set -d 'wgclienttunnels[enabled]=1')
 mv "$T/mirror.php.off" "$MIRROR_LIB"
 service cron start > /dev/null 2>&1
 check "control user: a settings/set POST while lib/mirror.php cannot be read is refused (HTTP 500: the plugin is being installed or upgraded) and PHP's error log does not grow" \
-    "$code $(grep -c 'The plugin is being installed or upgraded' "$T/body") $(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "500 1 $log0"
+    "$code $(grep -c 'The plugin is being installed or upgraded' "$T/body") $(stat -f %z "$PHPLOG" 2> /dev/null || echo 0) $cq" "500 1 $log0 cron-quiet"
 
 # case 5
 remove_instance
