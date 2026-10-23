@@ -19,18 +19,22 @@
 #     3.7_1 mirror leaves a hold, and WAN_B's gateway (force_down=0, and no tunnel's gateway);
 #   - an IPv6 gateway `rehearse-ipv6` on rehearse's interface (a synthetic uuid, monitoring off), force_down=1 as
 #     the 3.7_1 mirror's pass 2 leaves it while the IPv4 tunnel is unhealthy, and in no `held` list (spec 3.5a);
-#   - no engine node (scenarios A and B, a box that never ran 3.8), or an empty one at 1.0.0 (scenario C).
+#   - no engine node (scenarios A, B and D, a box that never ran 3.8), or an empty one at 1.0.0 (scenario C);
+#   - the plugin and its health mirror on, as the 3.7_1 mirror runs (A to C), or the health mirror off (D).
 # The 3.7_1 tunnel.php, from the 3.7_1 package in pkg's cache, lists the tunnels on that config. Then:
 #   A: run_migrations.php OPNsense/WGClientTunnels, as the package's +POST_INSTALL runs it (both models);
 #   B: run_migrations.php OPNsense/WGClientTunnels/WGClientTunnels, the settings model alone: its migration first
 #      brings the engine model to its own version, so the order core runs the two in does not matter;
-#   C: as A, with the engine model already migrated.
+#   C: as A, with the engine model already migrated;
+#   D: as A, with the health mirror off (ruling R35): the 3.7_1 mirror never ran, so the forced IPv6 gateway is not
+#      the plugin's.
 # Each scenario then asserts: the settings node is at 3.1.0 with neither field; the engine node is at 1.0.0 with
-# the managed list byte for byte and exactly two holds rows, each with the live kern.boot_id and taken during the
-# run: rehearse's gateway on WAN_B, and rehearse-ipv6 following rehearse; force_down is as it was; one "not held by
-# this plugin" line names WAN_B's gateway in core's WireGuard log; the installed tunnel.php lists the same tunnels,
-# findings and unmanaged instances as 3.7_1 did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's
-# two gateways (WAN_B's was dropped). A second run changes nothing (A).
+# the managed list byte for byte and its holds rows, each with the live kern.boot_id and taken during the run:
+# rehearse's gateway on WAN_B, and (A to C) rehearse-ipv6 following rehearse; in D one line names rehearse-ipv6 as
+# left forced down as manual; force_down is as it was; one "not held by this plugin" line names WAN_B's gateway in
+# core's WireGuard log; the installed tunnel.php lists the same tunnels, findings and unmanaged instances as 3.7_1
+# did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped).
+# A second run changes nothing (A).
 #
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
@@ -78,14 +82,15 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
-# shape.php ENGINE UPPER GW6: the config 3.7_1 leaves (see the header); ENGINE is none or empty. Prints the uuids.
+# shape.php ENGINE UPPER GW6 MIRROR: the config 3.7_1 leaves (see the header); ENGINE is none or empty, MIRROR on or
+# off (the 3.0.0 health_mirror switch). Prints the uuids.
 cat > "$T/shape.php" <<'PHPEOF'
 <?php
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 
 use OPNsense\Core\Config;
 
-[, $engineMode, $upper, $gw6] = $argv;
+[, $engineMode, $upper, $gw6, $mirror] = $argv;
 $cfg = Config::getInstance();
 $cfg->lock();
 $root = $cfg->object();
@@ -126,6 +131,8 @@ foreach (['disabled' => '0', 'name' => 'rehearse-ipv6', 'descr' => 'rehearse-ipv
 }
 $n = $root->OPNsense->WGClientTunnels;
 $n['version'] = '3.0.0';
+$n->enabled = '1';
+$n->health_mirror = $mirror === 'on' ? '1' : '0';
 $n->managed = "{$ids['instance']},{$upper}";
 $n->held = "{$ids['gw_rehearse']},{$ids['gw_wanb']}";
 unset($root->OPNsense->WGClientTunnelsEngine);
@@ -222,13 +229,20 @@ PHPEOF
 BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\1/p' | tr 'A-F' 'a-f')
 [ -n "$BOOT" ] || { echo "[FAIL] kern.boot_id cannot be read on this VM"; exit 1; }
 
-# scenario NAME ENGINE PREFIX
+# scenario NAME ENGINE PREFIX MIRROR
 scenario() {
     name="$1"
-    ids=$($PHP "$T/shape.php" "$2" "$UPPER" "$GW6") || { echo "[FAIL] $name: the 3.7_1 config could not be written"; FAIL=$((FAIL + 1)); return; }
+    mirror="$4"
+    ids=$($PHP "$T/shape.php" "$2" "$UPPER" "$GW6" "$mirror") || { echo "[FAIL] $name: the 3.7_1 config could not be written"; FAIL=$((FAIL + 1)); return; }
     set -- "$@" $ids
-    inst="$4"; gwr="$5"; gwb="$6"
-    held38=$($PHP -r '$h = [$argv[1], $argv[2]]; sort($h); echo json_encode($h);' "$gwr" "$GW6")
+    inst="$5"; gwr="$6"; gwb="$7"
+    if [ "$mirror" = on ]; then
+        rows=2
+        held38=$($PHP -r '$h = [$argv[1], $argv[2]]; sort($h); echo json_encode($h);' "$gwr" "$GW6")
+    else
+        rows=1
+        held38="[\"$gwr\"]"
+    fi
     $PHP "$T/list371.php" > "$T/before.json"
     mark=$(lmark wireguard)
     start=$(date +%s)
@@ -242,18 +256,24 @@ scenario() {
     check "$name: the engine node is at 1.0.0" "$($PHP "$T/fact.php" engine_version)" 1.0.0
     check "$name: the engine holds the managed list byte for byte (m1: order and upper case kept)" \
         "$($PHP "$T/fact.php" engine_managed)" "$inst,$UPPER"
-    check "$name: exactly two holds rows" "$($PHP "$T/fact.php" rows)" 2
+    check "$name: exactly $rows holds rows" "$($PHP "$T/fact.php" rows)" "$rows"
     row=$($PHP "$T/fact.php" row "$gwr")
     check "$name: one row is rehearse's gateway, the live boot id, WAN_B" "${row% *}" "$gwr $BOOT WAN_B"
     taken="${row##* }"
     check "$name: that row was taken during the migration" \
         "$([ "$taken" -ge "$start" ] 2> /dev/null && [ "$taken" -le "$end" ] && echo yes || echo "no ($taken, run $start-$end)")" yes
     row6=$($PHP "$T/fact.php" row "$GW6")
-    check "$name: (3.5a) the other is rehearse-ipv6, forced down by the 3.7_1 pass 2: the live boot id, following rehearse" \
-        "${row6% *}" "$GW6 $BOOT rehearse"
-    taken="${row6##* }"
-    check "$name: that row was taken during the migration" \
-        "$([ "$taken" -ge "$start" ] 2> /dev/null && [ "$taken" -le "$end" ] && echo yes || echo "no ($taken, run $start-$end)")" yes
+    if [ "$mirror" = on ]; then
+        check "$name: (3.5a) the other is rehearse-ipv6, forced down by the 3.7_1 pass 2: the live boot id, following rehearse" \
+            "${row6% *}" "$GW6 $BOOT rehearse"
+        taken="${row6##* }"
+        check "$name: that row was taken during the migration" \
+            "$([ "$taken" -ge "$start" ] 2> /dev/null && [ "$taken" -le "$end" ] && echo yes || echo "no ($taken, run $start-$end)")" yes
+    else
+        check "$name: (R35) rehearse-ipv6 has no row: the 3.7_1 mirror never ran, so its force_down is not the plugin's" "[$row6]" "[]"
+        check "$name: (R35) one line names rehearse-ipv6 as left forced down as manual" \
+            "$(lcount wireguard "$mark" -e "rehearse-ipv6 ($GW6) left forced down as manual: the 3.7_1 health mirror was off")" 1
+    fi
     check "$name: rehearse and rehearse-ipv6 stay force_down=1, WAN_B force_down=0" \
         "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" force_down rehearse-ipv6) $($PHP "$T/fact.php" force_down WAN_B)" "1 1 0"
     check "$name: one 'not held by this plugin' line names WAN_B's gateway" \
@@ -262,17 +282,18 @@ scenario() {
     check "$name: tunnel.php --json list shows the same tunnels, findings and unmanaged instances as 3.7_1" \
         "$(echo "$lists" | sed -n 1p)" same
     check "$name: 3.7_1 listed both held uuids" "$(echo "$lists" | sed -n 2p)" "[\"$gwr\",\"$gwb\"]"
-    check "$name: 3.8 lists rehearse's two gateways as held, and only them" "$(echo "$lists" | sed -n 3p)" "$held38"
+    check "$name: 3.8 lists rehearse's gateways with a row as held, and only them" "$(echo "$lists" | sed -n 3p)" "$held38"
 }
 
-scenario "A (+POST_INSTALL, no engine node)" none OPNsense/WGClientTunnels
+scenario "A (+POST_INSTALL, no engine node)" none OPNsense/WGClientTunnels on
 cp /conf/config.xml "$T/after-a.xml"
 $PHP "$MIGRATE" OPNsense/WGClientTunnels > "$T/again.out" 2>&1
 check "A: a second run_migrations.php prints nothing" "$(cat "$T/again.out")" ""
 check "A: a second run_migrations.php leaves config.xml as it was" \
     "$(cmp -s /conf/config.xml "$T/after-a.xml" && echo unchanged || echo changed)" unchanged
-scenario "B (the settings model alone)" none OPNsense/WGClientTunnels/WGClientTunnels
-scenario "C (the engine model already at 1.0.0)" empty OPNsense/WGClientTunnels
+scenario "B (the settings model alone)" none OPNsense/WGClientTunnels/WGClientTunnels on
+scenario "C (the engine model already at 1.0.0)" empty OPNsense/WGClientTunnels on
+scenario "D (the health mirror off, R35)" none OPNsense/WGClientTunnels off
 
 echo "migrate: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]
