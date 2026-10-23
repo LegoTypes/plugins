@@ -328,7 +328,7 @@ EOF
     printf ']}\n'
 }
 
-# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.post deletes it; spec 2026-10-20
+# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.pre deletes it; spec 2026-10-20
 # section 3.11, ruling R30): while it exists nothing here adds, repairs or queues anything, so nothing rebuilds what
 # the removal takes away. stop (the removal's own), its section and the status lines still run. The minute cron's
 # reconcile says so each minute, which a removal that stopped partway is worth.
