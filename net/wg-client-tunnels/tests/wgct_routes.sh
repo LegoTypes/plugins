@@ -220,7 +220,7 @@ check "30 state|pending (the 3.1.0 migration pending) removes no route, keeps th
 say 'state|pending' "$(line lo91 91 $M3)"; "$T/wgct_fakes.sh" configure_routes
 check "31 state|pending adds and deletes nothing either" '[ -z "$(dev_of $M3)" ] && [ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before"'
 say 'state|on' "$(line lo91 91 $M1)"; "$T/wgct_fakes.sh" configure_routes; "$T/wgct_fakes.sh" configure_routes
-check "32 once migrated the route set runs again, said once" '[ "$(dev_of $M1)" = lo91 ] && [ "$(grep -c "route set runs again" "$T/log")" = 1 ] && [ ! -e "$STATE/routes.pending" ]'
+check "32 once migrated the route set runs again, said once" '[ "$(dev_of $M1)" = lo91 ] && [ "$(grep -c "route set runs again" "$T/log")" = 1 ] && [ ! -e "$STATE/routes.awaiting-migration" ]'
 "$W" stop
 
 echo "routes: $pass/$((pass + fail)) passed"
