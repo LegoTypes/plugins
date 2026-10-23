@@ -107,7 +107,7 @@ function wgct_action_snapshot(): array {
     }
     return [
         'core' => $core,
-        'managed' => wgct_split_csv($engine->managed->getValue()),
+        'managed' => wgct_managed(),
         /* the gateway of every hold record, owned or not: Remove drops them all */
         'held' => array_values(array_unique(array_column($engine->holdRows(), 'gateway'))),
         'ports' => $ports,
@@ -173,15 +173,25 @@ function wgct_local6_snapshot(): ?array {
 
 /**
  * wgct_locked_commit() for an action. $mutate returns ['save' => bool,
- * 'result' => wgct_result()]. Unless it saved, config is re-read.
+ * 'result' => wgct_result()]. Unless it saved, config is re-read. Every
+ * action writer (Create, Edit, Remove, Rebind, Adopt, the sentinel, a dry run
+ * of each included) comes through here, so here, under the lock, an action
+ * refuses while the 3.1.0 migration is pending (ruling R37): the engine model
+ * it writes does not hold the managed list and the holds yet.
  *
  * @param callable(): array $mutate
  * @param string            $description the config-history text of the save (ruling 23)
  * @return array wgct_result()
  */
 function wgct_action_commit(callable $mutate, string $description): array {
+    $guarded = function () use ($mutate): array {
+        if (wgct_pending_refuses('action', WGCT_ACTION_LOG_TAG)) {
+            return ['save' => false, 'result' => wgct_result(['errors' => ['general' => WGCT_MIGRATION_PENDING]])];
+        }
+        return $mutate();
+    };
     try {
-        $commit = wgct_locked_commit($mutate, 'wg upstream tunnels: ' . $description);
+        $commit = wgct_locked_commit($guarded, 'wg upstream tunnels: ' . $description);
     } catch (\Throwable $e) {
         Config::getInstance()->forceReload();
         throw $e;

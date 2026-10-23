@@ -41,7 +41,9 @@
  * force_down left alone (spec 2026-10-20 section 3.5). Each tick ends by
  * recording the live boot id in boot.json, written only when it names another
  * boot. A tick that cannot read kern.boot_id takes, releases and records no
- * hold, and says so once per state.
+ * hold, and says so once per state. So does a tick while the plugin settings
+ * wait for their 3.1.0 migration (ruling R37): the hold records are not in the
+ * engine model yet.
  *
  * Settle guard: a dpinger that has just started has no samples yet, so what it
  * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing about
@@ -125,6 +127,19 @@ if ($snapshotOut) {
 }
 
 /*
+ * The 3.1.0 migration pending (between pkg installing these files and the
+ * package's run_migrations.php): the hold records are still 3.7_1's list in the
+ * settings node, so the tick takes, releases and records nothing, said once per
+ * state (ruling R37). --dry only says so.
+ */
+if ($dryRun ? wgct_migration_pending() : wgct_pending_refuses('tick', $logTag)) {
+    if ($dryRun) {
+        echo 'the tick refuses: ', WGCT_MIGRATION_PENDING, "\n";
+    }
+    exit(0);
+}
+
+/*
  * Single-instance guard (health.lock under /var/run). Cron fires this script four times a minute
  * (0/15/30/45s). A tick that changes a gateway blocks below until a full
  * routing reconfigure completes (dpinger torn down and rebuilt), which can
@@ -193,6 +208,10 @@ if (empty($plan['changes'])) {
          */
         $live = wgct_collect_live();
         $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
+            /* config as re-read under the lock: a migration pending again (a restored 3.7_1 backup) saves nothing */
+            if (wgct_migration_pending()) {
+                return ['save' => false, 'deferred' => true];
+            }
             $now = wgct_collect_config();
             $replan = wgct_plan($now, $live, array_fill_keys($now['held'], true), $settleOverride);
             if (!empty($replan['changes'])) {
@@ -249,6 +268,10 @@ try {
 wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, false, '', 'gateway lock available again');
 $live = wgct_collect_live();
 $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
+    /* config as re-read under the lock: a migration pending again (a restored 3.7_1 backup) saves nothing */
+    if (wgct_migration_pending()) {
+        return ['save' => false, 'pending' => true];
+    }
     $now = wgct_collect_config();
     $plan = wgct_plan($now, $live, array_fill_keys($now['held'], true), $settleOverride);
     $save = false;
@@ -261,6 +284,10 @@ $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
     $held = wgct_commit_held($plan['held'], $now, $now['live_boot']);
     return ['save' => $held || $save, 'plan' => $plan, 'held' => $held, 'config' => $now];
 });
+if (!empty($commit['pending'])) {
+    $gwLock->flock(LOCK_UN);
+    exit(0);
+}
 $plan = $commit['plan'];
 foreach ($plan['log'] as $msg) {
     logMsg($logTag, $msg);

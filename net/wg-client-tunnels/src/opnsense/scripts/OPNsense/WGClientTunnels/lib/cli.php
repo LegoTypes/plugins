@@ -276,6 +276,12 @@ function wgct_release_holds(): array {
         'replayed' => [], 'logged' => '', 'errors' => []];
     $lock = null;
     try {
+        /* the hold records are 3.7_1's list in the settings node until the 3.1.0 migration has run: nothing can be
+         * shown to be ours, so every gateway is left as it is (ruling R37) */
+        if (wgct_pending_refuses('release-holds', WGCT_ACTION_LOG_TAG)) {
+            $out['errors'][] = 'deinstall: ' . WGCT_MIGRATION_PENDING . '; every gateway left as it is';
+            return $out;
+        }
         $before = wgct_gateway_status();
         $lock = wgct_gateway_lock(true);
         $readings = wgct_collect_dpinger();
@@ -286,7 +292,7 @@ function wgct_release_holds(): array {
              * The pairs are the mirror's: every finding that blocks a tunnel comes from this part.
              */
             $core = wgct_core_tunnel_snapshot();
-            $pairs = wgct_mirror_inputs(wgct_derive($core, wgct_split_csv($engine->managed->getValue())))['pairs'];
+            $pairs = wgct_mirror_inputs(wgct_derive($core, wgct_managed()))['pairs'];
             $holds = wgct_engine_holds($engine, $core['gateways']);
             $names = [];
             foreach ($core['gateways'] as $name => $g) {

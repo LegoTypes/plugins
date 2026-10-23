@@ -37,6 +37,13 @@
 # boot.json, removed before the run, names the live boot (M3: a reboot before the mirror's first tick still finds
 # the carried rows its own). A second run changes nothing (A). boot.json is backed up first and put back at exit.
 #
+# Before scenario A's migration runs, the window between pkg installing 3.8's files and the migration (M1, ruling
+# R37), with cron stopped from then on (started again at exit): the 3.8 list shows the tunnels and findings 3.7_1 lists, and the
+# listing writes nothing (config.xml as it was, no marker, no log line); a mirror tick, apply, an action (adopt, and
+# a dry remove), release-holds, the route set and the monitor repair each refuse, change nothing, and log the
+# refusal once (each run twice where it repeats; --dry only says so). After the migration the first action logs
+# that it runs again.
+#
 # The first VM WAN is never touched, and WAN_B's gateway is only named in `held`. Case m3 (kern.boot_id
 # unreadable) is a unit case of M3_1_0::plan() in tunnel.php --selftest (ruling R12).
 #
@@ -80,6 +87,8 @@ exit(\OPNsense\Core\Config::getInstance()->restoreBackup($argv[1]) ? 0 : 1);
 PHPEOF
 cleanup() {
     $PHP "$T/restore.php" "$T/config.xml" || echo "[FAIL] config.xml could not be restored from $T/config.xml"
+    rm -f /var/run/wgclienttunnels/*.pending
+    service cron status > /dev/null 2>&1 || service cron start > /dev/null
     if [ -f "$T/boot.json" ]; then cp -p "$T/boot.json" "$BOOTJSON"; else rm -f "$BOOTJSON"; fi
     rm -rf "$T/pkg"
 }
@@ -233,13 +242,61 @@ PHPEOF
 BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\1/p' | tr 'A-F' 'a-f')
 [ -n "$BOOT" ] || { echo "[FAIL] kern.boot_id cannot be read on this VM"; exit 1; }
 
-# scenario NAME ENGINE PREFIX MIRROR
+S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
+RUN=/var/run/wgclienttunnels
+REFUSED='the plugin settings are not migrated to 3.1.0 yet'
+
+# pending INST: the checks of the window before the migration (see the header); config.xml is 3.7_1's
+pending() {
+    service cron stop > /dev/null
+    rm -f "$RUN"/*.pending
+    cp /conf/config.xml "$T/pending.xml"
+    mark=$(lmark wireguard)
+    $PHP "$TUNNEL" --json list > "$T/pending-list.json"
+    check "pending: (M1) the 3.8 list shows the tunnels, findings and unmanaged instances 3.7_1 lists (the managed list 3.7_1 stored)" \
+        "$($PHP "$T/lists.php" "$T/before.json" "$T/pending-list.json" | sed -n 1p)" same
+    $PHP "$S/health_mirror.php" --dry > "$T/dry.out" 2>&1
+    check "pending: (M1) health_mirror.php --dry says the tick refuses" "$(grep -c "the tick refuses: $REFUSED" "$T/dry.out")" 1
+    check "pending: (M1) the listing and --dry write nothing: config.xml as it was, no marker, no log line" \
+        "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed) $(ls "$RUN" | grep -c '[.]pending$') $(lcount wireguard "$mark" -e '\[wgct-')" "same 0 0"
+    mark=$(lmark wireguard)
+    $PHP "$S/health_mirror.php"; t1=$?
+    $PHP "$S/health_mirror.php"; t2=$?
+    check "pending: (M1) two mirror ticks exit 0 and log one refusal" \
+        "$t1 $t2 $(lcount wireguard "$mark" -e "wgct-health. tick refused: $REFUSED")" "0 0 1"
+    mark=$(lmark wireguard)
+    a1=$($PHP "$TUNNEL" --json apply "$1" filter)
+    $PHP "$TUNNEL" --json apply "$1" filter > /dev/null
+    check "pending: (M1) apply refuses with the reason, before any step, and logs it once" \
+        "$(echo "$a1" | grep -c "\"errors\":\[\"$REFUSED") $(echo "$a1" | grep -c '"apply":\[\]') $(lcount wireguard "$mark" -e "apply refused: $REFUSED")" "1 1 1"
+    mark=$(lmark wireguard)
+    d1=$($PHP "$TUNNEL" --json adopt "$UPPER")
+    d2=$($PHP "$TUNNEL" --json --dry remove "$1")
+    check "pending: (M1) an action (adopt) and a dry remove refuse with the reason; one line" \
+        "$(echo "$d1" | grep -c "$REFUSED") $(echo "$d2" | grep -c "$REFUSED") $(lcount wireguard "$mark" -e "action refused: $REFUSED")" "1 1 1"
+    mark=$(lmark wireguard)
+    r1=$($PHP "$TUNNEL" --json release-holds)
+    $PHP "$TUNNEL" --json release-holds > /dev/null
+    check "pending: (M1) release-holds refuses, releases nothing (rehearse stays force_down=1) and logs it once" \
+        "$(echo "$r1" | grep -c "$REFUSED") $($PHP "$T/fact.php" force_down rehearse) $(lcount wireguard "$mark" -e "release-holds refused: $REFUSED")" "1 1 1"
+    mark=$(lmark wireguard)
+    "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
+    $PHP "$S/monitor_repair.php"; $PHP "$S/monitor_repair.php"
+    check "pending: (M1) the route set and the monitor repair refuse, each logged once" \
+        "$(lcount wireguard "$mark" -e "wgct-routes. route set refused: $REFUSED") $(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")" "1 1"
+    check "pending: (M1) nothing refused changed config.xml" "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed)" same
+    pend_mark=$(lmark wireguard)
+}
+
+# scenario NAME ENGINE PREFIX MIRROR [pending]
 scenario() {
     name="$1"
+    prefix="$3"
     mirror="$4"
+    pend="${5:-}"
     ids=$($PHP "$T/shape.php" "$2" "$UPPER" "$GW6" "$mirror") || { echo "[FAIL] $name: the 3.7_1 config could not be written"; FAIL=$((FAIL + 1)); return; }
-    set -- "$@" $ids
-    inst="$5"; gwr="$6"; gwb="$7"
+    set -- $ids
+    inst="$1"; gwr="$2"; gwb="$3"
     if [ "$mirror" = on ]; then
         rows=2
         held38=$($PHP -r '$h = [$argv[1], $argv[2]]; sort($h); echo json_encode($h);' "$gwr" "$GW6")
@@ -248,10 +305,11 @@ scenario() {
         held38="[\"$gwr\"]"
     fi
     $PHP "$T/list371.php" > "$T/before.json"
+    [ "$pend" = pending ] && pending "$inst"
     rm -f "$BOOTJSON"
     mark=$(lmark wireguard)
     start=$(date +%s)
-    $PHP "$MIGRATE" "$3" > "$T/migrate.out" 2>&1
+    $PHP "$MIGRATE" "$prefix" > "$T/migrate.out" 2>&1
     end=$(date +%s)
     echo "    $name: run_migrations.php said: $(tr '\n' ';' < "$T/migrate.out")"
     sleep 1
@@ -290,9 +348,14 @@ scenario() {
         "$(echo "$lists" | sed -n 1p)" same
     check "$name: 3.7_1 listed both held uuids" "$(echo "$lists" | sed -n 2p)" "[\"$gwr\",\"$gwb\"]"
     check "$name: 3.8 lists rehearse's gateways with a row as held, and only them" "$(echo "$lists" | sed -n 3p)" "$held38"
+    if [ "$pend" = pending ]; then
+        $PHP "$TUNNEL" --json adopt "$UPPER" > /dev/null
+        check "pending: (M1) after the migration the first action logs that it runs again, and nothing refuses since" \
+            "$(lcount wireguard "$pend_mark" -e 'action runs again: the plugin settings are migrated to 3.1.0') $(lcount wireguard "$mark" -e "refused: $REFUSED")" "1 0"
+    fi
 }
 
-scenario "A (+POST_INSTALL, no engine node)" none OPNsense/WGClientTunnels on
+scenario "A (+POST_INSTALL, no engine node)" none OPNsense/WGClientTunnels on pending
 cp /conf/config.xml "$T/after-a.xml"
 $PHP "$MIGRATE" OPNsense/WGClientTunnels > "$T/again.out" 2>&1
 check "A: a second run_migrations.php prints nothing" "$(cat "$T/again.out")" ""

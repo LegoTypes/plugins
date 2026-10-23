@@ -30,6 +30,10 @@ $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     exit(0);
 }
+/* the 3.1.0 migration pending: the repair starts and replays nothing, said once per state (ruling R37) */
+if (wgct_pending_refuses('monitor-repair', 'wgct-monitor')) {
+    exit(0);
+}
 $log = function (string $msg): bool {
     wgct_log(LOG_NOTICE, "[wgct-monitor] {$msg}");
     return true;

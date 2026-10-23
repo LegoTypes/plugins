@@ -29,7 +29,7 @@ function wgct_tunnel_view(): array {
     $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
     $engine = new \OPNsense\WGClientTunnels\Engine();
     $core = wgct_core_snapshot();
-    $managed = wgct_split_csv($engine->managed->getValue());
+    $managed = wgct_managed();
     $derived = wgct_derive($core, $managed);
     $mssClamp = $mdl->mss_clamp->isEqual('1');
     /* the pins the filter hook renders: none while the plugin is disabled */

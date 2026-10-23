@@ -78,17 +78,35 @@ function wgct_skip_log_plan(bool $skipped, bool $markerExists): array {
  * @param bool   $skipped whether this tick could not take the lock
  * @param string $skipMsg logged on the first skip
  * @param string $resumeMsg logged on the first success after a skip
+ * @param string $tag     the log prefix without brackets
  */
-function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $resumeMsg): void {
+function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $resumeMsg, string $tag = 'wgct-health'): void {
     $plan = wgct_skip_log_plan($skipped, wgct_read_state_file($marker, 16) !== null);
     if ($plan['log'] !== null) {
-        logMsg('wgct-health', $plan['log'] === 'skip' ? $skipMsg : $resumeMsg);
+        logMsg($tag, $plan['log'] === 'skip' ? $skipMsg : $resumeMsg);
     }
     if ($plan['marker'] === 'write') {
         wgct_write_file_atomic($marker, "skipped\n");
     } elseif ($plan['marker'] === 'remove') {
         @unlink($marker);
     }
+}
+
+/**
+ * Whether a state-changing run must refuse because the 3.1.0 migration is pending (wgct_migration_pending(),
+ * ruling R37): the engine model does not hold the managed list and the holds yet, so the run takes, releases and
+ * writes nothing. Logged once per state, as an unreadable boot id is (ruling R17): the refusal once, and the first
+ * run after the migration once, through the marker WGCT_RUN_DIR/<run>.pending. A read-only listing never calls it.
+ *
+ * @param string $run what refuses, as the marker and the log lines name it (tick, action, apply, ...)
+ * @param string $tag the log prefix without brackets
+ * @return bool true when the run must end now, having changed nothing
+ */
+function wgct_pending_refuses(string $run, string $tag): bool {
+    $pending = wgct_migration_pending();
+    wgct_note_lock(WGCT_RUN_DIR . "/{$run}.pending", $pending, "{$run} refused: " . WGCT_MIGRATION_PENDING,
+        "{$run} runs again: the plugin settings are migrated to " . WGCT_SETTINGS_MIGRATED_VERSION, $tag);
+    return $pending;
 }
 
 /**
@@ -431,7 +449,7 @@ function wgct_collect_config() {
     $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
     $engine = new OPNsense\WGClientTunnels\Engine();
     $core = wgct_core_snapshot();
-    $inputs = wgct_mirror_inputs(wgct_derive($core, wgct_split_csv($engine->managed->getValue())));
+    $inputs = wgct_mirror_inputs(wgct_derive($core, wgct_managed()));
     $holds = wgct_engine_holds($engine, $core['gateways']);
     $nameByUuid = [];
     foreach ($core['gateways'] as $name => $g) {

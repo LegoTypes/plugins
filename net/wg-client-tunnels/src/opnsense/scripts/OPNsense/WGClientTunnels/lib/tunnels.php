@@ -511,13 +511,82 @@ function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
     }
 }
 
+/* the settings model version whose migration (M3_1_0) moves the managed list and the holds into the engine model */
+const WGCT_SETTINGS_MIGRATED_VERSION = '3.1.0';
+
+/* what a state-changing run says while that migration is pending (ruling R37) */
+const WGCT_MIGRATION_PENDING = 'the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php);'
+    . ' nothing is held, released or written until they are';
+
+/**
+ * Whether the settings node in $root still waits for its 3.1.0 migration: between pkg installing 3.8's files and
+ * the package's run_migrations.php, or for good when that migration failed. The node's stored version decides: one
+ * below 3.1.0, or none (core reads that as 0.0.0), is pending. A box with no settings node (a new install) has
+ * nothing to carry over and is not. Pure.
+ *
+ * @param \SimpleXMLElement $root config.xml's root
+ * @return bool
+ */
+function wgct_settings_pending(\SimpleXMLElement $root): bool {
+    if (!isset($root->OPNsense->WGClientTunnels)) {
+        return false;
+    }
+    $stored = (string)($root->OPNsense->WGClientTunnels['version'] ?? '');
+    return version_compare($stored !== '' ? $stored : '0.0.0', WGCT_SETTINGS_MIGRATED_VERSION, '<');
+}
+
+/**
+ * The managed list as 3.7_1 stored it in the 3.0.0 settings node: M3_1_0's own source, split as 3.7_1 split it, so
+ * a render while the migration is pending pins what 3.7_1 pinned. No list stored is none. Pure.
+ *
+ * @param \SimpleXMLElement $root config.xml's root
+ * @return list<string> instance uuids, in order, as stored
+ * @throws \RuntimeException when the node holds more than one list, or a list that is not one text value
+ */
+function wgct_legacy_managed(\SimpleXMLElement $root): array {
+    $node = $root->OPNsense->WGClientTunnels;
+    if (!isset($node->managed)) {
+        return [];
+    }
+    if (count($node->managed) !== 1 || $node->managed->children()->count() !== 0) {
+        throw new \RuntimeException('the 3.0.0 settings\' managed list cannot be read as one list');
+    }
+    return wgct_split_csv((string)$node->managed);
+}
+
+/**
+ * The managed list wgct_managed() returns, from $root: the legacy one while the migration is pending (the engine
+ * model is not read: it does not hold the list yet), else $engine's. Pure but for $engine.
+ *
+ * @param \SimpleXMLElement        $root   config.xml's root
+ * @param callable(): list<string> $engine the engine model's list
+ * @return list<string> instance uuids
+ * @throws \RuntimeException when the migration is pending and the legacy list cannot be read
+ */
+function wgct_managed_in(\SimpleXMLElement $root, callable $engine): array {
+    return wgct_settings_pending($root) ? wgct_legacy_managed($root) : $engine();
+}
+
+/**
+ * @return bool whether config.xml's settings node waits for its 3.1.0 migration (wgct_settings_pending()): every
+ *              state-changing run refuses then (ruling R37)
+ */
+function wgct_migration_pending(): bool {
+    return wgct_settings_pending(Config::getInstance()->object());
+}
+
 /**
  * The WireGuard instances the plugin manages, in order, from the engine model (spec 3.5): the API cannot edit it.
+ * While the 3.1.0 migration is pending, the list 3.7_1 stored in the settings node, which the migration carries
+ * over (wgct_managed_in(), ruling R37): a render in that window pins what 3.7_1 pinned, and one that cannot read it
+ * fails into the footprint.
  *
  * @return list<string> instance uuids
+ * @throws \RuntimeException when the migration is pending and the legacy list cannot be read
  */
 function wgct_managed(): array {
-    return wgct_split_csv((new \OPNsense\WGClientTunnels\Engine())->managed->getValue());
+    return wgct_managed_in(Config::getInstance()->object(),
+        fn (): array => wgct_split_csv((new \OPNsense\WGClientTunnels\Engine())->managed->getValue()));
 }
 
 /**
@@ -1001,6 +1070,17 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
             ['route', $t['device'], $t['ipv6_address'], $t['ipv6_next_hop'], $t['gw4'], $t['gw6'], $t['monitor6']]));
     }
     return $lines;
+}
+
+/**
+ * gateway_config.php's output while the 3.1.0 migration is pending (ruling R37): `state|pending` in place of the
+ * state line, so wgct.sh's route set changes nothing, and the route lines kept for its status listing. Pure.
+ *
+ * @param list<string> $lines wgct_route_lines()
+ * @return list<string>
+ */
+function wgct_route_lines_pending(array $lines): array {
+    return array_merge(['state|pending'], array_slice($lines, 1));
 }
 
 /**
@@ -2019,6 +2099,57 @@ function wgct_tunnels_selftest() {
             return wgct_clamp_for(wgct_derive($c, ['i-a'])['tunnels'][0], true) === ['v4' => 1336, 'v6' => 1316]
                 && wgct_clamp_for(wgct_derive($c2, ['i-a'])['tunnels'][0], true) === null;
         }));
+
+    /* (M1, ruling R37) the window between pkg installing 3.8's files and the 3.1.0 migration */
+    $cfg = fn (string $settings, string $engine = ''): \SimpleXMLElement
+        => simplexml_load_string("<opnsense><OPNsense>{$settings}{$engine}</OPNsense></opnsense>");
+    $uA = '0000000a-0000-4000-8000-00000000000a';
+    $uUpper = 'ABCDEF00-0000-4000-8000-0000000000AB';
+    $old = $cfg("<WGClientTunnels version=\"3.0.0\"><enabled>1</enabled><managed>{$uA},{$uUpper}</managed><held/></WGClientTunnels>");
+    $new = $cfg('<WGClientTunnels version="3.1.0"><enabled>1</enabled></WGClientTunnels>',
+        "<WGClientTunnelsEngine version=\"1.0.0\"><managed>{$uA}</managed></WGClientTunnelsEngine>");
+    wgct_check($p, 'migration: (M1) a settings node stored below 3.1.0 is pending; 3.1.0 or later is not',
+        wgct_settings_pending($old) && !wgct_settings_pending($new)
+        && !wgct_settings_pending($cfg('<WGClientTunnels version="3.2.0"/>')));
+    wgct_check($p, 'migration: (M1) a settings node without a version reads as 0.0.0, as core reads it: pending',
+        wgct_settings_pending($cfg('<WGClientTunnels><enabled>1</enabled></WGClientTunnels>')));
+    wgct_check($p, 'migration: (M1) no settings node at all (a new install) has nothing to carry over: not pending',
+        !wgct_settings_pending($cfg('')));
+    wgct_check($p, 'migration: (M1) the legacy list is 3.7_1\'s as stored, in order, upper case kept; none stored => none',
+        wgct_legacy_managed($old) === [$uA, $uUpper]
+        && wgct_legacy_managed($cfg('<WGClientTunnels version="3.0.0"><enabled>1</enabled></WGClientTunnels>')) === []);
+    $unreadable = function (\SimpleXMLElement $root): bool {
+        try {
+            wgct_legacy_managed($root);
+        } catch (\RuntimeException $e) {
+            return $e->getMessage() === 'the 3.0.0 settings\' managed list cannot be read as one list';
+        }
+        return false;
+    };
+    wgct_check($p, 'migration: (M1) a legacy list that is not one text value (two managed nodes, or elements inside) => it throws',
+        $unreadable($cfg("<WGClientTunnels version=\"3.0.0\"><managed>{$uA}</managed><managed>{$uUpper}</managed></WGClientTunnels>"))
+        && $unreadable($cfg("<WGClientTunnels version=\"3.0.0\"><managed><item>{$uA}</item></managed></WGClientTunnels>")));
+    $engineReads = 0;
+    $engine = function () use (&$engineReads, $uA): array {
+        $engineReads++;
+        return [$uA];
+    };
+    wgct_check($p, 'migration: (M1) pending => the managed list is the legacy one, and the engine model is not read',
+        wgct_managed_in($old, $engine) === [$uA, $uUpper] && $engineReads === 0);
+    wgct_check($p, 'migration: (M1) migrated => the managed list is the engine model\'s',
+        wgct_managed_in($new, $engine) === [$uA] && $engineReads === 1);
+    wgct_check($p, 'migration: (M1) pending with an unreadable legacy list => the managed list throws (a render falls back to the footprint)',
+        (function () use ($cfg, $engine): bool {
+            try {
+                wgct_managed_in($cfg('<WGClientTunnels version="3.0.0"><managed>a</managed><managed>b</managed></WGClientTunnels>'), $engine);
+            } catch (\RuntimeException $e) {
+                return true;
+            }
+            return false;
+        })());
+    wgct_check($p, 'migration: (M1) a pending route set says so on its state line and keeps its route lines for the status listing',
+        wgct_route_lines_pending(['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']) === ['state|pending', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']
+        && wgct_route_lines_pending(['state|off']) === ['state|pending']);
     $fail += $p['fail'];
     $total += $p['total'];
 

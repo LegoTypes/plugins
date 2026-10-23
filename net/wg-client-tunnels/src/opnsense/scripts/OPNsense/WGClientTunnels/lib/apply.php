@@ -881,6 +881,10 @@ function wgct_filter_action(callable $commit): array {
  * @throws \InvalidArgumentException for an unknown mode, before anything runs
  */
 function wgct_apply_only(string $uuid, ?string $mode = null): array {
+    /* Ruling R37: no apply while the 3.1.0 migration is pending, before any lock or step. */
+    if (wgct_pending_refuses('apply', WGCT_ACTION_LOG_TAG)) {
+        return wgct_result(['errors' => [WGCT_MIGRATION_PENDING], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
+    }
     /* Spec 3.6: before any lock or step, an instance the engine model does not list is not the plugin's to apply. */
     if (!in_array($uuid, wgct_managed(), true)) {
         return wgct_result(['errors' => ['not a managed tunnel'], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
