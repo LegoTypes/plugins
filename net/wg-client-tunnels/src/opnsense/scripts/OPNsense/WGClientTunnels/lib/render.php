@@ -977,8 +977,8 @@ function wgct_anchor_log_plan(?string $priorFailHash, bool $success, array $mssL
  * 2026-10-20 section 3.1 part A): the rules and MSS lines while the plugin
  * is enabled, the empty footprint while it is disabled.
  *
- * $wanted, $loader, $writer, $inReload and $footprinter are injectable so the
- * self-test can exercise every path without config, pf or the filesystem --
+ * $wanted, $loader, $writer, $inReload, $footprinter and $log are injectable so the
+ * self-test can exercise every path without config, pf, the filesystem or syslog --
  * in particular, $inReload lets a case force "inside a real filter reload"
  * true or false without a stand-in for core's filter_configure_sync
  * (defining one globally would collide with the real function in a process
@@ -992,6 +992,7 @@ function wgct_anchor_log_plan(?string $priorFailHash, bool $success, array $mssL
  * @param callable|null             $writer      (array $record): bool; default wgct_write_rendered
  * @param callable|null             $inReload    (): bool; default checks the call stack for filter_configure_sync
  * @param callable|null             $footprinter (array $footprint): bool; default wgct_write_footprint
+ * @param callable|null             $log         (int $priority, string $message): void; default wgct_log
  * @return bool true when the wanted rule set is registered
  */
 function wgct_render_firewall(
@@ -1002,13 +1003,15 @@ function wgct_render_firewall(
     ?callable $loader = null,
     ?callable $writer = null,
     ?callable $inReload = null,
-    ?callable $footprinter = null
+    ?callable $footprinter = null,
+    ?callable $log = null
 ): bool {
     $rendered = ['at' => time(), 'failed' => false, 'error' => '', 'enabled' => false,
                  'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     $loader = $loader ?? 'wgct_load_mss_anchor';
     $writer = $writer ?? 'wgct_write_rendered';
     $footprinter = $footprinter ?? 'wgct_write_footprint';
+    $log = $log ?? 'wgct_log';
     $inReload = $inReload ?? function () {
         return wgclienttunnels_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
     };
@@ -1040,7 +1043,10 @@ function wgct_render_firewall(
     } catch (\Throwable $e) {
         $rendered = ['at' => time(), 'failed' => true, 'error' => $e->getMessage(), 'enabled' => false,
                      'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
-        wgct_log(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
+        /* only a real filter reload says so: a rules listing changes and logs nothing (ruling R27) */
+        if ($apply) {
+            $log(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
+        }
     }
     if ($registered && $apply) {
         try {
@@ -1263,6 +1269,26 @@ function wgct_render_selftest(): int {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] render_firewall: \$wanted throws => no rules, anchor kept, failed recorded\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (ruling R27) a rules listing whose render fails logs nothing; only a real filter reload logs it, at err */
+    $logged = [];
+    $logger = function (int $priority, string $message) use (&$logged): void {
+        $logged[] = [$priority, $message];
+    };
+    $throwing = function (): array {
+        throw new \RuntimeException('boom');
+    };
+    $rendered = null;
+    wgct_render_firewall($makeFw(), $throwing, true, $rendered, null, null, fn (): bool => false, null, $logger);
+    wgct_render_firewall($makeFw(), $throwing, false, $rendered, null, null, null, null, $logger);
+    $listing = $logged;
+    $logged = [];
+    wgct_render_firewall($makeFw(), $throwing, true, $rendered, fn (array $l): bool => true, fn (array $r): bool => true,
+        $inReloadTrue, $footprinter, $logger);
+    $ok = $listing === [] && $logged === [[LOG_ERR, '[wgct-render] rules not rendered: boom']];
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] render_firewall: a failed render logs nothing for a rules listing, and one err line inside a filter reload\n", $ok ? 'PASS' : 'FAIL');
 
     /* case 3: enabled => false => no rules, anchor still registered (harmless), empty MSS */
     $fw = $makeFw();
