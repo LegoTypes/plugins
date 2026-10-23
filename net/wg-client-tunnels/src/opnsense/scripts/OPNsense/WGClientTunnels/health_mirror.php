@@ -130,8 +130,16 @@ if ($snapshotOut) {
  * The 3.1.0 migration pending (between pkg installing these files and the
  * package's run_migrations.php): the hold records are still 3.7_1's list in the
  * settings node, so the tick takes, releases and records nothing, said once per
- * state (ruling R37). --dry only says so.
+ * state (ruling R37). --dry only says so. A mirror switched off would not have
+ * run either, so it ends quietly first, as it does below.
  */
+$switches = new \OPNsense\WGClientTunnels\WGClientTunnels();
+if (!$switches->enabled->isEqual('1') || !$switches->health_mirror->isEqual('1')) {
+    if ($dryRun) {
+        echo "health mirror is off in the plugin settings\n";
+    }
+    exit(0);
+}
 if ($dryRun ? wgct_migration_pending() : wgct_pending_refuses('tick', $logTag)) {
     if ($dryRun) {
         echo 'the tick refuses: ', WGCT_MIGRATION_PENDING, "\n";
