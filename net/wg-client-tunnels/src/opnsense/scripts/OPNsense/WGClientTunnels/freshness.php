@@ -121,7 +121,11 @@ try {
     /* The labels pf should hold: the rendered pins', or, while the hook enforces the footprint (no rendered
      * record, fallback.json present), the footprint's (spec 2026-10-20 section 3.1 part D). */
     $fallback = $rendered === null ? wgct_read_fallback() : null;
-    $lookFor = wgct_rules_looked_for($rendered, $fallback, $fallback !== null ? wgct_read_footprint() : null);
+    $footprint = wgct_read_footprint();
+    $lookFor = wgct_rules_looked_for($rendered, $fallback, $fallback !== null ? $footprint : null);
+    /* whether a failed render would have anything to fall back to: when not, the plan asks for the reload that
+     * records it (wgct_freshness_plan() case 1b; a box upgraded from 3.7_1 has none) */
+    $footprintRecorded = $footprint !== null || ($fallback ?? wgct_read_fallback()) !== null;
     $labelsFrom = $rendered === null && $fallback !== null ? 'footprint' : 'rendered';
     $observeError = null;
     $observeTransient = false;
@@ -205,7 +209,7 @@ try {
     $reloadState = $fileState['reload'];
     $anchorFailHash = $fileState['anchor_fail_hash'];
 
-    $plan = wgct_freshness_plan($wanted, $rendered, $errorMtime, $reloadState, time(), $live);
+    $plan = wgct_freshness_plan($wanted, $rendered, $errorMtime, $reloadState, time(), $live, $footprintRecorded);
 
     if ($dry) {
         printf(

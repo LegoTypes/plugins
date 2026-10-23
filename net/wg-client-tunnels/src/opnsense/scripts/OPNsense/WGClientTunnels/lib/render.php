@@ -786,6 +786,13 @@ function wgct_report_freshness_outcome(?string $error): void {
  *      the clamp switch on with no WAN-pin tunnels): a disabled/empty plugin
  *      with no record yet has nothing to enforce and must not spin on this
  *      forever
+ *   1b. the plugin enabled with pins wanted, but no footprint and no fallback
+ *      record ($footprintRecorded false: a box upgraded from 3.7_1, which
+ *      wrote none, whose render is otherwise current) -> reload, as for 1, so
+ *      the first reconcile records the footprint a later failed render falls
+ *      back to; once that reload has written it, the plan is current again,
+ *      and a footprint that is still not written is asked for again only as
+ *      the rate limit below allows
  *   2. rendered pins differ from wanted -> reload (this includes going from
  *      pins to none, e.g. the plugin was just disabled: the stale pins still
  *      need removing)
@@ -843,14 +850,20 @@ function wgct_report_freshness_outcome(?string $error): void {
  *                                see wgct_observed_reuse()), or null when pf
  *                                could not be read (pfctl exited non-zero, or
  *                                every listing straddled a ruleset load)
+ * @param bool       $footprintRecorded a footprint or a fallback record exists
+ *                                (wgct_read_footprint(), wgct_read_fallback())
  * @return array ['reload' => bool, 'anchor' => bool, 'reason' => string, 'state' => array|null]
  */
-function wgct_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime, ?array $state, int $now, ?array $live): array {
+function wgct_freshness_plan(array $wanted, ?array $rendered, ?int $errorMtime, ?array $state, int $now, ?array $live,
+    bool $footprintRecorded): array {
     $anchorOnlyError = $rendered !== null && wgct_anchor_only_failure($rendered);
 
     if ($rendered === null) {
         $needReload = wgct_pins_nonempty($wanted['pins']) || !empty($wanted['mss']);
         $reason = $needReload ? 'no rendered record' : 'nothing rendered yet';
+    } elseif ($wanted['enabled'] && wgct_pins_nonempty($wanted['pins']) && !$footprintRecorded) {
+        $needReload = true;
+        $reason = 'no footprint recorded';
     } elseif ($rendered['pins'] !== $wanted['pins']) {
         $needReload = true;
         $reason = 'pins changed';
@@ -1394,20 +1407,20 @@ function wgct_render_selftest(): int {
     $current = ['at' => 1000, 'failed' => false, 'error' => '', 'enabled' => true, 'pins' => $pins, 'mss' => $mss];
     $currentEmpty = ['at' => 1000, 'failed' => false, 'error' => '', 'enabled' => false, 'pins' => $emptyPins, 'mss' => []];
 
-    $p = wgct_freshness_plan($wanted, null, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, null, null, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false && $p['state'] !== null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: no rendered record, wanted has pins => reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wantedDisabled, null, null, null, 1000, null);
+    $p = wgct_freshness_plan($wantedDisabled, null, null, null, 1000, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: no rendered record, wanted disabled/empty => nothing\n", $ok ? 'PASS' : 'FAIL');
 
     $wantedMssOnly = ['enabled' => true, 'pins' => $emptyPins, 'mss' => $mss];
-    $p = wgct_freshness_plan($wantedMssOnly, null, null, null, 1000, null);
+    $p = wgct_freshness_plan($wantedMssOnly, null, null, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false && $p['state'] !== null;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1415,13 +1428,13 @@ function wgct_render_selftest(): int {
 
     $r = $current;
     $r['pins'] = $otherPins;
-    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: pins differ => reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wantedDisabled, $current, null, null, 1000, null);
+    $p = wgct_freshness_plan($wantedDisabled, $current, null, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1429,11 +1442,35 @@ function wgct_render_selftest(): int {
 
     $r = $current;
     $r['mss'] = $otherMss;
-    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === true && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: mss only differs => anchor retry\n", $ok ? 'PASS' : 'FAIL');
+
+    /* (M2) enabled, pins wanted, no footprint and no fallback record (a box upgraded from 3.7_1, whose render is
+     * current): the first reconcile asks for the reload that records the footprint, as for no rendered record */
+    $p1 = wgct_freshness_plan($wanted, $current, null, null, 1000, ['anchor_count' => 1, 'missing_labels' => 0], false);
+    $ok = $p1['reload'] === true && $p1['anchor'] === false && $p1['reason'] === 'no footprint recorded' && $p1['state'] !== null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: (M2) enabled, pins wanted, the render current but no footprint and no fallback => reload\n", $ok ? 'PASS' : 'FAIL');
+    $p2 = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, ['anchor_count' => 1, 'missing_labels' => 0], true);
+    $ok = $p2['reload'] === false && $p2['anchor'] === false && $p2['reason'] === 'current' && $p2['state'] === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: (M2) no loop: once that reload has recorded a footprint the next plan is current\n", $ok ? 'PASS' : 'FAIL');
+    $p3 = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, ['anchor_count' => 1, 'missing_labels' => 0], false);
+    $ok = $p3['reload'] === false && $p3['state'] !== null && $p3['state']['notified'] === true;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: (M2) a footprint that is still not recorded is asked for again only past the rate limit\n", $ok ? 'PASS' : 'FAIL');
+    $p = wgct_freshness_plan($wantedDisabled, $currentEmpty, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0], false);
+    $q = wgct_freshness_plan($wantedMssOnly, ['pins' => $emptyPins] + $current, null, null, 1000, ['anchor_count' => 1, 'missing_labels' => 0], false);
+    $ok = $p['reload'] === false && $p['reason'] === 'current' && $q['reload'] === false && $q['reason'] === 'current';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] freshness_plan: (M2) no footprint with the plugin disabled, or no pins wanted => no reload for it\n", $ok ? 'PASS' : 'FAIL');
 
     /* wgct_error_file_stale: pure boundary check, same-second counts as stale */
     $ok = wgct_error_file_stale(1000, 1000) === true;
@@ -1460,19 +1497,19 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] rules_error_shape: non-empty with pfctl on the first line only\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wanted, $current, 1000, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $current, 1000, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: rules.debug.error at the same second as the render => reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wanted, $current, 1500, null, 1600, null);
+    $p = wgct_freshness_plan($wanted, $current, 1500, null, 1600, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: rules.debug.error newer than the render => reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wantedDisabled, $currentEmpty, 1500, null, 1600, null);
+    $p = wgct_freshness_plan($wantedDisabled, $currentEmpty, 1500, null, 1600, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1481,7 +1518,7 @@ function wgct_render_selftest(): int {
     $r = $current;
     $r['failed'] = true;
     $r['error'] = 'MSS anchor load failed (see syslog)';
-    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === true && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1490,7 +1527,7 @@ function wgct_render_selftest(): int {
     $r = $current;
     $r['failed'] = true;
     $r['error'] = 'boom, something else broke';
-    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, null, true);
     $ok = $p['reload'] === true && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1499,7 +1536,7 @@ function wgct_render_selftest(): int {
     $r = $currentEmpty;
     $r['failed'] = true;
     $r['error'] = 'boom, something else broke';
-    $p = wgct_freshness_plan($wantedDisabled, $r, null, null, 1000, null);
+    $p = wgct_freshness_plan($wantedDisabled, $r, null, null, 1000, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === false;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1508,13 +1545,13 @@ function wgct_render_selftest(): int {
     /* rate limiting with exponential back-off */
     $r = $current;
     $r['pins'] = $otherPins;
-    $p1 = wgct_freshness_plan($wanted, $r, null, null, 1000, null);
+    $p1 = wgct_freshness_plan($wanted, $r, null, null, 1000, null, true);
     $ok = $p1['reload'] === true && $p1['state']['notified'] === false && $p1['state']['window'] === WGCT_RELOAD_SUPPRESS_SECONDS;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: first reload request => state recorded, window = base, not yet notified\n", $ok ? 'PASS' : 'FAIL');
 
-    $p2 = wgct_freshness_plan($wanted, $r, null, $p1['state'], 1010, null);
+    $p2 = wgct_freshness_plan($wanted, $r, null, $p1['state'], 1010, null, true);
     $ok = $p2['reload'] === false && $p2['anchor'] === false
         && $p1['state']['notified'] === false && $p2['state']['notified'] === true
         && $p2['state']['requested_at'] === $p1['state']['requested_at']
@@ -1523,14 +1560,14 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] freshness_plan: repeat within the window, same pins => suppressed, first-time notify, window unchanged\n", $ok ? 'PASS' : 'FAIL');
 
-    $p3 = wgct_freshness_plan($wanted, $r, null, $p2['state'], 1020, null);
+    $p3 = wgct_freshness_plan($wanted, $r, null, $p2['state'], 1020, null, true);
     $ok = $p3['reload'] === false && $p3['state']['notified'] === true;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: further repeat, already notified => suppressed quietly (no new notify transition)\n", $ok ? 'PASS' : 'FAIL');
 
     $now = 1000 + $p1['state']['window'];
-    $p4 = wgct_freshness_plan($wanted, $r, null, $p1['state'], $now, null);
+    $p4 = wgct_freshness_plan($wanted, $r, null, $p1['state'], $now, null, true);
     $ok = $p4['reload'] === true && $p4['state']['window'] === 2 * WGCT_RELOAD_SUPPRESS_SECONDS;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1542,7 +1579,7 @@ function wgct_render_selftest(): int {
     $expected = [1200, 2400, 3600, 3600];
     $backoffOk = true;
     foreach ($expected as $want) {
-        $pn = wgct_freshness_plan($wanted, $r, null, $state, $now, null);
+        $pn = wgct_freshness_plan($wanted, $r, null, $state, $now, null, true);
         if ($pn['reload'] !== true || $pn['state']['window'] !== $want) {
             $backoffOk = false;
         }
@@ -1554,27 +1591,27 @@ function wgct_render_selftest(): int {
     printf("[%s] freshness_plan: back-off keeps doubling, capped at %d\n", $backoffOk ? 'PASS' : 'FAIL', WGCT_RELOAD_MAX_WINDOW_SECONDS);
 
     $wanted2 = ['enabled' => true, 'pins' => $thirdPins, 'mss' => $mss];
-    $p5 = wgct_freshness_plan($wanted2, $r, null, $p1['state'], 1010, null);
+    $p5 = wgct_freshness_plan($wanted2, $r, null, $p1['state'], 1010, null, true);
     $ok = $p5['reload'] === true && $p5['state']['window'] === WGCT_RELOAD_SUPPRESS_SECONDS;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: repeat within the window but the wanted pins changed => reload allowed, window resets to base\n", $ok ? 'PASS' : 'FAIL');
 
     $backStepped = ['requested_at' => 5000, 'pins_hash' => wgct_hash_array($wanted['pins']), 'notified' => false, 'window' => 300];
-    $p = wgct_freshness_plan($wanted, $r, null, $backStepped, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, $backStepped, 1000, null, true);
     $ok = $p['reload'] === true;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: negative elapsed (clock stepped back) => never suppressed\n", $ok ? 'PASS' : 'FAIL');
 
     $noRequestedAt = ['pins_hash' => wgct_hash_array($wanted['pins']), 'notified' => false, 'window' => 300];
-    $p = wgct_freshness_plan($wanted, $r, null, $noRequestedAt, 1000, null);
+    $p = wgct_freshness_plan($wanted, $r, null, $noRequestedAt, 1000, null, true);
     $ok = $p['reload'] === true;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: state missing requested_at => allowed\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, null);
+    $p = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['reason'] === 'current' && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1620,7 +1657,7 @@ function wgct_render_selftest(): int {
      * already-tested "current" signal (reload=false, anchor=false,
      * state=null) with the already-tested recovery behaviour to prove the
      * two pieces line up the way freshness.php relies on. */
-    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, null, true);
     $isCurrent = $p['reload'] === false && $p['anchor'] === false && $p['state'] === null;
     $lp = wgct_anchor_log_plan($mssHash, true, $wanted['mss']);
     $ok = $isCurrent && $lp['log_recovery'] === true && $lp['fail_hash'] === null;
@@ -1708,21 +1745,21 @@ function wgct_render_selftest(): int {
     /* wgct_freshness_plan with a live pf observation */
     $liveGood = ['anchor_count' => count($mss), 'missing_labels' => 0];
 
-    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, $liveGood);
+    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, $liveGood, true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['reason'] === 'current' && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: record current and pf holds every label and the anchor's rule count => current\n", $ok ? 'PASS' : 'FAIL');
 
     $liveMissing = ['anchor_count' => count($mss), 'missing_labels' => 2];
-    $pm1 = wgct_freshness_plan($wanted, $current, null, null, 1000, $liveMissing);
+    $pm1 = wgct_freshness_plan($wanted, $current, null, null, 1000, $liveMissing, true);
     $ok = $pm1['reload'] === true && $pm1['anchor'] === false
         && $pm1['reason'] === 'rendered pins missing from pf' && $pm1['state'] !== null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: record current but rendered labels missing from pf => reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $pm2 = wgct_freshness_plan($wanted, $current, null, $pm1['state'], 1010, $liveMissing);
+    $pm2 = wgct_freshness_plan($wanted, $current, null, $pm1['state'], 1010, $liveMissing, true);
     $ok = $pm2['reload'] === false && $pm2['anchor'] === false
         && $pm2['reason'] === 'rendered pins missing from pf; filter reload suppressed (rate-limited)';
     $fail += $ok ? 0 : 1;
@@ -1732,20 +1769,20 @@ function wgct_render_selftest(): int {
     $r = $current;
     $r['failed'] = true;
     $r['error'] = 'MSS anchor load failed (see syslog)';
-    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, $liveMissing);
+    $p = wgct_freshness_plan($wanted, $r, null, null, 1000, $liveMissing, true);
     $ok = $p['reload'] === false && $p['anchor'] === true;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: labels missing but the record is failed (anchor-only) => anchor retry, no reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0]);
+    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0], true);
     $ok = $p['reload'] === false && $p['anchor'] === true
         && $p['reason'] === 'MSS anchor differs from the last render' && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] freshness_plan: anchor rule count differs from the rendered MSS lines => anchor reload\n", $ok ? 'PASS' : 'FAIL');
 
-    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, null);
+    $p = wgct_freshness_plan($wanted, $current, null, null, 1000, null, true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['reason'] === 'current' && $p['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
@@ -1754,7 +1791,7 @@ function wgct_render_selftest(): int {
     $wantedNoClamp = ['enabled' => true, 'pins' => $pins, 'mss' => []];
     $r = $current;
     $r['mss'] = [];
-    $p = wgct_freshness_plan($wantedNoClamp, $r, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0]);
+    $p = wgct_freshness_plan($wantedNoClamp, $r, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0], true);
     $ok = $p['reload'] === false && $p['anchor'] === false && $p['reason'] === 'current';
     $fail += $ok ? 0 : 1;
     $total++;
