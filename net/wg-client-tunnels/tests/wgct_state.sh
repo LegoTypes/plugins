@@ -229,7 +229,8 @@ fi
 # the WireGuard log, nothing in PHP's error log (core's GUI crash reporter reads it). They run from a copy of the
 # script directory without lib/, never the installed one; the copy's entry.php keeps its markers in a directory
 # of this test's own, so the VM's cron runs never see them. php runs with the production ini here (log_errors on).
-PHPLOG=$($PHP -d log_errors=0 -r 'echo ini_get("error_log");')
+# PHP's error log, as core's GUI crash reporter reads it
+PHPLOG=/var/lib/php/tmp/PHP_errors.log
 E="$T/entry"
 mkdir -p "$E/run"
 cp -Rp "$(dirname "$SRC")" "$E/scripts"
