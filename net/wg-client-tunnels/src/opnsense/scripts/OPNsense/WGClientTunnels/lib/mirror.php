@@ -96,7 +96,8 @@ function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $
  * Whether a state-changing run must refuse because the 3.1.0 migration is pending (wgct_migration_pending(),
  * ruling R37): the engine model does not hold the managed list and the holds yet, so the run takes, releases and
  * writes nothing. Logged once per state, as an unreadable boot id is (ruling R17): the refusal once, and the first
- * run after the migration once, through the marker WGCT_RUN_DIR/<run>.pending. A read-only listing never calls it.
+ * run after the migration once, through the marker WGCT_RUN_DIR/<run>.awaiting-migration (a suffix of its own:
+ * wgct.sh's queued-reconcile mark is reconcile.pending). A read-only listing never calls it.
  *
  * @param string $run what refuses, as the marker and the log lines name it (tick, action, apply, ...)
  * @param string $tag the log prefix without brackets
@@ -104,7 +105,7 @@ function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $
  */
 function wgct_pending_refuses(string $run, string $tag): bool {
     $pending = wgct_migration_pending();
-    wgct_note_lock(WGCT_RUN_DIR . "/{$run}.pending", $pending, "{$run} refused: " . WGCT_MIGRATION_PENDING,
+    wgct_note_lock(WGCT_RUN_DIR . "/{$run}.awaiting-migration", $pending, "{$run} refused: " . WGCT_MIGRATION_PENDING,
         "{$run} runs again: the plugin settings are migrated to " . WGCT_SETTINGS_MIGRATED_VERSION, $tag);
     return $pending;
 }
