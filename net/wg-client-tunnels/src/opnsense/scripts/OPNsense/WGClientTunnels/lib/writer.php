@@ -997,6 +997,23 @@ function wgct_engine_selftest(): int {
         $report(['rows' => [], 'dropped' => [$gA], 'manual' => []], [$gA], '', null, $names) === [[LOG_WARNING,
             "[wgct-migrate] kern.boot_id cannot be read, so no hold is carried over; tun_a ({$gA}) keep their force_down until it is cleared by hand"]]);
 
+    /* (M3) after its save the migration records the boot it stamped in boot.json, so a reboot before the first
+     * mirror tick still knows the carried rows as its own */
+    $recordBoot = [\OPNsense\WGClientTunnels\Migrations\M3_1_0::class, 'recordBoot'];
+    $recorded = [];
+    $recorder = function (string $bootId) use (&$recorded): bool {
+        $recorded[] = $bootId;
+        return true;
+    };
+    wgct_check($t, 'migrate: (M3) a readable boot id => recorded in boot.json once, nothing logged',
+        $recordBoot($boot, $recorder) === null && $recorded === [$boot]);
+    $recorded = [];
+    wgct_check($t, 'migrate: (M3) (R17) kern.boot_id unreadable => nothing recorded, nothing logged',
+        $recordBoot('', $recorder) === null && $recorded === []);
+    wgct_check($t, 'migrate: (M3) boot.json that cannot be written => one warning naming the boot and what it costs',
+        $recordBoot($boot, fn (string $bootId): bool => false) === "[wgct-migrate] boot {$boot} could not be recorded in boot.json;"
+            . ' a reboot before the first health mirror tick makes the carried holds foreign');
+
     $rows = [
         'r1' => ['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B', 'taken_at' => 1760000000],
         'r2' => ['gateway' => $gX, 'boot' => $boot, 'underlay' => 'WAN_A', 'taken_at' => 1760000000],

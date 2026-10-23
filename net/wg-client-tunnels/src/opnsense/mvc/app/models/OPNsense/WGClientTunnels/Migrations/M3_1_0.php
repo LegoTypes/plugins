@@ -46,15 +46,23 @@ use OPNsense\WGClientTunnels\Engine;
  * on): only then did it rewrite that force_down on every tick, so only then was it the mirror's. With either off,
  * such a gateway is a person's or Create's, and is left forced down as manual, logged once by name (ruling R35).
  * The engine model is brought to its own version before it is written, so the outcome is the same whichever of the
- * two models core migrates first.
+ * two models core migrates first. Once the models are serialized, the boot the rows carry is recorded in boot.json,
+ * as the mirror records the boot it runs under: a reboot before the mirror's first tick then still finds the
+ * carried rows to be from the boot before it, and so its own.
  */
 class M3_1_0 extends BaseModelMigration
 {
     /* the plugin's derivation, which knows each tunnel's IPv4 gateway and its bound WAN */
     private const TUNNELS_LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/tunnels.php';
 
+    /* the health mirror's library, whose boot.json writer the migration shares */
+    private const MIRROR_LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/mirror.php';
+
     /* the engine model's mask for a hold record's underlay */
     private const UNDERLAY_MASK = '/^[a-zA-Z0-9_-]{1,32}$/D';
+
+    /* the boot run() stamped the carried rows with, '' when it carried nothing over or could not read it */
+    private string $bootId = '';
 
     /**
      * Which gateways become hold records: the held ones, then the forced IPv6 pair gateways. Pure.
@@ -159,6 +167,23 @@ class M3_1_0 extends BaseModelMigration
     }
 
     /**
+     * Record in boot.json the boot the carried rows were stamped with. With no readable boot id nothing was stamped,
+     * so nothing is recorded (ruling R17). Pure but for $record.
+     *
+     * @param string                 $bootId the boot run() stamped, '' for none
+     * @param callable(string): bool $record wgct_record_boot()
+     * @return string|null the warning to log when boot.json cannot record it, else null
+     */
+    public static function recordBoot(string $bootId, callable $record): ?string
+    {
+        if ($bootId === '' || $record($bootId)) {
+            return null;
+        }
+        return "[wgct-migrate] boot {$bootId} could not be recorded in boot.json;"
+            . ' a reboot before the first health mirror tick makes the carried holds foreign';
+    }
+
+    /**
      * @param \OPNsense\WGClientTunnels\WGClientTunnels $model
      */
     public function run($model)
@@ -177,6 +202,7 @@ class M3_1_0 extends BaseModelMigration
         $managed = wgct_split_csv($managedRaw);
         $held = wgct_split_csv((string)$node->held);
         $bootId = Engine::liveBootId();
+        $this->bootId = $bootId;
         $plan = ['rows' => [], 'dropped' => [], 'manual' => []];
         $names = [];
         $gatewaysError = null;
@@ -199,6 +225,32 @@ class M3_1_0 extends BaseModelMigration
 
         foreach (self::report($plan, $held, $bootId, $gatewaysError, $names) as [$priority, $line]) {
             wgct_log($priority, $line);
+        }
+    }
+
+    /**
+     * After core serialized the migrated models: boot.json (recordBoot()). Core reads a throw here as a model that
+     * cannot be saved and then saves nothing, so every failure is logged instead.
+     *
+     * @param \OPNsense\WGClientTunnels\WGClientTunnels $model
+     */
+    public function post($model)
+    {
+        if ($this->bootId === '') {
+            return;
+        }
+        try {
+            if (!is_readable(self::MIRROR_LIB)) {
+                throw new \RuntimeException(self::MIRROR_LIB . ' cannot be read');
+            }
+            require_once self::MIRROR_LIB;
+            $warning = self::recordBoot($this->bootId, 'wgct_record_boot');
+        } catch (\Throwable $e) {
+            $warning = "[wgct-migrate] boot {$this->bootId} could not be recorded in boot.json (" . $e->getMessage()
+                . '); a reboot before the first health mirror tick makes the carried holds foreign';
+        }
+        if ($warning !== null) {
+            wgct_log(LOG_WARNING, $warning);
         }
     }
 

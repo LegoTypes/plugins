@@ -513,7 +513,8 @@ function wgct_boot_record_json(string $bootId, int $at): string {
 }
 
 /**
- * Record the boot the mirror runs under in boot.json, at the end of a tick.
+ * Record the boot the plugin runs under in boot.json: the mirror at the end of a tick, the 3.1.0 migration once it
+ * has stamped the carried hold records with it.
  *
  * @return bool whether boot.json names $bootId now
  */
