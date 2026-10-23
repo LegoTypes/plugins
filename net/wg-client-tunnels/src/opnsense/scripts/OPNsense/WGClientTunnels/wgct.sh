@@ -163,11 +163,23 @@ routes_section() {
     out=$(parse_config)
     rc=$?
     first=$(printf '%s\n' "${out}" | head -n 1)
-    if [ "${rc}" -ne 0 ] || { [ "${first}" != "state|on" ] && [ "${first}" != "state|off" ]; }; then
+    if [ "${rc}" -ne 0 ] || { [ "${first}" != "state|on" ] && [ "${first}" != "state|off" ] && [ "${first}" != "state|pending" ]; }; then
         parse_failure "${rc}" "${first}"
         return 0
     fi
     rm -f "${STATE_DIR}/parse_error"
+    # the plugin settings wait for their 3.1.0 migration (ruling R37): nothing is added or removed, said once per state
+    if [ "${first}" = "state|pending" ]; then
+        if [ ! -f "${STATE_DIR}/routes.pending" ]; then
+            : > "${STATE_DIR}/routes.pending"
+            log_msg "route set refused: the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php); routes left as they are"
+        fi
+        return 0
+    fi
+    if [ -f "${STATE_DIR}/routes.pending" ]; then
+        rm -f "${STATE_DIR}/routes.pending"
+        log_msg "route set runs again: the plugin settings are migrated to 3.1.0"
+    fi
     # plugin or IPv6 routes off: nothing is maintained and nothing removed; only stop removes
     if [ "${first}" = "state|off" ]; then
         [ "${quiet}" = "quiet" ] || log_msg "IPv6 routes are off; routes left as they are"

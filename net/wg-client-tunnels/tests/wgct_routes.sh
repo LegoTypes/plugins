@@ -199,5 +199,19 @@ touch "$STATE/db/footprint.json" "$STATE/fallback.json" "$STATE/fallback.logged"
 "$W" stop
 check "29 stop removes the footprint, the fallback record and its log marker" '[ ! -e "$STATE/db/footprint.json" ] && [ ! -e "$STATE/fallback.json" ] && [ ! -e "$STATE/fallback.logged" ]'
 
+# (ruling R37) the plugin settings waiting for their 3.1.0 migration: the route set changes nothing, said once per state
+sed -e "s#logger -t#$T/logger -t#g" "$W" > "$T/wgct_fakes.sh"
+chmod +x "$T/wgct_fakes.sh"
+: > "$T/log"
+say 'state|on' "$(line lo91 91 $M1)"; "$T/wgct_fakes.sh" configure_routes
+cp "$REC" "$T/rec.before"
+say 'state|pending' "$(line lo91 91 $M1)"; "$T/wgct_fakes.sh" configure_routes; "$T/wgct_fakes.sh" configure_routes
+check "30 state|pending (the 3.1.0 migration pending) removes no route, keeps the record and logs one refusal" '[ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before" && [ "$(grep -c "route set refused: the plugin settings are not migrated to 3.1.0 yet" "$T/log")" = 1 ]'
+say 'state|pending' "$(line lo91 91 $M3)"; "$T/wgct_fakes.sh" configure_routes
+check "31 state|pending adds and deletes nothing either" '[ -z "$(dev_of $M3)" ] && [ "$(dev_of $M1)" = lo91 ] && cmp -s "$REC" "$T/rec.before"'
+say 'state|on' "$(line lo91 91 $M1)"; "$T/wgct_fakes.sh" configure_routes; "$T/wgct_fakes.sh" configure_routes
+check "32 once migrated the route set runs again, said once" '[ "$(dev_of $M1)" = lo91 ] && [ "$(grep -c "route set runs again" "$T/log")" = 1 ] && [ ! -e "$STATE/routes.pending" ]'
+"$W" stop
+
 echo "routes: $pass/$((pass + fail)) passed"
 [ "$fail" = 0 ]
