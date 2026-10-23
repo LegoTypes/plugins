@@ -170,14 +170,14 @@ routes_section() {
     rm -f "${STATE_DIR}/parse_error"
     # the plugin settings wait for their 3.1.0 migration (ruling R37): nothing is added or removed, said once per state
     if [ "${first}" = "state|pending" ]; then
-        if [ ! -f "${STATE_DIR}/routes.pending" ]; then
-            : > "${STATE_DIR}/routes.pending"
+        if [ ! -f "${STATE_DIR}/routes.awaiting-migration" ]; then
+            : > "${STATE_DIR}/routes.awaiting-migration"
             log_msg "route set refused: the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php); routes left as they are"
         fi
         return 0
     fi
-    if [ -f "${STATE_DIR}/routes.pending" ]; then
-        rm -f "${STATE_DIR}/routes.pending"
+    if [ -f "${STATE_DIR}/routes.awaiting-migration" ]; then
+        rm -f "${STATE_DIR}/routes.awaiting-migration"
         log_msg "route set runs again: the plugin settings are migrated to 3.1.0"
     fi
     # plugin or IPv6 routes off: nothing is maintained and nothing removed; only stop removes
@@ -354,7 +354,13 @@ case "$1" in
         with_routes_lock _cleanup && log_msg "stopped"
         ;;
     restart)
-        with_routes_lock _cleanup && with_routes_lock _routes
+        # While the plugin settings wait for their 3.1.0 migration (ruling R37) the route set adds nothing, so a
+        # restart must not remove first: the route set alone runs, refusing and saying so once.
+        if [ "$(parse_config 2>/dev/null | head -n 1)" = "state|pending" ]; then
+            with_routes_lock _routes
+        else
+            with_routes_lock _cleanup && with_routes_lock _routes
+        fi
         ;;
     reconcile)
         # Idempotent repair pass for event hooks and cron: adds only what is
