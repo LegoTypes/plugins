@@ -1,5 +1,5 @@
 """
-Copyright (C) 2026 cayossarian (Bill Flood)
+Copyright (C) 2026 cayossarian
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without
