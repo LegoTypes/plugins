@@ -28,7 +28,10 @@ const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the 
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
 const UU_BLOCK_TABLE = '__unboundupstream_block'; /* the counting block's table, in core's __ namespace, which no
                                                      * alias can take (spec section 3.6c, P7) */
-const UU_RULES_PATH = '/var/run/unboundupstream/rules.json'; /* the rules verification record (section 3.6c) */
+const UU_RUN_DIR = '/var/run/unboundupstream'; /* root's, mode 0700, made at use (uu_run_dir()): never /tmp (C3) */
+const UU_STATE_PATH = UU_RUN_DIR . '/state.json'; /* the runtime state (state.php) */
+const UU_RULES_PATH = UU_RUN_DIR . '/rules.json'; /* the rules verification record (section 3.6c) */
+const UU_FILE_MAX_BYTES = 1048576;        /* the most read of a state, record or zone file (uu_read_regular_file()) */
 const UU_RULES_LIST_PAIRS = 2;            /* checksum-listing-checksum tries before a straddled listing is given up
                                            * (section 3.6c, P12) */
 const UU_STOP_REQUEST = 'request';        /* Snapshot.stop: evaluate.php stop (the service's stop, or a Save) */

@@ -20,6 +20,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/render.php';
+require_once __DIR__ . '/state.php';
 
 /** The ruleset checksum `pfctl -si -v` prints ("Checksum: 0x..."), or null when it prints none. */
 function uu_pf_checksum(string $siOut): ?string
@@ -281,18 +282,19 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
 }
 
 /**
- * The saved record, or null when the file is missing, truncated or not exactly the Record shape (a record without
- * inputs, from a build before them, is null too: the next evaluation lists once).
+ * The saved record, or null when the file is missing, not a regular file within the limit (convention C3),
+ * truncated or not exactly the Record shape (a record without inputs, from a build before them, is null too: the
+ * next evaluation lists once).
  *
  * @return ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}
  */
 function uu_rules_record_load(string $path): ?array
 {
-    $text = @file_get_contents($path);
-    if ($text === false) {
+    $read = uu_read_regular_file($path);
+    if ($read['problem'] !== null || $read['text'] === null) {
         return null;
     }
-    $doc = json_decode($text, true);
+    $doc = json_decode($read['text'], true);
     if (!is_array($doc) || count($doc) !== 5
         || !isset($doc['checksum']) || !is_string($doc['checksum'])
         || !isset($doc['inputs']) || !is_string($doc['inputs'])

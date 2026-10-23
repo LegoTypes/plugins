@@ -19,6 +19,7 @@ require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/zone.php';
 require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/pfobserve.php';
+require_once __DIR__ . '/state.php';
 
 /** Core's PHP library, loaded when a collector needs it so the parsers load anywhere. */
 function uu_load_core(): void
@@ -247,14 +248,21 @@ function uu_pf_observe(string $resolver, array $members, ?array $record, int $wa
  * `pfctl: DIOCGETRULE: Device busy` when a load cut a listing short) ever reaches a parser. A pfctl that cannot
  * be started, or that exits non-zero (a signal mid-listing too), gets a `pfctl:` line on stderr, so its listing
  * is unusable (uu_pf_listing_usable()); its stdout is kept, and nothing else reads stderr. The temporary file
- * goes in every case. $binary is for the tests.
+ * lives in the root-only run directory, never in /tmp (convention C3): tempnam() silently falls back to the
+ * system temporary directory when runDir is unusable, so a file anywhere else is removed and pfctl is not run.
+ * The temporary file goes in every case. $binary and $runDir are for the tests.
  *
  * @param list<string> $args
  * @return array{out: string, err: string}
  */
-function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl'): array
+function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDir = UU_RUN_DIR): array
 {
-    $errFile = tempnam(sys_get_temp_dir(), 'uu_pfctl');
+    /* @: the fallback's notice would reach PHP_errors.log; the dirname check below refuses that file */
+    $errFile = @tempnam($runDir, 'uu_pfctl');
+    if ($errFile !== false && dirname($errFile) !== $runDir) {
+        unlink($errFile);
+        $errFile = false;
+    }
     if ($errFile === false) {
         return ['out' => '', 'err' => 'pfctl: no temporary file for its stderr'];
     }
@@ -391,18 +399,21 @@ function uu_live_root(): ?array
 }
 
 /**
- * Unbound's generated configuration files, in file-name order.
+ * Unbound's generated configuration files, in file-name order (ruling R9, convention C3): a symbolic link, anything
+ * but a regular file and an unreadable file are skipped, and a file over UU_FILE_MAX_BYTES gives its first
+ * UU_FILE_MAX_BYTES, so a large blocklist file still counts. The files are core's, written as root, but the
+ * directory belongs to Unbound's chroot. $dir is for the tests.
  *
  * @return list<string>
  */
-function uu_zone_texts(): array
+function uu_zone_texts(string $dir = '/var/unbound/etc'): array
 {
     $texts = [];
-    $files = glob('/var/unbound/etc/*.conf') ?: [];
+    $files = glob($dir . '/*.conf') ?: [];
     sort($files);
     foreach ($files as $file) {
-        $text = is_readable($file) ? file_get_contents($file) : false;
-        if ($text !== false) {
+        $text = uu_read_regular_file($file)['text'];
+        if ($text !== null) {
             $texts[] = $text;
         }
     }
@@ -443,6 +454,8 @@ function uu_zone_texts(): array
  */
 function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules): array
 {
+    /* pfctl's stderr file goes in the run directory, and a status after a boot runs before any evaluation made it */
+    uu_run_dir();
     uu_load_core();
     $now = intdiv(hrtime(true), 1000000000);
     $wall = time();

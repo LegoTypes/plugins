@@ -7,11 +7,14 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Root-zone parser and shape (spec section 3.4): only shapes forward_add can restore.
+ * Root-zone parser and shape (spec section 3.4): only shapes forward_add can restore; and the configuration files
+ * it reads, regular files only (convention C3).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/zone.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+require_once __DIR__ . '/scratch.php';
 
 function uu_test_fixture(string $name): string
 {
@@ -85,6 +88,22 @@ uu_register_suite('zone', function (): int {
         . "  forward-addr: 192.0.2.53\n"]);
     uu_check($t, 'a comment after a clause header does not hide the zone',
         $z['shape'] === 'one' && $z['addrs'] === ['192.0.2.53'] && $z['problems'] === []);
+
+    /* convention C3 (ruling R9): the zone files are read as regular files only, each up to 1 MiB, so a large
+     * blocklist file still counts and no forward-zone lies past 1 MiB */
+    uu_check($t, '(z1) zone texts: a symbolic link and a directory are skipped, the regular file read, and a 2 MiB '
+        . 'file yields its first 1 MiB',
+        uu_scratch_case(function (string $dir): bool {
+            $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
+            $line = "local-zone: \"blocked.example\" always_nxdomain\n";
+            $big = substr(str_repeat($line, intdiv(2 * UU_SCRATCH_MIB, strlen($line)) + 1), 0, 2 * UU_SCRATCH_MIB);
+            file_put_contents($dir . '/a.conf', $root);
+            file_put_contents($dir . '/elsewhere.txt', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
+            symlink($dir . '/elsewhere.txt', $dir . '/b.conf');
+            mkdir($dir . '/c.conf');
+            file_put_contents($dir . '/d.conf', $big);
+            return uu_zone_texts($dir) === [$root, substr($big, 0, UU_SCRATCH_MIB)];
+        }));
 
     return uu_tally_report('zone', $t);
 });

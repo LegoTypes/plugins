@@ -961,7 +961,7 @@ function uu_drill(string $server, string $name): bool
  * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (section 3.1); a failing
  * route or unbound-control call logs its output here, where the output is known.
  *
- * @param string $statePath where save writes the state (evaluate.php's UU_STATE_PATH)
+ * @param string $statePath where save writes the state (UU_STATE_PATH)
  * @return array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,

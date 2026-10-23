@@ -26,10 +26,87 @@ declare(strict_types=1);
  * address that route and Unbound's live root referred to (null once nothing does), so a Save that changes the
  * resolver setting undoes the old address's route and forwarders first (ruling R31). A file that cannot
  * be read back exactly as written is discarded: the planner derives the mode from the live forwarders and route,
- * so a fresh state costs only the failback timers.
+ * so a fresh state costs only the failback timers. The file lives in the root-only run directory and is read as a
+ * regular file only (convention C3).
  */
 
+require_once __DIR__ . '/constants.php';
+
 const UU_STATE_VERSION = 5;
+
+/**
+ * The plugin's runtime directory (UU_RUN_DIR by default, convention C3): created 0700 when missing, put back to
+ * 0700 when its mode differs, refused when the path is a symbolic link or not a directory.
+ */
+function uu_run_dir(string $dir = UU_RUN_DIR): void
+{
+    clearstatcache(true, $dir);
+    if (@lstat($dir) === false) {
+        /* a failure, or another process's mkdir in between, is judged by the checks below */
+        @mkdir($dir, 0700, true);
+        clearstatcache(true, $dir);
+    }
+    $st = @lstat($dir);
+    if ($st === false) {
+        throw new RuntimeException("cannot create $dir");
+    }
+    if (($st['mode'] & 0170000) === 0120000) {
+        throw new RuntimeException("$dir is a symbolic link");
+    }
+    if (($st['mode'] & 0170000) !== 0040000) {
+        throw new RuntimeException("$dir is not a directory");
+    }
+    if (($st['mode'] & 07777) !== 0700 && !chmod($dir, 0700)) {
+        throw new RuntimeException("cannot make $dir mode 0700");
+    }
+}
+
+/**
+ * A file the plugin trusts, read as a regular file only (convention C3): the path is no symbolic link and a regular
+ * file (lstat), and the file opened is the one checked (the same device and inode), so a swap between the check and
+ * the open is refused. A missing path, or one below a directory this process cannot search, has no text and no
+ * problem. A file over maxBytes gives its first maxBytes as text, with the problem; a reader that needs the whole
+ * file treats every problem as absent.
+ *
+ * @return array{text: ?string, problem: ?string} problem: 'a symbolic link', 'not a regular file', 'larger than
+ *     1 MiB' (the default limit) or 'unreadable'
+ */
+function uu_read_regular_file(string $path, int $maxBytes = UU_FILE_MAX_BYTES): array
+{
+    clearstatcache(true, $path);
+    $link = @lstat($path);
+    if ($link === false) {
+        return ['text' => null, 'problem' => null];
+    }
+    if (($link['mode'] & 0170000) === 0120000) {
+        return ['text' => null, 'problem' => 'a symbolic link'];
+    }
+    if (($link['mode'] & 0170000) !== 0100000) {
+        return ['text' => null, 'problem' => 'not a regular file'];
+    }
+    $fh = @fopen($path, 'rb');
+    if ($fh === false) {
+        return ['text' => null, 'problem' => 'unreadable'];
+    }
+    try {
+        $st = fstat($fh);
+        if ($st === false || $st['dev'] !== $link['dev'] || $st['ino'] !== $link['ino']) {
+            return ['text' => null, 'problem' => 'unreadable'];
+        }
+        $text = stream_get_contents($fh, $maxBytes + 1);
+        if ($text === false) {
+            return ['text' => null, 'problem' => 'unreadable'];
+        }
+        if (strlen($text) > $maxBytes) {
+            $limit = $maxBytes > 0 && $maxBytes % 1048576 === 0
+                ? intdiv($maxBytes, 1048576) . ' MiB' : "$maxBytes bytes";
+            return ['text' => substr($text, 0, $maxBytes), 'problem' => "larger than $limit"];
+        }
+        return ['text' => $text, 'problem' => null];
+    } finally {
+        fclose($fh);
+    }
+}
 
 /**
  * @return array{version: int, mode: string, member: ?string,
@@ -229,7 +306,37 @@ function uu_state_from_doc(array $doc): ?array
 }
 
 /**
- * The saved state, or a new one when the file is missing, truncated, not this version or not this shape.
+ * The saved state and why it could not be used: a new state, with no problem when the file is missing, and with
+ * uu_read_regular_file()'s problem, "not JSON" or "not this version's shape" otherwise.
+ *
+ * @return array{state: array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *     problem: ?string}
+ */
+function uu_state_read(string $path): array
+{
+    $read = uu_read_regular_file($path);
+    if ($read['problem'] !== null || $read['text'] === null) {
+        return ['state' => uu_state_new(), 'problem' => $read['problem']];
+    }
+    $doc = json_decode($read['text'], true);
+    if (json_last_error() !== JSON_ERROR_NONE) {
+        return ['state' => uu_state_new(), 'problem' => 'not JSON'];
+    }
+    $state = is_array($doc) ? uu_state_from_doc($doc) : null;
+    return $state === null ? ['state' => uu_state_new(), 'problem' => 'not this version\'s shape']
+        : ['state' => $state, 'problem' => null];
+}
+
+/**
+ * The saved state, or a new one when the file is missing, not a regular file within the limit, truncated, not
+ * this version or not this shape.
  *
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
@@ -242,12 +349,7 @@ function uu_state_from_doc(array $doc): ?array
  */
 function uu_state_load(string $path): array
 {
-    $text = @file_get_contents($path);
-    if ($text === false) {
-        return uu_state_new();
-    }
-    $doc = json_decode($text, true);
-    return (is_array($doc) ? uu_state_from_doc($doc) : null) ?? uu_state_new();
+    return uu_state_read($path)['state'];
 }
 
 /**

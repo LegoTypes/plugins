@@ -8,11 +8,13 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Observing pf (spec section 3.6c): the ruleset checksum, a table's counters, the rule verdict read from the
- * kernel's own text by keyword, and the verification kept once per checksum.
+ * kernel's own text by keyword, and the verification kept once per checksum, in a record read as a regular file
+ * only (convention C3).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/pfobserve.php';
+require_once __DIR__ . '/scratch.php';
 
 function uu_pfobserve_fixture(string $name): string
 {
@@ -298,6 +300,21 @@ uu_register_suite('pfobserve', function (): int {
     unlink($path);
     rmdir($dir . '/sub');
     rmdir($dir);
+    /* convention C3: the record is read as a regular file of at most UU_FILE_MAX_BYTES only */
+    $valid = (string)json_encode($record);
+    foreach (['link' => 'a symbolic link to a valid record', 'dir' => 'a directory at the path',
+              'large' => 'a valid record padded to 1 MiB + 1 byte'] as $kind => $what) {
+        uu_check($t, "(p1) record: $what is null",
+            uu_scratch_case(function (string $dir) use ($kind, $valid): bool {
+                uu_scratch_place($kind, $dir . '/rules.json', $valid);
+                return uu_rules_record_load($dir . '/rules.json') === null;
+            }));
+    }
+    uu_check($t, 'record: a valid record padded to exactly 1 MiB is read',
+        uu_scratch_case(function (string $dir) use ($valid, $record): bool {
+            file_put_contents($dir . '/rules.json', str_pad($valid, UU_SCRATCH_MIB, ' '));
+            return uu_rules_record_load($dir . '/rules.json') === $record;
+        }));
 
     /* block table view */
     $armedTable = ['addresses' => 1, 'references' => 1, 'out_block' => 37];

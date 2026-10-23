@@ -29,11 +29,6 @@ declare(strict_types=1);
  * non-zero; nothing is thrown into configd.
  */
 
-const UU_RUN_DIR = '/var/run/unboundupstream';
-const UU_STATE_PATH = UU_RUN_DIR . '/state.json';
-const UU_LOCK_PATH = UU_RUN_DIR . '/evaluate.lock';
-const UU_REMOVING_PATH = UU_RUN_DIR . '/removing';  /* +POST_INSTALL.post deletes it by this path */
-
 require_once __DIR__ . '/lib/constants.php';
 require_once __DIR__ . '/lib/state.php';
 require_once __DIR__ . '/lib/planner.php';
@@ -41,6 +36,9 @@ require_once __DIR__ . '/lib/snapshot.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/log.php';
 require_once __DIR__ . '/lib/notify.php';
+
+const UU_LOCK_PATH = UU_RUN_DIR . '/evaluate.lock';
+const UU_REMOVING_PATH = UU_RUN_DIR . '/removing';  /* +POST_INSTALL.post deletes it by this path */
 
 try {
     exit(uu_main(array_values(array_slice($argv, 1))));
@@ -121,13 +119,6 @@ function uu_names(string $arg): array
         }
     }
     return $names;
-}
-
-function uu_run_dir(): void
-{
-    if (!is_dir(UU_RUN_DIR) && !mkdir(UU_RUN_DIR, 0700, true) && !is_dir(UU_RUN_DIR)) {
-        throw new RuntimeException('cannot create ' . UU_RUN_DIR);
-    }
 }
 
 /**

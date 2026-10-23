@@ -67,7 +67,8 @@ uu_register_suite('snapshot_vm', function (): int {
     /* a status snapshot never lists the ruleset: its verdict is the saved record's for the live checksum and these
      * inputs, or verifying, and it has nothing to save; a listing would have returned this run's time and a record */
     $saved = uu_rules_record_load(UU_RULES_PATH);
-    $temps = fn (): array => glob(sys_get_temp_dir() . '/uu_pfctl*') ?: [];
+    $temps = fn (): array => array_merge(glob(UU_RUN_DIR . '/uu_pfctl*') ?: [],
+        glob(sys_get_temp_dir() . '/uu_pfctl*') ?: []);
     $before = $temps();
     $run = uu_pfctl_run(['-si', '-v']);
     uu_check($t, 'runner: pfctl -si -v keeps its streams apart (Checksum: on stdout only) and leaves no temp file',
