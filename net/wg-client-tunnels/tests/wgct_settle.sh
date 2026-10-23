@@ -25,13 +25,15 @@
 #                         dpinger's average holds only probes sent since its start
 #   gw_quiet [MAX]        wait (at most MAX s, default 120) until WAN_B reads up and is not forced down in config.xml,
 #                         every monitored gateway's status is the one core's gateway watcher last acted on (no alarm
-#                         pending) and nothing above runs
+#                         pending), core has run the config hooks of every config save (its
+#                         /conf/event_config_changed.json is past the newest /conf/backup file), no reconcile is
+#                         queued and nothing above runs
 # Each wait returns 1 when it times out, after printing "      | " lines with what it waited on (what still runs, the
 # gateway state); the caller's check turns that into a FAIL.
 # Their own variables are named ws_*, so a test's are left alone.
 
 WS_PHP="/usr/local/bin/php -d log_errors=0"
-WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|wgct[.]sh (reconcile|_reconcile)|rc[.]routing_configure'
+WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|wgct[.]sh (reconcile|_reconcile)|rc[.]routing_configure|trigger_config_changed_events|rc[.]syshook'
 # the plugin's cron rounds, as cron runs them (cron.d/wgclienttunnels)
 WS_CRON='^/bin/sh -c (sleep [0-9]+ && )?/usr/local/(bin/php /usr/local/)?opnsense/scripts/OPNsense/WGClientTunnels/'
 
@@ -132,6 +134,21 @@ ws_gateways() {
         }
         if ($forced !== "0" && $forced !== "") {
             $why[] = $forced === "absent" ? "no WAN_B gateway in config.xml" : "WAN_B is forced down in config.xml";
+        }
+        /* a config save reaches the plugin through core: syslog, configd, rc.syshook config, request_reconcile */
+        $done = json_decode((string)@file_get_contents("/conf/event_config_changed.json"), true);
+        $last = round((float)($done["last_processed_stamp"] ?? 0), 4);
+        $newest = 0.0;
+        foreach (glob("/conf/backup/config-*.xml") ?: [] as $f) {
+            if (preg_match("/config-([0-9]+(\\.[0-9]+)?)\\.xml$/", $f, $m)) {
+                $newest = max($newest, round((float)str_replace("_", "", $m[1]), 4));
+            }
+        }
+        if ($newest > $last) {
+            $why[] = "core has not run the config hooks of the newest config save yet";
+        }
+        if (file_exists("/var/run/wgclienttunnels/reconcile.pending")) {
+            $why[] = "a reconcile is queued (reconcile.pending)";
         }
         foreach ($now as $name => $r) {
             if ($r["loss"] !== "~" && ($seen[$name] ?? "") !== $r["status"]) {
