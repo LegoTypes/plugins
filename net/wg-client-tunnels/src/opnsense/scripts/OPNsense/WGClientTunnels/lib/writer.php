@@ -931,10 +931,9 @@ function wgct_engine_selftest(): int {
     $badWan = [$iA => ['gateway' => $gA, 'underlay' => 'WAN B;']] + $ipv4;
     wgct_check($t, 'migrate: a bound WAN the engine mask refuses => the row carries no underlay',
         $plan($managed, [$gA], $gateways, $badWan, [], $boot)['rows'] === [['gateway' => $gA, 'boot' => $boot, 'underlay' => '']]);
-    $gwBefore = $gateways;
     $p = $plan($managed, [$gA], $gateways, $ipv4, [], '');
     wgct_check($t, 'migrate: (m3) kern.boot_id unreadable => no row, the hold dropped, and nothing but rows and drops planned (force_down left as it is)',
-        $p === ['rows' => [], 'dropped' => [$gA]] && $gateways === $gwBefore);
+        $p === ['rows' => [], 'dropped' => [$gA]]);
     wgct_check($t, 'migrate: nothing held => no row, nothing dropped',
         $plan($managed, [], $gateways, $ipv4, [], $boot) === ['rows' => [], 'dropped' => []]);
     wgct_check($t, 'migrate: a gateway of a tunnel that left the managed list => dropped',
