@@ -25,6 +25,10 @@
 #         saved with no validation message and changes neither the settings node (its persisted_at stamp aside,
 #         which every save rewrites) nor the engine node: the settings model has no such fields. Should a change
 #         get through, the old values are posted back so the VM keeps its managed list.
+# Case 4b: while the installed lib/mirror.php cannot be read (pkg's rename window), the control user's settings/set
+#         POST is refused with core's UserException (HTTP 500, "The plugin is being installed or upgraded") and
+#         PHP's error log does not grow: no fatal reaches core's crash reporter. cron is stopped meanwhile, so no
+#         tick runs without its library, and the file is put back at once (and at exit).
 #
 # Case 5: an unmanaged WireGuard instance (spec section 3.6, F6): apply refuses it and does nothing. The instance
 #         is created through core's Server model with a synthetic key, a documentation-range address and
@@ -61,6 +65,8 @@ check() {
 }
 
 . "$(dirname "$0")/wgct_marks.sh"
+. "$(dirname "$0")/wgct_settle.sh"
+MIRROR_LIB=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/mirror.php
 
 USERS="$(dirname "$0")/wgct_user.php"
 
@@ -118,6 +124,8 @@ remove_users() {
 }
 
 cleanup() {
+    [ -f "$T/mirror.php.off" ] && mv "$T/mirror.php.off" "$MIRROR_LIB"
+    service cron status > /dev/null 2>&1 || service cron start > /dev/null 2>&1
     remove_users
     remove_instance
     rm -rf "$T"
@@ -231,6 +239,17 @@ else
     call "$CTL_CRED" settings/set -d "wgclienttunnels[managed]=$OLD_MANAGED" -d "wgclienttunnels[held]=$OLD_HELD" > /dev/null
 fi
 check "control user: that POST leaves the settings node and the engine node as they were" "$same" unchanged
+
+# case 4b
+PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+log0=$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)
+cron_quiesce > /dev/null
+mv "$MIRROR_LIB" "$T/mirror.php.off"
+code=$(call "$CTL_CRED" settings/set -d 'wgclienttunnels[enabled]=1')
+mv "$T/mirror.php.off" "$MIRROR_LIB"
+service cron start > /dev/null 2>&1
+check "control user: a settings/set POST while lib/mirror.php cannot be read is refused (HTTP 500: the plugin is being installed or upgraded) and PHP's error log does not grow" \
+    "$code $(grep -c 'The plugin is being installed or upgraded' "$T/body") $(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "500 1 $log0"
 
 # case 5
 remove_instance

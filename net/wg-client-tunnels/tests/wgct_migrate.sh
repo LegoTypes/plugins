@@ -92,10 +92,21 @@ remove_set_user() {
     $PHP "$(dirname "$0")/wgct_user.php" delete wgct-migrate-set > /dev/null 2>&1
     configctl auth sync user wgct-migrate-set > /dev/null 2>&1
 }
+# remove_lo93: the planted route set record of the restart case (N2), its loopback and the record as it was
+remove_lo93() {
+    ifconfig lo93 destroy 2> /dev/null
+    if [ -f "$T/record.orig" ]; then
+        cp -p "$T/record.orig" "$RECORD"
+    elif [ -n "${RECORD_PLANTED:-}" ]; then
+        rm -f "$RECORD"
+    fi
+    RECORD_PLANTED=""
+}
 cleanup() {
     $PHP "$T/restore.php" "$T/config.xml" || echo "[FAIL] config.xml could not be restored from $T/config.xml"
     remove_set_user
-    rm -f /var/run/wgclienttunnels/*.pending
+    rm -f /var/run/wgclienttunnels/*.awaiting-migration
+    remove_lo93
     service cron status > /dev/null 2>&1 || service cron start > /dev/null
     if [ -f "$T/boot.json" ]; then cp -p "$T/boot.json" "$BOOTJSON"; else rm -f "$BOOTJSON"; fi
     rm -rf "$T/pkg"
@@ -165,6 +176,28 @@ if ($engineMode === 'empty') {
 $cfg->save();
 $cfg->unlock();
 echo $ids['instance'], ' ', $ids['gw_rehearse'], ' ', $ids['gw_wanb'], "\n";
+PHPEOF
+
+# tweak.php WHAT: a change to the 3.7_1-shaped settings node through core's Config: mirror-off sets its health_mirror
+# switch to 0 (N6); managed-unreadable puts an element inside its managed list, a shape 3.7_1's model never writes,
+# so the legacy list cannot be read, and switches IPv6 routes on, so the route set's helper reads that list (N1)
+cat > "$T/tweak.php" <<'PHPEOF'
+<?php
+require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
+
+use OPNsense\Core\Config;
+
+$cfg = Config::getInstance();
+$cfg->lock();
+$n = $cfg->object()->OPNsense->WGClientTunnels;
+if ($argv[1] === 'mirror-off') {
+    $n->health_mirror = '0';
+} elseif ($argv[1] === 'managed-unreadable') {
+    $n->managed->addChild('item', 'not a list');
+    $n->ipv6_routes = '1';
+}
+$cfg->save();
+$cfg->unlock();
 PHPEOF
 
 # fact.php WHAT [ARG]: one fact about /conf/config.xml as it is on disk
@@ -252,6 +285,8 @@ BOOT=$(/sbin/sysctl -x -n kern.boot_id | sed -n 's/.*Dump:0x\([0-9a-fA-F]*\).*/\
 
 S=/usr/local/opnsense/scripts/OPNsense/WGClientTunnels
 RUN=/var/run/wgclienttunnels
+RECORD="$RUN/active_gateways"
+RECORD_PLANTED=""
 USERS="$(dirname "$0")/wgct_user.php"
 SET_USER=wgct-migrate-set
 REFUSED='the plugin settings are not migrated to 3.1.0 yet'
@@ -275,7 +310,7 @@ pending() {
     echo "    waited ${n} s for the runs cron started"
     check "pending: no run cron started is left" \
         "$(pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null && echo running || echo none)" none
-    rm -f "$RUN"/*.pending
+    rm -f "$RUN"/*.awaiting-migration
     cp /conf/config.xml "$T/pending.xml"
     mark=$(lmark wireguard)
     # the window opens: a gateway alarm from an earlier test (dpinger reports up to a minute late) can run the route
@@ -288,7 +323,7 @@ pending() {
     $PHP "$S/health_mirror.php" --dry > "$T/dry.out" 2>&1
     check "pending: (M1) health_mirror.php --dry says the tick refuses" "$(grep -c "the tick refuses: $REFUSED" "$T/dry.out")" 1
     check "pending: (M1) the listing and --dry write nothing: config.xml as it was, no marker, no log line" \
-        "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed) $(ls "$RUN" | grep '[.]pending$' | grep -c -v '^routes[.]pending$') $(others "$mark")" "same 0 0"
+        "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed) $(ls "$RUN" | grep '[.]awaiting-migration$' | grep -c -v '^routes[.]awaiting-migration$') $(others "$mark")" "same 0 0"
     mark=$(lmark wireguard)
     $PHP "$S/health_mirror.php"; t1=$?
     $PHP "$S/health_mirror.php"; t2=$?
@@ -309,16 +344,35 @@ pending() {
     $PHP "$TUNNEL" --json release-holds > /dev/null
     check "pending: (M1) release-holds refuses, releases nothing (rehearse stays force_down=1) and logs it once" \
         "$(echo "$r1" | grep -c "$REFUSED") $($PHP "$T/fact.php" force_down rehearse) $(lcount wireguard "$mark" -e "release-holds refused: $REFUSED")" "1 1 1"
+    # (N2) a restart removes no route and no address: a recorded IPv6 address and route on a loopback of this test's
+    # own (fd00::93:1 and fd00::93:2 on lo93) stay, and so does the record
+    [ -f "$RECORD" ] && cp -p "$RECORD" "$T/record.orig"
+    ifconfig lo93 create 2> /dev/null
+    ifconfig lo93 inet6 -ifdisabled up
+    ifconfig lo93 inet6 fd00::93:1/128 alias
+    route -q -n add -6 fd00::93:2 -iface lo93
+    RECORD_PLANTED=1
+    printf 'lo93|fd00::93:1/128|fd00::93:2|t93|\n' >> "$RECORD"
+    cp -p "$RECORD" "$T/record.planted"
+    mark=$(lmark wireguard)
+    "$S/wgct.sh" restart
+    check "pending: (N2) wgct.sh restart removes no route and no address: the record, fd00::93:1 on lo93 and its route stay, no removed line" \
+        "$(cmp -s "$RECORD" "$T/record.planted" && echo kept || echo changed) $(ifconfig lo93 | grep -c 'fd00::93:1 ') $(netstat -rn -f inet6 | grep -c '^fd00::93:2 .*lo93') $(lcount wireguard "$mark" -e 'wgct-routes. removed ')" \
+        "kept 1 1 0"
+    remove_lo93
     mark=$(lmark wireguard)
     "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
     $PHP "$S/monitor_repair.php"; $PHP "$S/monitor_repair.php"
     rm1=$(lcount wireguard "$open" -e "wgct-routes. route set refused: $REFUSED")
     rm2=$(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")
-    rm3=$([ -f "$RUN/routes.pending" ] && echo marker || echo none)
+    rm3=$([ -f "$RUN/routes.awaiting-migration" ] && echo marker || echo none)
     check "pending: (M1) the route set and the monitor repair refuse, each logged once" "$rm1 $rm2 $rm3" "1 1 marker"
-    if [ "$rm1 $rm2 $rm3" != "1 1 marker" ]; then
+    # (N3) the window holds exactly one route-set line, the refusal: no other route-set line passes unseen
+    routes_all=$(lcount wireguard "$open" -e '\[wgct-routes\]')
+    check "pending: (N3) the window's only route-set line is that refusal" "$routes_all $rm1" "1 1"
+    if [ "$rm1 $rm2 $rm3 $routes_all" != "1 1 marker 1" ]; then
         echo "      | $RUN: $(ls "$RUN" | tr '\n' ' ')"
-        lwindow wireguard "$mark" | sed 's/^/      | /'
+        lwindow wireguard "$open" | sed 's/^/      | /'
     fi
     check "pending: (M1) nothing refused changed config.xml" "$(cmp -s /conf/config.xml "$T/pending.xml" && echo same || echo changed)" same
     cred=$($PHP "$USERS" create "$SET_USER" page-vpn-wgclienttunnels) && configctl auth sync user "$SET_USER" > /dev/null 2>&1
@@ -330,6 +384,35 @@ pending() {
         "$code $(grep -c "$REFUSED" "$T/set.body") $(lcount wireguard "$mark" -e "settings refused: $REFUSED")" "500 1 1"
     check "pending: (M1) the settings node keeps 3.7_1's managed list and holds for the migration" "$($PHP "$T/fact.php" settings)" "3.0.0 managed:yes held:yes"
     remove_set_user
+    # (N6) with the health mirror off in the 3.0.0 node, a tick ends quietly: a mirror that is off would not have run
+    cp /conf/config.xml "$T/n.xml"
+    rm -f "$RUN/tick.awaiting-migration"
+    $PHP "$T/tweak.php" mirror-off
+    mark=$(lmark wireguard)
+    $PHP "$S/health_mirror.php"; t1=$?
+    check "pending: (N6) with the health mirror off, a tick exits 0 and logs no refusal" \
+        "$t1 $(lcount wireguard "$mark" -e 'tick refused')" "0 0"
+    $PHP "$T/restore.php" "$T/n.xml"
+    # (N1) 3.7_1's managed list unreadable: the route set's helper and the prime tick end quietly. They run with the
+    # production ini here (log_errors on), as wgct.sh and cron run them: nothing may reach PHP's error log.
+    PHPLOG=$($PHP -r 'echo ini_get("error_log");')
+    log0=$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)
+    [ -f "$RECORD" ] && cp -p "$RECORD" "$T/record.n1"
+    $PHP "$T/tweak.php" managed-unreadable
+    rm -f "$RUN/parse_error"
+    /usr/local/bin/php "$S/gateway_config.php" > "$T/gc.out" 2> /dev/null; gc=$?
+    check "pending: (N1) with 3.7_1's managed list unreadable, gateway_config.php exits non-zero with nothing on stdout" \
+        "$([ "$gc" -ne 0 ] && echo non-zero || echo 0) [$(cat "$T/gc.out")]" "non-zero []"
+    mark=$(lmark wireguard)
+    "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
+    check "pending: (N1) then wgct.sh configure_routes twice logs 'gateway_config.php failed' once and changes no route" \
+        "$(lcount wireguard "$mark" -e 'wgct-routes. gateway_config.php failed') $(lcount wireguard "$mark" -e 'wgct-routes. \(added\|removed\) ') $({ [ -f "$T/record.n1" ] && cmp -s "$RECORD" "$T/record.n1"; } || { [ ! -f "$T/record.n1" ] && [ ! -f "$RECORD" ]; } && echo kept || echo changed)" \
+        "1 0 kept"
+    /usr/local/bin/php "$S/prime.php" > /dev/null 2>&1; pr=$?
+    check "pending: (N1) then prime.php exits 0, and PHP's error log did not grow" \
+        "$pr $(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "0 $log0"
+    $PHP "$T/restore.php" "$T/n.xml"
+    rm -f "$RUN/parse_error" "$T/record.n1"
     pend_mark=$(lmark wireguard)
 }
 
