@@ -101,6 +101,12 @@ uu_register_suite('wiring', function (): int {
         printf("[SKIP] wiring: core is not on this machine\n");
         return uu_tally_report('wiring', $t);
     }
+    $view = file_get_contents('/usr/local/opnsense/mvc/app/views/OPNsense/UnboundUpstream/index.volt');
+    $view = $view === false ? '' : $view;
+    uu_check($t, '(f4) the installed status view decodes only what core\'s escaping encodes, and builds no markup with .html(',
+        str_contains($view, "return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<')"
+            . ".replace(/&gt;/g, '>').replace(/&amp;/g, '&');")
+        && !str_contains($view, '.html('));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -261,11 +267,5 @@ uu_register_suite('wiring', function (): int {
     }
     uu_check($t, 'pluginctl -c unbound_start leads to an evaluate that configd runs within 5 s',
         $seen);
-    $view = file_get_contents('/usr/local/opnsense/mvc/app/views/OPNsense/UnboundUpstream/index.volt');
-    $view = $view === false ? '' : $view;
-    uu_check($t, '(f4) the installed status view decodes only what core\'s escaping encodes, and builds no markup with .html(',
-        strpos($view, "return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<')"
-            . ".replace(/&gt;/g, '>').replace(/&amp;/g, '&');") !== false
-        && strpos($view, '.html(') === false);
     return uu_tally_report('wiring', $t);
 });

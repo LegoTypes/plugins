@@ -63,11 +63,11 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, '(f1) forward: a DoT answer with a port and an authentication name is kept, IPv4 and IPv6',
         uu_parse_forward("192.0.2.53@853#dns.example 2001:db8::53@853#dns.example\n")
         === ['192.0.2.53@853#dns.example', '2001:db8::53@853#dns.example']);
-    uu_check($t, '(f1) forward: markup, a space in the name, a non-address and a trailing LF in a word are null',
+    uu_check($t, '(f1) forward: markup, a space in the name, a non-address and a port longer than five digits are null',
         uu_parse_forward("192.0.2.53#dns<b>\n") === null && uu_parse_forward("192.0.2.53#a b\n") === null
         && uu_parse_forward("999.1.1.1\n") === null && uu_parse_forward("192.0.2.53@99999999\n") === null);
-    uu_check($t, '(f1) forward: a value that fails uu_forward_addr_ok() is rejected, a trailing LF included',
-        uu_forward_addr_ok('192.0.2.53@853#dns.example') && !uu_forward_addr_ok("192.0.2.53\n")
+    uu_check($t, '(f1) forward: a value with a trailing LF fails uu_forward_addr_ok(), and so do markup and a bad address',
+        uu_forward_addr_ok('192.0.2.53@853#dns.example') && !uu_forward_addr_ok("192.0.2.53@853#dns.example\n") && !uu_forward_addr_ok("192.0.2.53\n")
         && !uu_forward_addr_ok('192.0.2.53#dns<b>') && !uu_forward_addr_ok('999.1.1.1') && !uu_forward_addr_ok('1.2.3'));
 
     uu_check($t, 'sysctl: 1000', uu_parse_sysctl_int("1000\n") === 1000);

@@ -88,6 +88,9 @@ uu_register_suite('zone', function (): int {
         . "  forward-addr: 999.1.1.1\n"]);
     uu_check($t, '(f2) two bad forward-addr values give the one problem once',
         $z['shape'] === 'unrestorable' && $z['problems'] === ['forward-addr value']);
+    $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: \"192.0.2.53 198.51.100.1\"\n"]);
+    uu_check($t, '(f2) whitespace inside a forward-addr value is unrestorable, "forward-addr value"',
+        $z['shape'] === 'unrestorable' && $z['addrs'] === [] && $z['problems'] === ['forward-addr value']);
     $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n  fo<o>: yes\n"]);
     uu_check($t, '(f3) an option that is not a plain name is "unknown option", the text never named',
         $z['shape'] === 'unrestorable' && $z['problems'] === ['unknown option']
