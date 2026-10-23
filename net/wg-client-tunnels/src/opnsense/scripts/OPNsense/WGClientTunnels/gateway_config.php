@@ -25,8 +25,15 @@ wgct_entry_load('gateway_config.php', 'wgct-routes', ['tunnels.php']);
 $mdl = new OPNsense\WGClientTunnels\WGClientTunnels();
 $enabled = $mdl->enabled->isEqual('1');
 $ipv6Routes = $mdl->ipv6_routes->isEqual('1');
-$derived = $enabled && $ipv6Routes
-    ? wgct_derive(wgct_core_snapshot(), wgct_managed())
-    : ['tunnels' => [], 'global' => []];
+try {
+    $derived = $enabled && $ipv6Routes
+        ? wgct_derive(wgct_core_snapshot(), wgct_managed())
+        : ['tunnels' => [], 'global' => []];
+} catch (\RuntimeException $e) {
+    /* the managed list cannot be read (a pending migration's unreadable 3.7_1 list): nothing on stdout, so wgct.sh
+       changes no route and logs this failure once */
+    fwrite(STDERR, $e->getMessage() . PHP_EOL);
+    exit(1);
+}
 $lines = wgct_route_lines($derived, $enabled, $ipv6Routes);
 echo implode(PHP_EOL, wgct_migration_pending() ? wgct_route_lines_pending($lines) : $lines) . PHP_EOL;
