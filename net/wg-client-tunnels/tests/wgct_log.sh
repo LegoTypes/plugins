@@ -36,7 +36,15 @@ chmod +x "$T/helper"
 "$T/wgct.sh" configure_routes
 # core's own line
 logger -t config "coretest-$tag"
-sleep 3
+# every line above is written once a marker logged after them is (syslog writes in order): one to the WireGuard log,
+# and core's own line to the system log (at most 10 s each)
+. "$(dirname "$0")/wgct_marks.sh"
+lmark wireguard > /dev/null
+n=0
+while [ "$n" -lt 100 ] && ! grep -qs "coretest-$tag" /var/log/system/*.log; do
+    sleep 0.1
+    n=$((n + 1))
+done
 check "1 a plugin line from a process with a core ident lands in the WireGuard log" 'grep -qs "$tag core-ident" $L/*.log'
 check "2 info-level lines are kept" 'grep -qs "$tag info" $L/*.log'
 check "3 a wgct.sh line lands in the WireGuard log with its [wgct-routes] prefix" 'grep -hs "IPv6 routes are off" $L/*.log | tail -1 | grep -q "wireguard.*\[wgct-routes\] IPv6 routes are off"'

@@ -14,8 +14,8 @@
 #
 # The VM's cron runs the installed mirror four times a minute and the reconcile every minute, against the same
 # health.lock, skip marker and state directories as these cases. cron is stopped for the whole run, and the
-# ticks a cron round started before the stop are waited out, so only the test's own runs act; it is started
-# again at exit, after the originals are back.
+# rounds cron started before the stop are ended or waited out (wgct_settle.sh cron_quiesce), so only the test's
+# own runs act; it is started again at exit, after the originals are back.
 #
 # The mirror cases (spec section 3.2, lock bullets) run the copy's health_mirror.php with --dry, which still
 # takes health.lock and writes the skip markers but changes no gateway. Log counts are of the lines between two
@@ -47,6 +47,7 @@ check() {
 }
 
 . "$(dirname "$0")/wgct_marks.sh"
+. "$(dirname "$0")/wgct_settle.sh"
 
 stop_holder() {
     [ -n "$HOLDER" ] && kill "$HOLDER" > /dev/null 2>&1
@@ -64,13 +65,7 @@ HOLDER=""
 trap 'stop_holder; restore' EXIT
 trap 'exit 1' HUP INT TERM
 
-service cron stop > /dev/null 2>&1
-# a cron round started before the stop keeps its `sleep N && health_mirror.php` children: let them end (at most 90 s)
-n=0
-while [ "$n" -lt 90 ] && pgrep -f "$PENDING" > /dev/null; do
-    sleep 1
-    n=$((n + 1))
-done
+cron_quiesce > /dev/null
 check "no tick or reconcile started by cron is still running" "$(pgrep -f "$PENDING" > /dev/null && echo running || echo none)" none
 
 [ -d "$RUN" ] && mv "$RUN" "$T/run"
