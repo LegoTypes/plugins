@@ -44,11 +44,18 @@ class SettingsController extends ApiMutableModelControllerBase
      * declares the managed list and the holds 3.7_1 stored in its node, so a save then would drop them before the
      * migration carries them over. Logged once per state, as every refused writer is.
      *
-     * @throws UserException while the migration is pending
+     * @throws UserException while the migration is pending, or while the plugin's library cannot be read
      */
     public function setAction()
     {
         if ($this->request->isPost()) {
+            /* a library pkg has not finished installing cannot say whether the migration is pending: save nothing */
+            if (!is_readable(self::MIRROR_LIB)) {
+                throw new UserException(
+                    gettext('The plugin is being installed or upgraded; save again once it has finished.'),
+                    gettext('WireGuard Upstream Tunnels')
+                );
+            }
             require_once self::MIRROR_LIB;
             if (wgct_pending_refuses('settings', 'wgct-action')) {
                 throw new UserException(WGCT_MIGRATION_PENDING, gettext('WireGuard Upstream Tunnels'));
