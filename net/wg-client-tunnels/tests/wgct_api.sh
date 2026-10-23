@@ -60,6 +60,8 @@ check() {
     fi
 }
 
+. "$(dirname "$0")/wgct_marks.sh"
+
 cat > "$T/user.php" <<'PHPEOF'
 <?php
 require_once 'config.inc';
@@ -192,34 +194,31 @@ refused() {
     fi
 }
 
-# configd's log, every daily file: a count over them only grows, whenever syslog starts a new file (and latest.log
-# can name the old one for a while after midnight)
-configd_log() {
-    cat /var/log/configd/configd_*.log
-}
-# plugin actions configd logged: the log lines that name one of the actions with a side effect or a preview
+# plugin actions configd logged after MARK (wgct_marks.sh): the lines that name one of the actions with a side
+# effect or a preview
+ACTIONS='previewing the (removal|adoption|no-default)|ensuring the no-default|removing WireGuard upstream|adopting WireGuard instance|measuring the tunnel MTU|applying WireGuard upstream tunnel [0-9a-f]|rebinding WireGuard|reconfiguring WireGuard upstream tunnel IPv6 routes'
 actions() {
-    configd_log | grep -c -E 'previewing the (removal|adoption|no-default)|ensuring the no-default|removing WireGuard upstream|adopting WireGuard instance|measuring the tunnel MTU|applying WireGuard upstream tunnel [0-9a-f]|rebinding WireGuard|reconfiguring WireGuard upstream tunnel IPv6 routes'
+    lcount configd "$1" -E -e "$ACTIONS"
 }
 
 # the control user may preview, and the preview shows in configd's log
-before=$(actions)
+mark=$(lmark configd)
 check "control user (page privilege only): dry sentinel preview answers 200" \
     "$(call "$CTL_CRED" service/sentinel -d dry=1)" 200
-check "control user: that preview is in configd's log" "$(( $(actions) - before ))" 1
+check "control user: that preview is in configd's log" "$(actions "$mark")" 1
 
 # case 1
 check "read-only user: measure_mtu POST is refused" \
     "$(refused "$RO_CRED" tunnels/measure_mtu -d "wan=$WAN" -d "endpoint=$ENDPOINT")" refused
 
 # case 2
-before=$(actions)
+mark=$(lmark configd)
 for what in "tunnels/edit/$UUID" "tunnels/remove/$UUID" "tunnels/adopt/$UUID" service/sentinel; do
     check "read-only user: dry=1 POST to $(echo "$what" | sed "s/$UUID/<uuid>/") is refused" \
         "$(refused "$RO_CRED" "$what" -d dry=1)" refused
 done
 check "read-only user: a reconfigure POST is refused" "$(refused "$RO_CRED" service/reconfigure)" refused
-check "read-only user: no plugin action in configd's log" "$(( $(actions) - before ))" 0
+check "read-only user: no plugin action in configd's log" "$(actions "$mark")" 0
 
 # case 3: two measurements at once; the loser is refused while the winner pings (about 3 s)
 $PHP "$TUNNEL" --json measure-mtu "$WAN" "$ENDPOINT" > "$T/m1" &
@@ -276,16 +275,17 @@ UNMANAGED=$($PHP "$T/instance.php" create "$UNMANAGED_NAME" "$(wg genkey)")
 check "the throw-away instance is not on the managed list" \
     "$($PHP -r 'echo substr_count((string)simplexml_load_file("/conf/config.xml")->OPNsense->WGClientTunnelsEngine->managed, $argv[1]);' "$UNMANAGED")" 0
 handshakes=$(wg show all latest-handshakes)
+mark=$(lmark configd)
 $PHP "$TUNNEL" --json apply "$UNMANAGED" > "$T/apply"
 check "apply of an unmanaged instance: refused as not a managed tunnel" \
     "$($PHP -r '$j = json_decode(file_get_contents($argv[1]), true); echo $j["ok"] === false ? implode("|", $j["errors"]) : "ok";' "$T/apply")" \
     "not a managed tunnel"
 check "apply of an unmanaged instance: configd's log never names it" \
-    "$(configd_log | grep -c "$UNMANAGED")" 0
+    "$(lcount configd "$mark" -F -e "$UNMANAGED")" 0
 check "apply of an unmanaged instance: every latest handshake is unchanged" "$(wg show all latest-handshakes)" "$handshakes"
 $PHP "$TUNNEL" --json apply "$UNMANAGED" first > /dev/null
 check "apply of an unmanaged instance with a mode: configd's log still never names it" \
-    "$(configd_log | grep -c "$UNMANAGED")" 0
+    "$(lcount configd "$mark" -F -e "$UNMANAGED")" 0
 
 echo "api: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]
