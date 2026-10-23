@@ -36,12 +36,52 @@ function uu_notify_body(array $st): string
         JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 }
 
-/** The notify URL while notify is on, else null. */
+/** Whether the URL is an http or https URL, as the settings model's Mask admits it. */
+function uu_notify_url_ok(string $url): bool
+{
+    return preg_match(UU_NOTIFY_URL_MASK, $url) === 1;
+}
+
+/**
+ * The notify URL while notify is on, else null. A stored value that fails the mask (a restored config, a hand edit)
+ * is never used: one warning, no notification.
+ */
 function uu_notify_url(): ?string
 {
     uu_load_core();
     $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
-    return $mdl->notify->isEqual('1') && !$mdl->notify_url->isEmpty() ? $mdl->notify_url->getValue() : null;
+    if (!$mdl->notify->isEqual('1') || $mdl->notify_url->isEmpty()) {
+        return null;
+    }
+    $url = $mdl->notify_url->getValue();
+    if (!uu_notify_url_ok($url)) {
+        uu_log('notify: the stored URL is not an http or https URL; no notification is sent', LOG_WARNING);
+        return null;
+    }
+    return $url;
+}
+
+/**
+ * curl's options for the POST. Only http and https, on the request and on any redirect (none is followed); the _STR
+ * keys exist from PHP 8.3 with curl 7.85, the bitmask keys before them.
+ *
+ * @return array<int, mixed>
+ */
+function uu_notify_curl_options(string $body): array
+{
+    $protocols = defined('CURLOPT_PROTOCOLS_STR')
+        ? [CURLOPT_PROTOCOLS_STR => 'http,https', CURLOPT_REDIR_PROTOCOLS_STR => 'http,https']
+        : [CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
+            CURLOPT_REDIR_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS];
+    return $protocols + [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => $body,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => UU_NOTIFY_CONNECT_SECONDS,
+        CURLOPT_TIMEOUT => UU_NOTIFY_TIMEOUT_SECONDS,
+    ];
 }
 
 /** POST body as JSON; null on a 2xx answer, else what went wrong. */
@@ -51,20 +91,28 @@ function uu_notify_post(string $url, string $body): ?string
     if ($ch === false) {
         return 'curl_init failed';
     }
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $body,
-        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => false,
-        CURLOPT_CONNECTTIMEOUT => UU_NOTIFY_CONNECT_SECONDS,
-        CURLOPT_TIMEOUT => UU_NOTIFY_TIMEOUT_SECONDS,
-    ]);
+    curl_setopt_array($ch, uu_notify_curl_options($body));
     if (curl_exec($ch) === false) {
         return curl_error($ch);
     }
     $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
     return $code >= 200 && $code < 300 ? null : "HTTP $code";
+}
+
+/**
+ * What a failed notification says about the receiver, after "did not reach ": its scheme, host and port and the
+ * error, never the userinfo, path or query, which carry the receiver's secret. A 4xx answer points at the URL.
+ */
+function uu_notify_failure_line(string $url, string $error): string
+{
+    $parts = parse_url($url);
+    if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
+        $target = 'the notify URL';
+    } else {
+        $target = $parts['scheme'] . '://' . $parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : '');
+    }
+    $hint = preg_match('/^HTTP 4\d\d$/', $error) === 1 ? ' (see the Notify URL on the page)' : '';
+    return "$target: $error$hint";
 }
 
 /**
@@ -83,7 +131,7 @@ function uu_notify_switch(array $st): void
         }
         $error = uu_notify_post($url, uu_notify_body($st));
         if ($error !== null) {
-            uu_log("notify: the switch $switch did not reach $url: $error", LOG_WARNING);
+            uu_log("notify: the switch $switch did not reach " . uu_notify_failure_line($url, $error), LOG_WARNING);
         }
     } catch (\Throwable $e) {
         uu_log("notify: the switch $switch was not sent: " . $e->getMessage(), LOG_WARNING);
