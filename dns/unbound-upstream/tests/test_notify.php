@@ -33,5 +33,39 @@ uu_register_suite('notify', function (): int {
         json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a]), true)['member']
             === 'wg-a');
 
+    $opts = uu_notify_curl_options('{}');
+    uu_check($t, 'curl: only http and https, on the first request and on a redirect; no redirect is followed',
+        $opts[CURLOPT_PROTOCOLS_STR] === 'http,https' && $opts[CURLOPT_REDIR_PROTOCOLS_STR] === 'http,https'
+            && $opts[CURLOPT_FOLLOWLOCATION] === false);
+    uu_check($t, 'curl: the body is posted and the two timeouts are the constants',
+        $opts[CURLOPT_POSTFIELDS] === '{}' && $opts[CURLOPT_CONNECTTIMEOUT] === UU_NOTIFY_CONNECT_SECONDS
+            && $opts[CURLOPT_TIMEOUT] === UU_NOTIFY_TIMEOUT_SECONDS);
+
+    $xml = (string)file_get_contents(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
+    uu_check($t, 'url_ok: the mask is the settings model\'s notify_url Mask, byte for byte',
+        str_contains($xml, '<Mask>' . UU_NOTIFY_URL_MASK . '</Mask>'));
+    uu_check($t, 'url_ok: refuses file, gopher and a URL with a space',
+        !uu_notify_url_ok('file:///etc/passwd') && !uu_notify_url_ok('gopher://198.51.100.20/')
+            && !uu_notify_url_ok('http://198.51.100.20/a b'));
+    uu_check($t, 'url_ok: accepts http with a port and path, and https with userinfo',
+        uu_notify_url_ok('http://198.51.100.20:8123/api/webhook/example')
+            && uu_notify_url_ok('https://user:pw@198.51.100.20/x'));
+
+    uu_check($t, 'failure line: a 4xx answer names scheme, host and port, and points at the Notify URL',
+        uu_notify_failure_line('http://198.51.100.20:8123/api/webhook/example', 'HTTP 404')
+            === 'http://198.51.100.20:8123: HTTP 404 (see the Notify URL on the page)');
+    uu_check($t, 'failure line: HTTP 500 and a curl error get no hint; an IPv6 host keeps brackets and port',
+        uu_notify_failure_line('http://198.51.100.20/x', 'HTTP 500') === 'http://198.51.100.20: HTTP 500'
+            && uu_notify_failure_line('https://198.51.100.20/x', 'Connection refused')
+                === 'https://198.51.100.20: Connection refused'
+            && uu_notify_failure_line('https://[2001:db8::20]:8123/x', 'Connection refused')
+                === 'https://[2001:db8::20]:8123: Connection refused');
+    $line = uu_notify_failure_line('https://user:secret@198.51.100.20:8123/api/webhook/x?t=secret', 'HTTP 403');
+    uu_check($t, 'failure line: userinfo, path and query never appear',
+        $line === 'https://198.51.100.20:8123: HTTP 403 (see the Notify URL on the page)'
+            && !str_contains($line, 'user') && !str_contains($line, 'secret') && !str_contains($line, 'webhook'));
+    uu_check($t, 'failure line: a URL parse_url cannot split is named as the notify URL',
+        uu_notify_failure_line('http:///x', 'HTTP 404') === 'the notify URL: HTTP 404 (see the Notify URL on the page)');
+
     return uu_tally_report('notify', $t);
 });

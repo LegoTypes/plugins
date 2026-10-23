@@ -42,6 +42,8 @@ const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being
 const UU_STOP_RESOLVER = 'resolver';      /* Snapshot.stop: undoing the resolver address a Save replaced */
 const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect timeout */
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
+const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the model's notify_url <Mask>, byte for byte: what the
+                                          * stored value must match to be used */
 const UU_SYSLOG_IDENT = 'dnsupstream';   /* the program name every log line carries; syslog-ng's program() is an
                                            * unanchored regex, so it must contain no other log's pattern (core's
                                            * resolver log is program("unbound")); unboundupstream.inc's syslog and
