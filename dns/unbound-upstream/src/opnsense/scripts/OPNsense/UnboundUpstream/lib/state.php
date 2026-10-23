@@ -56,7 +56,7 @@ function uu_run_dir(string $dir = UU_RUN_DIR): void
     if (($st['mode'] & 0170000) !== 0040000) {
         throw new RuntimeException("$dir is not a directory");
     }
-    if (($st['mode'] & 07777) !== 0700 && !chmod($dir, 0700)) {
+    if (($st['mode'] & 07777) !== 0700 && !@chmod($dir, 0700)) {
         throw new RuntimeException("cannot make $dir mode 0700");
     }
 }
@@ -64,9 +64,9 @@ function uu_run_dir(string $dir = UU_RUN_DIR): void
 /**
  * A file the plugin trusts, read as a regular file only (convention C3): the path is no symbolic link and a regular
  * file (lstat), and the file opened is the one checked (the same device and inode), so a swap between the check and
- * the open is refused. A missing path, or one below a directory this process cannot search, has no text and no
- * problem. A file over maxBytes gives its first maxBytes as text, with the problem; a reader that needs the whole
- * file treats every problem as absent.
+ * the open is refused, and the open never blocks. A missing path, or one below a directory this process cannot
+ * search, has no text and no problem. A file over maxBytes gives its first maxBytes as text, with the problem; a
+ * reader that needs the whole file treats every problem as absent.
  *
  * @return array{text: ?string, problem: ?string} problem: 'a symbolic link', 'not a regular file', 'larger than
  *     1 MiB' (the default limit) or 'unreadable'
@@ -84,7 +84,10 @@ function uu_read_regular_file(string $path, int $maxBytes = UU_FILE_MAX_BYTES): 
     if (($link['mode'] & 0170000) !== 0100000) {
         return ['text' => null, 'problem' => 'not a regular file'];
     }
-    $fh = @fopen($path, 'rb');
+    /* n is O_NONBLOCK (the plain-files wrapper): a FIFO or device swapped in after the lstat opens at once, and the
+     * identity check below refuses it, instead of the open blocking until a writer appears; a regular file ignores
+     * the flag */
+    $fh = @fopen($path, 'rbn');
     if ($fh === false) {
         return ['text' => null, 'problem' => 'unreadable'];
     }

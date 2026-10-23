@@ -90,19 +90,38 @@ uu_register_suite('zone', function (): int {
         $z['shape'] === 'one' && $z['addrs'] === ['192.0.2.53'] && $z['problems'] === []);
 
     /* convention C3 (ruling R9): the zone files are read as regular files only, each up to 1 MiB, so a large
-     * blocklist file still counts and no forward-zone lies past 1 MiB */
-    uu_check($t, '(z1) zone texts: a symbolic link and a directory are skipped, the regular file read, and a 2 MiB '
-        . 'file yields its first 1 MiB',
+     * blocklist file still counts and no forward-zone lies past 1 MiB; the cut falls at a line's end, so a line
+     * past it is lost whole, never shortened */
+    uu_check($t, '(z1) zone texts: a symbolic link, a directory and a named pipe are skipped, the regular file read, '
+        . 'and a 2 MiB file yields its first 1 MiB up to its last whole line',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
             $line = "local-zone: \"blocked.example\" always_nxdomain\n";
             $big = substr(str_repeat($line, intdiv(2 * UU_SCRATCH_MIB, strlen($line)) + 1), 0, 2 * UU_SCRATCH_MIB);
+            $head = substr($big, 0, UU_SCRATCH_MIB);
             file_put_contents($dir . '/a.conf', $root);
             file_put_contents($dir . '/elsewhere.txt', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
             symlink($dir . '/elsewhere.txt', $dir . '/b.conf');
             mkdir($dir . '/c.conf');
             file_put_contents($dir . '/d.conf', $big);
-            return uu_zone_texts($dir) === [$root, substr($big, 0, UU_SCRATCH_MIB)];
+            uu_scratch_place('fifo', $dir . '/e.conf', '');
+            return UU_SCRATCH_MIB % strlen($line) !== 0
+                && uu_zone_texts($dir) === [$root, substr($head, 0, (int)strrpos($head, "\n") + 1)];
+        }));
+    uu_check($t, 'zone texts: a forward-addr line that straddles the 1 MiB cut is dropped whole, never shortened to '
+        . 'another address',
+        uu_scratch_case(function (string $dir): bool {
+            $head = "forward-zone:\n  name: \".\"\n";
+            $addr = "  forward-addr: 192.0.2.53\n";
+            /* comment lines up to 10 bytes short of the cut, so the address line runs past it */
+            $fill = UU_SCRATCH_MIB - 10 - strlen($head);
+            $pad = str_repeat(str_repeat('#', 63) . "\n", intdiv($fill, 64));
+            $pad .= $fill % 64 === 0 ? '' : str_repeat('#', $fill % 64 - 1) . "\n";
+            $text = $head . $pad . $addr . str_repeat("# after the cut\n", 1000);
+            file_put_contents($dir . '/a.conf', $text);
+            $got = uu_zone_texts($dir);
+            return strlen($head . $pad) === UU_SCRATCH_MIB - 10 && $got === [$head . $pad]
+                && uu_root_zone($got)['addrs'] === [];
         }));
 
     return uu_tally_report('zone', $t);

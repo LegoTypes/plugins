@@ -218,12 +218,13 @@ uu_register_suite('snapshot', function (): int {
             return count($listed) === 1 && $run['err'] === '' && (glob($dir . '/uu_pfctl*') ?: []) === [];
         }));
     uu_check($t, '(t2) runner: a run directory that does not exist is "no temporary file for its stderr", and no '
-        . 'uu_pfctl file is left in /tmp',
+        . 'uu_pfctl file is left in /tmp or the system temporary directory (tempnam()\'s fallback)',
         uu_scratch_case(function (string $dir) use ($stub): bool {
-            $before = glob('/tmp/uu_pfctl*') ?: [];
+            $temps = fn (): array => array_values(array_unique(array_merge(glob('/tmp/uu_pfctl*') ?: [],
+                glob(sys_get_temp_dir() . '/uu_pfctl*') ?: [])));
+            $before = $temps();
             $run = uu_pfctl_run([], $stub($dir), '/nonexistent/uu');
-            return $run === ['out' => '', 'err' => 'pfctl: no temporary file for its stderr']
-                && (glob('/tmp/uu_pfctl*') ?: []) === $before;
+            return $run === ['out' => '', 'err' => 'pfctl: no temporary file for its stderr'] && $temps() === $before;
         }));
     [$o, $calls] = $observe(null, false, $outputs);
     uu_check($t, 'observe, status (no listing) without a record: verifying; the checksum and the table are read, '

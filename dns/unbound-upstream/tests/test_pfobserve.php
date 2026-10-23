@@ -302,9 +302,10 @@ uu_register_suite('pfobserve', function (): int {
     rmdir($dir);
     /* convention C3: the record is read as a regular file of at most UU_FILE_MAX_BYTES only */
     $valid = (string)json_encode($record);
-    foreach (['link' => 'a symbolic link to a valid record', 'dir' => 'a directory at the path',
-              'large' => 'a valid record padded to 1 MiB + 1 byte'] as $kind => $what) {
-        uu_check($t, "(p1) record: $what is null",
+    foreach (['link' => '(p1) record: a symbolic link to a valid record',
+              'dir' => '(p1) record: a directory at the path', 'fifo' => 'record: a named pipe at the path',
+              'large' => '(p1) record: a valid record padded to 1 MiB + 1 byte'] as $kind => $what) {
+        uu_check($t, "$what is null",
             uu_scratch_case(function (string $dir) use ($kind, $valid): bool {
                 uu_scratch_place($kind, $dir . '/rules.json', $valid);
                 return uu_rules_record_load($dir . '/rules.json') === null;

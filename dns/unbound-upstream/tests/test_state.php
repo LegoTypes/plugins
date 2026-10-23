@@ -227,8 +227,13 @@ uu_register_suite('state', function (): int {
     };
     uu_check($t, '(s1) read: a symbolic link to a valid state file is a new state, "a symbolic link"',
         $reads('link', 'a symbolic link'));
+    uu_check($t, 'read: a dangling symbolic link is a new state, "a symbolic link", not a missing file',
+        uu_scratch_case(fn (string $dir): bool => symlink($dir . '/none', $dir . '/state.json')
+            && uu_state_read($dir . '/state.json') === ['state' => $new, 'problem' => 'a symbolic link']));
     uu_check($t, '(s2) read: a directory at the path is a new state, "not a regular file"',
         $reads('dir', 'not a regular file'));
+    uu_check($t, 'read: a named pipe at the path is a new state, "not a regular file", at once (never opened)',
+        $reads('fifo', 'not a regular file'));
     uu_check($t, '(s3) read: a valid state padded to 1 MiB + 1 byte is a new state, "larger than 1 MiB"',
         $reads('large', 'larger than 1 MiB'));
     uu_check($t, '(s4) read: a missing path is a new state with no problem',

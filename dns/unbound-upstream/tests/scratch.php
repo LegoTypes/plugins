@@ -8,7 +8,7 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Scratch directories for the cases that read files the plugin trusts (convention C3): a fresh, randomly named
- * 0700 directory per case, and the three kinds of path that are not a regular file within the read limit.
+ * 0700 directory per case, and the four kinds of path that are not a regular file within the read limit.
  */
 
 const UU_SCRATCH_MIB = 1048576;           /* the spec's limit (section 5.3), pinned here apart from UU_FILE_MAX_BYTES */
@@ -23,10 +23,10 @@ function uu_scratch_dir(): string
     return $dir;
 }
 
-/** Remove path and everything below it; a symbolic link is removed, never followed. */
+/** Remove path and everything below it; a symbolic link is removed, never followed, and so is a named pipe. */
 function uu_scratch_remove(string $path): void
 {
-    if (is_link($path) || is_file($path)) {
+    if (is_link($path) || (file_exists($path) && !is_dir($path))) {
         unlink($path);
         return;
     }
@@ -64,15 +64,18 @@ function uu_scratch_case(callable $case): bool
 }
 
 /**
- * Put at path one of the three things a trusted file must not be, each holding (or pointing at) valid: 'link', a
- * symbolic link to a regular file of valid beside it; 'dir', a directory; 'large', valid padded with spaces to one
- * byte over 1 MiB (still valid JSON, so only the size refuses it).
+ * Put at path one of the four things a trusted file must not be, each holding (or pointing at) valid where it can:
+ * 'link', a symbolic link to a regular file of valid beside it; 'dir', a directory; 'fifo', a named pipe, which an
+ * open without O_NONBLOCK would block on until a writer appears; 'large', valid padded with spaces to one byte over
+ * 1 MiB (still valid JSON, so only the size refuses it).
  */
 function uu_scratch_place(string $kind, string $path, string $valid): void
 {
+    $rc = 1;
     $ok = match ($kind) {
         'link' => file_put_contents($path . '.target', $valid) !== false && symlink($path . '.target', $path),
         'dir' => mkdir($path, 0700),
+        'fifo' => exec('/usr/bin/mkfifo ' . escapeshellarg($path), result_code: $rc) !== false && $rc === 0,
         'large' => file_put_contents($path, str_pad($valid, UU_SCRATCH_MIB + 1, ' ')) !== false,
     };
     if (!$ok) {

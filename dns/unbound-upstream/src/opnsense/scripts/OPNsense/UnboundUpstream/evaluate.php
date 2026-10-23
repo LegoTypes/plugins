@@ -19,10 +19,12 @@ declare(strict_types=1);
  *                                     evaluation stops while the marker exists (a cron tick or a hook between the
  *                                     deinstall's stop and the files' removal would otherwise re-enter tunnel mode
  *                                     with nothing left to undo it), until the package's post-install deletes it
- *   evaluate.php status               the section 3.8 JSON for the page; read-only and without the lock, and it
- *                                     never lists the ruleset (section 3.6c)
+ *   evaluate.php status               the section 3.8 JSON for the page; without the lock, it changes nothing but
+ *                                     the run directory (uu_run_dir()), and it never lists the ruleset
+ *                                     (section 3.6c)
  *   evaluate.php selftest             the pure suites, from a source tree (the package carries no tests)
- *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing
+ *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing else
+ *                                     but the run directory (uu_run_dir())
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
  * evaluate, start, stop and remove run under the evaluate lock, waiting up to UU_LOCK_WAIT_SECONDS for an
  * evaluation in flight, so a trigger that arrives meanwhile runs after it instead of being dropped. Every failure is logged and exits

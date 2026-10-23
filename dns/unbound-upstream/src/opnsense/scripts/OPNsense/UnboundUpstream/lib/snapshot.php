@@ -401,8 +401,9 @@ function uu_live_root(): ?array
 /**
  * Unbound's generated configuration files, in file-name order (ruling R9, convention C3): a symbolic link, anything
  * but a regular file and an unreadable file are skipped, and a file over UU_FILE_MAX_BYTES gives its first
- * UU_FILE_MAX_BYTES, so a large blocklist file still counts. The files are core's, written as root, but the
- * directory belongs to Unbound's chroot. $dir is for the tests.
+ * UU_FILE_MAX_BYTES up to the last line end in them, so a large blocklist file still counts and a line the cut
+ * falls in (a forward-addr) is dropped whole, never shortened into another value. The files are core's, written
+ * as root, but the directory belongs to Unbound's chroot. $dir is for the tests.
  *
  * @return list<string>
  */
@@ -412,10 +413,17 @@ function uu_zone_texts(string $dir = '/var/unbound/etc'): array
     $files = glob($dir . '/*.conf') ?: [];
     sort($files);
     foreach ($files as $file) {
-        $text = uu_read_regular_file($file)['text'];
-        if ($text !== null) {
-            $texts[] = $text;
+        $read = uu_read_regular_file($file);
+        $text = $read['text'];
+        if ($text === null) {
+            continue;
         }
+        if ($read['problem'] !== null) {
+            /* the first UU_FILE_MAX_BYTES of a larger file: cut after its last line end */
+            $end = strrpos($text, "\n");
+            $text = $end === false ? '' : substr($text, 0, $end + 1);
+        }
+        $texts[] = $text;
     }
     return $texts;
 }
