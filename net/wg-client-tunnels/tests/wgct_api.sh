@@ -41,7 +41,6 @@ SRC="$1"
 TUNNEL="$(dirname "$SRC")/tunnel.php"
 PHP="/usr/local/bin/php -d log_errors=0"
 API=https://127.0.0.1/api/wgclienttunnels
-LOG=/var/log/configd/latest.log
 PAGE_PRIV=page-vpn-wgclienttunnels
 RO_USER=wgct-api-readonly
 CTL_USER=wgct-api-control
@@ -193,9 +192,14 @@ refused() {
     fi
 }
 
+# configd's log, every daily file: a count over them only grows, whenever syslog starts a new file (and latest.log
+# can name the old one for a while after midnight)
+configd_log() {
+    cat /var/log/configd/configd_*.log
+}
 # plugin actions configd logged: the log lines that name one of the actions with a side effect or a preview
 actions() {
-    grep -c -E 'previewing the (removal|adoption|no-default)|ensuring the no-default|removing WireGuard upstream|adopting WireGuard instance|measuring the tunnel MTU|applying WireGuard upstream tunnel [0-9a-f]|rebinding WireGuard|reconfiguring WireGuard upstream tunnel IPv6 routes' "$LOG"
+    configd_log | grep -c -E 'previewing the (removal|adoption|no-default)|ensuring the no-default|removing WireGuard upstream|adopting WireGuard instance|measuring the tunnel MTU|applying WireGuard upstream tunnel [0-9a-f]|rebinding WireGuard|reconfiguring WireGuard upstream tunnel IPv6 routes'
 }
 
 # the control user may preview, and the preview shows in configd's log
@@ -272,17 +276,16 @@ UNMANAGED=$($PHP "$T/instance.php" create "$UNMANAGED_NAME" "$(wg genkey)")
 check "the throw-away instance is not on the managed list" \
     "$($PHP -r 'echo substr_count((string)simplexml_load_file("/conf/config.xml")->OPNsense->WGClientTunnelsEngine->managed, $argv[1]);' "$UNMANAGED")" 0
 handshakes=$(wg show all latest-handshakes)
-lines=$(wc -l < "$LOG")
 $PHP "$TUNNEL" --json apply "$UNMANAGED" > "$T/apply"
 check "apply of an unmanaged instance: refused as not a managed tunnel" \
     "$($PHP -r '$j = json_decode(file_get_contents($argv[1]), true); echo $j["ok"] === false ? implode("|", $j["errors"]) : "ok";' "$T/apply")" \
     "not a managed tunnel"
 check "apply of an unmanaged instance: configd's log never names it" \
-    "$(tail -n +"$((lines + 1))" "$LOG" | grep -c "$UNMANAGED")" 0
+    "$(configd_log | grep -c "$UNMANAGED")" 0
 check "apply of an unmanaged instance: every latest handshake is unchanged" "$(wg show all latest-handshakes)" "$handshakes"
 $PHP "$TUNNEL" --json apply "$UNMANAGED" first > /dev/null
 check "apply of an unmanaged instance with a mode: configd's log still never names it" \
-    "$(tail -n +"$((lines + 1))" "$LOG" | grep -c "$UNMANAGED")" 0
+    "$(configd_log | grep -c "$UNMANAGED")" 0
 
 echo "api: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]
