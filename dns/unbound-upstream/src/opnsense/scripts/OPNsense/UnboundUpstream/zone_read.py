@@ -14,9 +14,10 @@ ever resolved through a link and no device behind one is ever looked up (devfs c
 lookup). The directory's *.conf entries (not the dot files, as glob(3)) are opened the same way and O_NONBLOCK,
 in byte order of their names, and each regular file's first MAX_BYTES are read; a larger one is cut after its
 last line end at or before MAX_BYTES (ruling R9), so a line the cut falls in is dropped whole. A link, anything
-but a regular file, and a file that cannot be opened or read are skipped; a DIR that is not reached this way reads
-as nothing. Prints one JSON list on stdout: each kept file's bytes, base64, in order. Exits 0 then, 2 on a usage
-error and 1 on any other failure, naming only the exception's type on stderr, never a file's text.
+but a regular file, and a file that cannot be opened or read are skipped. Prints one JSON list on stdout: each kept
+file's bytes, base64, in order, and exits 0. A DIR that is not reached this way is a failed read, never an empty
+one (ruling R44: "could not look" must not read as "no root zone"): nothing on stdout, exit 1, as for any other
+failure, which names only the exception's type on stderr, never a file's text. A usage error exits 2.
 """
 
 import base64
@@ -79,18 +80,20 @@ def main(argv):
         sys.stderr.write('usage: zone_read.py DIR MAX_BYTES\n')
         return 2
     max_bytes = int(argv[2])
-    texts = []
     dir_fd = open_dir(argv[1])
-    if dir_fd is not None:
-        try:
-            names = sorted((os.fsencode(n) for n in os.listdir(dir_fd)
-                            if not n.startswith('.') and fnmatch.fnmatchcase(n, '*.conf')))
-            for name in names:
-                data = read_entry(dir_fd, name, max_bytes)
-                if data is not None:
-                    texts.append(base64.b64encode(data).decode('ascii'))
-        finally:
-            os.close(dir_fd)
+    if dir_fd is None:
+        sys.stderr.write('zone_read.py: DIR not reached without following a link\n')
+        return 1
+    texts = []
+    try:
+        names = sorted((os.fsencode(n) for n in os.listdir(dir_fd)
+                        if not n.startswith('.') and fnmatch.fnmatchcase(n, '*.conf')))
+        for name in names:
+            data = read_entry(dir_fd, name, max_bytes)
+            if data is not None:
+                texts.append(base64.b64encode(data).decode('ascii'))
+    finally:
+        os.close(dir_fd)
     sys.stdout.write(json.dumps(texts) + '\n')
     return 0
 

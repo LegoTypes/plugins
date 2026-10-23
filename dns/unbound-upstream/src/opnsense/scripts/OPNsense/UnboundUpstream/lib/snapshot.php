@@ -405,21 +405,23 @@ function uu_live_root(): ?array
  * are skipped, and a file over UU_FILE_MAX_BYTES gives its first UU_FILE_MAX_BYTES up to the last line end in
  * them, so a large blocklist file still counts and a line the cut falls in (a forward-addr) is dropped whole. The
  * files are core's, written as root, but the directory belongs to Unbound's chroot, which uid unbound can write.
- * The helper runs from its argv (no shell) under UU_ZONE_READ_SECONDS; a helper that cannot start, runs past that
- * (it is killed), exits non-zero or prints anything but a JSON list of base64 strings gives no texts. $dir and
- * $helper are for the tests.
+ * The helper runs from its argv (no shell) for at most $seconds. Null when the read failed (ruling R44): a helper
+ * that cannot start, runs past that (it is killed), exits non-zero (a DIR it cannot reach) or prints anything
+ * uu_zone_decode() refuses; never the empty list, which means no files. It logs nothing: status runs it every 30 s
+ * (ruling R8). $dir, $helper and $seconds are for the tests.
  *
- * @return list<string>
+ * @return ?list<string>
  */
-function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR__ . '/../zone_read.py'): array
+function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR__ . '/../zone_read.py',
+    int $seconds = UU_ZONE_READ_SECONDS): ?array
 {
     $pipes = [];
     $proc = @proc_open([UU_PYTHON, '-I', $helper, $dir, (string)UU_FILE_MAX_BYTES],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
     if (!is_resource($proc)) {
-        return [];
+        return null;
     }
-    $deadline = hrtime(true) + UU_ZONE_READ_SECONDS * 1000000000;
+    $deadline = hrtime(true) + $seconds * 1000000000;
     $out = '';
     $exit = null;
     try {
@@ -431,7 +433,7 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
             if ($left <= 0
                 || @stream_select($ready, $none, $none, intdiv($left, 1000000000), intdiv($left % 1000000000, 1000))
                 === false) {
-                return [];
+                return null;
             }
             $out .= (string)fread($pipes[1], 65536);
         }
@@ -441,7 +443,7 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
             $status = proc_get_status($proc);
         }
         if ($status['running']) {
-            return [];
+            return null;
         }
         $exit = $status['exitcode'];
     } finally {
@@ -451,22 +453,30 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
         }
         proc_close($proc);
     }
-    if ($exit !== 0) {
-        return [];
-    }
+    return $exit === 0 ? uu_zone_decode($out) : null;
+}
+
+/**
+ * zone_read.py's stdout, strictly: a JSON list of base64 strings, each a file's bytes. Null for anything else (bad
+ * JSON, an object, a nested list, a non-string or an entry that is not base64). Pure.
+ *
+ * @return ?list<string>
+ */
+function uu_zone_decode(string $stdout): ?array
+{
     try {
-        $doc = json_decode($out, false, 2, JSON_THROW_ON_ERROR);
+        $doc = json_decode($stdout, false, 2, JSON_THROW_ON_ERROR);
     } catch (\JsonException) {
-        return [];
+        return null;
     }
     if (!is_array($doc)) {
-        return [];
+        return null;
     }
     $texts = [];
     foreach ($doc as $entry) {
         $text = is_string($entry) ? base64_decode($entry, true) : false;
         if ($text === false) {
-            return [];
+            return null;
         }
         $texts[] = $text;
     }
