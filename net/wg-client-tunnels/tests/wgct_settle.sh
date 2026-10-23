@@ -25,9 +25,10 @@
 #                         dpinger's average holds only probes sent since its start
 #   gw_quiet [MAX]        wait (at most MAX s, default 120) until WAN_B reads up and is not forced down in config.xml,
 #                         every monitored gateway's status is the one core's gateway watcher last acted on (no alarm
-#                         pending), core has run the config hooks of every config save (its
-#                         /conf/event_config_changed.json is past the newest /conf/backup file), no reconcile is
-#                         queued and nothing above runs
+#                         pending), core is done with the newest config save's hooks (its
+#                         /conf/event_config_changed.json is past the newest /conf/backup file, or that save is 5 s
+#                         old: core's trigger skips an event while it runs, and a save made with configd stopped
+#                         raises none), no reconcile is queued and nothing above runs
 # Each wait returns 1 when it times out, after printing "      | " lines with what it waited on (what still runs, the
 # gateway state); the caller's check turns that into a FAIL.
 # Their own variables are named ws_*, so a test's are left alone.
@@ -139,12 +140,17 @@ ws_gateways() {
         $done = json_decode((string)@file_get_contents("/conf/event_config_changed.json"), true);
         $last = round((float)($done["last_processed_stamp"] ?? 0), 4);
         $newest = 0.0;
+        $newestFile = "";
         foreach (glob("/conf/backup/config-*.xml") ?: [] as $f) {
             if (preg_match("/config-([0-9]+(\\.[0-9]+)?)\\.xml$/", $f, $m)) {
-                $newest = max($newest, round((float)str_replace("_", "", $m[1]), 4));
+                $stamp = round((float)str_replace("_", "", $m[1]), 4);
+                if ($stamp > $newest) {
+                    $newest = $stamp;
+                    $newestFile = $f;
+                }
             }
         }
-        if ($newest > $last) {
+        if ($newest > $last && time() - (int)@filemtime($newestFile) < 5) {
             $why[] = "core has not run the config hooks of the newest config save yet";
         }
         if (file_exists("/var/run/wgclienttunnels/reconcile.pending")) {
