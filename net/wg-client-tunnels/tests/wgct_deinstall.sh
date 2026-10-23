@@ -232,7 +232,11 @@ ticks_past() {
     done
 }
 
-cron_quiesce > /dev/null
+if ! cq=$(cron_quiesce); then
+    FAIL=$((FAIL + 1))
+    echo "[FAIL] cron stopped and its runs ended within 90 s"
+    printf '%s\n' "$cq" | sed 's/^/      | /'
+fi
 RGW=$($PHP "$T/fact.php" uuid rehearse)
 [ -n "$RGW" ] && [ -n "$($PHP "$T/fact.php" uuid WAN_B)" ] || { echo "[FAIL] rehearse or WAN_B is missing (vm_base.sh)"; exit 1; }
 check "start: rehearse and WAN_B are not forced down, no hold record, WAN_DHCP not forced down, no removal marker" \

@@ -65,7 +65,11 @@ HOLDER=""
 trap 'stop_holder; restore' EXIT
 trap 'exit 1' HUP INT TERM
 
-cron_quiesce > /dev/null
+if ! cq=$(cron_quiesce); then
+    FAIL=$((FAIL + 1))
+    echo "[FAIL] cron stopped and its runs ended within 90 s"
+    printf '%s\n' "$cq" | sed 's/^/      | /'
+fi
 check "no tick or reconcile started by cron is still running" "$(pgrep -f "$PENDING" > /dev/null && echo running || echo none)" none
 
 [ -d "$RUN" ] && mv "$RUN" "$T/run"
