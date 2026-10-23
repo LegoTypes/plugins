@@ -32,7 +32,8 @@
 #                         event of a save made while configd was stopped, and its trigger skips one while it runs,
 #                         so when a save's hooks have not run and nothing runs, gw_quiet drives core's trigger itself
 #                         (configctl system event config_changed), as the next save would: it runs the hooks of every
-#                         save not yet run, so a delivery still on its way finds nothing left to run.
+#                         save not yet run, so a delivery still on its way finds nothing left to run. It drives it
+#                         once per newest save; a timeout prints the stamps and configctl's own answer.
 #   ws_hooks              "done" or "due", the newest /conf/backup save's stamp and the one core last ran hooks for
 # Each wait returns 1 when it times out, after printing "      | " lines with what it waited on (what still runs, the
 # gateway state); the caller's check turns that into a FAIL.
@@ -169,18 +170,23 @@ ws_gateways() {
 gw_quiet() {
     ws_max=${1:-120}
     ws_end=$(($(date +%s) + ws_max))
+    ws_fired=""
+    ws_ctl="not run"
     while [ "$(date +%s)" -lt "$ws_end" ]; do
         if ! in_flight; then
             ws_h=$(ws_hooks)
-            if [ "${ws_h%% *}" = due ]; then
-                /usr/local/sbin/configctl system event config_changed > /dev/null 2>&1
-            elif [ "$(ws_gateways)" = quiet ] && ! in_flight && [ "$(ws_hooks | cut -d' ' -f1)" = done ]; then
+            ws_newest=$(echo "$ws_h" | cut -d' ' -f2)
+            if [ "${ws_h%% *}" = due ] && [ "$ws_newest" != "$ws_fired" ]; then
+                ws_fired=$ws_newest
+                ws_ctl=$(/usr/local/sbin/configctl system event config_changed 2>&1)
+                ws_ctl="exit $? for save $ws_newest: $(printf '%s' "$ws_ctl" | tr '\n' ' ' | cut -c1-200)"
+            elif [ "${ws_h%% *}" = done ] && [ "$(ws_gateways)" = quiet ] && ! in_flight && [ "$(ws_hooks | cut -d' ' -f1)" = done ]; then
                 return 0
             fi
         fi
         sleep 0.25
     done
-    echo "      | gw_quiet: not quiet within ${ws_max} s: $(ws_gateways); config hooks $(ws_hooks)"
+    echo "      | gw_quiet: not quiet within ${ws_max} s: $(ws_gateways); config hooks $(ws_hooks); core's trigger driven: $ws_ctl"
     $WS_PHP /usr/local/opnsense/scripts/routes/gateway_status.php | $WS_PHP -r '
         foreach (json_decode(stream_get_contents(STDIN), true) as $n => $g) {
             echo "      |   $n: {$g["status"]} loss {$g["loss"]} delay {$g["delay"]} monitor {$g["monitor"]}\n";
