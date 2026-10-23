@@ -103,7 +103,17 @@ $read = $state;
 $now = time();
 
 $core = wgct_core_snapshot();
-$watch = wgct_repair_watch(wgct_derive($core, wgct_managed()), $core);
+try {
+    $managed = wgct_managed();
+} catch (\RuntimeException $e) {
+    /* the managed list cannot be read (a pending migration's unreadable 3.7_1 list): nothing to watch this tick; the
+       health mirror's tick reports the pending state once */
+    if ($dry) {
+        echo 'the managed list cannot be read: ', $e->getMessage(), "; nothing judged\n";
+    }
+    exit(0);
+}
+$watch = wgct_repair_watch(wgct_derive($core, $managed), $core);
 $status = wgct_gateway_status();
 if ($status === null) {
     if ($dry) {
