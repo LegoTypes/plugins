@@ -151,6 +151,14 @@ uu_register_suite('zone', function (): int {
             return $helperRun($dir . '/link') === [1, ''] && $helperRun($dir . '/none') === [1, '']
                 && $helperRun($dir . '/real') === [0, '[]'];
         }));
+    uu_check($t, 'zone texts: a reachable directory with no *.conf file (only other names, a dot file) is no files '
+        . '([]), shape none as before; only a failed read is null',
+        uu_scratch_case(function (string $dir): bool {
+            file_put_contents($dir . '/notes.txt', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
+            file_put_contents($dir . '/.hidden.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
+            $got = uu_zone_texts($dir);
+            return $got === [] && uu_root_zone($got)['shape'] === 'none';
+        }));
     $try = function (callable $case): bool {
         try {
             return (bool)$case();
