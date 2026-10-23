@@ -12,8 +12,9 @@
 #
 # The VM's tunnel `rehearse` is bound to WAN_B, the second VM WAN. A hold is taken the way the mirror takes one:
 # WAN_B's gateway forced down in its settings, then one mirror tick. Only WAN_B's gateway is ever forced down; the
-# first VM WAN is never touched. cron is stopped for the whole run, and the ticks a cron round started before the
-# stop are waited out, so only the ticks the test runs by hand act.
+# first VM WAN is never touched. cron is stopped for the whole run, and the rounds cron started before the stop are
+# ended or waited out (wgct_settle.sh cron_quiesce), so only the ticks the test runs by hand act. Each wait for a
+# condition polls it (wgct_settle.sh); none sleeps a fixed time.
 #   a. release-holds with rehearse held: exit 0, rehearse force_down=0, no hold record, routing re-synced through
 #      configd, the alarm replayed for rehearse, one "deinstall: released rehearse" line in the WireGuard log;
 #      run again with nothing held: "deinstall: nothing held", nothing saved.
@@ -27,10 +28,10 @@
 #      and names it ("left forced down (IPv6, its tunnel is not healthy)"). Then rehearse's monitor is pointed at
 #      its own tunnel address, which the firewall answers itself (0% loss): once that reading has settled,
 #      release-holds releases rehearse-ipv6 and forgets its record. The config of before the case is put back.
-#   f. A mirror tick that needs a change waits for the gateway lock (held by flock for 70 s, WAN_B forced down and
-#      no hold taken yet) while it holds health.lock; the .pre meanwhile gives up on health.lock after 60 s, writes
-#      the marker and runs release-holds. Once the gateway lock is free the tick stops at the marker: no hold record,
-#      rehearse not forced down (R30, review fix I2).
+#   f. A mirror tick that needs a change waits for the gateway lock (held by flock until the .pre has written the
+#      removal marker or ended, WAN_B forced down and no hold taken yet) while it holds health.lock; the .pre meanwhile gives
+#      up on health.lock after 60 s (its own bound), writes the marker and runs release-holds. Once the gateway lock
+#      is free the tick stops at the marker: no hold record, rehearse not forced down (R30, review fix I2).
 #   b. With PKG_UPGRADE set: +PRE_DEINSTALL.pre with rehearse held changes nothing (the hold and its record, the
 #      state directories with the footprint, the MSS anchor, the pin labels in pf, no removal marker), and
 #      +POST_DEINSTALL.post keeps both state directories.
@@ -41,7 +42,8 @@
 #   e. +POST_INSTALL.pre deletes a removal marker.
 # At exit, even on failure: configd running, the removal marker gone, config.xml put back as it was at the start
 # through core's Config::restoreBackup(), routing re-synced, the state rebuilt (wgct.sh reconcile, a filter reload,
-# one mirror tick) and cron started.
+# one mirror tick), the gateways waited quiet (WAN_B up, no alarm of this test still pending, so none reaches the
+# next test) and cron started.
 #
 # Usage: wgct_deinstall.sh DIR   (DIR holds +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and +POST_INSTALL.pre)
 
@@ -100,6 +102,7 @@ cleanup() {
     "$S/wgct.sh" reconcile > /dev/null 2>&1
     /usr/local/sbin/configctl filter reload > /dev/null
     $PHP "$MIRROR" > /dev/null 2>&1
+    gw_quiet 120 || echo "[FAIL] at exit the gateways are not quiet"
     service cron start > /dev/null 2>&1
     rm -rf "$T"
 }
@@ -185,9 +188,10 @@ echo is_array($v) ? implode(',', $v) : (is_bool($v) ? ($v ? 'true' : 'false') : 
 PHPEOF
 
 . "$(dirname "$0")/wgct_marks.sh"
+. "$(dirname "$0")/wgct_settle.sh"
 
 status_of() {
-    /usr/local/opnsense/scripts/routes/gateway_status.php | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d[$argv[1]]["status"] ?? "absent";' "$1"
+    $PHP /usr/local/opnsense/scripts/routes/gateway_status.php | $PHP -r '$d = json_decode(stream_get_contents(STDIN), true); echo $d[$argv[1]]["status"] ?? "absent";' "$1"
 }
 deinstall_lines() {
     lwindow wireguard "$1" | grep -F -e '[wgct-action] deinstall:' -e 'wgct-marks: marker missing' | sed 's/.*\[wgct-action\] //'
@@ -206,26 +210,37 @@ release_wan_b() {
 # settle: wait (at most 90 s) until no tick, prime, reconcile or routing configure is running
 settle() {
     n=0
-    while [ "$n" -lt 90 ] && pgrep -f "$PENDING|rc[.]routing_configure" > /dev/null; do
-        sleep 1
+    while [ "$n" -lt 900 ] && in_flight; do
+        sleep 0.1
         n=$((n + 1))
     done
 }
-# settled NAME: wait (at most 150 s) until NAME's dpinger has run past its settle window (60 s: no time_period set)
+# settled NAME: wait until NAME's dpinger has run past its settle window (wgct_settle.sh gw_settled: the gateway's
+# time_period, or dpinger's default 60 s)
 settled() {
+    gw_settled "$1"
+}
+# held_by_tick: wait (at most 10 s) until the tick started in the background holds health.lock
+held_by_tick() {
     n=0
-    while [ "$n" -lt 150 ]; do
-        age=$($PHP -r '$m = @filemtime("/var/run/dpinger_" . $argv[1] . ".sock"); echo $m === false ? -1 : time() - $m;' "$1")
-        [ "$age" -ge 65 ] && return 0
-        sleep 1
+    while [ "$n" -lt 100 ] && kill -0 "$TICK" 2> /dev/null && /usr/local/bin/flock -n "$RUN/health.lock" true; do
+        sleep 0.1
         n=$((n + 1))
     done
-    return 1
+}
+# ticks: the ticks case c's loop has finished; ticks_past N: wait (at most 30 s) until it has finished more than N
+ticks() {
+    cat "$T/ticks" 2> /dev/null | wc -l | tr -d ' '
+}
+ticks_past() {
+    n=0
+    while [ "$n" -lt 300 ] && [ "$(ticks)" -le "$1" ]; do
+        sleep 0.1
+        n=$((n + 1))
+    done
 }
 
-service cron stop > /dev/null 2>&1
-# a cron round started before the stop keeps its `sleep N && health_mirror.php` children: let them end first
-settle
+cron_quiesce > /dev/null
 RGW=$($PHP "$T/fact.php" uuid rehearse)
 [ -n "$RGW" ] && [ -n "$($PHP "$T/fact.php" uuid WAN_B)" ] || { echo "[FAIL] rehearse or WAN_B is missing (vm_base.sh)"; exit 1; }
 check "start: rehearse and WAN_B are not forced down, no hold record, WAN_DHCP not forced down, no removal marker" \
@@ -242,7 +257,7 @@ check "a: gateway status shows rehearse force_down" "$(status_of rehearse)" forc
 mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/a.json"
 rc=$?
-sleep 1
+settle
 check "a: release-holds exits 0" "$rc" 0
 check "a: it reports ok, saved, rehearse released, nothing pruned or left down, routing through configd, rehearse replayed" \
     "$($PHP "$T/json.php" ok < "$T/a.json") $($PHP "$T/json.php" saved < "$T/a.json") $($PHP "$T/json.php" released < "$T/a.json") [$($PHP "$T/json.php" pruned < "$T/a.json")] [$($PHP "$T/json.php" left_down < "$T/a.json")] $($PHP "$T/json.php" routing < "$T/a.json") $($PHP "$T/json.php" replayed < "$T/a.json")" \
@@ -254,7 +269,7 @@ check "a: one line in the WireGuard log: deinstall: released rehearse" "$(deinst
 mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/a2.json"
 rc=$?
-sleep 1
+settle
 check "a: again with nothing held: exit 0, ok, nothing saved, nothing released, no routing re-sync" \
     "$rc $($PHP "$T/json.php" ok < "$T/a2.json") $($PHP "$T/json.php" saved < "$T/a2.json") [$($PHP "$T/json.php" released < "$T/a2.json")] [$($PHP "$T/json.php" routing < "$T/a2.json")]" \
     "0 true false [] []"
@@ -273,7 +288,7 @@ start=$(date +%s)
 $PHP "$TUNNEL" --json release-holds > "$T/d.json"
 rc=$?
 took=$(($(date +%s) - start))
-sleep 1
+settle
 bound=$($PHP -r 'require "/usr/local/opnsense/mvc/script/load_phalcon.php"; require "'"$S"'/lib/apply.php"; echo WGCT_REMOVAL_CONFIGD_SECONDS;')
 echo "    d: release-holds took ${took} s with configd stopped (one configd call is bounded at ${bound} s)"
 check "d: release-holds ends well within one bound" "$([ "$took" -lt "$bound" ] && echo within || echo "over (${took} s)")" within
@@ -290,7 +305,7 @@ start=$(date +%s)
 $PHP "$TUNNEL" --json release-holds > "$T/d2.json"
 rc=$?
 took=$(($(date +%s) - start))
-sleep 1
+settle
 echo "    d2: release-holds with nothing held took ${took} s with configd stopped"
 check "d2: release-holds with nothing held ends well within one bound" "$([ "$took" -lt "$bound" ] && echo within || echo "over (${took} s)")" within
 check "d2: exit 0, ok, nothing saved or released, no configd call (routing empty), nothing replayed" \
@@ -319,7 +334,7 @@ check "p: the mirror reads rehearse unhealthy" "$($PHP "$MIRROR" --dry | grep -c
 mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/p1.json"
 rc=$?
-sleep 1
+settle
 check "p: release-holds with rehearse unhealthy: exit 0, ok, nothing released, nothing pruned, rehearse-ipv6 left down, nothing saved" \
     "$rc $($PHP "$T/json.php" ok < "$T/p1.json") [$($PHP "$T/json.php" released < "$T/p1.json")] [$($PHP "$T/json.php" pruned < "$T/p1.json")] $($PHP "$T/json.php" left_down < "$T/p1.json") $($PHP "$T/json.php" saved < "$T/p1.json")" \
     "0 true [] [] rehearse-ipv6 false"
@@ -336,7 +351,7 @@ check "p: the mirror reads rehearse healthy" "$($PHP "$MIRROR" --dry | grep -c '
 mark=$(lmark wireguard)
 $PHP "$TUNNEL" --json release-holds > "$T/p2.json"
 rc=$?
-sleep 1
+settle
 check "p: release-holds with rehearse healthy: exit 0, ok, saved, rehearse-ipv6 released, nothing pruned or left down, routing through configd" \
     "$rc $($PHP "$T/json.php" ok < "$T/p2.json") $($PHP "$T/json.php" saved < "$T/p2.json") $($PHP "$T/json.php" released < "$T/p2.json") [$($PHP "$T/json.php" pruned < "$T/p2.json")] [$($PHP "$T/json.php" left_down < "$T/p2.json")] $($PHP "$T/json.php" routing < "$T/p2.json")" \
     "0 true true rehearse-ipv6 [] [] configd"
@@ -352,22 +367,32 @@ check "p: the config of before the case is back: no rehearse-ipv6, rehearse's ow
 $PHP "$T/gw.php" WAN_B force_down=1 && /usr/local/sbin/configctl interface routes configure > /dev/null
 settle
 check "f: WAN_B forced down, no hold taken yet" "$(facts)" "0 0 1 0"
-/usr/local/bin/flock -o /tmp/filter_reload_gateway.lock sleep 70 &
+# the holder keeps the gateway lock until the .pre has written the marker or ended (at most 75 s; the .pre waits
+# 60 s for health.lock first), so the tick gets the lock only after the marker is there
+/usr/local/bin/flock -o /tmp/filter_reload_gateway.lock /bin/sh -c \
+    "n=0; while [ ! -e $MARKER ] && [ ! -e $T/f.done ] && [ \$n -lt 750 ]; do sleep 0.1; n=\$((n + 1)); done" &
 HOLDER=$!
-sleep 1
+n=0
+while [ "$n" -lt 100 ] && /usr/local/bin/flock -n /tmp/filter_reload_gateway.lock true; do
+    sleep 0.1
+    n=$((n + 1))
+done
 mark=$(lmark wireguard)
 $PHP "$MIRROR" > "$T/f.tick" 2>&1 &
 TICK=$!
-sleep 5
+held_by_tick
 check "f: the tick is waiting for the gateway lock, holding health.lock" \
     "$(kill -0 "$TICK" 2> /dev/null && echo waiting || echo ended) $(/usr/local/bin/flock -n "$RUN/health.lock" true && echo free || echo held)" "waiting held"
 start=$(date +%s)
 env -u PKG_UPGRADE sh "$DIR/+PRE_DEINSTALL.pre"
 rc=$?
 took=$(($(date +%s) - start))
+: > "$T/f.done"
 wait "$TICK"
 wait "$HOLDER" 2> /dev/null
-sleep 1
+HOLDER=""
+TICK=""
+settle
 echo "    f: the .pre took ${took} s (60 s for health.lock, then release-holds behind the gateway lock)"
 check "f: the .pre exits 0 and leaves the marker" "$rc $([ -f "$MARKER" ] && echo marker || echo none)" "0 marker"
 check "f: after the tick got the gateway lock: no hold record, rehearse not forced down; WAN_B still forced down, WAN_DHCP untouched" \
@@ -378,7 +403,7 @@ check "f: release-holds found nothing held" "$(deinstall_lines "$mark")" "deinst
 sh "$DIR/+POST_INSTALL.pre"
 "$S/wgct.sh" reconcile > /dev/null 2>&1
 /usr/local/sbin/configctl filter reload > /dev/null
-sleep 2
+settle
 release_wan_b
 
 # b. an upgrade: the .pre and the .post of the deinstall change nothing
@@ -399,7 +424,7 @@ check "b: rehearse held, the footprint names its pins and pf holds them, the MSS
 mark=$(lmark wireguard)
 PKG_UPGRADE=true sh "$DIR/+PRE_DEINSTALL.pre"
 rc=$?
-sleep 1
+settle
 check "b: PKG_UPGRADE=true sh +PRE_DEINSTALL.pre exits 0 and writes no removal marker" \
     "$rc $([ -e "$MARKER" ] && echo marker || echo none)" "0 none"
 check "b: the hold and its record stay" "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" rows) $($PHP "$T/fact.php" row_gateway)" "1 1 $RGW"
@@ -422,13 +447,14 @@ rm -f "$T/stop" "$T/ticks"
     done
 ) &
 LOOP=$!
-sleep 2
+ticks_past 0
 mark=$(lmark wireguard)
-ticks_before=$(wc -l < "$T/ticks" | tr -d ' ')
+ticks_before=$(ticks)
 env -u PKG_UPGRADE sh "$DIR/+PRE_DEINSTALL.pre"
 rc=$?
-ticks_during=$(($(wc -l < "$T/ticks" | tr -d ' ') - ticks_before))
-sleep 3
+ticks_during=$(($(ticks) - ticks_before))
+# two more ticks after the .pre: the loop ran on past it
+ticks_past $((ticks_before + ticks_during + 1))
 stop_loop
 $PHP "$MIRROR" > /dev/null 2>&1
 check "c: sh +PRE_DEINSTALL.pre exits 0, with mirror ticks running all the while" \
@@ -445,7 +471,7 @@ rm -f "$RUN/reconcile.pending"
 "$S/wgct.sh" configure_routes
 "$S/wgct.sh" reconcile --repair
 /usr/local/sbin/configctl filter reload > /dev/null
-sleep 3
+settle
 check "c: with the marker, request_reconcile queues nothing, and reconcile and a filter reload render no anchor or footprint" \
     "$([ -e "$RUN/reconcile.pending" ] && echo queued || echo none) $(pfctl -a "$ANCHOR" -sr 2> /dev/null | wc -l | tr -d ' ') $([ -e "$DB/footprint.json" ] && echo footprint || echo none)" "none 0 none"
 check "c: the minute reconcile says the package is being removed, once per run" \

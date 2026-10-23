@@ -61,6 +61,16 @@ dev_of() {
     route -n get -inet6 "$1" 2>/dev/null | awk -v ip="$1" '$1 == "destination:" { d = $2 } $1 == "interface:" { i = $2 } END { if (d == ip) print i }'
 }
 say() { printf '%s\n' "$@" > "$T/out"; }
+# until COND: wait (at most 30 s) until the shell condition COND holds
+until_true() {
+    n=0
+    while [ "$n" -lt 300 ] && ! eval "$1"; do
+        sleep 0.1
+        n=$((n + 1))
+    done
+}
+# drained: no queued reconcile of this test's copies waits or runs (at most 30 s)
+drained() { until_true '! pgrep -f "$T/.*_reconcile_(wait|queued)" > /dev/null'; }
 line() { printf 'route|%s|fd00::%s:1/128|fd00::%s:2|t%s|t%s-ipv6|%s' "$1" "$2" "$2" "$2" "$2" "$3"; }
 run() { "$W" configure_routes; }
 
@@ -105,7 +115,7 @@ printf 'lo91|fd00::91:1/128|fd00::91:2|t91\n' > "$REC"
 check "15 stop reads a four-field record written by the previous version" '! netstat -rn -f inet6 | grep -q "fd00::91:2.*lo91" && [ ! -f "$REC" ]'
 say 'state|on' "$(line lo91 91 $M1)"; echo 2 > "$T/sleep"
 "$W" configure_routes & a=$!
-sleep 1
+until_true '[ -e "$T/inside" ]'
 "$W" configure_routes & b=$!
 wait $a; ra=$?
 wait $b; rb=$?
@@ -117,7 +127,7 @@ rm -f "$T/daemon.on"
 check "17 a daemon the section started does not inherit routes.lock" '[ "$(fstat "$STATE/routes.lock" | grep -c .)" -le 1 ]'
 kill "$(cat "$T/daemon")" 2>/dev/null
 /usr/local/bin/flock "$STATE/routes.lock" sleep 15 & h=$!
-sleep 1
+until_true '! /usr/local/bin/flock -n "$STATE/routes.lock" true'
 "$W" configure_routes; rt=$?
 kill $h 2>/dev/null
 check "18 a wait past 10 s gives up with exit 75" '[ $rt = 75 ]'
@@ -178,20 +188,20 @@ t0=$(date +%s)
 "$W" request_reconcile; "$W" request_reconcile; "$W" request_reconcile
 t1=$(date +%s)
 check "24 request_reconcile returns without waiting for the reconcile" '[ $((t1 - t0)) -le 1 ]'
-sleep 6
+drained
 check "25 a burst of requests runs the reconcile once or twice, never once per request" '[ "$(grep -c . "$T/runs")" -ge 1 ] && [ "$(grep -c . "$T/runs")" -le 2 ]'
 : > "$T/runs"
-"$W" request_reconcile; sleep 1; "$W" request_reconcile
-sleep 6
+"$W" request_reconcile; until_true '[ -s "$T/runs" ]'; "$W" request_reconcile
+drained
 check "26 a request made while a reconcile runs gets its own run after it" '[ "$(grep -c . "$T/runs")" = 2 ]'
 check "27 no waiter is left running" '! pgrep -f "_reconcile_queued" > /dev/null'
 : > "$T/log"; : > "$T/runs"
 sh "$(dirname "$0")/wgct_stub.sh" "$SRC" "$T/wgct_wait1.sh" "$STATE" "$T/helper" "$T/recon" 1 || exit 1
 sed -e "s#logger -t#$T/logger -t#g" "$T/wgct_wait1.sh" > "$T/wgct_fakes.sh"
 /usr/local/bin/flock "$STATE/reconcile.lock" sleep 4 & h=$!
-sleep 1
+until_true '! /usr/local/bin/flock -n "$STATE/reconcile.lock" true'
 "$T/wgct_fakes.sh" request_reconcile
-sleep 5
+drained
 kill $h 2>/dev/null
 check "28 a queued reconcile that waits out its time logs that it gave up, and does not run" 'grep -q "queued reconcile skipped" "$T/log" && [ ! -s "$T/runs" ]'
 mkdir -p "$STATE/db"

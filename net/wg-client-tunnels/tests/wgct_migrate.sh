@@ -68,6 +68,7 @@ PASS=0
 FAIL=0
 
 . "$(dirname "$0")/wgct_marks.sh"
+. "$(dirname "$0")/wgct_settle.sh"
 
 check() {
     if [ "$2" = "$3" ]; then
@@ -268,16 +269,12 @@ others() {
 
 # pending INST: the checks of the window before the migration (see the header); config.xml is 3.7_1's
 pending() {
-    service cron stop > /dev/null
-    # the ticks and the reconcile cron started before it stopped (a `sleep 45 && …` shell runs on): each would run
-    # the route set or the mirror, and log its one refusal before the checks below mark the log
-    n=0
-    while [ "$n" -lt 90 ] && pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null; do
-        sleep 1
-        n=$((n + 1))
-    done
+    # the ticks and the reconcile cron started before it stopped: each would run the route set or the mirror, and log
+    # its one refusal before the checks below mark the log; a round still asleep is ended (wgct_settle.sh)
+    n=$(cron_quiesce)
     echo "    waited ${n} s for the runs cron started"
-    check "pending: no run cron started is left" "$([ "$n" -lt 90 ] && echo none || echo running)" none
+    check "pending: no run cron started is left" \
+        "$(pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null && echo running || echo none)" none
     rm -f "$RUN"/*.pending
     cp /conf/config.xml "$T/pending.xml"
     mark=$(lmark wireguard)
@@ -360,7 +357,12 @@ scenario() {
     $PHP "$MIGRATE" "$prefix" > "$T/migrate.out" 2>&1
     end=$(date +%s)
     echo "    $name: run_migrations.php said: $(tr '\n' ';' < "$T/migrate.out")"
-    sleep 1
+    # whatever the migration's save set off has ended before the list is read (at most 30 s)
+    n=0
+    while [ "$n" -lt 300 ] && in_flight; do
+        sleep 0.1
+        n=$((n + 1))
+    done
     $PHP "$TUNNEL" --json list > "$T/after.json"
 
     check "$name: the settings node is at 3.1.0 with neither managed nor held" "$($PHP "$T/fact.php" settings)" "3.1.0 managed:no held:no"
