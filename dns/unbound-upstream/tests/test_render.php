@@ -41,6 +41,9 @@ function uu_test_fw(): \OPNsense\Firewall\Plugin
 
         public bool $tableThrows = false;
 
+        /** a rule carrying this label is refused, as core may refuse one */
+        public ?string $ruleThrowsOn = null;
+
         public function registerTable($name, $persist = false, $file = null)
         {
             if ($this->tableThrows) {
@@ -55,6 +58,9 @@ function uu_test_fw(): \OPNsense\Firewall\Plugin
          */
         public function registerFilterRule($prio, $conf, $defaults = null)
         {
+            if ($this->ruleThrowsOn !== null && ($conf['label'] ?? null) === $this->ruleThrowsOn) {
+                throw new \RuntimeException("refused\ntwice");
+            }
             $this->rules[] = [$prio, $conf];
         }
     };
@@ -388,6 +394,38 @@ uu_register_suite('render', function (): int {
                 && $bad['members'] === [['name' => 'wg-a', 'interface' => 'opt14', 'if' => 'wg1'],
                                         ['name' => 'wg-b', 'interface' => 'opt15', 'if' => 'wg5']];
         }));
+
+    /* a rule core refuses costs only itself: every block after it still registers, with one error naming it */
+    $refused = function (string $label) use ($a, $b): array {
+        $fw = uu_test_fw();
+        $fw->ruleThrowsOn = $label;
+        $logged = [];
+        $threw = false;
+        try {
+            uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '192.0.2.9',
+                'members' => [$a, $b], 'footprint' => ['resolver' => '192.0.2.1', 'interface' => 'opt14'],
+                'footprint_problem' => null, 'error' => null],
+                function (string $msg, string $level) use (&$logged): void {
+                    $logged[] = [$level, $msg];
+                });
+        } catch (\Throwable) {
+            $threw = true;
+        }
+        return ['threw' => $threw, 'labels' => array_map(fn (array $r): string => (string)$r[1]['label'], $fw->rules),
+                'logged' => $logged];
+    };
+    $r = $refused(md5('uu-footprint-pass-opt14'));
+    uu_check($t, '(M5) a refused footprint pass costs only itself: the setting\'s passes, the counting block, the '
+        . 'backstop and the footprint block all register, one error naming the rule',
+        !$r['threw'] && $r['labels'] === [md5('uu-pass-opt14'), md5('uu-pass-opt15'), md5('uu-block'),
+            md5('uu-backstop'), md5('uu-footprint')]
+        && $r['logged'] === [['err', 'rules: "Unbound upstream: the address the plugin last used, through the device '
+            . 'of its route" not rendered: refused; twice']]);
+    $r = $refused(md5('uu-pass-opt14'));
+    uu_check($t, '(M5) a refused first setting pass costs only itself: the other passes and every block register',
+        !$r['threw'] && $r['labels'] === [md5('uu-pass-opt15'), md5('uu-footprint-pass-opt14'), md5('uu-block'),
+            md5('uu-backstop'), md5('uu-footprint')]
+        && count($r['logged']) === 1 && $r['logged'][0][0] === 'err');
 
     return uu_tally_report('render', $t);
 });
