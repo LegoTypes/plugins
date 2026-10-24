@@ -67,8 +67,10 @@ uu_register_suite('snapshot', function (): int {
         uu_parse_forward("192.0.2.53#dns<b>\n") === null && uu_parse_forward("192.0.2.53#a b\n") === null
         && uu_parse_forward("999.1.1.1\n") === null && uu_parse_forward("192.0.2.53@99999999\n") === null);
     uu_check($t, '(f1) forward: a value with a trailing LF fails uu_forward_addr_ok(), and so do markup and a bad address',
-        uu_forward_addr_ok('192.0.2.53@853#dns.example') && !uu_forward_addr_ok("192.0.2.53@853#dns.example\n") && !uu_forward_addr_ok("192.0.2.53\n")
-        && !uu_forward_addr_ok('192.0.2.53#dns<b>') && !uu_forward_addr_ok('999.1.1.1') && !uu_forward_addr_ok('1.2.3'));
+        uu_try_case(fn (): bool => uu_forward_addr_ok('192.0.2.53@853#dns.example')
+            && !uu_forward_addr_ok("192.0.2.53@853#dns.example\n") && !uu_forward_addr_ok("192.0.2.53\n")
+            && !uu_forward_addr_ok('192.0.2.53#dns<b>') && !uu_forward_addr_ok('999.1.1.1')
+            && !uu_forward_addr_ok('1.2.3')));
 
     uu_check($t, 'sysctl: 1000', uu_parse_sysctl_int("1000\n") === 1000);
     uu_check($t, 'sysctl: 0 is a value', uu_parse_sysctl_int("0\n") === 0);

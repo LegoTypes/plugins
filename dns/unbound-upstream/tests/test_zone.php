@@ -100,8 +100,8 @@ uu_register_suite('zone', function (): int {
     uu_check($t, '(f3) forward-first is still named, and two bad option names give "unknown option" once',
         $z['problems'] === ['forward-first', 'unknown option']);
     uu_check($t, '(f3) an option name is admitted by shape: a trailing LF never passes',
-        uu_zone_option_name_ok('forward-first') && !uu_zone_option_name_ok("forward-first\n")
-        && !uu_zone_option_name_ok('fo<o>'));
+        uu_try_case(fn (): bool => uu_zone_option_name_ok('forward-first') && !uu_zone_option_name_ok("forward-first\n")
+            && !uu_zone_option_name_ok('fo<o>')));
 
     $z = uu_root_zone(["forward-zone:\n  name: \".\"\n  forward-tls-upstream: no\n  forward-addr: 192.0.2.53\n"]);
     uu_check($t, 'forward-tls-upstream: no is not tls', $z['shape'] === 'one' && !$z['tls']);
