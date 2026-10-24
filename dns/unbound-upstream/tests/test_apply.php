@@ -960,15 +960,24 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(a2) requested stop with the zone unrestorable → no forward_add, restart at once, then the same tail',
         $run['action'] === 'stop' && $run['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
         && $cleared($run['st']) && uu_test_logged($run['calls'], LOG_ERR, 'second . zone'));
-    /* ruling R44: an unreadable zone configuration is unrestorable, so these stops restart at once as well */
-    $unreadable = $fp;
-    $unreadable['zone'] = uu_root_zone(null);
-    $unreadable['contract_input']['zone'] = $unreadable['zone'];
+    /* ruling R44: an unreadable zone configuration is unrestorable, so these stops restart at once as well (a library
+     * whose uu_root_zone() takes no null throws here, and the cases after these still run) */
+    $unreadable = null;
+    try {
+        $unreadable = $fp;
+        $unreadable['zone'] = uu_root_zone(null);
+        $unreadable['contract_input']['zone'] = $unreadable['zone'];
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+        $unreadable = null;
+    }
     foreach ([UU_STOP_REQUEST => 'requested stop', UU_STOP_REMOVE => 'removal'] as $cause => $what) {
-        $run = $stopAs($unreadable, $cause, ['restart_live' => $fpRoot, 'restarts' => true]);
+        $run = $unreadable === null ? null
+            : $stopAs($unreadable, $cause, ['restart_live' => $fpRoot, 'restarts' => true]);
         uu_check($t, "(a2, R44) $what with the zone configuration unreadable → restart at once, then the same tail",
-            $run['action'] === 'stop' && $run['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
-            && $cleared($run['st']) && uu_test_logged($run['calls'], LOG_ERR, 'configuration unreadable'));
+            $run !== null && $run['action'] === 'stop'
+            && $run['acts'] === array_merge(['restart', 'uc forward'], $fpTail) && $cleared($run['st'])
+            && uu_test_logged($run['calls'], LOG_ERR, 'configuration unreadable'));
     }
 
     $keeps = $fp;
