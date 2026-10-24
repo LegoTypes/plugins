@@ -34,7 +34,7 @@ uu_register_suite('render_vm', function (): int {
     $b['interface'] = 'opt2';
     $b['if'] = 'wg2';
     uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b],
-        'footprint' => null, 'footprint_problem' => null]);
+        'footprint' => null, 'footprint_problem' => null, 'error' => null]);
     $text = $fw->outputFilterRules();
     uu_check($t, 'rendered on the tunnel device wg1', str_contains($text, 'on wg1 '));
     uu_check($t, 'rendered on the tunnel device wg2', str_contains($text, 'on wg2 '));
@@ -51,7 +51,8 @@ uu_register_suite('render_vm', function (): int {
     $fw = new \OPNsense\Firewall\Plugin();
     $fw->setInterfaceMapping($mapping);
     uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '', 'members' => [],
-        'footprint' => ['resolver' => '192.0.2.1', 'interface' => 'opt1'], 'footprint_problem' => null]);
+        'footprint' => ['resolver' => '192.0.2.1', 'interface' => 'opt1'], 'footprint_problem' => null,
+        'error' => null]);
     $text = $fw->outputFilterRules();
     uu_check($t, '(r10) the footprint pass on opt1 renders on wg1, from its address, to 192.0.2.1 port 53, under '
         . 'its own label',

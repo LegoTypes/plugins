@@ -65,12 +65,9 @@ function uu_label_footprint_pass(string $opt): string
 }
 
 /**
- * The setting's rules, when it names a resolver: one pass per distinct member interface, then the counting block
- * when asked, then the backstop. The pass is on the member's friendly interface name, which core maps to the
- * device, with the interface's own address as source so a query that Unbound sent from another address cannot ride
- * a member out. disablereplyto keeps the pass from also stamping reply-to. The counting block targets the plugin
- * table; the backstop targets the resolver itself and is always rendered with the setting's rules. Then the
- * footprint's: its pass on the same terms when it has an interface, and its block.
+ * The rules, every pass before every block (ruling R47), so that no block, the counting block's table included, can
+ * shadow a pass: the setting's passes, the footprint's pass when it has an interface, the setting's blocks, the
+ * footprint's block.
  *
  * @param list<array{interface: string}> $members
  * @param ?array{resolver: string, interface: string} $footprint
@@ -78,66 +75,86 @@ function uu_label_footprint_pass(string $opt): string
  */
 function uu_rule_confs(string $resolver, array $members, bool $counting, ?array $footprint): array
 {
-    $confs = [];
-    if ($resolver !== '') {
-        array_push($confs, ...uu_setting_confs($resolver, $members, $counting));
+    $confs = uu_setting_passes($resolver, $members);
+    if ($footprint !== null && $footprint['interface'] !== '') {
+        $confs[] = uu_pass_conf($footprint['interface'], $footprint['resolver'],
+            uu_label_footprint_pass($footprint['interface']),
+            'Unbound upstream: the address the plugin last used, through the device of its route');
     }
+    array_push($confs, ...uu_setting_blocks($resolver, $counting));
     if ($footprint !== null) {
-        $opt = $footprint['interface'];
-        if ($opt !== '') {
-            $confs[] = [
-                'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt,
-                'ipprotocol' => 'inet', 'protocol' => 'tcp/udp', 'from' => $opt . 'ip',
-                'to' => $footprint['resolver'], 'to_port' => '53', 'disablereplyto' => true,
-                'label' => uu_label_footprint_pass($opt),
-                'descr' => 'Unbound upstream: the address the plugin last used, through the device of its route',
-            ];
-        }
-        $confs[] = [
-            'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-            'to' => $footprint['resolver'], 'label' => uu_label_footprint(),
-            'descr' => 'Unbound upstream: the address the plugin last used never leaves by another interface',
-        ];
+        $confs[] = uu_block_conf($footprint['resolver'], uu_label_footprint(),
+            'Unbound upstream: the address the plugin last used never leaves by another interface');
     }
     return $confs;
 }
 
 /**
- * The setting's part of uu_rule_confs().
+ * The setting's passes when it names a resolver: one per distinct member interface, on the member's friendly
+ * interface name, which core maps to the device, with the interface's own address as source so a query that Unbound
+ * sent from another address cannot ride a member out. disablereplyto keeps the pass from also stamping reply-to.
  *
  * @param list<array{interface: string}> $members
  * @return list<array<string, string|bool>>
  */
-function uu_setting_confs(string $resolver, array $members, bool $counting): array
+function uu_setting_passes(string $resolver, array $members): array
 {
     $confs = [];
     $seen = [];
-    foreach ($members as $member) {
+    foreach ($resolver === '' ? [] : $members as $member) {
         $opt = $member['interface'];
         if ($opt === '' || isset($seen[$opt])) {
             continue;
         }
         $seen[$opt] = true;
-        $confs[] = [
-            'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt, 'ipprotocol' => 'inet',
-            'protocol' => 'tcp/udp', 'from' => $opt . 'ip', 'to' => $resolver, 'to_port' => '53',
-            'disablereplyto' => true, 'label' => uu_label_pass($opt),
-            'descr' => 'Unbound upstream: the resolver through this member',
-        ];
+        $confs[] = uu_pass_conf($opt, $resolver, uu_label_pass($opt),
+            'Unbound upstream: the resolver through this member');
     }
-    if ($counting) {
-        $confs[] = [
-            'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-            'to' => '<' . UU_BLOCK_TABLE . '>', 'label' => uu_label_block(),
-            'descr' => 'Unbound upstream: the resolver never leaves by another interface (counted)',
-        ];
-    }
-    $confs[] = [
-        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
-        'to' => $resolver, 'label' => uu_label_backstop(),
-        'descr' => 'Unbound upstream: the resolver never leaves by another interface (backstop)',
-    ];
     return $confs;
+}
+
+/**
+ * The setting's blocks when it names a resolver: the counting block when asked, which targets the plugin table, then
+ * the backstop, which targets the resolver itself and is always rendered with the setting's rules.
+ *
+ * @return list<array<string, string|bool>>
+ */
+function uu_setting_blocks(string $resolver, bool $counting): array
+{
+    if ($resolver === '') {
+        return [];
+    }
+    $confs = [];
+    if ($counting) {
+        $confs[] = uu_block_conf('<' . UU_BLOCK_TABLE . '>', uu_label_block(),
+            'Unbound upstream: the resolver never leaves by another interface (counted)');
+    }
+    $confs[] = uu_block_conf($resolver, uu_label_backstop(),
+        'Unbound upstream: the resolver never leaves by another interface (backstop)');
+    return $confs;
+}
+
+/**
+ * @return array<string, string|bool>
+ */
+function uu_pass_conf(string $opt, string $to, string $label, string $descr): array
+{
+    return [
+        'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt, 'ipprotocol' => 'inet',
+        'protocol' => 'tcp/udp', 'from' => $opt . 'ip', 'to' => $to, 'to_port' => '53',
+        'disablereplyto' => true, 'label' => $label, 'descr' => $descr,
+    ];
+}
+
+/**
+ * @return array<string, string|bool>
+ */
+function uu_block_conf(string $to, string $label, string $descr): array
+{
+    return [
+        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+        'to' => $to, 'label' => $label, 'descr' => $descr,
+    ];
 }
 
 /**
@@ -190,84 +207,108 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
 }
 
 /**
- * What to render, from the setting, the gateway records and the state file at $statePath. $enabled is whether the
- * setting renders (on, with its group found and a resolver set) and $members are the group's; the setting's rules
- * go to the resolver only when it is IPv4, so a setting naming anything else leaves the footprint its own rules. A
- * state file that cannot be read is no footprint, and its problem is the footprint's.
+ * What to render (ruling R48). The state file at $statePath is read first, on its own; core's settings ($model) are
+ * read next, and the gateway records ($records) only when the setting may render or the state records an address,
+ * so a disabled plugin with no footprint reads no records. The setting renders when the settings and the records were
+ * both read and name it; its rules go to the resolver only when that is IPv4, so a setting naming anything else
+ * leaves the footprint its own rules. A failed settings read renders the footprint as if the setting rendered nothing
+ * (its pass and its block); a failed records read leaves the footprint its block alone. Each failed read is part of
+ * error, which is null when every read needed succeeded; a state file that cannot be read is no footprint, and its
+ * problem is footprint_problem.
  *
- * @param list<array{name: string, interface: string, if: string}> $members
- * @param array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
+ * @param callable(): array{resolver: string, gateways: ?list<string>} $model the settings: the resolver, and the
+ *     group's gateway names when the plugin is on with a group found and a resolver set, else null
+ * @param callable(): array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
  * @return array{enabled: bool, resolver: string, members: list<array{name: string, interface: string, if: string}>,
- *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string}
+ *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string, error: ?string}
  */
-function uu_wanted_from(bool $enabled, string $resolver, array $members, array $records, string $statePath): array
+function uu_wanted_from(callable $model, callable $records, string $statePath): array
 {
-    $setting = $enabled && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $resolver : '';
     $read = uu_state_read($statePath);
-    $found = uu_footprint_from_state($read['state'], $records, $setting);
+    $errors = [];
+    $settings = null;
+    try {
+        $settings = $model();
+    } catch (\Throwable $e) {
+        $errors[] = 'cannot read the settings: ' . $e->getMessage();
+    }
+    $gateways = $settings['gateways'] ?? null;
+    $recs = null;
+    if ($gateways !== null || $read['state']['resolver'] !== null) {
+        try {
+            $recs = $records();
+        } catch (\Throwable $e) {
+            $errors[] = 'cannot read the gateway records: ' . $e->getMessage();
+        }
+    }
+    $enabled = $gateways !== null && $recs !== null;
+    $resolver = $enabled ? (string)($settings['resolver'] ?? '') : '';
+    $members = [];
+    foreach ($enabled ? $gateways : [] as $name) {
+        if (!isset($recs[$name])) {
+            continue;
+        }
+        $members[] = ['name' => (string)$name, 'interface' => (string)($recs[$name]['interface'] ?? ''),
+            'if' => (string)($recs[$name]['if'] ?? '')];
+    }
+    $setting = $enabled && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $resolver : '';
+    $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
     return ['enabled' => $enabled, 'resolver' => $resolver, 'members' => $members, 'footprint' => $found['footprint'],
-        'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem']];
+        'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem'],
+        'error' => $errors === [] ? null : implode('; ', $errors)];
 }
 
 /**
- * What to render, from the saved model, the live gateway records and the plugin's state file. Disabled, or a group
- * or resolver that cannot be resolved, is enabled false: no setting rules. The records are read in every case, for
- * the footprint.
+ * The plugin's settings as uu_wanted_from() takes them, from the saved model and core's gateway groups: the group's
+ * gateway names only when the plugin is on, a group is chosen and found, and a resolver is set.
+ *
+ * @return array{resolver: string, gateways: ?list<string>}
+ */
+function uu_render_model(): array
+{
+    $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    if (!$mdl->enabled->isEqual('1') || $mdl->gateway_group->isEmpty() || $mdl->resolver->isEmpty()) {
+        return ['resolver' => '', 'gateways' => null];
+    }
+    $groups = new \OPNsense\Routing\GatewayGroups();
+    foreach ($groups->gateway_group->iterateItems() as $uuid => $item) {
+        if ($uuid === $mdl->gateway_group->getValue()) {
+            return ['resolver' => $mdl->resolver->getValue(),
+                    'gateways' => array_map('strval', array_values($groups->gatewaysInGroup($item)))];
+        }
+    }
+    return ['resolver' => '', 'gateways' => null];
+}
+
+/**
+ * What to render, from the plugin's state file, the saved model and the live gateway records (uu_wanted_from()).
  *
  * @return array{enabled: bool, resolver: string, members: list<array{name: string, interface: string, if: string}>,
- *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string}
+ *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string, error: ?string}
  */
 function uu_wanted_render(): array
 {
-    $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
-    $records = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true);
-    $members = null;
-    if ($mdl->enabled->isEqual('1') && !$mdl->gateway_group->isEmpty() && !$mdl->resolver->isEmpty()) {
-        $members = uu_group_members($mdl->gateway_group->getValue(), $records);
-    }
-    return uu_wanted_from($members !== null, $members !== null ? $mdl->resolver->getValue() : '', $members ?? [],
-        $records, UU_STATE_PATH);
+    return uu_wanted_from('uu_render_model',
+        fn (): array => (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true), UU_STATE_PATH);
 }
 
 /**
- * The members of the gateway group with this id that have a gateway record, or null when no group has the id.
- *
- * @param array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
- * @return ?list<array{name: string, interface: string, if: string}>
- */
-function uu_group_members(string $uuid, array $records): ?array
-{
-    $groups = new \OPNsense\Routing\GatewayGroups();
-    foreach ($groups->gateway_group->iterateItems() as $key => $item) {
-        if ($key !== $uuid) {
-            continue;
-        }
-        $members = [];
-        foreach ($groups->gatewaysInGroup($item) as $name) {
-            if (!isset($records[$name])) {
-                continue;
-            }
-            $members[] = ['name' => (string)$name, 'interface' => (string)($records[$name]['interface'] ?? ''),
-                'if' => (string)($records[$name]['if'] ?? '')];
-        }
-        return $members;
-    }
-    return null;
-}
-
-/**
- * The plugins_firewall hook body. Never throws: any failure renders nothing and is logged.
- *
- * The setting's rules render when it is enabled and its resolver is IPv4; a resolver that is not is one error, and
- * the setting renders nothing (ruling R11). The footprint's rules follow, whatever the setting, and the table is
- * registered for the setting's counting block only. A footprint that cannot be read is one warning for the render
- * (spec -04 section 3.2): each filter reload is a process of its own, so the hook keeps nothing between renders.
+ * The plugins_firewall hook body. Never throws. What each failure keeps:
+ * - a settings or gateway records read that fails is one error, and the footprint still renders (uu_wanted_from());
+ * - a setting resolver that is not IPv4 is one error, the setting renders nothing and the footprint still renders
+ *   (ruling R11);
+ * - a state file that cannot be read, or a recorded address that is not IPv4, is one warning for the render, and the
+ *   setting's rules still render (spec -04 section 3.2): each filter reload is a process of its own, so the hook
+ *   keeps nothing between renders;
+ * - a table that cannot be registered costs only the counting block;
+ * - anything else that throws renders nothing, and is one error.
+ * The table is registered for the setting's counting block only.
  *
  * Lines go through logger(1), not openlog(): the hook runs inside core's filter reload and must not replace core's
  * syslog ident or drop its connection.
  *
  * @param ?callable(): array{enabled: bool, resolver: string, members: list<array{interface: string}>,
- *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string} $wanted
+ *     footprint: ?array{resolver: string, interface: string}, footprint_problem: ?string, error: ?string} $wanted
  * @param ?callable(string, string): void $log receives the message and its syslog level name (err, warning); default
  *     logs it as UU_SYSLOG_IDENT at local4
  */
@@ -282,6 +323,9 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
     };
     try {
         $w = $wanted !== null ? $wanted() : uu_wanted_render();
+        if ($w['error'] !== null) {
+            $emit('rules for the setting not rendered: ' . uu_log_text($w['error']), 'err');
+        }
         $resolver = '';
         if ($w['enabled']) {
             if (filter_var($w['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {

@@ -134,8 +134,9 @@ function unboundupstream_cron()
 }
 
 /**
- * Rendered rules (spec 3.6b) at every filter reload. Failures render nothing and are logged through logger(1):
- * the hook runs inside core's filter reload and must not openlog() over core's ident.
+ * Rendered rules (spec 3.6b, and the footprint's of spec -04 section 3.2) at every filter reload. Never throws: a
+ * missing library renders nothing, and what each other failure keeps is uu_render_firewall()'s. Lines go through
+ * logger(1): the hook runs inside core's filter reload and must not openlog() over core's ident.
  */
 function unboundupstream_firewall($fw)
 {
