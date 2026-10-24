@@ -4,8 +4,8 @@
 # BSD 2-Clause License
 
 """
-Unbound's generated configuration files, read without following any link (ruling R43, convention C3), for
-uu_zone_texts() (lib/snapshot.php), which runs it as root:
+Unbound's generated configuration files, read without following any link (a file the plugin trusts is read as a
+regular file only), for uu_zone_texts() (lib/snapshot.php), which runs it as root:
 
     python3 -I zone_read.py DIR MAX_BYTES
 
@@ -13,11 +13,14 @@ DIR is walked from / one component at a time, each opened relative to its parent
 ever resolved through a link and no device behind one is ever looked up (devfs clones tun and tap interfaces on a
 lookup). The directory's *.conf entries (not the dot files, as glob(3)) are opened the same way and O_NONBLOCK,
 in byte order of their names, and each regular file's first MAX_BYTES are read; a larger one is cut after its
-last line end at or before MAX_BYTES (ruling R9), so a line the cut falls in is dropped whole. A link, anything
-but a regular file, and a file that cannot be opened or read are skipped. Prints one JSON list on stdout: each kept
-file's bytes, base64, in order, and exits 0. A DIR that is not reached this way is a failed read, never an empty
-one (ruling R44: "could not look" must not read as "no root zone"): nothing on stdout, exit 1, as for any other
-failure, which names only the exception's type on stderr, never a file's text. A usage error exits 2.
+last line end at or before MAX_BYTES, so a line the cut falls in is dropped whole and a large blocklist file still
+counts. A link, anything but a regular file, and a file that cannot be opened or read are skipped and counted.
+Prints one JSON object on stdout, {"texts": [...], "skipped": n}: each kept file's bytes, base64, in order, and the
+number of *.conf entries skipped, and exits 0; the caller reads any skip as a configuration it could not read,
+since the skipped file may hold the root zone. A DIR that is not reached this way is a failed read, never an empty
+one ("could not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on
+stdout, exit 1, as for any other failure, which names only the exception's type on stderr, never a file's text. A
+usage error exits 2.
 """
 
 import base64
@@ -85,16 +88,19 @@ def main(argv):
         sys.stderr.write('zone_read.py: DIR not reached without following a link\n')
         return 1
     texts = []
+    skipped = 0
     try:
         names = sorted((os.fsencode(n) for n in os.listdir(dir_fd)
                         if not n.startswith('.') and fnmatch.fnmatchcase(n, '*.conf')))
         for name in names:
             data = read_entry(dir_fd, name, max_bytes)
-            if data is not None:
+            if data is None:
+                skipped += 1
+            else:
                 texts.append(base64.b64encode(data).decode('ascii'))
     finally:
         os.close(dir_fd)
-    sys.stdout.write(json.dumps(texts) + '\n')
+    sys.stdout.write(json.dumps({'texts': texts, 'skipped': skipped}) + '\n')
     return 0
 
 

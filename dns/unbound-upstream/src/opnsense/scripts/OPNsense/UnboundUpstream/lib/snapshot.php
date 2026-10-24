@@ -495,16 +495,18 @@ function uu_live_root(): ?array
 }
 
 /**
- * Unbound's generated configuration files, in file-name order, as zone_read.py reads them (rulings R9 and R43,
- * convention C3): no path in the directory is resolved through a link, so no device behind one is ever looked up
- * (devfs clones tun and tap interfaces on a lookup); a link, anything but a regular file and an unreadable file
- * are skipped, and a file over UU_FILE_MAX_BYTES gives its first UU_FILE_MAX_BYTES up to the last line end in
- * them, so a large blocklist file still counts and a line the cut falls in (a forward-addr) is dropped whole. The
- * files are core's, written as root, but the directory belongs to Unbound's chroot, which uid unbound can write.
- * The helper runs from its argv (no shell) for at most $seconds. Null when the read failed (ruling R44): a helper
- * that cannot start, runs past that (it is killed), exits non-zero (a DIR it cannot reach) or prints anything
- * uu_zone_decode() refuses; never the empty list, which means no files. It logs nothing: status runs it every 30 s
- * (ruling R8). $dir, $helper and $seconds are for the tests.
+ * Unbound's generated configuration files, in file-name order, as zone_read.py reads them: no path in the
+ * directory is resolved through a link, so no device behind one is ever looked up (devfs clones tun and tap
+ * interfaces on a lookup), and a file over UU_FILE_MAX_BYTES gives its first UU_FILE_MAX_BYTES up to the last line
+ * end in them, so a large blocklist file still counts and a line the cut falls in (a forward-addr) is dropped whole.
+ * The files are core's, written as root, but the directory belongs to Unbound's chroot, which uid unbound can write.
+ * The helper runs from its argv (no shell) for at most $seconds. Null when the read failed, so the root zone reads
+ * as unreadable and never as "no . zone", which would restore recursion over the WAN: a helper that cannot start,
+ * runs past that (it is killed), exits non-zero (a DIR it cannot reach) or prints anything uu_zone_decode() refuses,
+ * and a *.conf entry it skipped (a link, anything but a regular file, a file it cannot open or read), which may be
+ * the one holding the root zone; never the empty list, which means no files. It logs nothing: status runs it every
+ * 30 s, and the stop or contract that reads the zone names the problem. $dir, $helper and $seconds are for the
+ * tests.
  *
  * @return ?list<string>
  */
@@ -549,39 +551,47 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
         }
         proc_close($proc);
     }
-    return $exit === 0 ? uu_zone_decode($out) : null;
+    $doc = $exit === 0 ? uu_zone_decode($out) : null;
+    return $doc === null || $doc['skipped'] > 0 ? null : $doc['texts'];
 }
 
 /**
- * zone_read.py's stdout, strictly: a JSON list of base64 strings, each a file's bytes. Null for anything else (bad
- * JSON, an object, a nested list, a non-string or an entry that is not base64). Pure.
+ * zone_read.py's stdout, strictly: a JSON object with exactly texts, a list of base64 strings, each a file's bytes,
+ * and skipped, the number of *.conf entries it skipped, a whole number. Null for anything else (bad JSON, a list, a
+ * missing or extra key, texts that is not a list or holds a non-string or an entry that is not base64, skipped that
+ * is not a whole number). Pure.
  *
- * @return ?list<string>
+ * @return ?array{texts: list<string>, skipped: int}
  */
 function uu_zone_decode(string $stdout): ?array
 {
     try {
-        $doc = json_decode($stdout, false, 2, JSON_THROW_ON_ERROR);
+        $doc = json_decode($stdout, false, 3, JSON_THROW_ON_ERROR);
     } catch (\JsonException) {
         return null;
     }
-    if (!is_array($doc)) {
+    if (!$doc instanceof \stdClass) {
+        return null;
+    }
+    $keys = array_keys(get_object_vars($doc));
+    sort($keys);
+    if ($keys !== ['skipped', 'texts'] || !is_array($doc->texts) || !is_int($doc->skipped) || $doc->skipped < 0) {
         return null;
     }
     $texts = [];
-    foreach ($doc as $entry) {
+    foreach ($doc->texts as $entry) {
         $text = is_string($entry) ? base64_decode($entry, true) : false;
         if ($text === false) {
             return null;
         }
         $texts[] = $text;
     }
-    return $texts;
+    return ['texts' => $texts, 'skipped' => $doc->skipped];
 }
 
 /**
  * A snapshot evaluate.php record wrote, in this version's shape for replay: a recording made before 1.3 has no
- * contract_input.core_commands, which reads as nothing drifted, since that version did not check (Task 10 M3).
+ * contract_input.core_commands, which reads as nothing drifted, since that version did not check.
  * Anything else is as recorded; replay checks the top-level shape.
  *
  * @param array<string, mixed> $snapshot
