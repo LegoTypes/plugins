@@ -26,16 +26,20 @@ require_once __DIR__ . '/state.php';
  * /usr/bin/timeout kills it. Only configctl's stdout is read, and the timeout bounds it; core's own command writes to
  * /dev/null and only its exit status counts, so a child it leaves running (a daemon a restart starts) cannot hold the
  * runner's pipe open and stall the caller. Core's own command runs synchronously, even for a detached action.
+ * A configctl killed by the timeout leaves configd's action running; when the caller can tell that action's effect
+ * ($late), the action counts as configd's once its effect shows, and core's command is not run beside it.
  *
  * @param string $action the configd action, words as configctl takes them ("filter reload")
  * @param string $direct the command core's actions file runs for it (a UU_CORE_* constant)
  * @param callable(string): array{rc: int, out: string} $run runs a shell command line: its exit status and stdout
  * @param bool $detached queue the action (configctl -d) instead of waiting for it
+ * @param ?callable(): bool $late after configctl's timeout: whether configd's action took effect all the same
  * @return array{path: string, configd: string, rc: ?int} path is configd, direct, or failed when core's command
- *     exited non-zero too; configd is what configd did, for a log line ('' when it answered); rc is core's
+ *     exited non-zero too; configd is what configd did, for a log line ('' when it answered in time); rc is core's
  *     command's exit status, null when it did not run
  */
-function uu_core_command(string $action, string $direct, callable $run, bool $detached = false): array
+function uu_core_command(string $action, string $direct, callable $run, bool $detached = false,
+    ?callable $late = null): array
 {
     $ctl = $run('/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl '
         . ($detached ? '-d ' : '') . $action . ' 2> /dev/null');
@@ -48,6 +52,9 @@ function uu_core_command(string $action, string $direct, callable $run, bool $de
     }
     if ($ctl['rc'] === 124) {
         $configd = 'did not answer within ' . UU_CONFIGD_TIMEOUT_SECONDS . ' s (configctl exit 124)';
+        if ($late !== null && $late()) {
+            return ['path' => 'configd', 'configd' => "$configd, but its action took effect", 'rc' => null];
+        }
     } elseif ($ctl['rc'] !== 0) {
         $configd = "did not answer (configctl exit {$ctl['rc']})";
     } else {
@@ -72,21 +79,64 @@ function uu_core_shell(string $cmdline): array
     return ['rc' => $rc, 'out' => implode("\n", $out)];
 }
 
+/** Unbound's pid from its pid file, read as a regular file; null when it cannot be read or is not a pid. */
+function uu_unbound_pid(): ?int
+{
+    $text = uu_read_regular_file('/var/run/unbound.pid')['text'];
+    return $text !== null && preg_match('/^\s*([1-9][0-9]*)\s*$/D', $text, $m) === 1 ? (int)$m[1] : null;
+}
+
+/**
+ * core's Unbound restart through uu_core_command(). When configctl's timeout ran out, configd may still be running
+ * core's restart, and a second one started directly beside it would race it; so Unbound's pid is watched for up to
+ * UU_CONTROL_WAIT_SECONDS first: a pid that changed (or appeared) means configd's restart happened, and core's own
+ * command runs only when the pid stayed as it was or never could be read. $pid and $sleepMs are for the tests.
+ *
+ * @param callable(string): array{rc: int, out: string} $run
+ * @param ?callable(): ?int $pid Unbound's pid (default uu_unbound_pid())
+ * @param ?callable(int): void $sleepMs waits that many milliseconds (default usleep)
+ * @return array{path: string, configd: string, rc: ?int} as uu_core_command()
+ */
+function uu_core_unbound_restart(callable $run, ?callable $pid = null, ?callable $sleepMs = null): array
+{
+    $pid ??= 'uu_unbound_pid';
+    $sleepMs ??= function (int $ms): void {
+        usleep($ms * 1000);
+    };
+    $before = $pid();
+    $late = function () use ($pid, $sleepMs, $before): bool {
+        for ($try = 0; $try < UU_CONTROL_WAIT_SECONDS; $try++) {
+            if ($try > 0) {
+                $sleepMs(1000);
+            }
+            $now = $pid();
+            if ($now !== null && $now !== $before) {
+                return true;
+            }
+        }
+        return false;
+    };
+    return uu_core_command('unbound restart', UU_CORE_UNBOUND_RESTART, $run, false, $late);
+}
+
 /**
  * Unbound's restart, for every stop that restarts and for the silent channel's escalation: core's restart through
  * configd, else core's own command, so a configd that is silent or failing still restarts Unbound onto the root
- * zone the user configured, and a hung one cannot hold the run past the timeout. Logged with the path it took; true
- * when one of the two ran.
+ * zone the user configured, and a hung one cannot hold the run past the timeout (uu_core_unbound_restart()). Logged
+ * with the path it took; true when one of the two ran.
  *
  * @param callable(string): array{rc: int, out: string} $run
  * @param callable(string, int): void $log
+ * @param ?callable(): ?int $pid as uu_core_unbound_restart()
+ * @param ?callable(int): void $sleepMs as uu_core_unbound_restart()
  */
-function uu_unbound_restart(callable $run, callable $log): bool
+function uu_unbound_restart(callable $run, callable $log, ?callable $pid = null, ?callable $sleepMs = null): bool
 {
-    $r = uu_core_command('unbound restart', UU_CORE_UNBOUND_RESTART, $run);
+    $r = uu_core_unbound_restart($run, $pid, $sleepMs);
     switch ($r['path']) {
         case 'configd':
-            $log('unbound restart through configd', LOG_NOTICE);
+            $log('unbound restart through configd' . ($r['configd'] === '' ? '' : " ({$r['configd']}: Unbound's pid "
+                . 'changed)'), LOG_NOTICE);
             return true;
         case 'direct':
             $log("unbound restart: configd {$r['configd']}, so core's " . UU_CORE_UNBOUND_RESTART . ' ran directly',
@@ -168,9 +218,10 @@ function uu_remove_core_commands(callable $run, callable $log): void
  */
 function uu_remove_restart_stateless(string $found, string $remedy, callable $run, callable $log): void
 {
-    $r = uu_core_command('unbound restart', UU_CORE_UNBOUND_RESTART, $run);
+    $r = uu_core_unbound_restart($run);
     $done = match ($r['path']) {
-        'configd' => "core's Unbound restart ran through configd",
+        'configd' => "core's Unbound restart ran through configd" . ($r['configd'] === '' ? ''
+            : " ({$r['configd']}: Unbound's pid changed)"),
         'direct' => "configd {$r['configd']}, so core's " . UU_CORE_UNBOUND_RESTART . ' ran directly',
         default => "Unbound was not restarted: configd {$r['configd']}, and core's " . UU_CORE_UNBOUND_RESTART
             . " exited {$r['rc']}",
