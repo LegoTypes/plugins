@@ -923,6 +923,25 @@ uu_register_suite('apply', function (): int {
     $run = $stopAs($fpGap, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
     uu_check($t, '(a5) the same with the route missing (a route-loss window) → the reject route added',
         $run['acts'] === [$restoreDot, 'restart', 'route add -host 192.0.2.1 127.0.0.1 -reject'] && $lastResort($run));
+    /* nothing changed, so nothing was saved mid-run: the returned state is what evaluate.php saves */
+    $noReject = fn (array $run): bool => !in_array('route delete -host 192.0.2.1', $run['acts'], true)
+        && $run['st']['resolver'] === '192.0.2.1' && $run['st']['route_installed'] !== $rejectRecord
+        && !uu_test_logged($run['calls'], LOG_ERR, 'rejected locally')
+        && uu_test_logged($run['calls'], LOG_ERR, 'being removed', '192.0.2.1', 'could not be made a reject route',
+            'configctl unbound restart');
+    $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false,
+                                         'route_fail' => ['change', 'add'], 'restarts' => true]);
+    uu_check($t, '(a5) removal whose restart fails and whose reject route cannot be made → the member route kept, never deleted, the resolver recorded, an error naming the removal and the remedy',
+        $run['acts'] === [$restoreDot, 'restart', $fpReject, 'route add -host 192.0.2.1 127.0.0.1 -reject']
+        && $noReject($run));
+    $fpForeign = $fp;
+    $fpForeign['route'] = ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0', 'reject' => false,
+                           'ours' => false];
+    $run = $stopAs($fpForeign, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false,
+                                                'restarts' => true]);
+    uu_check($t, '(a5) removal whose restart fails with a foreign route → no reject route over it, never deleted, the resolver recorded, an error naming the removal and the remedy',
+        $run['acts'] === [$restoreDot, 'restart'] && $noReject($run)
+        && uu_test_logged($run['calls'], LOG_WARNING, 'not ours'));
 
     $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'forward_out' => "192.0.2.1\n",
                                          'restarts' => true]);
