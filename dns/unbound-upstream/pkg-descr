@@ -23,16 +23,17 @@ Plugin Changelog
 Security release.
 
 * The block follows the address the plugin last used, not only the
-  setting: disabling the plugin, changing the resolver address or
-  removing the package keeps that address blocked (and the route's
-  device passed) until a stop has really undone it. The minute job
-  stays installed while such an address remains, and the filter is
-  reloaded when that address changes
+  setting: disabling the plugin or changing the resolver address keeps
+  that address blocked (and the route's device passed) until a stop
+  has really undone it. The minute job stays installed while such an
+  address remains, and the filter is reloaded when that address changes
 * A stop that cannot restore Unbound's forwarders through its control
   channel ends in Unbound's own start, which applies the root zone you
   configured (every requested stop and the package removal; a requested
-  stop does so unless the cache is flushed on a restart). When even that
-  leaves Unbound on the resolver, the removal installs a reject route
+  stop does so unless the cache is flushed on a restart). Every restart
+  goes through configd, or core's own script when configd does not
+  answer. A removal leaves no rule behind: when even the restart leaves
+  Unbound on the resolver, it makes the plugin's route a reject route
   and logs what to run. The removal waits up to 120 s for the lock and
   asks core to reload the filter and restart cron, with core's own
   scripts when configd does not answer. An upgrade still removes the old
@@ -50,9 +51,11 @@ Security release.
 * A failed notification names only the receiver's scheme, host and port
   (it used to log the whole URL)
 * State, record and zone files are read as regular files only, never
-  through a link, at most 1 MiB each; pfctl's error file lives in the
-  plugin's root-only run directory
-* Control characters are replaced in log lines (a line break by "; ", any other by "?")
+  through a link, at most 1 MiB each; a zone file that cannot be read
+  that way makes the root zone unrestorable, never recursion. pfctl's
+  error file lives in the plugin's root-only run directory
+* Control characters are replaced in log lines (a line break by "; ",
+  any other by "?")
 * Every copyright header reads "Copyright (C) 2026 cayossarian"
 
 1.2_1
