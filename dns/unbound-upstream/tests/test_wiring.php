@@ -276,7 +276,8 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'both log paths (openlog in evaluate, logger in hooks) reach the plugin log and not the resolver log',
         substr_count(uu_test_log_dir('unboundupstream'), $mark) === 2 && !str_contains(uu_test_log_dir('resolver'), $mark));
     uu_check($t, 'the hook file cleans what it logs with the same function as the scripts',
-        unboundupstream_clean("a\x1bb\nc") === 'a?b; c' && unboundupstream_clean('plain') === 'plain');
+        uu_try_case(fn (): bool => unboundupstream_clean("a\x1bb\nc") === 'a?b; c'
+            && unboundupstream_clean('plain') === 'plain'));
     /* N1: a php whose open_basedir admits only core's inc directory loads the hook file but cannot read
      * lib/logline.php, as when the library is missing: the hook's own prefix stays, only the message is withheld */
     $code = 'require "' . $inc . '"; echo unboundupstream_error_line("cron: cannot read the settings: ", '
@@ -285,7 +286,7 @@ uu_register_suite('wiring', function (): int {
         . escapeshellarg(dirname($inc)) . ' -r ' . escapeshellarg($code));
     $withheld = 'message withheld, the plugin library is missing';
     if ($out !== "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n") {
-        printf("  without the library: %s\n", uu_log_text(substr($out, 0, 400)));
+        printf("  without the library: %s\n", preg_replace('/[^\x20-\x7e]/', '?', substr($out, 0, 400)));
     }
     uu_check($t, '(N1) without the plugin library a hook\'s error line keeps its prefix and withholds only the message',
         $out === "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n");
@@ -302,28 +303,32 @@ uu_register_suite('wiring', function (): int {
     $had = file_exists(UU_STATE_PATH);
     $saved = $had ? (string)file_get_contents(UU_STATE_PATH) : null;
     $r9 = null;
-    uu_run_dir();
-    uu_test_state_aside(UU_STATE_PATH, $aside, function (callable $place) use (&$r9): void {
-        $recorded = uu_state_new();
-        $recorded['resolver'] = '192.0.2.1';
-        $place($recorded);
-        /* one line per read, so a php that dies on the second still shows the first */
-        $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
-            . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
-            . 'echo json_encode(uu_wanted_from(fn () => ["resolver" => "", "gateways" => null], fn () => [], '
-            . 'UU_STATE_PATH)), PHP_EOL;';
-        $out = (string)shell_exec('/usr/bin/su -m nobody -c '
-            . escapeshellarg('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code)) . ' 2>&1');
-        $lines = explode("\n", $out);
-        $r9 = ['root' => uu_state_read(UU_STATE_PATH), 'out' => $out,
-               'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
-        $r9['root_wanted'] = uu_wanted_from(fn (): array => ['resolver' => '', 'gateways' => null],
-            fn (): array => [], UU_STATE_PATH);
-    }, 'rename');
+    try {
+        uu_run_dir();
+        uu_test_state_aside(UU_STATE_PATH, $aside, function (callable $place) use (&$r9): void {
+            $recorded = uu_state_new();
+            $recorded['resolver'] = '192.0.2.1';
+            $place($recorded);
+            /* one line per read, so a php that dies on the second still shows the first */
+            $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
+                . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
+                . 'echo json_encode(uu_wanted_from(fn () => ["resolver" => "", "gateways" => null], fn () => [], '
+                . 'UU_STATE_PATH)), PHP_EOL;';
+            $out = (string)shell_exec('/usr/bin/su -m nobody -c '
+                . escapeshellarg('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code)) . ' 2>&1');
+            $lines = explode("\n", $out);
+            $r9 = ['root' => uu_state_read(UU_STATE_PATH), 'out' => $out,
+                   'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
+            $r9['root_wanted'] = uu_wanted_from(fn (): array => ['resolver' => '', 'gateways' => null],
+                fn (): array => [], UU_STATE_PATH);
+        }, 'rename');
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    }
     $fresh = json_decode((string)json_encode(uu_state_new()), true);
     $nobody = $r9['nobody'] ?? [null, null];
     if ($r9 !== null && (!is_array($nobody[0]) || !is_array($nobody[1]))) {
-        printf("  as nobody: %s\n", uu_log_text(substr($r9['out'], 0, 400)));
+        printf("  as nobody: %s\n", preg_replace('/[^\x20-\x7e]/', '?', substr($r9['out'], 0, 400)));
     }
     uu_check($t, '(r9) as nobody, a state recording a footprint reads as missing: a fresh state and no problem '
         . '(root reads its footprint)',
