@@ -66,6 +66,33 @@ function uu_core_shell(string $cmdline): array
 }
 
 /**
+ * Unbound's restart, for every stop that restarts and for the silent channel's escalation: core's restart through
+ * configd, else core's own command, so a configd that is silent or failing still restarts Unbound onto the root
+ * zone the user configured, and a hung one cannot hold the run past the timeout. Logged with the path it took; true
+ * when one of the two ran.
+ *
+ * @param callable(string): array{rc: int, out: string} $run
+ * @param callable(string, int): void $log
+ */
+function uu_unbound_restart(callable $run, callable $log): bool
+{
+    $r = uu_core_command('unbound restart', UU_CORE_UNBOUND_RESTART, $run);
+    switch ($r['path']) {
+        case 'configd':
+            $log('unbound restart through configd', LOG_NOTICE);
+            return true;
+        case 'direct':
+            $log("unbound restart: configd {$r['configd']}, so core's " . UU_CORE_UNBOUND_RESTART . ' ran directly',
+                LOG_WARNING);
+            return true;
+        default:
+            $log("unbound restart failed: configd {$r['configd']}, and core's " . UU_CORE_UNBOUND_RESTART
+                . " exited {$r['rc']}", LOG_ERR);
+            return false;
+    }
+}
+
+/**
  * What remove runs after its stop (ruling R4): the filter reload, so the rules follow the footprint the stop left,
  * and the cron restart, so the minute job follows it too; each logged with the path it took, and "through
  * configd" only when configd answered OK.
