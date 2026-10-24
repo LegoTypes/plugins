@@ -201,16 +201,17 @@ uu_register_suite('contract', function (): int {
         && str_starts_with($c['notes'][1] ?? '', 'core command changed: cron restart')
         && str_starts_with($c['notes'][2] ?? '', 'core command changed: unbound restart'));
 
-    /* the package scripts run core's two commands as remove does: configd within the timeout, else core's script */
+    /* the package scripts run core's two commands as remove does: configd when it says OK within the timeout, else
+     * core's script (ruling R55) */
     $scripts = [];
     foreach (['+POST_INSTALL.post', '+POST_DEINSTALL.post'] as $name) {
         $text = @file_get_contents(__DIR__ . '/../' . $name);
         $scripts[$name] = is_string($text) ? $text : null;
     }
     $fallbacks = fn (): array => [
-        '/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl filter reload || '
+        '[ "$(/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl filter reload)" = OK ] || '
             . UU_CORE_FILTER_RELOAD . ' || true',
-        '/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl cron restart || '
+        '[ "$(/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl cron restart)" = OK ] || '
             . UU_CORE_CRON_RESTART . ' || true',
     ];
     uu_check($t, '(d6) +POST_INSTALL.post: the removal marker deleted first, then the filter reload and the cron restart, each through configd, else core\'s own script',
@@ -221,6 +222,42 @@ uu_register_suite('contract', function (): int {
         uu_try_case(fn (): bool => $scripts['+POST_DEINSTALL.post'] !== null
             && uu_test_script_commands($scripts['+POST_DEINSTALL.post'])
                 === array_merge($fallbacks(), ['rm -f /var/run/unboundupstream/rules.json'])));
+    /* each fallback line run by /bin/sh with configctl stubbed (a reply and an exit status) and core's script
+     * stubbed to say it ran: core's script runs unless configctl exits 0 saying OK */
+    $stubs = [
+        'configctl answers OK' => ['echo OK', false],
+        'configctl answers OK with blanks' => ['echo " OK"', true],
+        'configctl answers Error (1)' => ["echo 'Error (1)'", true],
+        'configctl answers Action not found' => ["echo 'Action not found'", true],
+        'configctl answers nothing, exit 0' => ['/usr/bin/true', true],
+        'configctl exits 255 (no socket)' => ['sh -c "exit 255"', true],
+        'configctl times out (124)' => ['sh -c "exit 124"', true],
+    ];
+    foreach (['+POST_INSTALL.post', '+POST_DEINSTALL.post'] as $name) {
+        $lines = $scripts[$name] === null ? [] : array_values(array_filter(uu_test_script_commands($scripts[$name]),
+            fn (string $line): bool => str_contains($line, 'configctl')));
+        $all = count($lines) === 2;
+        $seen = [];
+        foreach ($lines as $line) {
+            foreach ($stubs as $what => [$stub, $direct]) {
+                $sh = (string)preg_replace('#/usr/bin/timeout \d+ /usr/local/sbin/configctl [a-z ]+[a-z]#', $stub,
+                    str_replace([UU_CORE_FILTER_RELOAD, UU_CORE_CRON_RESTART], 'echo DIRECT', $line));
+                $out = [];
+                $rc = 0;
+                exec('/bin/sh -c ' . escapeshellarg($sh) . ' 2>&1', $out, $rc);
+                $ran = in_array('DIRECT', $out, true);
+                if ($rc !== 0 || $ran !== $direct) {
+                    $all = false;
+                    $seen[] = "$what: exit $rc, core's script " . ($ran ? 'ran' : 'did not run');
+                }
+            }
+        }
+        if ($seen !== []) {
+            printf("  %s\n", implode("\n  ", $seen));
+        }
+        uu_check($t, "(R55) $name under /bin/sh: core's script runs unless configctl exits 0 saying OK (no socket, a timeout, an error reply, no reply), and the line always exits 0",
+            $all);
+    }
     foreach ($scripts as $name => $text) {
         uu_check($t, "(d6) $name: printable ASCII, tab and newline only, ending with a newline (verify-payload.sh step 5)",
             $text !== null && $text !== '' && preg_match('/^[\t\n\x20-\x7e]*\z/', $text) === 1

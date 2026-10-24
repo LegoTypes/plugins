@@ -21,7 +21,7 @@ declare(strict_types=1);
  *                                     exists (a cron tick or a hook between the deinstall's stop and the files'
  *                                     removal would otherwise re-enter tunnel mode with nothing left to undo it),
  *                                     until the package's post-install deletes it. With a run directory it cannot
- *                                     trust it only restarts Unbound (ruling R54)
+ *                                     trust, or a marker it cannot make, it only restarts Unbound (rulings R54, R56)
  *   evaluate.php status               the section 3.8 JSON for the page; without the lock, it changes nothing but
  *                                     the run directory (uu_run_dir()), and it never lists the ruleset
  *                                     (section 3.6c)
@@ -84,16 +84,14 @@ function uu_main(array $args): int
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(null, []));
         case 'remove':
-            $refused = uu_remove_untrusted_run_dir('uu_run_dir', 'uu_core_shell', 'uu_log');
+            $refused = uu_remove_prepare('uu_remove_marker', 'uu_core_shell', 'uu_log');
             if ($refused !== null) {
                 return $refused;
             }
-            if (!touch(UU_REMOVING_PATH)) {
-                throw new RuntimeException('cannot create ' . UU_REMOVING_PATH);
-            }
-            return uu_with_lock('uu_remove', UU_REMOVE_LOCK_WAIT_SECONDS, LOG_ERR, 'the package is being removed '
-                . "while Unbound may still forward to the resolver over the plugin's route: once it is removed, run "
-                . 'configctl unbound restart, then route delete -host <resolver>');
+            /* the address for the remedy, read without the lock as status reads it */
+            $read = uu_state_read(UU_STATE_PATH);
+            return uu_with_lock('uu_remove', UU_REMOVE_LOCK_WAIT_SECONDS, LOG_ERR,
+                uu_remove_timeout_text($read['problem'] === null ? uu_state_footprint($read['state']) : null));
         case 'stop':
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(UU_STOP_REQUEST, []));
@@ -164,6 +162,15 @@ function uu_with_lock(
         return $fn();
     } finally {
         fclose($lock);
+    }
+}
+
+/** remove's preparation (rulings R54, R56): a run directory it can trust, then the removal marker in it. */
+function uu_remove_marker(): void
+{
+    uu_run_dir();
+    if (!touch(UU_REMOVING_PATH)) {
+        throw new RuntimeException('cannot create ' . UU_REMOVING_PATH);
     }
 }
 
@@ -477,7 +484,7 @@ function uu_replay_main(string $path): int
         echo "the recorded state is not this version's shape: planning from a fresh state\n";
         $st = uu_state_new();
     }
-    $s = uu_route_adopt($doc['snapshot'], $st['route_installed']);
+    $s = uu_route_adopt(uu_snapshot_recorded($doc['snapshot']), $st['route_installed']);
     $p = uu_plan($s, $st);
     uu_apply_preview($p, $s, function (string $msg, int $prio): void {
         echo $msg, "\n";
