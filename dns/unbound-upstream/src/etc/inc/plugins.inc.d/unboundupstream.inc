@@ -28,8 +28,9 @@
 
 /*
  * Hooks. plugins_scan() sorts the file names, so this file runs after unbound.inc: on unbound_start Unbound's
- * restart is already launched when the evaluate below is queued (spec 3.1). Every hook only queues
- * `configctl -d unboundupstream evaluate` and returns; none can throw into core.
+ * restart is already launched when the evaluate below is queued (spec 3.1). The configure hooks only queue
+ * `configctl -d unboundupstream evaluate` and return; the cron and firewall hooks read the plugin's state through its
+ * own libraries; none can throw into core.
  */
 
 /**
@@ -116,6 +117,37 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
     }
 }
 
+/**
+ * Whether the state records a footprint (spec -04 section 3.2), by the plugin's own uu_state_footprint(). Loads only
+ * lib/state.php and lib/logline.php, which need only the constants, and neither when its functions are already
+ * there. A state file that cannot be read counts as no footprint, in one line; nothing throws into core.
+ */
+function unboundupstream_footprint_recorded(): bool
+{
+    $lib = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib';
+    try {
+        foreach (['uu_state_footprint' => 'state.php', 'uu_logger' => 'logline.php'] as $function => $file) {
+            if (function_exists($function)) {
+                continue;
+            }
+            if (!is_readable("$lib/$file")) {
+                throw new \RuntimeException('plugin library missing');
+            }
+            require_once "$lib/$file";
+        }
+        $read = uu_state_read(UU_STATE_PATH);
+        if ($read['problem'] !== null) {
+            uu_logger('cron: the state file is ' . $read['problem'] . ': no footprint read, so the minute job follows '
+                . 'the enabled setting alone', 'warning');
+        }
+        return uu_state_footprint($read['state']) !== null;
+    } catch (\Throwable $e) {
+        syslog(LOG_ERR, 'unboundupstream: cannot read its state for cron, so the minute job follows the enabled '
+            . 'setting alone: ' . unboundupstream_clean($e->getMessage()));
+        return false;
+    }
+}
+
 function unboundupstream_cron()
 {
     $jobs = [];
@@ -126,8 +158,9 @@ function unboundupstream_cron()
             . unboundupstream_clean($e->getMessage()));
         $enabled = false;
     }
-    if ($enabled) {
-        /* every minute; generate_cron_job() defaults the minute to 0, so pass '*' */
+    if ($enabled || unboundupstream_footprint_recorded()) {
+        /* every minute, and while a footprint is recorded even disabled, so a stop that could not restore is retried
+         * (spec -04 decision D4); generate_cron_job() defaults the minute to 0, so pass '*' */
         $jobs[]['autocron'] = ['/usr/local/sbin/configctl unboundupstream evaluate', '*'];
     }
     return $jobs;

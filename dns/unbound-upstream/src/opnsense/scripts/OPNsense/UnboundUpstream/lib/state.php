@@ -357,6 +357,32 @@ function uu_state_load(string $path): array
 }
 
 /**
+ * The plugin's footprint (spec -04 section 3.2): the address the state records while the plugin's route or Unbound's
+ * live root may still refer to it, when that is an IPv4 address, else null. The one definition the rendered rules,
+ * an evaluation's filter reload and the minute job share.
+ *
+ * @param array{resolver: ?string} $state
+ */
+function uu_state_footprint(array $state): ?string
+{
+    $address = $state['resolver'];
+    return $address !== null && filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $address : null;
+}
+
+/**
+ * What an evaluation runs once it has saved a changed footprint (spec -04 section 3.2, ruling R4): a filter reload
+ * whenever the footprint changed, since the rules follow it; and, with the plugin disabled, a cron restart when a
+ * footprint came or went, since the minute job is installed exactly while the plugin is enabled or a footprint is
+ * recorded (decision D4).
+ *
+ * @return array{reload: bool, cron: bool}
+ */
+function uu_footprint_actions(?string $before, ?string $after, bool $enabled): array
+{
+    return ['reload' => $before !== $after, 'cron' => !$enabled && ($before === null) !== ($after === null)];
+}
+
+/**
  * The state once the plugin's footprint on another resolver address has been undone (ruling R31): every member's
  * resolver-failed mark and probe failure count were about that address, so none holds for the new one.
  *

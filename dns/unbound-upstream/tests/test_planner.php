@@ -477,6 +477,62 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'disabled setting → stop', $p['action'] === 'stop' && !$p['escalate_restart']
         && uu_test_reason_has($p['reasons'], 'disabled in settings'));
 
+    /* ruling R52: the minute job stays while a footprint remains, so a disabled plugin's tick on a silent channel
+     * restarts Unbound only within section 3.10's bound, never once a minute */
+    $tick = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+    $tick['settings']['enabled'] = false;
+    $tick['unbound']['control_ok'] = false;
+    $tick['unbound']['live_root'] = null;
+    $footprint = uu_test_plan_state('wg-a', $usable);
+    $footprint['resolver'] = $tick['settings']['resolver'];
+    $d1 = uu_plan($tick, $footprint);
+    $tick['now'] = $now + 60;
+    $d2 = uu_plan($tick, $d1['state']);
+    $tick['now'] = $now + UU_ESCALATE_MIN_SECONDS;
+    $d3 = uu_plan($tick, $d2['state']);
+    uu_check($t, '(R52) disabled tick, footprint, silent channel → a stop with no restart on the first and second evaluations, with one on the third at 120 s',
+        $d1['action'] === 'stop' && !$d1['escalate_restart'] && $d1['state']['control_failures'] === 1
+        && $d1['state']['control_silent_since'] === $now
+        && $d2['action'] === 'stop' && !$d2['escalate_restart'] && $d2['state']['control_failures'] === 2
+        && $d3['action'] === 'stop' && $d3['escalate_restart'] && $d3['state']['control_failures'] === 0
+        && $d3['state']['control_silent_since'] === null
+        && uu_test_reason_has($d1['reasons'], 'disabled in settings')
+        && uu_test_reason_has($d1['reasons'], 'silent (1 evaluations, 0 s)')
+        && uu_test_reason_has($d3['reasons'], 'plugin disabled', 'restart'));
+    $tick['now'] = $now;
+    $e1 = uu_plan($tick, $footprint);
+    $tick['now'] = $now + 20;
+    $e2 = uu_plan($tick, $e1['state']);
+    $tick['now'] = $now + 40;
+    $e3 = uu_plan($tick, $e2['state']);
+    $tick['now'] = $now + UU_ESCALATE_MIN_SECONDS;
+    $e4 = uu_plan($tick, $e3['state']);
+    uu_check($t, '(R52) disabled tick: three silent evaluations within 120 s → no restart; the fourth at 120 s → one',
+        !$e3['escalate_restart'] && $e3['state']['control_failures'] === 3 && $e4['escalate_restart']);
+    $answering = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+    $answering['settings']['enabled'] = false;
+    $counted = uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS + 2, $now - UU_ESCALATE_MIN_SECONDS);
+    $counted['resolver'] = $answering['settings']['resolver'];
+    $never = true;
+    $st = $counted;
+    foreach ([0, 60, 120, 180] as $offset) {
+        $answering['now'] = $now + $offset;
+        $a = uu_plan($answering, $st);
+        $never = $never && $a['action'] === 'stop' && !$a['escalate_restart'] && $a['state']['control_failures'] === 0
+            && $a['state']['control_silent_since'] === null;
+        $st = $a['state'];
+    }
+    uu_check($t, '(R52) disabled tick with an answering channel → never a restart, the count cleared', $never);
+    $tickDead = $tick;
+    $tickDead['unbound']['pid_alive'] = false;
+    $tickDeadPlan = uu_plan($tickDead, $counted);
+    $tickRequested = $tick;
+    $tickRequested['stop'] = UU_STOP_REQUEST;
+    $tickRequestedPlan = uu_plan($tickRequested, $counted);
+    uu_check($t, '(R52) a stopped Unbound, or a requested stop (whose restart is apply\'s own), → no count and no escalation',
+        !$tickDeadPlan['escalate_restart'] && $tickDeadPlan['state']['control_failures'] === 0
+        && !$tickRequestedPlan['escalate_restart'] && $tickRequestedPlan['state']['control_failures'] === 0);
+
     /* each stop says why: a requested stop, a removal and a replaced resolver while enabled are not the setting */
     $stops = [];
     foreach ([UU_STOP_REQUEST, UU_STOP_REMOVE, UU_STOP_RESOLVER] as $cause) {

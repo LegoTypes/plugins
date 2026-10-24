@@ -760,11 +760,21 @@ uu_register_suite('apply', function (): int {
     $silentTunnel['unbound']['live_root'] = null;
     $silentStop = $silentTunnel;
     $silentStop['settings']['enabled'] = false;
+    /* a disabled plugin's tick restarts only once the planner's bound is reached (ruling R52): this state is one
+     * silent evaluation short of it */
+    $atBound = uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS - 1, $now - UU_ESCALATE_MIN_SECONDS);
     $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53']]);
+    $st = uu_apply($p, $silentStop, $r['io']);
+    uu_check($t, '(R52) a disabled tick with a silent channel short of the bound → the restore tried, no restart, the route stays, still tunnel',
+        $p['action'] === 'stop' && !$p['escalate_restart'] && uu_test_acts($r['calls']) === [$restoreDot]
+        && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a'
+        && $st['resolver'] === $silentStop['settings']['resolver'] && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
+    $p = uu_plan($silentStop, $atBound);
     $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'],
         'restarts' => true]);
     $st = uu_apply($p, $silentStop, $r['io']);
-    uu_check($t, 'stop in tunnel mode with a silent channel → restart, the configured root confirmed, then reject, drain, delete',
+    uu_check($t, 'stop in tunnel mode with a silent channel at the bound → restart, the configured root confirmed, then reject, drain, delete',
         $p['action'] === 'stop'
         && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null
@@ -782,7 +792,7 @@ uu_register_suite('apply', function (): int {
         && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a' && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
     $flush = $silentStop;
     $flush['contract_input']['cacheflush'] = true;
-    $p = uu_plan($flush, uu_test_plan_state('wg-a', $usable));
+    $p = uu_plan($flush, $atBound);
     $r = uu_test_io($flush, $all, ['silent' => true, 'restart_live' => ['192.0.2.53']]);
     $st = uu_apply($p, $flush, $r['io']);
     uu_check($t, 'stop with a silent channel and cacheflush on → no restart, the route stays, logged as an error',
@@ -800,7 +810,7 @@ uu_register_suite('apply', function (): int {
         && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
     $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'],
         'restarts' => true]);
-    uu_apply(uu_plan($silentStop, uu_test_plan_state('wg-a', $usable)), $silentStop, $r['io']);
+    uu_apply(uu_plan($silentStop, $atBound), $silentStop, $r['io']);
     uu_check($t, 'after the restart the log says what was checked: the live root is no longer the resolver',
         uu_test_logged($r['calls'], LOG_WARNING, 'no longer forwards to the resolver'));
     $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));

@@ -272,16 +272,19 @@ final class UuApplyRun
      * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart on any restore failure:
      * a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone. Any other
      * stop (a replaced resolver address, a disabled plugin's tick, dry run's undo) restarts only on a silent
-     * channel (ruling R24), since the next evaluation retries it. Never while Unbound is disabled in its settings,
-     * even with its pid still alive; with cacheflush on only for a removal (owner decision D2: the restart wipes the
-     * cache the user keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`,
-     * polled for up to UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
+     * channel (ruling R24), since the next evaluation retries it; a disabled plugin's tick, which the minute job
+     * repeats while a footprint remains, only once the planner's escalate_restart says the silence has lasted
+     * section 3.10's bound (ruling R52). Never while Unbound is disabled in its settings, even with its pid still
+     * alive; with cacheflush on only for a removal (owner decision D2: the restart wipes the cache the user keeps,
+     * and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for up to
+     * UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
      */
     private function restartForStop(): bool
     {
         $cause = $this->s['stop'];
         $anyFailure = $cause === UU_STOP_REQUEST || $cause === UU_STOP_REMOVE;
-        if ((!$this->silent && !$anyFailure) || !$this->s['unbound']['pid_alive']) {
+        $bounded = $cause === null && !$this->s['settings']['enabled'] && !$this->p['escalate_restart'];
+        if ((!$this->silent && !$anyFailure) || !$this->s['unbound']['pid_alive'] || $bounded) {
             return false;
         }
         $why = $this->silent ? "Unbound's control channel is silent"
