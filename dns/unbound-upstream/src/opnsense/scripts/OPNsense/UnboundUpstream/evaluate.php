@@ -187,7 +187,9 @@ function uu_evaluate(?string $stop, array $named): int
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    $old = uu_state_load(UU_STATE_PATH)['resolver'];
+    /* the footprint as the rules and the minute job read it: a recorded value that is no IPv4 address is none, and
+     * never reaches a route or unbound-control argument */
+    $old = uu_state_footprint(uu_state_load(UU_STATE_PATH));
     if ($old !== null && $old !== $settings['resolver']) {
         uu_log("resolver changed from $old to {$settings['resolver']}: undoing the route and forwarders of $old "
             . 'first');
