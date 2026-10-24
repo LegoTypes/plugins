@@ -300,17 +300,19 @@ uu_register_suite('render', function (): int {
             $r = $render($dir . '/state.json', null, $records);
             return $r['rules'] === $at([$fpPass, $fpBlock]) && $r['tables'] === []
                 && count($r['logged']) === 1 && $r['logged'][0][0] === 'err'
-                && str_contains($r['logged'][0][1], 'cannot read the settings: model unreadable');
+                && str_contains($r['logged'][0][1], 'cannot read the settings: model unreadable')
+                && !str_contains($r['logged'][0][1], 'is blocked');
         }));
     uu_check($t, '(r13) the settings and the gateway records cannot be read: the footprint block alone, and one error '
-        . 'naming both (R48)',
+        . 'naming both reads and the address now blocked (R48)',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $at, $fpBlock): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
             $r = $render($dir . '/state.json', null, null);
             return $r['rules'] === $at([$fpBlock]) && $r['tables'] === []
                 && count($r['logged']) === 1 && $r['logged'][0][0] === 'err'
-                && str_contains($r['logged'][0][1], 'cannot read the settings: model unreadable')
-                && str_contains($r['logged'][0][1], 'cannot read the gateway records: records unreadable');
+                && $r['logged'][0][1] === 'rules for the setting not rendered: cannot read the settings: model '
+                    . 'unreadable; cannot read the gateway records: records unreadable; DNS to 192.0.2.1 is blocked '
+                    . 'until a filter reload can read the gateway records';
         }));
     uu_check($t, '(r14) disabled with no footprint: the settings are read once, the gateway records never, nothing is '
         . 'rendered and nothing logged (R48)',
@@ -330,13 +332,15 @@ uu_register_suite('render', function (): int {
                 && $r['logged'][0][0] === 'err';
         }));
     uu_check($t, '(r16) enabled, the gateway records cannot be read: no setting rules, the recorded resolver keeps its '
-        . 'block alone, one error',
+        . 'block alone, and one error saying DNS to it is blocked until a reload can read the records',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $on, $at, $fpBlock): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.9', $onWg1));
             $r = $render($dir . '/state.json', $on('192.0.2.9'), null);
             return $r['rules'] === $at([array_replace($fpBlock, ['to' => '192.0.2.9'])])
                 && $r['tables'] === [] && count($r['logged']) === 1 && $r['logged'][0][0] === 'err'
-                && str_contains($r['logged'][0][1], 'cannot read the gateway records');
+                && $r['logged'][0][1] === 'rules for the setting not rendered: cannot read the gateway records: '
+                    . 'records unreadable; DNS to 192.0.2.9 is blocked until a filter reload can read the gateway '
+                    . 'records';
         }));
 
     /* the footprint reader itself (ruling R1) */
