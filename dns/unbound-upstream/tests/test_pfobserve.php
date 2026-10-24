@@ -16,6 +16,27 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/se
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/pfobserve.php';
 require_once __DIR__ . '/scratch.php';
 
+/**
+ * The record read of a named pipe, in a child php under timeout -f (ruling R61): a reader that blocks on the pipe, as
+ * one that opens it without O_NONBLOCK does while no writer comes, fails the case after 5 s with the evidence instead
+ * of hanging the suite. True when the child read null.
+ */
+function uu_test_fifo_record_null(string $path): bool
+{
+    $lib = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/pfobserve.php';
+    $code = 'require $argv[1]; echo uu_rules_record_load($argv[2]) === null ? "null" : "read", PHP_EOL;';
+    $out = [];
+    $rc = 0;
+    exec('/usr/bin/timeout -f 5 ' . escapeshellarg(PHP_BINARY) . ' -d log_errors=0 -r ' . escapeshellarg($code) . ' '
+        . escapeshellarg($lib) . ' ' . escapeshellarg($path) . ' 2>&1', $out, $rc);
+    if ($rc !== 0 || $out !== ['null']) {
+        printf("  the read in a child php: exit %d%s, output '%s'\n", $rc,
+            $rc === 124 ? ' (killed after 5 s: it blocked on the pipe)' : '', implode(' | ', $out));
+        return false;
+    }
+    return true;
+}
+
 function uu_pfobserve_fixture(string $name): string
 {
     $text = file_get_contents(__DIR__ . '/fixtures/' . $name);
@@ -330,7 +351,8 @@ uu_register_suite('pfobserve', function (): int {
         uu_check($t, "$what is null",
             uu_scratch_case(function (string $dir) use ($kind, $valid): bool {
                 uu_scratch_place($kind, $dir . '/rules.json', $valid);
-                return uu_rules_record_load($dir . '/rules.json') === null;
+                return $kind === 'fifo' ? uu_test_fifo_record_null($dir . '/rules.json')
+                    : uu_rules_record_load($dir . '/rules.json') === null;
             }));
     }
     uu_check($t, 'record: a valid record padded to exactly 1 MiB is read',
