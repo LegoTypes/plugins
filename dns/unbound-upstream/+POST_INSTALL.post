@@ -1,7 +1,9 @@
 
 # An install or an upgrade (its deinstall dropped the rendered rules and the minute job, and left the removal
-# marker that keeps evaluations stopped) deletes the marker, loads the plugin's rules and, while it is enabled,
-# its minute job back; nothing else starts.
+# marker that keeps evaluations stopped) deletes the marker, loads the plugin's rules and, while it is enabled or a
+# footprint is recorded, its minute job back; nothing else starts. Each through configd when it answers within 30 s,
+# else the command core's actions file runs for it, run directly (convention C6): configd was restarted just before,
+# so one still starting falls through to core's script.
 rm -f /var/run/unboundupstream/removing
-/usr/local/sbin/configctl filter reload || true
-/usr/local/sbin/configctl cron restart || true
+/usr/bin/timeout 30 /usr/local/sbin/configctl filter reload || /usr/local/etc/rc.filter_configure || true
+/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart || /usr/local/sbin/pluginctl -s cron restart || true

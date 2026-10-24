@@ -20,7 +20,7 @@ declare(strict_types=1);
  *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *     unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int} $c
+ *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>} $c
  * @return array{ok: bool, failures: list<string>, notes: list<string>}
  */
 function uu_contract(array $c): array
@@ -81,6 +81,11 @@ function uu_contract(array $c): array
         $failures[] = 'group not found';
     } elseif ($c['members'] === 0) {
         $failures[] = 'group has no members';
+    }
+    /* ruling R6: a removal's fallback that no longer matches core fails closed (the loaded rules keep the plugin's
+     * blocks until core's next reload), so refusing tunnel mode would buy nothing */
+    foreach ($c['core_commands'] as $name) {
+        $notes[] = "core command changed: $name (a removal that configd does not answer runs the old command)";
     }
 
     return ['ok' => $failures === [], 'failures' => $failures, 'notes' => $notes];

@@ -9,10 +9,10 @@ declare(strict_types=1);
  *
  * Live collectors (spec 2026-10-17 section 3.2). Read-only: the plugin model, gateway groups and records and
  * status, the dpinger processes' ages, Unbound's state, forwarders and generated configuration, the resolver's
- * route, one sysctl, the core hook files the contract checks, and pf (section 3.6c: the ruleset checksum, the
- * counting table, and the ruleset listing only when an evaluation finds no verdict for the live checksum). Builds
- * the Snapshot uu_plan() consumes (planner.php). The parsers are pure; the collectors are not and run only where
- * core is installed.
+ * route, one sysctl, the core hook files and configd actions files the contract checks, and pf (section 3.6c: the
+ * ruleset checksum, the counting table, and the ruleset listing only when an evaluation finds no verdict for the
+ * live checksum). Builds the Snapshot uu_plan() consumes (planner.php). The parsers are pure; the collectors are not
+ * and run only where core is installed.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -88,6 +88,48 @@ function uu_parse_sysctl_int(string $out): ?int
 {
     $text = trim($out);
     return preg_match('/^\d+$/', $text) === 1 ? (int)$text : null;
+}
+
+/**
+ * The command: value of one section of a configd actions file (actions_<service>.conf), as configd's parser reads
+ * it: the section's command option (":" or "="), trimmed. Null when the section or its command is missing.
+ */
+function uu_configd_action_command(string $conf, string $section): ?string
+{
+    $in = false;
+    foreach (preg_split('/\r?\n/', $conf) ?: [] as $line) {
+        if (preg_match('/^\[(.+)\]\s*$/', $line, $m) === 1) {
+            if ($in) {
+                return null;
+            }
+            $in = $m[1] === $section;
+        } elseif ($in && preg_match('/^command\s*[:=](.*)$/i', $line, $m) === 1) {
+            return trim($m[1]);
+        }
+    }
+    return null;
+}
+
+/**
+ * The names of core's commands a removal falls back to (spec -04 section 3.2, C6) that core's actions files no
+ * longer run as the plugin's constants say (ruling R6); an unreadable file counts as changed.
+ *
+ * @return list<string>
+ */
+function uu_core_commands_changed(string $dir = '/usr/local/opnsense/service/conf/actions.d'): array
+{
+    $changed = [];
+    foreach ([
+        'filter reload' => ['actions_filter.conf', 'reload', UU_CORE_FILTER_RELOAD],
+        'cron restart' => ['actions_cron.conf', 'restart', UU_CORE_CRON_RESTART],
+        'unbound restart' => ['actions_unbound.conf', 'restart', UU_CORE_UNBOUND_RESTART],
+    ] as $name => [$file, $section, $command]) {
+        $conf = @file_get_contents("$dir/$file");
+        if (!is_string($conf) || uu_configd_action_command($conf, $section) !== $command) {
+            $changed[] = $name;
+        }
+    }
+    return $changed;
 }
 
 /**
@@ -311,7 +353,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
@@ -333,7 +375,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -564,7 +606,7 @@ function uu_zone_decode(string $stdout): ?array
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -732,6 +774,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             'cacheflush' => $unboundMdl->general->cacheflush->isEqual('1'),
             'group_found' => $group !== null,
             'members' => count($members),
+            'core_commands' => uu_core_commands_changed(),
         ],
         'rules' => $pf['rules'],
         'block_table' => $pf['block_table'],

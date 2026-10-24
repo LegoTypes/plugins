@@ -7,12 +7,17 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core contract (spec section 3.10): each broken input refuses tunnel mode with its own named failure.
+ * Core contract (spec section 3.10): each broken input refuses tunnel mode with its own named failure; a core
+ * command a removal falls back to that no longer matches core is a note (ruling R6), and the package scripts run the
+ * same commands (spec -04 section 3.2, C6).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/contract.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/zone.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * A contract input that passes, with a restorable single root zone.
@@ -21,7 +26,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/zo
  *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *     unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int}
+ *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>}
  */
 function uu_test_contract_input(): array
 {
@@ -40,7 +45,19 @@ function uu_test_contract_input(): array
         'cacheflush' => false,
         'group_found' => true,
         'members' => 2,
+        'core_commands' => [],
     ];
+}
+
+/**
+ * The lines of a package script that run something: no blank line, no comment.
+ *
+ * @return list<string>
+ */
+function uu_test_script_commands(string $text): array
+{
+    return array_values(array_filter(explode("\n", $text),
+        fn (string $line): bool => trim($line) !== '' && !str_starts_with(ltrim($line), '#')));
 }
 
 uu_register_suite('contract', function (): int {
@@ -153,6 +170,62 @@ uu_register_suite('contract', function (): int {
     $c = uu_contract($in);
     uu_check($t, 'several broken inputs report every failure',
         !$c['ok'] && count($c['failures']) === 3);
+
+    // The core commands a removal falls back to when configd does not answer (spec -04 section 3.2, C6; ruling R6).
+    $conf = "[reload]\ncommand:/usr/local/etc/rc.filter_configure\nparameters: %s\ntype:script\n"
+        . "message:Reloading filter\n\n"
+        . "[sync]\ncommand:/usr/local/etc/rc.filter_synchronize\nparameters:\ntype:script\n\n"
+        . "[restart]\nparameters:\ncommand: /usr/local/sbin/pluginctl -s cron restart \ntype:script\n\n"
+        . "[status]\nparameters:\ntype:script_output\n";
+    uu_check($t, '(d4) the command: value of each section of a configd actions file, trimmed, wherever it stands in the section',
+        uu_try_case(fn (): bool => uu_configd_action_command($conf, 'reload') === '/usr/local/etc/rc.filter_configure'
+            && uu_configd_action_command($conf, 'restart') === '/usr/local/sbin/pluginctl -s cron restart'
+            && uu_configd_action_command($conf, 'sync') === '/usr/local/etc/rc.filter_synchronize'));
+    uu_check($t, '(d4) a section without a command, a missing section, or a command line of another section → null',
+        uu_try_case(fn (): bool => uu_configd_action_command($conf, 'status') === null
+            && uu_configd_action_command($conf, 'start') === null
+            && uu_configd_action_command("[restart]\n[reload]\ncommand:/bin/x\n", 'restart') === null
+            && uu_configd_action_command('', 'reload') === null));
+
+    $in = uu_test_contract_input();
+    $in['core_commands'] = ['filter reload'];
+    $c = uu_contract($in);
+    uu_check($t, '(d5) a core command that drifted → one note naming it, no failure, tunnel mode allowed',
+        $c['ok'] && $c['failures'] === [] && count($c['notes']) === 1
+        && str_starts_with($c['notes'][0] ?? '', 'core command changed: filter reload'));
+    $in['core_commands'] = ['filter reload', 'cron restart', 'unbound restart'];
+    $c = uu_contract($in);
+    uu_check($t, '(d5) three drifted → three notes, each naming its command, in order, no failure',
+        $c['ok'] && $c['failures'] === [] && count($c['notes']) === 3
+        && str_starts_with($c['notes'][0] ?? '', 'core command changed: filter reload')
+        && str_starts_with($c['notes'][1] ?? '', 'core command changed: cron restart')
+        && str_starts_with($c['notes'][2] ?? '', 'core command changed: unbound restart'));
+
+    /* the package scripts run core's two commands as remove does: configd within the timeout, else core's script */
+    $scripts = [];
+    foreach (['+POST_INSTALL.post', '+POST_DEINSTALL.post'] as $name) {
+        $text = @file_get_contents(__DIR__ . '/../' . $name);
+        $scripts[$name] = is_string($text) ? $text : null;
+    }
+    $fallbacks = fn (): array => [
+        '/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl filter reload || '
+            . UU_CORE_FILTER_RELOAD . ' || true',
+        '/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl cron restart || '
+            . UU_CORE_CRON_RESTART . ' || true',
+    ];
+    uu_check($t, '(d6) +POST_INSTALL.post: the removal marker deleted first, then the filter reload and the cron restart, each through configd, else core\'s own script',
+        uu_try_case(fn (): bool => $scripts['+POST_INSTALL.post'] !== null
+            && uu_test_script_commands($scripts['+POST_INSTALL.post'])
+                === array_merge(['rm -f /var/run/unboundupstream/removing'], $fallbacks())));
+    uu_check($t, '(d6) +POST_DEINSTALL.post: the filter reload and the cron restart, each through configd, else core\'s own script, then the rules record deleted',
+        uu_try_case(fn (): bool => $scripts['+POST_DEINSTALL.post'] !== null
+            && uu_test_script_commands($scripts['+POST_DEINSTALL.post'])
+                === array_merge($fallbacks(), ['rm -f /var/run/unboundupstream/rules.json'])));
+    foreach ($scripts as $name => $text) {
+        uu_check($t, "(d6) $name: printable ASCII, tab and newline only, ending with a newline (verify-payload.sh step 5)",
+            $text !== null && $text !== '' && preg_match('/^[\t\n\x20-\x7e]*\z/', $text) === 1
+            && str_ends_with($text, "\n"));
+    }
 
     return uu_tally_report('contract', $t);
 });

@@ -64,6 +64,9 @@ uu_register_suite('snapshot_vm', function (): int {
         && $c['foreign_route'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
+    /* ruling R6: the constants are core's commands as this VM's core runs them, so a drift note means core changed */
+    uu_check($t, 'contract input: core\'s filter reload, cron restart and unbound restart are the commands a removal falls back to',
+        array_key_exists('core_commands', $c) && $c['core_commands'] === []);
 
     /* a status snapshot never lists the ruleset: its verdict is the saved record's for the live checksum and these
      * inputs, or verifying, and it has nothing to save; a listing would have returned this run's time and a record */
