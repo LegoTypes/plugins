@@ -71,13 +71,22 @@ function unboundupstream_clean(string $msg): string
 }
 
 /**
+ * A hook's error line: its prefix, fixed ASCII text of this file, as it is, then the message cleaned, so a missing
+ * library withholds the message only and the line still says what failed.
+ */
+function unboundupstream_error_line(string $prefix, string $msg): string
+{
+    return $prefix . unboundupstream_clean($msg);
+}
+
+/**
  * One error line in the plugin's log (program dnsupstream, facility local4) from a hook: through the plugin's own
  * uu_logger() (lib/logline.php), or through logger(1) directly when the library is missing. The hooks run inside
  * core's process and must not openlog() over core's ident.
  */
-function unboundupstream_log_error(string $msg): void
+function unboundupstream_log_error(string $prefix, string $msg): void
 {
-    $text = unboundupstream_clean($msg);
+    $text = unboundupstream_error_line($prefix, $msg);
     if (function_exists('uu_logger')) {
         uu_logger($text, 'err');
         return;
@@ -100,7 +109,7 @@ function unboundupstream_queue(bool $verbose = false): void
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        unboundupstream_log_error('cannot queue an evaluation: ' . $e->getMessage());
+        unboundupstream_log_error('cannot queue an evaluation: ', $e->getMessage());
     }
 }
 
@@ -128,7 +137,7 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        unboundupstream_log_error('cannot queue an evaluation: ' . $e->getMessage());
+        unboundupstream_log_error('cannot queue an evaluation: ', $e->getMessage());
     }
 }
 
@@ -157,8 +166,8 @@ function unboundupstream_footprint_recorded(): bool
         }
         return uu_state_footprint($read['state']) !== null;
     } catch (\Throwable $e) {
-        unboundupstream_log_error('cron: cannot read the state, so the minute job follows the enabled setting alone: '
-            . $e->getMessage());
+        unboundupstream_log_error('cron: cannot read the state, so the minute job follows the enabled setting alone: ',
+            $e->getMessage());
         return false;
     }
 }
@@ -169,7 +178,7 @@ function unboundupstream_cron()
     try {
         $enabled = (new \OPNsense\UnboundUpstream\UnboundUpstream())->enabled->isEqual('1');
     } catch (\Throwable $e) {
-        unboundupstream_log_error('cron: cannot read the settings: ' . $e->getMessage());
+        unboundupstream_log_error('cron: cannot read the settings: ', $e->getMessage());
         $enabled = false;
     }
     if ($enabled || unboundupstream_footprint_recorded()) {
@@ -195,7 +204,7 @@ function unboundupstream_firewall($fw)
         require_once $lib;
         uu_render_firewall($fw);
     } catch (\Throwable $e) {
-        unboundupstream_log_error('render hook failed: ' . $e->getMessage());
+        unboundupstream_log_error('render hook failed: ', $e->getMessage());
     }
 }
 

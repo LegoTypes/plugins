@@ -277,6 +277,21 @@ uu_register_suite('wiring', function (): int {
         substr_count(uu_test_log_dir('unboundupstream'), $mark) === 2 && !str_contains(uu_test_log_dir('resolver'), $mark));
     uu_check($t, 'the hook file cleans what it logs with the same function as the scripts',
         unboundupstream_clean("a\x1bb\nc") === 'a?b; c' && unboundupstream_clean('plain') === 'plain');
+    /* N1: a php whose open_basedir admits only core's inc directory loads the hook file but cannot read
+     * lib/logline.php, as when the library is missing: the hook's own prefix stays, only the message is withheld */
+    $code = 'require "' . $inc . '"; echo unboundupstream_error_line("cron: cannot read the settings: ", '
+        . '"secret\nsecond line"), PHP_EOL, unboundupstream_error_line("render hook failed: ", "a\x1bb"), PHP_EOL;';
+    $out = (string)shell_exec('/usr/local/bin/php -d log_errors=0 -d display_errors=0 -d open_basedir='
+        . escapeshellarg(dirname($inc)) . ' -r ' . escapeshellarg($code));
+    $withheld = 'message withheld, the plugin library is missing';
+    if ($out !== "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n") {
+        printf("  without the library: %s\n", uu_log_text(substr($out, 0, 400)));
+    }
+    uu_check($t, '(N1) without the plugin library a hook\'s error line keeps its prefix and withholds only the message',
+        $out === "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n");
+    uu_check($t, '(N1) with the library the error line is the prefix and the cleaned message',
+        uu_try_case(fn (): bool => unboundupstream_error_line('cron: cannot read the settings: ', "a\x1bb\nc")
+            === 'cron: cannot read the settings: a?b; c'));
     uu_check($t, 'cron is empty while the plugin is disabled', unboundupstream_cron() === []);
     uu_check($t, 'services is empty while the plugin is disabled', unboundupstream_services() === []);
 
