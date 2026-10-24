@@ -117,6 +117,28 @@ uu_register_suite('pfobserve', function (): int {
     $v = uu_rules_verdict($vsr, $resolver, [['if' => ''] + $members[0], $members[1]]);
     uu_check($t, 'verdict: a member without a device is reported, not matched to any device',
         !$v['loaded'] && $v['problems'] === ['wg-a pass: no device']);
+    /* the footprint's rules (spec -04 section 3.2, ruling R2): the verdict reads neither, so the old address's rules
+     * beside the setting's leave the setting's verdict as it is; a footprint block under the backstop's label would
+     * not, and a footprint pass under the member's pass label would not either */
+    $fpBlock = fn (string $label): string => $vsr
+        . "block drop out log quick inet from any to 192.0.2.1 label \"{$label}\"\n";
+    uu_check($t, '(p2) a footprint block beside the setting\'s rules reads loaded, with no problems',
+        uu_scratch_case(fn (string $dir): bool
+            => $verdict($fpBlock(uu_label_footprint())) === ['loaded' => true, 'problems' => []]));
+    uu_check($t, '(p2) the same block under the backstop\'s label reads "backstop block: wrong target"',
+        uu_scratch_case(fn (string $dir): bool => $verdict($fpBlock(uu_label_backstop()))
+            === ['loaded' => false, 'problems' => ['backstop block: wrong target']]));
+    $fpPass = fn (string $label): string => $vsr
+        . "pass out quick on wg1 inet proto tcp from (wg1) to 192.0.2.1 port = domain flags S/SA keep state label "
+        . "\"{$label}\"\n"
+        . "pass out quick on wg1 inet proto udp from (wg1) to 192.0.2.1 port = domain keep state label \"{$label}\"\n";
+    uu_check($t, '(p3) a footprint pass to the old address on a member\'s device reads loaded under its own label',
+        uu_scratch_case(fn (string $dir): bool
+            => $verdict($fpPass(uu_label_footprint_pass('opt1'))) === ['loaded' => true, 'problems' => []]));
+    uu_check($t, '(p3) the same pass under the member\'s pass label reads "wg-a pass: wrong address" (why R2 gives it '
+        . 'its own)',
+        uu_scratch_case(fn (string $dir): bool => $verdict($fpPass(uu_label_pass('opt1')))
+            === ['loaded' => false, 'problems' => ['wg-a pass: wrong address']]));
     uu_check($t, 'fixture: every edit applies to the capture' . ($missed === [] ? '' : ': ' . implode(', ', $missed)),
         $missed === []);
     uu_check($t, 'verdict: nothing listed is every rule missing',

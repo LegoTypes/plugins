@@ -68,8 +68,8 @@ uu_register_suite('log', function (): int {
     $doc = uu_status_doc($s, $plan, $armed, $route);
     uu_check($t, 'status: every section 3.8 field',
         array_keys($doc) === ['enabled', 'dry_run', 'resolver', 'mode', 'member', 'tier', 'unbound', 'live_root',
-            'configured_root', 'tls_applied', 'route', 'rules_loaded', 'rules', 'counter_armed', 'blocked', 'checks',
-            'members', 'last_switch', 'contract', 'next']);
+            'configured_root', 'tls_applied', 'route', 'rules_loaded', 'rules', 'footprint', 'counter_armed', 'blocked',
+            'checks', 'members', 'last_switch', 'contract', 'next']);
     uu_check($t, 'status: the resolver, mode, member and its tier; live and configured roots; the TLS flag applied',
         $doc['resolver'] === $s['settings']['resolver'] && $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
         && $doc['live_root'] === ['10.2.0.1'] && $doc['configured_root'] === $s['zone'] && $doc['tls_applied'] === false
@@ -116,6 +116,27 @@ uu_register_suite('log', function (): int {
     uu_check($t, 'status: checks, contract and the next evaluation\'s action',
         $doc['checks'] === $st['checks'] && $doc['contract'] === uu_contract($s['contract_input'])
         && $doc['next']['action'] === 'none' && $doc['last_switch'] === null);
+
+    /* (l1) the footprint (ruling R21): the address the plugin last used, when the setting does not cover it */
+    $fst = $st;
+    $fst['resolver'] = '192.0.2.1';
+    $fst['route_installed'] = ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'];
+    $off = $s;
+    $off['settings']['enabled'] = false;
+    $same = $st;
+    $same['resolver'] = $s['settings']['resolver'];
+    $footprint = fn (array $doc): ?string => array_key_exists('footprint', $doc) ? $doc['footprint'] : 'absent';
+    uu_check($t, '(l1) status: a footprint the disabled setting does not cover is named; one equal to the enabled '
+        . 'setting is null',
+        $footprint(uu_status_doc($off, uu_plan($off, $fst), $armed, $route)) === '192.0.2.1'
+        && $footprint(uu_status_doc($s, uu_plan($s, $same), $armed, $route)) === null);
+    $lost = $s;
+    $lost['contract_input']['group_found'] = false;
+    uu_check($t, '(l1) status: a footprint is named beside another enabled resolver, or a group that is gone, and '
+        . 'none recorded is null',
+        $footprint(uu_status_doc($s, uu_plan($s, $fst), $armed, $route)) === '192.0.2.1'
+        && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $route)) === $s['settings']['resolver']
+        && $footprint($doc) === null);
 
     $gone = $s;
     $gone['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
