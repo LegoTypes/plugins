@@ -156,26 +156,18 @@ function uu_remove_core_commands(callable $run, callable $log): void
 }
 
 /**
- * Rulings R54 and R56: a removal whose run directory cannot be trusted (a symbolic link, not a directory, not made)
- * or whose removal marker cannot be made takes no lock and reads no state, because both live there. A restart needs
- * neither: Unbound's own start puts it back on the root zone the user configured, whatever the plugin set, and a
- * removal restarts even with cacheflush on (owner decision D2). Nothing can confirm it without the state, so one
- * error says what was found, what ran, that it is not confirmed, and the remedy.
+ * A removal that cannot run its stop restarts Unbound with no state: Unbound's own start puts it back on the root
+ * zone the user configured, whatever the plugin set, and a removal restarts even with cacheflush on (the alternative
+ * is a package gone with Unbound possibly still on the resolver). Nothing confirms it without the stop, so one error
+ * says what was found, what ran, that it is not confirmed, and the remedy.
  *
- * @param callable(): void $prepare makes the run directory trusted and leaves the removal marker; throws when it
- *     cannot
+ * @param string $found what stopped the removal's stop, as a clause after "the package is being removed, but"
+ * @param string $remedy more remedy after the route delete, '' for none
  * @param callable(string): array{rc: int, out: string} $run
  * @param callable(string, int): void $log
- * @return ?int null when the removal is prepared (it goes on), else remove's exit status
  */
-function uu_remove_prepare(callable $prepare, callable $run, callable $log): ?int
+function uu_remove_restart_stateless(string $found, string $remedy, callable $run, callable $log): void
 {
-    try {
-        $prepare();
-        return null;
-    } catch (\Throwable $e) {
-        $problem = $e->getMessage();
-    }
     $r = uu_core_command('unbound restart', UU_CORE_UNBOUND_RESTART, $run);
     $done = match ($r['path']) {
         'configd' => "core's Unbound restart ran through configd",
@@ -183,13 +175,67 @@ function uu_remove_prepare(callable $prepare, callable $run, callable $log): ?in
         default => "Unbound was not restarted: configd {$r['configd']}, and core's " . UU_CORE_UNBOUND_RESTART
             . " exited {$r['rc']}",
     };
-    $log('the package is being removed, but its run directory ' . UU_RUN_DIR . " cannot be used ($problem): no lock "
-        . "was taken and no state read; $done. That Unbound left the resolver is not confirmed (no state to check it "
-        . 'against): if unbound-control -c /var/unbound/unbound.conf forward still names the resolver, run configctl '
-        . 'unbound restart; then delete the host route the plugin may have left to the resolver (route -n get '
-        . '<resolver>; route delete -host <resolver>) and make ' . UU_RUN_DIR . ' a directory root can write',
-        LOG_ERR);
-    return 1;
+    $log("the package is being removed, but $found; $done. That Unbound left the resolver is not confirmed (no stop "
+        . 'checked it): if unbound-control -c /var/unbound/unbound.conf forward still names the resolver, run '
+        . 'configctl unbound restart; then delete the host route the plugin may have left to the resolver (route -n '
+        . "get <resolver>; route delete -host <resolver>)$remedy", LOG_ERR);
+}
+
+/**
+ * remove's preparation. A run directory that cannot be trusted (a symbolic link, not a directory, not made) means no
+ * lock and no state, since both live there: the stateless restart, and remove exits 1. A removal marker that cannot
+ * be made in a trusted directory still leaves the lock and the state usable, so the removal's own stop runs (it
+ * restarts Unbound only as its own fallback, and keeps its last resort); one error says that an evaluation between
+ * that stop and the removal of the files, which the marker would have stopped, may use the resolver again.
+ *
+ * @param callable(): void $trust makes the run directory trusted; throws when it cannot
+ * @param callable(): void $mark leaves the removal marker; throws when it cannot
+ * @param callable(string): array{rc: int, out: string} $run
+ * @param callable(string, int): void $log
+ * @return ?int null when the removal goes on, else remove's exit status
+ */
+function uu_remove_prepare(callable $trust, callable $mark, callable $run, callable $log): ?int
+{
+    try {
+        $trust();
+    } catch (\Throwable $e) {
+        uu_remove_restart_stateless('its run directory ' . UU_RUN_DIR . ' cannot be used (' . $e->getMessage()
+            . '): no lock was taken and no state read', ' and make ' . UU_RUN_DIR . ' a directory root can write',
+            $run, $log);
+        return 1;
+    }
+    try {
+        $mark();
+    } catch (\Throwable $e) {
+        $log('the package is being removed, but the removal marker cannot be made (' . $e->getMessage() . '): the '
+            . "removal's stop runs as usual, but an evaluation between it and the removal of the files may use the "
+            . 'resolver again: if unbound-control -c /var/unbound/unbound.conf forward names the resolver once the '
+            . 'package is removed, run configctl unbound restart, then route delete -host <resolver>', LOG_ERR);
+    }
+    return null;
+}
+
+/**
+ * remove's body under the lock: the removal's stop, then core's filter reload and cron restart, which run whatever
+ * the stop did, so the rules and the minute job follow the footprint it saved. A stop that throws (a settings,
+ * snapshot or plan failure comes before it acts) restarts Unbound with no state first, so no removal ends with
+ * neither a stop nor a restart, and remove exits 1.
+ *
+ * @param callable(): int $evaluate the removal's stop
+ * @param callable(string): array{rc: int, out: string} $run
+ * @param callable(string, int): void $log
+ */
+function uu_remove_run(callable $evaluate, callable $run, callable $log): int
+{
+    try {
+        $rc = $evaluate();
+    } catch (\Throwable $e) {
+        uu_remove_restart_stateless('its stop failed (' . $e->getMessage() . ', ' . basename($e->getFile()) . ':'
+            . $e->getLine() . ')', '', $run, $log);
+        $rc = 1;
+    }
+    uu_remove_core_commands($run, $log);
+    return $rc;
 }
 
 /**
