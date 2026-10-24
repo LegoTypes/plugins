@@ -16,6 +16,7 @@ require_once __DIR__ . '/test_verdict.php';
 require_once __DIR__ . '/test_zone.php';
 require_once __DIR__ . '/test_choose.php';
 require_once __DIR__ . '/test_contract.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * Two members, wg-a tier 1 and wg-b tier 2, both settled with no loss; Unbound running on the configured DoT
@@ -39,7 +40,7 @@ require_once __DIR__ . '/test_contract.php';
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -101,7 +102,7 @@ function uu_test_snapshot(): array
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
@@ -122,7 +123,7 @@ function uu_test_snapshot(): array
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -562,6 +563,47 @@ uu_register_suite('planner', function (): int {
             && !$u2['escalate_restart'] && $u2['state']['control_failures'] === 2
             && $u3['escalate_restart'] && $u3['state']['control_failures'] === 0
             && uu_test_reason_has($u1['reasons'], 'resolver setting changed'));
+    }
+    /* ruling R51: a tick while the removal marker exists is such a stop too */
+    foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
+        $m = null;
+        $ok = uu_try_case(function () use ($on, $footprint, $now, &$m): bool {
+            $marker = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+            $marker['settings']['enabled'] = $on;
+            $marker['stop'] = UU_STOP_REMOVING;
+            $marker['unbound']['control_ok'] = false;
+            $marker['unbound']['live_root'] = null;
+            $m1 = uu_plan($marker, $footprint);
+            $marker['now'] = $now + 60;
+            $m2 = uu_plan($marker, $m1['state']);
+            $marker['now'] = $now + UU_ESCALATE_MIN_SECONDS;
+            $m3 = uu_plan($marker, $m2['state']);
+            $m = $m1;
+            return $m1['action'] === 'stop' && !$m1['escalate_restart'] && $m1['state']['control_failures'] === 1
+                && !$m2['escalate_restart'] && $m2['state']['control_failures'] === 2
+                && $m3['escalate_restart'] && $m3['state']['control_failures'] === 0;
+        });
+        uu_check($t, "(R51, R53) a tick while the removal marker exists, plugin $what, silent channel → a stop with no restart on the first and second evaluations, one on the third at 120 s",
+            $ok && $m !== null && uu_test_reason_has($m['reasons'], 'package is being removed', 'removal marker')
+            && !uu_test_reason_has($m['reasons'], 'disabled in settings'));
+    }
+
+    /* rulings R50 and R51: an evaluation's causes, for its run and for the undo of a replaced address before it */
+    $causes = [
+        'an evaluation: none, and the undo as the replaced address\'s' => [null, false,
+            fn (): array => ['run' => null, 'undo' => UU_STOP_RESOLVER]],
+        'an evaluation while the removal marker exists: both a tick of the removal' => [null, true,
+            fn (): array => ['run' => UU_STOP_REMOVING, 'undo' => UU_STOP_REMOVING]],
+        'a requested stop: both the requested stop' => [UU_STOP_REQUEST, false,
+            fn (): array => ['run' => UU_STOP_REQUEST, 'undo' => UU_STOP_REQUEST]],
+        'a requested stop while the removal marker exists: both still the requested stop' => [UU_STOP_REQUEST, true,
+            fn (): array => ['run' => UU_STOP_REQUEST, 'undo' => UU_STOP_REQUEST]],
+        'the removal, whose marker exists: both the removal' => [UU_STOP_REMOVE, true,
+            fn (): array => ['run' => UU_STOP_REMOVE, 'undo' => UU_STOP_REMOVE]],
+    ];
+    foreach ($causes as $what => [$stop, $removing, $want]) {
+        uu_check($t, "(R50, R51) the causes of $what",
+            uu_try_case(fn (): bool => uu_plan_causes($stop, $removing) === $want()));
     }
 
     /* each stop says why: a requested stop, a removal and a replaced resolver while enabled are not the setting */

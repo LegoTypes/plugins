@@ -313,9 +313,33 @@ uu_register_suite('state', function (): int {
     ];
     foreach ($cases as $what => [$before, $after, $enabled, $reload, $cron]) {
         uu_check($t, "(e1) footprint $what",
-            uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled)
+            uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled, null)
                 === ['reload' => $reload, 'cron' => $cron]));
     }
+    /* ruling R51: a tick while the removal marker exists is an evaluation and follows the footprint; only remove
+     * itself waits, and runs core's reload and cron restart after its stop (ruling R4) */
+    $marker = [
+        'a tick while the removal marker exists, A → null, enabled: reload' => [true, true, false],
+        'a tick while the removal marker exists, A → null, disabled: reload and cron' => [false, true, true],
+    ];
+    foreach ($marker as $what => [$enabled, $reload, $cron]) {
+        uu_check($t, "(R51) footprint $what",
+            uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, $enabled, UU_STOP_REMOVING)
+                === ['reload' => $reload, 'cron' => $cron]));
+    }
+    foreach (['A → null' => ['192.0.2.1', null], 'null → A' => [null, '192.0.2.1'],
+              'A → B' => ['192.0.2.1', '192.0.2.9']] as $what => [$before, $after]) {
+        uu_check($t, "(R51) footprint $what in remove itself, enabled or disabled: nothing until its stop is over",
+            uu_try_case(fn (): bool => uu_footprint_actions($before, $after, true, UU_STOP_REMOVE)
+                === ['reload' => false, 'cron' => false]
+                && uu_footprint_actions($before, $after, false, UU_STOP_REMOVE)
+                === ['reload' => false, 'cron' => false]));
+    }
+    uu_check($t, '(R51) footprint A → null in a requested stop or the undo of a replaced address: as an evaluation',
+        uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, false, UU_STOP_REQUEST)
+            === ['reload' => true, 'cron' => true]
+            && uu_footprint_actions('192.0.2.1', null, true, UU_STOP_RESOLVER)
+            === ['reload' => true, 'cron' => false]));
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

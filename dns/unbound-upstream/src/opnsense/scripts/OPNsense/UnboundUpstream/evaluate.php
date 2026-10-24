@@ -15,10 +15,13 @@ declare(strict_types=1);
  *                                     recorded), then one evaluation (Save with enabled on while the job is missing)
  *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
  *                                     whatever the settings say (Save with enabled off)
- *   evaluate.php remove               the package's deinstall: leave the removal marker, then stop; every
- *                                     evaluation stops while the marker exists (a cron tick or a hook between the
- *                                     deinstall's stop and the files' removal would otherwise re-enter tunnel mode
- *                                     with nothing left to undo it), until the package's post-install deletes it
+ *   evaluate.php remove               the package's deinstall, on an upgrade too (decision D6): leave the removal
+ *                                     marker, stop, then core's filter reload and cron restart (configd, else
+ *                                     core's own scripts: convention C6); every evaluation stops while the marker
+ *                                     exists (a cron tick or a hook between the deinstall's stop and the files'
+ *                                     removal would otherwise re-enter tunnel mode with nothing left to undo it),
+ *                                     until the package's post-install deletes it. With a run directory it cannot
+ *                                     trust it only restarts Unbound (ruling R54)
  *   evaluate.php status               the section 3.8 JSON for the page; without the lock, it changes nothing but
  *                                     the run directory (uu_run_dir()), and it never lists the ruleset
  *                                     (section 3.6c)
@@ -26,9 +29,9 @@ declare(strict_types=1);
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing else
  *                                     but the run directory (uu_run_dir())
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
- * evaluate, start, stop and remove run under the evaluate lock, waiting up to UU_LOCK_WAIT_SECONDS for an
- * evaluation in flight, so a trigger that arrives meanwhile runs after it instead of being dropped. Every failure is logged and exits
- * non-zero; nothing is thrown into configd.
+ * evaluate, start, stop and remove run under the evaluate lock, waiting up to UU_LOCK_WAIT_SECONDS (remove:
+ * UU_REMOVE_LOCK_WAIT_SECONDS) for an evaluation in flight, so a trigger that arrives meanwhile runs after it instead
+ * of being dropped. Every failure is logged and exits non-zero; nothing is thrown into configd.
  */
 
 require_once __DIR__ . '/lib/constants.php';
@@ -38,6 +41,7 @@ require_once __DIR__ . '/lib/snapshot.php';
 require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/log.php';
 require_once __DIR__ . '/lib/notify.php';
+require_once __DIR__ . '/lib/corecmd.php';
 
 const UU_LOCK_PATH = UU_RUN_DIR . '/evaluate.lock';
 const UU_REMOVING_PATH = UU_RUN_DIR . '/removing';  /* +POST_INSTALL.post deletes it by this path */
@@ -80,11 +84,16 @@ function uu_main(array $args): int
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(null, []));
         case 'remove':
-            uu_run_dir();
+            $refused = uu_remove_untrusted_run_dir('uu_run_dir', 'uu_core_shell', 'uu_log');
+            if ($refused !== null) {
+                return $refused;
+            }
             if (!touch(UU_REMOVING_PATH)) {
                 throw new RuntimeException('cannot create ' . UU_REMOVING_PATH);
             }
-            return uu_with_lock(fn (): int => uu_evaluate(UU_STOP_REMOVE, []));
+            return uu_with_lock('uu_remove', UU_REMOVE_LOCK_WAIT_SECONDS, LOG_ERR, 'the package is being removed '
+                . "while Unbound may still forward to the resolver over the plugin's route: once it is removed, run "
+                . 'configctl unbound restart, then route delete -host <resolver>');
         case 'stop':
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(UU_STOP_REQUEST, []));
@@ -126,24 +135,28 @@ function uu_names(string $arg): array
 }
 
 /**
- * Run fn under the evaluate lock: exclusive, blocking up to UU_LOCK_WAIT_SECONDS, never dropping a trigger at
- * once. The lock is close-on-exec, so a child (configctl unbound restart) never holds it.
+ * Run fn under the evaluate lock: exclusive, blocking up to waitSeconds, never dropping a trigger at once; a wait
+ * that runs out logs timeoutText at timeoutPrio and returns 1. The lock is close-on-exec, so a child (configctl
+ * unbound restart) never holds it.
  *
  * @param callable(): int $fn
  */
-function uu_with_lock(callable $fn): int
-{
+function uu_with_lock(
+    callable $fn,
+    int $waitSeconds = UU_LOCK_WAIT_SECONDS,
+    int $timeoutPrio = LOG_WARNING,
+    string $timeoutText = 'this trigger did nothing'
+): int {
     uu_run_dir();
     $lock = fopen(UU_LOCK_PATH, 'ce');
     if ($lock === false) {
         throw new RuntimeException('cannot open ' . UU_LOCK_PATH);
     }
     try {
-        $deadline = hrtime(true) + UU_LOCK_WAIT_SECONDS * 1000000000;
+        $deadline = hrtime(true) + $waitSeconds * 1000000000;
         while (!flock($lock, LOCK_EX | LOCK_NB)) {
             if (hrtime(true) >= $deadline) {
-                uu_log('an evaluation held the lock for ' . UU_LOCK_WAIT_SECONDS . ' s: this trigger did nothing',
-                    LOG_WARNING);
+                uu_log("an evaluation held the lock for $waitSeconds s: $timeoutText", $timeoutPrio);
                 return 1;
             }
             usleep(200000);
@@ -155,12 +168,27 @@ function uu_with_lock(callable $fn): int
 }
 
 /**
+ * remove under the lock: the removal's stop, then core's filter reload and cron restart (ruling R4), which run even
+ * when the stop failed, so the rules and the minute job follow whatever footprint it saved.
+ */
+function uu_remove(): int
+{
+    try {
+        return uu_evaluate(UU_STOP_REMOVE, []);
+    } finally {
+        uu_remove_core_commands('uu_core_shell', 'uu_log');
+    }
+}
+
+/**
  * One evaluation. stop and remove run as stops whatever the settings say, and so does every evaluation while the
- * removal marker exists; the cause goes to the planner (Snapshot.stop), which logs it. The settings are read under
- * the lock, so an evaluation that waited for it acts on the last Save. When the state records a resolver address
- * other than the setting's (a Save changed it, ruling R31), that address's route and forwarders are undone first
- * by a stop for it, and the members' resolver-failed marks, which were about it, are forgotten; if that does not
- * finish, the new address waits for the next evaluation.
+ * removal marker exists, as a tick of the removal (uu_plan_causes(), ruling R51); the cause goes to the planner
+ * (Snapshot.stop), which logs it. The settings are read under the lock, so an evaluation that waited for it acts on
+ * the last Save. When the state records a resolver address other than the setting's (a Save changed it, ruling
+ * R31), that address's route and forwarders are undone first by a stop for it, under the run's cause (ruling R50:
+ * a requested stop's or a removal's undo restarts Unbound when it cannot restore, and a removal's leaves the reject
+ * route), and the members' resolver-failed marks, which were about it, are forgotten; if the undo does not finish,
+ * the run ends there and the new address waits for the next evaluation.
  *
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param list<string> $named
@@ -168,11 +196,11 @@ function uu_with_lock(callable $fn): int
 function uu_evaluate(?string $stop, array $named): int
 {
     $settings = uu_settings(true);
-    if ($stop === null && $settings['enabled'] && is_file(UU_REMOVING_PATH)) {
+    $causes = uu_plan_causes($stop, is_file(UU_REMOVING_PATH));
+    if ($causes['run'] === UU_STOP_REMOVING) {
         /* every minute after a deinstall that stopped partway: worth the noise */
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
-        $stop = UU_STOP_REMOVE;
     }
     $old = uu_state_load(UU_STATE_PATH)['resolver'];
     if ($old !== null && $old !== $settings['resolver']) {
@@ -180,22 +208,23 @@ function uu_evaluate(?string $stop, array $named): int
             . 'first');
         $previous = $settings;
         $previous['resolver'] = $old;
-        uu_evaluate_once($previous, [], UU_STOP_RESOLVER);
+        uu_evaluate_once($previous, [], $causes['undo']);
         $st = uu_state_load(UU_STATE_PATH);
         if ($st['resolver'] === $old) {
-            uu_log("the route or forwarders of $old could not be undone: {$settings['resolver']} waits for the next "
-                . 'evaluation', LOG_ERR);
+            uu_log("the route or forwarders of $old could not be undone: " . ($causes['run'] === null
+                ? "{$settings['resolver']} waits for the next evaluation"
+                : 'the stop ends there, with what the lines above say is left'), LOG_ERR);
             return 1;
         }
         uu_state_save(UU_STATE_PATH, uu_state_forget_resolver($st));
     }
-    uu_evaluate_once($settings, $named, $stop);
+    uu_evaluate_once($settings, $named, $causes['run']);
     return 0;
 }
 
 /**
  * Snapshot, the rules' verification saved when this run made one, plan, apply, the counting table's upkeep and
- * blocked-count line, save, the filter reload (and cron restart) when the footprint changed, except in a removal
+ * blocked-count line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
  * (uu_footprint_follow()), then the switch notification when the run switched (section 3.11), for one set of
  * settings. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with
  * changes the checksum anyway; the stop for a replaced resolver address would also verify the rules against an
@@ -243,10 +272,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         $st['blocked'] = $blocked;
         uu_state_save(UU_STATE_PATH, $st);
     } finally {
-        /* a removal's reload and cron restart wait until its stop is over (ruling R4) */
-        if ($stop !== UU_STOP_REMOVE) {
-            uu_footprint_follow($before, $settings['enabled']);
-        }
+        uu_footprint_follow($before, $settings['enabled'], $stop);
     }
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
@@ -257,14 +283,16 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  * The rules and the minute job follow the footprint the run saved (spec -04 section 3.2, ruling R4, decision D4): a
  * footprint that changed reloads the filter, so its block and pass come or go at once, and one that came or went
  * while the plugin is disabled restarts cron, so the minute job that retries the stop is installed exactly while one
- * is recorded. The state is read back, so a run that failed after a checkpoint follows what it saved; nothing is
- * thrown, so such a run still ends in its own error.
+ * is recorded; in remove itself, both wait until its stop is over (uu_remove()). The state is read back, so a run
+ * that failed after a checkpoint follows what it saved; nothing is thrown, so such a run still ends in its own error.
+ *
+ * @param ?string $stop the run's UU_STOP_* cause, or null
  */
-function uu_footprint_follow(?string $before, bool $enabled): void
+function uu_footprint_follow(?string $before, bool $enabled, ?string $stop): void
 {
     try {
         $after = uu_state_footprint(uu_state_load(UU_STATE_PATH));
-        $actions = uu_footprint_actions($before, $after, $enabled);
+        $actions = uu_footprint_actions($before, $after, $enabled, $stop);
         if ($actions['reload']) {
             $out = [];
             $rc = 0;
@@ -330,7 +358,7 @@ function uu_block_table_fill(string $resolver): void
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
@@ -352,7 +380,7 @@ function uu_block_table_fill(string $resolver): void
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}

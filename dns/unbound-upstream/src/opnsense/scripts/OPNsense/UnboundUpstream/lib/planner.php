@@ -152,11 +152,27 @@ function uu_plan_silent(int $failures, ?int $since, int $now): array
 /**
  * Whether a stop with this cause restarts Unbound for a silent control channel at once (ruling R53): a requested
  * stop and the removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, the undo
- * of a replaced address, and any cause added later) waits for uu_plan_silent()'s bound.
+ * of a replaced address, a tick while the removal marker exists, and any cause added later) waits for
+ * uu_plan_silent()'s bound.
  */
 function uu_plan_restarts_at_once(?string $stop): bool
 {
     return in_array($stop, [UU_STOP_REQUEST, UU_STOP_REMOVE], true);
+}
+
+/**
+ * The causes of one evaluation's runs: its own (run), and that of the stop for a replaced resolver address that comes
+ * first when the state records one (undo). An evaluation with no cause that finds the removal marker is a tick of
+ * the removal (ruling R51): it stops, as the ticks do, but only remove itself has the removal's rules. The undo runs
+ * under the run's cause (ruling R50), so a requested stop's or a removal's undo has their restart and last resort; an
+ * evaluation's undo is the replaced address's own stop.
+ *
+ * @return array{run: ?string, undo: string}
+ */
+function uu_plan_causes(?string $stop, bool $removing): array
+{
+    $run = $stop === null && $removing ? UU_STOP_REMOVING : $stop;
+    return ['run' => $run, 'undo' => $run ?? UU_STOP_RESOLVER];
 }
 
 /**
@@ -170,6 +186,7 @@ function uu_plan_stop_reason(array $s): ?string
     $enabled = $s['settings']['enabled'];
     return match (true) {
         $s['stop'] === UU_STOP_REMOVE => 'the package is being removed',
+        $s['stop'] === UU_STOP_REMOVING => 'the package is being removed: its removal marker exists',
         $s['stop'] === UU_STOP_RESOLVER => "the resolver setting changed: undoing {$s['settings']['resolver']}",
         !$enabled => 'disabled in settings',
         $s['stop'] === UU_STOP_REQUEST => 'stopped on request (configctl unboundupstream stop)',
@@ -196,7 +213,7 @@ function uu_plan_stop_reason(array $s): ?string
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
@@ -295,9 +312,10 @@ function uu_plan(array $s, array $st): array
         $escalate = false;
         if (!uu_plan_restarts_at_once($s['stop']) && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
             && !$s['unbound']['control_ok']) {
-            /* rulings R52 and R53: a stop that repeats (a disabled plugin's tick, which the minute job runs while a
-             * footprint remains, and the undo of a replaced address) restarts Unbound for a silent channel only
-             * within the bound of tunnel mode's escalation, never every minute */
+            /* rulings R52, R53 and R51: a stop that repeats (a disabled plugin's tick, which the minute job runs
+             * while a footprint remains, the undo of a replaced address, and a tick while the removal marker exists)
+             * restarts Unbound for a silent channel only within the bound of tunnel mode's escalation, never every
+             * minute */
             $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
             $st['control_failures'] = $silent['failures'];
             $st['control_silent_since'] = $silent['since'];

@@ -270,14 +270,15 @@ final class UuApplyRun
     /**
      * Restart Unbound after this run's restore failed, so that Unbound's own start applies the root zone the user
      * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart at once, on any restore
-     * failure: a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone. Any
-     * other stop (a replaced resolver address, a disabled plugin's tick, dry run's undo) restarts only on a silent
-     * channel (ruling R24), and only once the planner's escalate_restart says the silence has lasted section 3.10's
-     * bound (rulings R52, R53): the minute job repeats those stops, while a footprint remains even disabled. Never
-     * while Unbound is disabled in its settings, even with its pid still alive; with cacheflush on only for a
-     * removal (owner decision D2: the restart wipes the cache the user keeps, and a removal has nothing after it but
-     * the reject route). Confirmed through `forward`, polled for up to UU_CONTROL_WAIT_SECONDS: true only when the
-     * live root is no longer the resolver.
+     * failure: a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone; so
+     * does their undo of a replaced address, which runs under their cause (ruling R50). Any other stop (a replaced
+     * resolver address in an evaluation, a disabled plugin's tick, a tick while the removal marker exists, dry run's
+     * undo) restarts only on a silent channel (ruling R24), and only once the planner's escalate_restart says the
+     * silence has lasted section 3.10's bound (rulings R51, R52, R53): the minute job repeats those stops, while a
+     * footprint remains even disabled. Never while Unbound is disabled in its settings, even with its pid still
+     * alive; with cacheflush on only for remove itself (owner decision D2: the restart wipes the cache the user
+     * keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for up
+     * to UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
      */
     private function restartForStop(): bool
     {
@@ -335,10 +336,11 @@ final class UuApplyRun
 
     /**
      * Neither the restore nor a restart took Unbound off the resolver. A removal's last resort (spec -04 section
-     * 3.2, C6) is the reject route over the plugin's route, never a delete: with the plugin gone, no block rule and
-     * no route repair are left for when the member route goes (a wireguard restart deletes it) and the queries
-     * follow the default route out a WAN, while the reject route keeps them local through any device change. The
-     * state keeps the resolver recorded. A reject route that cannot be made (a route not ours, a failed route call)
+     * 3.2, C6), in remove itself only (a tick while the removal marker exists keeps the route, ruling R51), is the
+     * reject route over the plugin's route, never a delete: with the plugin gone, no block rule and no route repair
+     * are left for when the member route goes (a wireguard restart deletes it) and the queries follow the default
+     * route out a WAN, while the reject route keeps them local through any device change. The state keeps the
+     * resolver recorded. A reject route that cannot be made (a route not ours, a failed route call)
      * leaves the route as it is, and the error says what to run. Any other stop keeps the route for the next try; a
      * requested stop that leaves a footprint with the plugin disabled says once that the footprint's block stays
      * (C2: once per change, never by the ticks that retry the stop).

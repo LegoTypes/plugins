@@ -373,12 +373,18 @@ function uu_state_footprint(array $state): ?string
  * What an evaluation runs once it has saved a changed footprint (spec -04 section 3.2, ruling R4): a filter reload
  * whenever the footprint changed, since the rules follow it; and, with the plugin disabled, a cron restart when a
  * footprint came or went, since the minute job is installed exactly while the plugin is enabled or a footprint is
- * recorded (decision D4).
+ * recorded (decision D4). Nothing in remove itself (UU_STOP_REMOVE), which runs core's reload and cron restart once
+ * its stop is over; a tick while the removal marker exists (UU_STOP_REMOVING) is an evaluation and follows (ruling
+ * R51).
  *
+ * @param ?string $stop the run's UU_STOP_* cause, or null
  * @return array{reload: bool, cron: bool}
  */
-function uu_footprint_actions(?string $before, ?string $after, bool $enabled): array
+function uu_footprint_actions(?string $before, ?string $after, bool $enabled, ?string $stop): array
 {
+    if ($stop === UU_STOP_REMOVE) {
+        return ['reload' => false, 'cron' => false];
+    }
     return ['reload' => $before !== $after, 'cron' => !$enabled && ($before === null) !== ($after === null)];
 }
 

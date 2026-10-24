@@ -8,12 +8,15 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Apply order and failure handling with a recording Io (spec sections 3.4, 3.5, 3.7, 3.10 and the section 5
- * planner list). Plans come from the real planner, so each case also pins the planner input it depends on.
+ * planner list). Plans come from the real planner, so each case also pins the planner input it depends on. The
+ * removal's core commands (spec -04 section 3.2, C6) run through a recording runner.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/apply.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/corecmd.php';
 require_once __DIR__ . '/test_planner.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * The planner's test snapshot with Unbound's live root as Unbound prints it: bare addresses, its own order.
@@ -35,7 +38,7 @@ require_once __DIR__ . '/test_planner.php';
  *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
  *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -196,6 +199,32 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
         },
     ];
     return ['io' => $io, 'calls' => $calls, 'saved' => $saved];
+}
+
+/**
+ * A recording runner for core's commands and a recording log: each command line and each log line ("log <prio>
+ * <msg>") goes to calls in order; a command line exits with the status of the first prefix in codes it starts
+ * with, else 0.
+ *
+ * @param array<string, int> $codes
+ * @return array{run: callable(string): int, log: callable(string, int): void, calls: ArrayObject<int, string>}
+ */
+function uu_test_runner(array $codes = []): array
+{
+    $calls = new ArrayObject();
+    $run = function (string $cmdline) use ($calls, $codes): int {
+        $calls[] = $cmdline;
+        foreach ($codes as $prefix => $rc) {
+            if (str_starts_with($cmdline, $prefix)) {
+                return $rc;
+            }
+        }
+        return 0;
+    };
+    $log = function (string $msg, int $prio) use ($calls): void {
+        $calls[] = "log $prio $msg";
+    };
+    return ['run' => $run, 'log' => $log, 'calls' => $calls];
 }
 
 /**
@@ -1024,6 +1053,198 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(a9) requested stop that restores → the tail, the resolver cleared, no footprint warning',
         $run['acts'] === array_merge([$restoreDot, 'uc forward'], $fpTail) && $cleared($run['st'])
         && !uu_test_logged($run['calls'], LOG_WARNING, 'block stays'));
+
+    // Ruling R50: the undo of a replaced address runs under the requested stop's cause. Setting B, footprint A
+    // (192.0.2.1), the zone unrestorable: the undo of A is a stop of A's snapshot.
+    $r50 = null;
+    $ok = uu_try_case(function () use ($stopAs, $unrestorable, &$r50): bool {
+        $r50 = $stopAs($unrestorable, uu_plan_causes(UU_STOP_REMOVE, true)['undo'],
+            ['restart' => false, 'restarts' => true]);
+        return true;
+    });
+    uu_check($t, '(R50) a removal with setting B, footprint A and the zone unrestorable → the undo of A restarts at once, then, still not restored, the reject route over A\'s route, never a delete, the removal line',
+        $ok && $r50 !== null && $r50['action'] === 'stop' && $r50['acts'] === ['restart', $fpReject]
+        && $lastResort($r50));
+    $ok = uu_try_case(function () use ($stopAs, $unrestorable, $fpRoot, &$r50): bool {
+        $r50 = $stopAs($unrestorable, uu_plan_causes(UU_STOP_REQUEST, false)['undo'],
+            ['restart_live' => $fpRoot, 'restarts' => true]);
+        return true;
+    });
+    uu_check($t, '(R50) the same under a requested stop → the undo of A restarts at once, the configured root confirmed, then the tail, A cleared',
+        $ok && $r50 !== null && $r50['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
+        && $cleared($r50['st']));
+
+    // Ruling R51: a tick while the removal marker exists is a stop with the ticks' rules: a restart only for a silent
+    // channel at section 3.10's bound, no cacheflush override, never the reject route. remove itself keeps both
+    // (a4 to a8 above).
+    $tick = null;
+    $ok = uu_try_case(function () use ($stopAs, $fp, $fpRefused, &$tick): bool {
+        $tick = $stopAs($fp, uu_plan_causes(null, true)['run'], $fpRefused);
+        return true;
+    });
+    uu_check($t, '(R51) a tick while the removal marker exists, restore refused, channel answering → no restart, no reject route, the route stays, the resolver recorded',
+        $ok && $tick !== null && $tick['action'] === 'stop' && $tick['acts'] === [$restoreDot]
+        && $tick['st']['mode'] === 'tunnel' && $tick['st']['resolver'] === '192.0.2.1'
+        && !uu_test_logged($tick['calls'], LOG_ERR, 'rejected locally')
+        && uu_test_logged($tick['calls'], LOG_ERR, 'route stays'));
+    $acts = [];
+    $ok = uu_try_case(function () use ($silentTunnel, $usable, $now, $all, $silentRoot, &$acts): bool {
+        $marker = $silentTunnel;
+        $marker['stop'] = uu_plan_causes(null, true)['run'];
+        $st = uu_test_plan_state('wg-a', $usable);
+        foreach ([0, 60, UU_ESCALATE_MIN_SECONDS] as $i => $offset) {
+            $marker['now'] = $now + $offset;
+            $p = uu_plan($marker, $st);
+            $r = uu_test_io($marker, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => $i === 2]);
+            $st = uu_apply($p, $marker, $r['io']);
+            $acts[] = uu_test_acts($r['calls']);
+        }
+        return $st['mode'] === 'fallback' && $st['resolver'] === null;
+    });
+    uu_check($t, '(R51, R53) a tick while the removal marker exists, silent channel → no restart before the third tick, at 120 s, then one restart and the tail',
+        $ok && count($acts) === 3 && $acts[0] === [$restoreDot] && $acts[1] === [$restoreDot]
+        && $acts[2] === $silentTail);
+    $ok = uu_try_case(function () use ($silentTunnel, $atBound, $all, &$tick): bool {
+        $marker = $silentTunnel;
+        $marker['stop'] = uu_plan_causes(null, true)['run'];
+        $p = uu_plan($marker, $atBound);
+        $r = uu_test_io($marker, $all, ['silent' => true, 'restart' => false, 'restarts' => true]);
+        $tick = ['p' => $p, 'calls' => $r['calls'], 'st' => uu_apply($p, $marker, $r['io'])];
+        return true;
+    });
+    uu_check($t, '(R51) the same tick at the bound whose restart fails → never the reject route: the route stays, still tunnel',
+        $ok && $tick !== null && $tick['p']['escalate_restart']
+        && uu_test_acts($tick['calls']) === [$restoreDot, 'restart']
+        && $tick['st']['mode'] === 'tunnel' && !uu_test_logged($tick['calls'], LOG_ERR, 'rejected locally')
+        && uu_test_logged($tick['calls'], LOG_ERR, 'route stays'));
+    $ok = uu_try_case(function () use ($silentTunnel, $atBound, $all, $silentRoot, &$tick): bool {
+        $marker = $silentTunnel;
+        $marker['stop'] = uu_plan_causes(null, true)['run'];
+        $marker['contract_input']['cacheflush'] = true;
+        $p = uu_plan($marker, $atBound);
+        $r = uu_test_io($marker, $all, ['silent' => true, 'restart_live' => $silentRoot]);
+        $tick = ['p' => $p, 'calls' => $r['calls'], 'st' => uu_apply($p, $marker, $r['io'])];
+        return true;
+    });
+    uu_check($t, '(R51) the same tick at the bound with cacheflush on → no restart (only remove itself overrides cacheflush), the route stays',
+        $ok && $tick !== null && uu_test_acts($tick['calls']) === [$restoreDot] && $tick['st']['mode'] === 'tunnel'
+        && uu_test_logged($tick['calls'], LOG_ERR, 'cacheflush'));
+
+    // A removal's core commands (rulings R4, R5; C6): through configd within UU_CONFIGD_TIMEOUT_SECONDS, else core's
+    // own script.
+    $ctlReload = '/usr/bin/timeout 30 /usr/local/sbin/configctl filter reload';
+    $ctlCron = '/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart';
+    $ctlUnbound = '/usr/bin/timeout 30 /usr/local/sbin/configctl unbound restart';
+    $both = null;
+    $ok = uu_try_case(function () use (&$both): bool {
+        $r = uu_test_runner(['/usr/bin/timeout ' => 1]);
+        $both = [uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $r['run']),
+                 uu_core_command('cron restart', UU_CORE_CRON_RESTART, $r['run']), $r['calls']->getArrayCopy()];
+        return true;
+    });
+    uu_check($t, '(d1) configd not answering (exit 1) → direct for each, core\'s own command right after its configctl line',
+        $ok && $both !== null && $both[0] === 'direct' && $both[1] === 'direct'
+        && $both[2] === [$ctlReload, '/usr/local/etc/rc.filter_configure', $ctlCron,
+                         '/usr/local/sbin/pluginctl -s cron restart']);
+    $ok = uu_try_case(function () use (&$both): bool {
+        $r = uu_test_runner(['/usr/bin/timeout ' => 124]);
+        $both = [uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $r['run']), $r['calls']->getArrayCopy()];
+        return true;
+    });
+    uu_check($t, '(d1) configctl timed out (exit 124) → direct',
+        $ok && $both !== null && $both[0] === 'direct' && $both[1] === [$ctlReload, UU_CORE_FILTER_RELOAD]);
+    $ok = uu_try_case(function () use (&$both): bool {
+        $r = uu_test_runner();
+        $both = [uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $r['run']),
+                 uu_core_command('cron restart', UU_CORE_CRON_RESTART, $r['run']), $r['calls']->getArrayCopy()];
+        return true;
+    });
+    uu_check($t, '(d2) configd answering → configd for each, only the two configctl lines',
+        $ok && $both !== null && $both[0] === 'configd' && $both[1] === 'configd'
+        && $both[2] === [$ctlReload, $ctlCron]);
+    $ok = uu_try_case(function () use (&$both): bool {
+        $r = uu_test_runner(['/' => 1]);
+        $both = [uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $r['run']), $r['calls']->getArrayCopy()];
+        return true;
+    });
+    uu_check($t, '(d3) configd and core\'s script both failing → failed',
+        $ok && $both !== null && $both[0] === 'failed' && $both[1] === [$ctlReload, UU_CORE_FILTER_RELOAD]);
+    $removal = function (array $codes): ?ArrayObject {
+        $calls = null;
+        $ok = uu_try_case(function () use ($codes, &$calls): bool {
+            $r = uu_test_runner($codes);
+            uu_remove_core_commands($r['run'], $r['log']);
+            $calls = $r['calls'];
+            return true;
+        });
+        return $ok ? $calls : null;
+    };
+    $calls = $removal([]);
+    uu_check($t, '(R4) remove after its stop, configd answering → the filter reload, then the cron restart, through configd, each logged',
+        $calls !== null && uu_test_acts($calls) === [$ctlReload, $ctlCron]
+        && uu_test_logged($calls, LOG_NOTICE, 'filter reload', 'configd')
+        && uu_test_logged($calls, LOG_NOTICE, 'cron restart', 'configd'));
+    $calls = $removal(['/usr/bin/timeout ' => 1]);
+    uu_check($t, '(R4) remove after its stop, configd not answering → core\'s two scripts directly, each logged with the command it ran',
+        $calls !== null && uu_test_acts($calls) === [$ctlReload, '/usr/local/etc/rc.filter_configure', $ctlCron,
+            '/usr/local/sbin/pluginctl -s cron restart']
+        && uu_test_logged($calls, LOG_WARNING, 'filter reload', '/usr/local/etc/rc.filter_configure')
+        && uu_test_logged($calls, LOG_WARNING, 'cron restart', '/usr/local/sbin/pluginctl -s cron restart'));
+    $calls = $removal(['/' => 1]);
+    uu_check($t, '(R4) remove after its stop, both failing → an error for each, saying what is left',
+        $calls !== null && uu_test_logged($calls, LOG_ERR, 'filter reload', 'failed')
+        && uu_test_logged($calls, LOG_ERR, 'cron restart', 'failed'));
+
+    // Ruling R54: a removal whose run directory cannot be trusted takes no lock, reads no state, restarts Unbound
+    // through core's command and says so in one error.
+    $untrusted = function (): void {
+        throw new RuntimeException(UU_RUN_DIR . ' is a symbolic link');
+    };
+    $refusal = function (array $codes) use ($untrusted): ?array {
+        $out = null;
+        $ok = uu_try_case(function () use ($codes, $untrusted, &$out): bool {
+            $r = uu_test_runner($codes);
+            $out = ['rc' => uu_remove_untrusted_run_dir($untrusted, $r['run'], $r['log']), 'calls' => $r['calls']];
+            return true;
+        });
+        return $ok ? $out : null;
+    };
+    $oneError = function (ArrayObject $calls): ?string {
+        $lines = array_values(array_filter($calls->getArrayCopy(),
+            fn (string $c): bool => str_starts_with($c, 'log ')));
+        return count($lines) === 1 && str_starts_with($lines[0], 'log ' . LOG_ERR . ' ') ? $lines[0] : null;
+    };
+    $out = $refusal([]);
+    $line = $out === null ? null : $oneError($out['calls']);
+    uu_check($t, '(R54) remove with an untrusted run dir → exit 1, Unbound restarted through configd, one error naming the run dir, the removal, the restart and the remedy',
+        $out !== null && $out['rc'] === 1 && uu_test_acts($out['calls']) === [$ctlUnbound] && $line !== null
+        && str_contains($line, UU_RUN_DIR) && str_contains($line, 'symbolic link')
+        && str_contains($line, 'being removed')
+        && str_contains($line, 'restarted') && !str_contains($line, 'not restarted')
+        && str_contains($line, 'route delete -host'));
+    $out = $refusal(['/usr/bin/timeout ' => 1]);
+    $line = $out === null ? null : $oneError($out['calls']);
+    uu_check($t, '(R54) the same with configd not answering → core\'s own restart run directly, and the line says so',
+        $out !== null && $out['rc'] === 1
+        && uu_test_acts($out['calls']) === [$ctlUnbound, '/usr/local/sbin/pluginctl -c unbound_start'] && $line !== null
+        && str_contains($line, UU_RUN_DIR) && str_contains($line, '/usr/local/sbin/pluginctl -c unbound_start')
+        && !str_contains($line, 'not restarted'));
+    $out = $refusal(['/' => 1]);
+    $line = $out === null ? null : $oneError($out['calls']);
+    uu_check($t, '(R54) the same with both failing → the line says Unbound was not restarted, and to run configctl unbound restart',
+        $out !== null && $out['rc'] === 1 && $line !== null && str_contains($line, UU_RUN_DIR)
+        && str_contains($line, 'not restarted') && str_contains($line, 'configctl unbound restart'));
+    /* uu_run_dir() returning is a trusted run dir */
+    $trusted = function (): void {
+    };
+    $out = null;
+    $ok = uu_try_case(function () use ($trusted, &$out): bool {
+        $r = uu_test_runner();
+        $out = ['rc' => uu_remove_untrusted_run_dir($trusted, $r['run'], $r['log']), 'calls' => $r['calls']];
+        return true;
+    });
+    uu_check($t, '(R54) a trusted run dir → null (the removal goes on), nothing run, nothing logged',
+        $ok && $out !== null && $out['rc'] === null && count($out['calls']) === 0);
 
     // Never planned, across every case above; flush_requestlist only behind the reject route (ruling R29: stop).
     $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'reload', 'reload_keep_cache',

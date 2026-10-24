@@ -21,6 +21,15 @@ const UU_CONTROL_CALL_TIMEOUT_SECONDS = 5; /* every unbound-control call has a t
 const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many evaluations before a restart */
 const UU_ESCALATE_MIN_SECONDS = 120;      /* and silent at least this long, so a fresh start is never restarted */
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
+const UU_REMOVE_LOCK_WAIT_SECONDS = 2 * UU_LOCK_WAIT_SECONDS; /* remove waits longer: an evaluation in flight is
+                                           * bounded, and the removal marker stops every later one (spec -04 3.2) */
+const UU_CONFIGD_TIMEOUT_SECONDS = 30;    /* a core command configctl has not answered in this long runs directly
+                                           * (ruling R5; the package scripts repeat the 30) */
+/* core 26.7.7's command: values, verbatim, run directly when configd does not answer (convention C6); the contract
+ * notes any that core's actions files no longer name (ruling R6) */
+const UU_CORE_FILTER_RELOAD = '/usr/local/etc/rc.filter_configure'; /* actions_filter.conf [reload] */
+const UU_CORE_CRON_RESTART = '/usr/local/sbin/pluginctl -s cron restart'; /* actions_cron.conf [restart] */
+const UU_CORE_UNBOUND_RESTART = '/usr/local/sbin/pluginctl -c unbound_start'; /* actions_unbound.conf [restart] */
 const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this long after flush_requestlist, before
                                            * the delete: the VM measured the last send to the resolver within 13 ms
                                            * of the flush (without it, retries ran up to 14.5 s) */
@@ -41,6 +50,8 @@ const UU_RULES_LIST_PAIRS = 2;            /* checksum-listing-checksum tries bef
 const UU_STOP_REQUEST = 'request';        /* Snapshot.stop: evaluate.php stop (the service's stop, or a Save) */
 const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being removed */
 const UU_STOP_RESOLVER = 'resolver';      /* Snapshot.stop: undoing the resolver address a Save replaced */
+const UU_STOP_REMOVING = 'removing';      /* Snapshot.stop: any other evaluation while the removal marker exists
+                                           * (ruling R51) */
 const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect timeout */
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
 const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the model's notify_url <Mask>, byte for byte:
