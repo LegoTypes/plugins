@@ -212,13 +212,15 @@ uu_register_suite('wiring', function (): int {
         /* one line per read, so a php that dies on the second still shows the first */
         $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
             . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
-            . 'echo json_encode(uu_wanted_from(false, "", [], [], UU_STATE_PATH)), PHP_EOL;';
+            . 'echo json_encode(uu_wanted_from(fn () => ["resolver" => "", "gateways" => null], fn () => [], '
+            . 'UU_STATE_PATH)), PHP_EOL;';
         $out = (string)shell_exec('/usr/bin/su -m nobody -c '
             . escapeshellarg('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code)) . ' 2>&1');
         $lines = explode("\n", $out);
         $r9 = ['root' => uu_state_read(UU_STATE_PATH), 'out' => $out,
                'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
-        $r9['root_wanted'] = uu_wanted_from(false, '', [], [], UU_STATE_PATH);
+        $r9['root_wanted'] = uu_wanted_from(fn (): array => ['resolver' => '', 'gateways' => null],
+            fn (): array => [], UU_STATE_PATH);
     } catch (\Throwable $e) {
         printf("  threw %s: %s\n", get_class($e), $e->getMessage());
     } finally {

@@ -8,7 +8,8 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Scratch directories for the cases that read files the plugin trusts (convention C3): a fresh, randomly named
- * 0700 directory per case, and the four kinds of path that are not a regular file within the read limit.
+ * 0700 directory per case, the four kinds of path that are not a regular file within the read limit, and the runner
+ * that turns a case's throw into a failure.
  */
 
 const UU_SCRATCH_MIB = 1048576;           /* the spec's limit (section 5.3), pinned here apart from UU_FILE_MAX_BYTES */
@@ -42,25 +43,36 @@ function uu_scratch_remove(string $path): void
 }
 
 /**
- * Run case in a fresh scratch directory, removed afterwards whatever happens. A case that throws (a function not
- * there yet, on the red run) is false, and the throwable's message is printed under it.
+ * Run a case that needs no directory. A case that throws (a function not there yet, on the red run) is false, and the
+ * throwable's message is printed under it.
+ *
+ * @param callable(): bool $case
+ */
+function uu_try_case(callable $case): bool
+{
+    try {
+        return (bool)$case();
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Run case in a fresh scratch directory, removed afterwards whatever happens; a throw is false, as in uu_try_case().
  *
  * @param callable(string): bool $case gets the scratch directory
  */
 function uu_scratch_case(callable $case): bool
 {
-    $dir = null;
-    try {
+    return uu_try_case(function () use ($case): bool {
         $dir = uu_scratch_dir();
-        return (bool)$case($dir);
-    } catch (\Throwable $e) {
-        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
-        return false;
-    } finally {
-        if ($dir !== null) {
+        try {
+            return (bool)$case($dir);
+        } finally {
             uu_scratch_remove($dir);
         }
-    }
+    });
 }
 
 /**
