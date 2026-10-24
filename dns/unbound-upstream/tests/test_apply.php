@@ -51,7 +51,7 @@ function uu_test_apply_snapshot(): array
  * A recording Io over a fake kernel and Unbound that follow the calls. The device the last route call chose
  * decides the direct probe's result ('reject' for the reject route); forward_add and forward_remove set what
  * `forward` prints, bare and in reverse order, as Unbound prints its own order. Every call is also appended to
- * $all after a "-- case" marker, so the never-planned assertion sees every case and where each starts.
+ * $all after a "-- case" marker, so the never-planned assertions see every case and where each starts.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -61,12 +61,13 @@ function uu_test_apply_snapshot(): array
  * @param ArrayObject<int, string> $all
  * @param array{direct?: array<string, list<bool>>, unbound?: list<bool>, uc_fail?: list<string>,
  *     forward_out?: string, route_fail?: list<string>, restart?: bool, silent?: bool,
- *     restart_live?: list<string>, throw_on?: string} $o
+ *     restart_live?: list<string>, throw_on?: string, restarts?: bool} $o
  *   direct: per device, successive direct probe results (true when absent or used up); unbound: successive
  *   through-Unbound results (true when used up); uc_fail and route_fail: commands or verbs that fail once each,
  *   in order; forward_out: what `forward` prints instead of the fake's live root; silent: every unbound-control
  *   call times out (null) until a restart that sets restart_live as the live root; throw_on: the Io function
- *   that throws, after recording its call
+ *   that throws, after recording its call; restarts: the case expects a restart (the sweep at the end allows one
+ *   nowhere else)
  * @return array{io: array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
@@ -80,8 +81,10 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
 {
     $calls = new ArrayObject();
     $route = $s['route'];
-    /* the sweep at the end allows a first flush_requestlist only in a case that starts on the reject route */
-    $all[] = $route['present'] && $route['reject'] ? '-- case on reject' : '-- case';
+    /* the sweep at the end allows a first flush_requestlist only in a case that starts on the reject route, and a
+     * restart only in a case that expects one */
+    $all[] = '-- case' . ($route['present'] && $route['reject'] ? ' on reject' : '')
+        . (($o['restarts'] ?? false) ? ' restarts' : '');
     $record = function (string $call) use ($calls, $all): void {
         $calls[] = $call;
         $all[] = $call;
@@ -739,7 +742,7 @@ uu_register_suite('apply', function (): int {
     $s['unbound']['control_ok'] = false;
     $s['unbound']['live_root'] = null;
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable, 2, $now - 200));
-    $r = uu_test_io($s, $all);
+    $r = uu_test_io($s, $all, ['restarts' => true]);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'escalation → restart_unbound, logged at warning, state stays tunnel for the reassert after it',
         $p['action'] === 'skip' && $p['escalate_restart'] && uu_test_acts($r['calls']) === ['restart']
@@ -758,14 +761,15 @@ uu_register_suite('apply', function (): int {
     $silentStop = $silentTunnel;
     $silentStop['settings']['enabled'] = false;
     $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
-    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53']]);
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'],
+        'restarts' => true]);
     $st = uu_apply($p, $silentStop, $r['io']);
     uu_check($t, 'stop in tunnel mode with a silent channel → restart, the configured root confirmed, then reject, drain, delete',
         $p['action'] === 'stop'
         && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null
         && uu_test_logged($r['calls'], LOG_WARNING, 'restart'));
-    $r = uu_test_io($silentStop, $all, ['silent' => true]);
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restarts' => true]);
     $st = uu_apply($p, $silentStop, $r['io']);
     $after = array_slice(uu_test_acts($r['calls']), 2);
     $polls = true;
@@ -794,7 +798,8 @@ uu_register_suite('apply', function (): int {
         $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
         && $st['member'] === 'wg-a' && uu_test_logged($r['calls'], LOG_ERR, 'disabled', 'no restart')
         && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
-    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53']]);
+    $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'],
+        'restarts' => true]);
     uu_apply(uu_plan($silentStop, uu_test_plan_state('wg-a', $usable)), $silentStop, $r['io']);
     uu_check($t, 'after the restart the log says what was checked: the live root is no longer the resolver',
         uu_test_logged($r['calls'], LOG_WARNING, 'no longer forwards to the resolver'));
@@ -806,7 +811,7 @@ uu_register_suite('apply', function (): int {
     $dryEscalate = $silentTunnel;
     $dryEscalate['settings']['dry_run'] = true;
     $p = uu_plan($dryEscalate, uu_test_plan_state('wg-a', $usable, 2, $now - 200));
-    $r = uu_test_io($dryEscalate, $all);
+    $r = uu_test_io($dryEscalate, $all, ['restarts' => true]);
     $st = uu_apply($p, $dryEscalate, $r['io']);
     uu_check($t, 'dry run with an escalating skip → the restart runs for real, no stop',
         $p['action'] === 'skip' && $p['escalate_restart'] && uu_test_acts($r['calls']) === ['restart']
@@ -833,17 +838,140 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'the state is saved after each successful change (the last save is the returned state)',
         isset($r['saved']['state']) && $r['saved']['state'] === $st);
 
+    // A stop that cannot restore (spec -04 section 3.2, ruling R3): a requested stop and a removal restart Unbound
+    // on any restore failure; a removal that still cannot restore leaves the reject route.
+    $fp = uu_test_apply_snapshot();
+    $fp['settings']['resolver'] = '192.0.2.1';
+    $fp = uu_test_in_tunnel($fp, 'wg-a');
+    $fpRoot = ['192.0.2.53', '2001:db8::53'];
+    $fpReject = 'route change -host 192.0.2.1 127.0.0.1 -reject';
+    $fpTail = [$fpReject, $flushReq, $drain, 'route delete -host 192.0.2.1'];
+    $fpRefused = ['uc_fail' => ['forward_add'], 'restart_live' => $fpRoot];
+    $stopAs = function (array $s, ?string $cause, array $o) use ($all, $usable): array {
+        $s['stop'] = $cause;
+        $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+        $r = uu_test_io($s, $all, $o);
+        $st = uu_apply($p, $s, $r['io']);
+        return ['action' => $p['action'], 'calls' => $r['calls'], 'acts' => uu_test_acts($r['calls']), 'st' => $st,
+                'saved' => $r['saved']];
+    };
+    $cleared = fn (array $st): bool => $st['mode'] === 'fallback' && $st['member'] === null
+        && $st['resolver'] === null && $st['route_installed'] === null;
+    $lastResort = fn (array $run): bool => !in_array('route delete -host 192.0.2.1', $run['acts'], true)
+        && $run['st']['resolver'] === '192.0.2.1' && $run['saved']['state']['resolver'] === '192.0.2.1'
+        && $run['st']['route_installed'] === $rejectRecord
+        && uu_test_logged($run['calls'], LOG_ERR, 'being removed', '192.0.2.1', 'rejected locally',
+            'configctl unbound restart');
+
+    $run = $stopAs($fp, UU_STOP_REQUEST, $fpRefused + ['restarts' => true]);
+    uu_check($t, '(a1) requested stop, forward_add refused, cacheflush off → restart, the configured root confirmed once, then reject, flush, drain, delete',
+        $run['action'] === 'stop' && $run['acts'] === array_merge([$restoreDot, 'restart', 'uc forward'], $fpTail)
+        && $cleared($run['st'])
+        && uu_test_logged($run['calls'], LOG_WARNING, 'only a restart brings back its configured root zone'));
+
+    $unrestorable = $fp;
+    $unrestorable['zone'] = ['shape' => 'unrestorable', 'addrs' => ['192.0.2.53'], 'tls' => false,
+                             'problems' => ['second . zone']];
+    $unrestorable['contract_input']['zone'] = $unrestorable['zone'];
+    $run = $stopAs($unrestorable, UU_STOP_REQUEST, ['restart_live' => $fpRoot, 'restarts' => true]);
+    uu_check($t, '(a2) requested stop with the zone unrestorable → no forward_add, restart at once, then the same tail',
+        $run['action'] === 'stop' && $run['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
+        && $cleared($run['st']) && uu_test_logged($run['calls'], LOG_ERR, 'second . zone'));
+    /* ruling R44: an unreadable zone configuration is unrestorable, so these stops restart at once as well */
+    $unreadable = $fp;
+    $unreadable['zone'] = uu_root_zone(null);
+    $unreadable['contract_input']['zone'] = $unreadable['zone'];
+    foreach ([UU_STOP_REQUEST => 'requested stop', UU_STOP_REMOVE => 'removal'] as $cause => $what) {
+        $run = $stopAs($unreadable, $cause, ['restart_live' => $fpRoot, 'restarts' => true]);
+        uu_check($t, "(a2, R44) $what with the zone configuration unreadable → restart at once, then the same tail",
+            $run['action'] === 'stop' && $run['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
+            && $cleared($run['st']) && uu_test_logged($run['calls'], LOG_ERR, 'configuration unreadable'));
+    }
+
+    $keeps = $fp;
+    $keeps['settings']['enabled'] = false;
+    $keeps['contract_input']['cacheflush'] = true;
+    $run = $stopAs($keeps, UU_STOP_REQUEST, $fpRefused);
+    $warned = array_values(array_filter($run['calls']->getArrayCopy(),
+        fn (string $c): bool => str_starts_with($c, 'log ' . LOG_WARNING . ' ')));
+    uu_check($t, '(a3) requested stop disabling the plugin, cacheflush on, restore refused → no restart, no route call, still tunnel, the resolver recorded, one warning that its block stays',
+        $run['action'] === 'stop' && $run['acts'] === [$restoreDot] && $run['st']['mode'] === 'tunnel'
+        && $run['st']['member'] === 'wg-a' && $run['st']['resolver'] === '192.0.2.1' && count($warned) === 1
+        && str_contains($warned[0], '192.0.2.1') && str_contains($warned[0], 'block stays'));
+    $keepsOn = $keeps;
+    $keepsOn['settings']['enabled'] = true;
+    foreach (["a disabled plugin's tick" => [$keeps, null],
+              'a requested stop with the plugin enabled' => [$keepsOn, UU_STOP_REQUEST]] as $what => [$case, $cause]) {
+        $run = $stopAs($case, $cause, $fpRefused);
+        uu_check($t, "(a3, R3) $what, cacheflush on, restore refused → no restart, the route stays, no footprint warning",
+            $run['action'] === 'stop' && $run['acts'] === [$restoreDot] && $run['st']['resolver'] === '192.0.2.1'
+            && !uu_test_logged($run['calls'], LOG_WARNING, 'block stays'));
+    }
+
+    $flushOn = $fp;
+    $flushOn['contract_input']['cacheflush'] = true;
+    $run = $stopAs($flushOn, UU_STOP_REMOVE, $fpRefused + ['restarts' => true]);
+    uu_check($t, '(a4) removal, cacheflush on, restore refused → restart anyway (owner decision D2), then the tail',
+        $run['action'] === 'stop' && $run['acts'] === array_merge([$restoreDot, 'restart', 'uc forward'], $fpTail)
+        && $cleared($run['st']));
+
+    $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
+    uu_check($t, '(a5) removal whose restart fails → the reject route over the member route as the last resort, never a delete, the resolver still recorded, logged',
+        $run['action'] === 'stop' && $run['acts'] === [$restoreDot, 'restart', $fpReject] && $lastResort($run));
+    $fpGap = $fp;
+    $fpGap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $run = $stopAs($fpGap, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
+    uu_check($t, '(a5) the same with the route missing (a route-loss window) → the reject route added',
+        $run['acts'] === [$restoreDot, 'restart', 'route add -host 192.0.2.1 127.0.0.1 -reject'] && $lastResort($run));
+
+    $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'forward_out' => "192.0.2.1\n",
+                                         'restarts' => true]);
+    uu_check($t, '(a6) removal, `forward` still the resolver after the restart → the same last resort',
+        $run['acts'] === [$restoreDot, 'restart', 'uc forward', $fpReject] && $lastResort($run)
+        && uu_test_logged($run['calls'], LOG_ERR, 'still forwards to the resolver'));
+    $run = $stopAs($fp, UU_STOP_REQUEST, ['forward_out' => "192.0.2.1\n", 'restarts' => true]);
+    uu_check($t, '(a6) requested stop whose restore does not confirm → restart; still the resolver after it → the route stays, no reject route (it would black-hole every query)',
+        $run['acts'] === [$restoreDot, 'uc forward', 'restart', 'uc forward'] && $run['st']['mode'] === 'tunnel'
+        && $run['st']['resolver'] === '192.0.2.1' && uu_test_logged($run['calls'], LOG_ERR, 'route stays'));
+
+    $run = $stopAs($fp, UU_STOP_RESOLVER, $fpRefused);
+    uu_check($t, '(a7) resolver-change stop, restore refused with the channel answering → no restart (1.2_1), the route stays',
+        $run['action'] === 'stop' && $run['acts'] === [$restoreDot] && $run['st']['mode'] === 'tunnel'
+        && $run['st']['resolver'] === '192.0.2.1');
+
+    $userOff = $fp;
+    $userOff['unbound']['enabled'] = false;
+    $run = $stopAs($userOff, UU_STOP_REMOVE, $fpRefused);
+    uu_check($t, '(a8) removal in tunnel mode with Unbound disabled in its settings, restore refused → no restart, the reject route, the error line',
+        $run['action'] === 'stop' && $run['acts'] === [$restoreDot, $fpReject] && $lastResort($run)
+        && uu_test_logged($run['calls'], LOG_ERR, 'disabled in its settings', 'no restart'));
+
+    $fpOff = $fp;
+    $fpOff['settings']['enabled'] = false;
+    $run = $stopAs($fpOff, UU_STOP_REQUEST, []);
+    uu_check($t, '(a9) requested stop that restores → the tail, the resolver cleared, no footprint warning',
+        $run['acts'] === array_merge([$restoreDot, 'uc forward'], $fpTail) && $cleared($run['st'])
+        && !uu_test_logged($run['calls'], LOG_WARNING, 'block stays'));
+
     // Never planned, across every case above; flush_requestlist only behind the reject route (ruling R29: stop).
     $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'reload', 'reload_keep_cache',
                   'fast_reload'];
     $clean = count($all) > 0;
     $previous = '';
     $onReject = false;
+    $restartsExpected = false;
+    $restartsOk = true;
+    $restarts = 0;
     foreach ($all as $call) {
         if (str_starts_with($call, '-- case')) {
             $previous = '';
-            $onReject = $call === '-- case on reject';
+            $onReject = str_contains($call, ' on reject');
+            $restartsExpected = str_contains($call, ' restarts');
             continue;
+        }
+        if ($call === 'restart') {
+            $restarts++;
+            $restartsOk = $restartsOk && $restartsExpected;
         }
         if (str_starts_with($call, 'uc ')) {
             $words = explode(' ', substr($call, 3));
@@ -860,6 +988,8 @@ uu_register_suite('apply', function (): int {
     }
     uu_check($t, 'no recorded call is ever flush, flush_zone, flush_bogus, flush_negative, reload, reload_keep_cache or fast_reload; flush_type only "<probe> SOA"; flush_requestlist only behind the reject route (every case above)',
         $clean);
+    uu_check($t, '(a10) a restart only in the cases that expect one: a requested stop or a removal that cannot restore, a silent channel, the section 3.10 escalation (every case above)',
+        $restartsOk && $restarts > 0);
 
     // drill output.
     $ok = ";; ->>HEADER<<- opcode: QUERY, rcode: NOERROR, id: 4242\n"
