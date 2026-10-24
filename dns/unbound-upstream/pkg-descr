@@ -18,6 +18,43 @@ that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.3
+
+Security release.
+
+* The block follows the address the plugin last used, not only the
+  setting: disabling the plugin, changing the resolver address or
+  removing the package keeps that address blocked (and the route's
+  device passed) until a stop has really undone it. The minute job
+  stays installed while such an address remains, and the filter is
+  reloaded when that address changes
+* A stop that cannot restore Unbound's forwarders through its control
+  channel ends in Unbound's own start, which applies the root zone you
+  configured (every requested stop and the package removal; a requested
+  stop does so unless the cache is flushed on a restart). When even that
+  leaves Unbound on the resolver, the removal installs a reject route
+  and logs what to run. The removal waits up to 120 s for the lock and
+  asks core to reload the filter and restart cron, with core's own
+  scripts when configd does not answer. An upgrade still removes the old
+  package first, so it falls back to Unbound's own forwarders for 30 to
+  60 s
+* The page decodes status text with one plain function and no HTML
+  parser
+* Answers from Unbound's forward list and the configured root zone's
+  forward-addr values are admitted by shape only (address, optional
+  port, optional host name); an unknown zone option is reported as
+  "unknown option", never by its text
+* Settings read from a restored configuration (resolver, probe name,
+  failback delay, gateway group, notify URL) are checked again where
+  they are used; curl speaks only http and https, with no redirects
+* A failed notification names only the receiver's scheme, host and port
+  (it used to log the whole URL)
+* State, record and zone files are read as regular files only, never
+  through a link, at most 1 MiB each; pfctl's error file lives in the
+  plugin's root-only run directory
+* Control characters are dropped from log lines
+* Every copyright header reads "Copyright (C) 2026 cayossarian"
+
 1.2_1
 
 * A rules listing cut short by a filter reload, even one that leaves
