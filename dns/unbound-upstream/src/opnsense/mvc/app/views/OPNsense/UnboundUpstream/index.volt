@@ -82,7 +82,10 @@
                 var notes = [];
                 $.each(contract.failures || [], function (i, f) { notes.push("{{ lang._('Tunnel mode refused:') }} " + plain(f)); });
                 $.each(contract.notes || [], function (i, n) { notes.push(plain(n)); });
-                $('#unboundupstream-notes').text(notes.join(' ')).toggle(notes.length > 0);
+                /* one line per refusal or note, each set as text */
+                var box = $('#unboundupstream-notes').empty();
+                $.each(notes, function (i, n) { box.append($('<div/>').text(n)); });
+                box.toggle(notes.length > 0);
             });
         }
 
