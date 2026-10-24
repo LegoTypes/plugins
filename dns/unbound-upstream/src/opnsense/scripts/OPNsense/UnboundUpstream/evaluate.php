@@ -15,13 +15,15 @@ declare(strict_types=1);
  *                                     recorded), then one evaluation (Save with enabled on while the job is missing)
  *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
  *                                     whatever the settings say (Save with enabled off)
- *   evaluate.php remove               the package's deinstall, on an upgrade too (decision D6): leave the removal
- *                                     marker, stop, then core's filter reload and cron restart (configd, else
- *                                     core's own scripts: convention C6); every evaluation stops while the marker
- *                                     exists (a cron tick or a hook between the deinstall's stop and the files'
- *                                     removal would otherwise re-enter tunnel mode with nothing left to undo it),
- *                                     until the package's post-install deletes it. With a run directory it cannot
- *                                     trust, or a marker it cannot make, it only restarts Unbound (rulings R54, R56)
+ *   evaluate.php remove               the package's deinstall, on an upgrade too (a reload between the old files'
+ *                                     removal and the new install renders none of the plugin's rules): leave the
+ *                                     removal marker, stop, then core's filter reload and cron restart (configd,
+ *                                     else core's own scripts, since the plugin's own actions go with its files);
+ *                                     every evaluation stops while the marker exists (a cron tick or a hook between
+ *                                     the deinstall's stop and the files' removal would otherwise re-enter tunnel
+ *                                     mode with nothing left to undo it), until the package's post-install deletes
+ *                                     it. With a run directory it cannot trust it only restarts Unbound; a marker it
+ *                                     cannot make is an error, and the stop runs all the same
  *   evaluate.php status               the section 3.8 JSON for the page; without the lock, it changes nothing but
  *                                     the run directory (uu_run_dir()), and it never lists the ruleset
  *                                     (section 3.6c)
@@ -86,7 +88,7 @@ function uu_main(array $args): int
             uu_cron_regenerate();
             return uu_with_lock($mode, fn (): int => uu_evaluate(null, []));
         case 'remove':
-            $refused = uu_remove_prepare('uu_remove_marker', 'uu_core_shell', 'uu_log');
+            $refused = uu_remove_prepare('uu_run_dir', 'uu_remove_marker', 'uu_core_shell', 'uu_log');
             if ($refused !== null) {
                 return $refused;
             }
@@ -145,26 +147,22 @@ function uu_with_lock(string $mode, callable $fn, string|\Closure $timeoutText =
     return uu_lock_run(UU_LOCK_PATH, $fn, $policy['seconds'], $policy['prio'], $timeoutText, 'uu_log');
 }
 
-/** remove's preparation (rulings R54, R56): a run directory it can trust, then the removal marker in it. */
+/** remove's removal marker, in the run directory uu_remove_prepare() found it can trust. */
 function uu_remove_marker(): void
 {
-    uu_run_dir();
     if (!touch(UU_REMOVING_PATH)) {
         throw new RuntimeException('cannot create ' . UU_REMOVING_PATH);
     }
 }
 
 /**
- * remove under the lock: the removal's stop, then core's filter reload and cron restart (ruling R4), which run even
- * when the stop failed, so the rules and the minute job follow whatever footprint it saved.
+ * remove under the lock: the removal's stop, then core's filter reload and cron restart, which run even when the
+ * stop failed, so the rules and the minute job follow whatever footprint it saved; a stop that throws before it can
+ * act restarts Unbound first (uu_remove_run()).
  */
 function uu_remove(): int
 {
-    try {
-        return uu_evaluate(UU_STOP_REMOVE, []);
-    } finally {
-        uu_remove_core_commands('uu_core_shell', 'uu_log');
-    }
+    return uu_remove_run(fn (): int => uu_evaluate(UU_STOP_REMOVE, []), 'uu_core_shell', 'uu_log');
 }
 
 /**

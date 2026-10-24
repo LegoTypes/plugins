@@ -1247,10 +1247,13 @@ uu_register_suite('apply', function (): int {
         $out = null;
         $ok = uu_try_case(function () use ($problem, $codes, &$out): bool {
             $r = uu_test_runner($codes);
-            $prepare = function () use ($problem): void {
+            $trust = function () use ($problem): void {
                 throw new RuntimeException($problem);
             };
-            $out = ['rc' => uu_remove_prepare($prepare, $r['run'], $r['log']), 'calls' => $r['calls']];
+            $mark = function (): void {
+                throw new LogicException('test: the marker is not made after a refused run dir');
+            };
+            $out = ['rc' => uu_remove_prepare($trust, $mark, $r['run'], $r['log']), 'calls' => $r['calls']];
             return true;
         });
         return $ok ? $out : null;
@@ -1301,22 +1304,68 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(R54) the same with both failing → the line says Unbound was not restarted, and to run configctl unbound restart',
         $out !== null && $out['rc'] === 1
         && $has($line, UU_RUN_DIR, 'not restarted', 'exited 1', 'configctl unbound restart'));
-    $out = $refusal('cannot create ' . UU_RUN_DIR . '/removing', []);
+    /* a trusted run dir whose removal marker cannot be made still has its lock and state: the removal's own stop */
+    $out = null;
+    $ok = uu_try_case(function () use (&$out): bool {
+        $r = uu_test_runner();
+        $mark = function (): void {
+            throw new RuntimeException('cannot create ' . UU_RUN_DIR . '/removing');
+        };
+        $out = ['rc' => uu_remove_prepare(function (): void {
+        }, $mark, $r['run'], $r['log']), 'calls' => $r['calls']];
+        return true;
+    });
     $line = $oneError($out);
-    uu_check($t, '(R56) remove whose removal marker cannot be made → the same path: core\'s restart, one error naming the marker, exit 1',
-        $out !== null && $out['rc'] === 1 && uu_test_acts($out['calls']) === [$ctlUnbound]
-        && $has($line, 'cannot create ' . UU_RUN_DIR . '/removing', 'being removed', 'not confirmed'));
+    uu_check($t, '(R56, M2) remove whose removal marker cannot be made in a trusted run dir → no restart, one error naming the marker and the window, the removal goes on under the lock (null)',
+        $ok && $out !== null && $out['rc'] === null && uu_test_acts($out['calls']) === []
+        && $has($line, 'cannot create ' . UU_RUN_DIR . '/removing', 'being removed', 'stop runs as usual',
+            'configctl unbound restart', 'route delete -host')
+        && !$has($line, 'ran through configd'));
     /* the preparation returning is a trusted run dir with the marker in place */
     $prepared = function (): void {
     };
     $out = null;
     $ok = uu_try_case(function () use ($prepared, &$out): bool {
         $r = uu_test_runner();
-        $out = ['rc' => uu_remove_prepare($prepared, $r['run'], $r['log']), 'calls' => $r['calls']];
+        $out = ['rc' => uu_remove_prepare($prepared, $prepared, $r['run'], $r['log']), 'calls' => $r['calls']];
         return true;
     });
     uu_check($t, '(R54) a trusted run dir with the marker made → null (the removal goes on), nothing run, nothing logged',
         $ok && $out !== null && $out['rc'] === null && count($out['calls']) === 0);
+
+    // A removal whose stop throws before it acts (I2): the stateless restart, then the core commands, exit 1.
+    $runRemove = function (callable $evaluate, array $codes = []): ?array {
+        $out = null;
+        $ok = uu_try_case(function () use ($evaluate, $codes, &$out): bool {
+            $r = uu_test_runner($codes);
+            $out = ['rc' => uu_remove_run($evaluate, $r['run'], $r['log']), 'calls' => $r['calls']];
+            return true;
+        });
+        return $ok ? $out : null;
+    };
+    $errors = fn (?array $out): array => $out === null ? [] : array_values(array_filter(
+        $out['calls']->getArrayCopy(), fn (string $c): bool => str_starts_with($c, 'log ' . LOG_ERR . ' ')));
+    $out = $runRemove(function (): int {
+        throw new RuntimeException('settings: model unreadable');
+    });
+    $errs = $errors($out);
+    uu_check($t, '(I2) a removal whose stop throws → Unbound restarted, then the filter reload, then the cron restart, one error naming the failure, exit 1',
+        $out !== null && $out['rc'] === 1 && uu_test_acts($out['calls']) === [$ctlUnbound, $ctlReload, $ctlCron]
+        && count($errs) === 1 && $has($errs[0], 'being removed', 'its stop failed (settings: model unreadable',
+            'ran through configd', 'not confirmed', 'configctl unbound restart', 'route delete -host'));
+    $out = $runRemove(function (): int {
+        throw new RuntimeException('snapshot failed');
+    }, [$ctl => [1, '']]);
+    uu_check($t, '(I2) the same with configd not answering → core\'s own restart, reload and cron run directly, in that order',
+        $out !== null && $out['rc'] === 1
+        && uu_test_acts($out['calls']) === [$ctlUnbound, $dUnbound, $ctlReload, $dReload, $ctlCron, $dCron]);
+    $out = $runRemove(fn (): int => 0);
+    uu_check($t, '(I2) a removal whose stop returns → no restart, the filter reload and the cron restart, its exit status, no error',
+        $out !== null && $out['rc'] === 0 && uu_test_acts($out['calls']) === [$ctlReload, $ctlCron]
+        && $errors($out) === []);
+    $out = $runRemove(fn (): int => 1);
+    uu_check($t, '(I2) a removal whose stop returns 1 (it ended with what it logged) → no restart, the two commands, exit 1',
+        $out !== null && $out['rc'] === 1 && uu_test_acts($out['calls']) === [$ctlReload, $ctlCron]);
 
     // Every stop's Unbound restart and the escalation (I1): core's restart through configd, else core's own command.
     $restart = function (array $codes): ?array {
