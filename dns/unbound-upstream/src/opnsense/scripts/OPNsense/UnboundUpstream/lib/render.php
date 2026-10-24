@@ -301,12 +301,12 @@ function uu_wanted_render(): array
 /**
  * The plugins_firewall hook body. Never throws. What each failure keeps:
  * - a settings or gateway records read that fails is one error, and the footprint still renders (uu_wanted_from());
- * - a setting resolver that is not IPv4 is one error, the setting renders nothing and the footprint still renders
- *   (ruling R11);
+ * - a setting resolver that is not IPv4 is one error, the setting renders nothing and the footprint still renders;
  * - a state file that cannot be read, or a recorded address that is not IPv4, is one warning for the render, and the
- *   setting's rules still render (spec -04 section 3.2): each filter reload is a process of its own, so the hook
- *   keeps nothing between renders;
+ *   setting's rules still render: each filter reload is a process of its own, so the hook keeps nothing between
+ *   renders;
  * - a table that cannot be registered costs only the counting block;
+ * - a rule that cannot be registered costs only itself, and is one error naming its description;
  * - anything else that throws renders nothing, and is one error.
  * The table is registered for the setting's counting block only.
  *
@@ -354,8 +354,13 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
                 $emit('rules: counting block not rendered: ' . uu_log_text($e->getMessage()), 'err');
             }
         }
+        // Each rule registers on its own: a rule core refuses must never cost the blocks after it.
         foreach (uu_rule_confs($resolver, $w['members'], $counting, $w['footprint']) as $conf) {
-            $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
+            try {
+                $fw->registerFilterRule(UU_RULE_PRIORITY, $conf);
+            } catch (\Throwable $e) {
+                $emit('rules: "' . $conf['descr'] . '" not rendered: ' . uu_log_text($e->getMessage()), 'err');
+            }
         }
     } catch (\Throwable $e) {
         $emit('rules not rendered: ' . uu_log_text($e->getMessage()), 'err');
