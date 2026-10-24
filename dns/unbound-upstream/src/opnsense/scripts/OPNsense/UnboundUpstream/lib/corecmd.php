@@ -15,23 +15,27 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/logline.php';
+require_once __DIR__ . '/state.php';
 
 /**
  * Run a core configd action, or core's own command for it when configd does not answer. configd has answered only
  * when configctl exits 0 and prints OK (trimmed), as a script action that ran replies (ruling R55): configctl also
  * exits 0 on no reply, a swallowed communication error, "Error (n)", "Action not found" and "Execute error". It exits
- * non-zero with no socket or no connection, and 124 when /usr/bin/timeout kills it.
+ * non-zero with no socket or no connection, and 124 when /usr/bin/timeout kills it. Only configctl's stdout is read,
+ * and the timeout bounds it; core's own command writes to /dev/null and only its exit status counts, so a child it
+ * leaves running (a daemon a restart starts) cannot hold the runner's pipe open and stall the removal (Task 10 N1).
  *
  * @param string $action the configd action, words as configctl takes them ("filter reload")
  * @param string $direct the command core's actions file runs for it (a UU_CORE_* constant)
- * @param callable(string): array{rc: int, out: string} $run runs a command line: its exit status and its stdout
+ * @param callable(string): array{rc: int, out: string} $run runs a shell command line: its exit status and stdout
  * @return array{path: string, configd: string, rc: ?int} path is configd, direct, or failed when core's command
  *     exited non-zero too; configd is what configd did, for a log line ('' when it answered OK); rc is core's
  *     command's exit status, null when it did not run
  */
 function uu_core_command(string $action, string $direct, callable $run): array
 {
-    $ctl = $run('/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl ' . $action);
+    $ctl = $run('/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl ' . $action
+        . ' 2> /dev/null');
     if ($ctl['rc'] === 0 && trim($ctl['out']) === 'OK') {
         return ['path' => 'configd', 'configd' => '', 'rc' => null];
     }
@@ -43,12 +47,13 @@ function uu_core_command(string $action, string $direct, callable $run): array
         $first = trim(explode("\n", trim($ctl['out']))[0]);
         $configd = $first === '' ? 'answered nothing' : "answered '" . substr(uu_log_text($first), 0, 120) . "'";
     }
-    $rc = $run($direct)['rc'];
+    $rc = $run($direct . ' > /dev/null 2>&1')['rc'];
     return ['path' => $rc === 0 ? 'direct' : 'failed', 'configd' => $configd, 'rc' => $rc];
 }
 
 /**
- * The production runner: the command line through sh, its stdout kept and its stderr discarded.
+ * The production runner: the command line through sh, as uu_core_command() wrote it (its redirections included), and
+ * what the line leaves on stdout.
  *
  * @return array{rc: int, out: string}
  */
@@ -56,7 +61,7 @@ function uu_core_shell(string $cmdline): array
 {
     $out = [];
     $rc = 0;
-    exec($cmdline . ' 2> /dev/null', $out, $rc);
+    exec($cmdline, $out, $rc);
     return ['rc' => $rc, 'out' => implode("\n", $out)];
 }
 
@@ -129,11 +134,27 @@ function uu_remove_prepare(callable $prepare, callable $run, callable $log): ?in
 
 /**
  * The error remove logs when an evaluation held the lock for UU_REMOVE_LOCK_WAIT_SECONDS, with the remedy: the
- * address the saved state records (read without the lock, as status reads it), else a placeholder.
+ * address the saved state records, else a placeholder.
  */
 function uu_remove_timeout_text(?string $resolver): string
 {
     $address = $resolver ?? '<resolver>';
     return "the package is being removed while Unbound may still forward to $address over the plugin's route: once "
         . "it is removed, run configctl unbound restart, then route delete -host $address";
+}
+
+/**
+ * That error as the wait runs out (Task 10 N2): the state read then, without the lock as status reads it, so the
+ * remedy names the address recorded at that moment; a state that cannot be read gives the placeholder, and nothing
+ * is thrown, so the error is always logged.
+ */
+function uu_remove_timeout_remedy(string $statePath): string
+{
+    try {
+        $read = uu_state_read($statePath);
+        $resolver = $read['problem'] === null ? uu_state_footprint($read['state']) : null;
+    } catch (\Throwable $e) {
+        $resolver = null;
+    }
+    return uu_remove_timeout_text($resolver);
 }

@@ -88,10 +88,8 @@ function uu_main(array $args): int
             if ($refused !== null) {
                 return $refused;
             }
-            /* the address for the remedy, read without the lock as status reads it */
-            $read = uu_state_read(UU_STATE_PATH);
             return uu_with_lock('uu_remove', UU_REMOVE_LOCK_WAIT_SECONDS, LOG_ERR,
-                uu_remove_timeout_text($read['problem'] === null ? uu_state_footprint($read['state']) : null));
+                fn (): string => uu_remove_timeout_remedy(UU_STATE_PATH));
         case 'stop':
             uu_cron_regenerate();
             return uu_with_lock(fn (): int => uu_evaluate(UU_STOP_REQUEST, []));
@@ -134,16 +132,17 @@ function uu_names(string $arg): array
 
 /**
  * Run fn under the evaluate lock: exclusive, blocking up to waitSeconds, never dropping a trigger at once; a wait
- * that runs out logs timeoutText at timeoutPrio and returns 1. The lock is close-on-exec, so a child (configctl
- * unbound restart) never holds it.
+ * that runs out logs timeoutText at timeoutPrio and returns 1. A Closure is the text built when the wait runs out, so
+ * it can name what holds then. The lock is close-on-exec, so a child (configctl unbound restart) never holds it.
  *
  * @param callable(): int $fn
+ * @param string|\Closure(): string $timeoutText
  */
 function uu_with_lock(
     callable $fn,
     int $waitSeconds = UU_LOCK_WAIT_SECONDS,
     int $timeoutPrio = LOG_WARNING,
-    string $timeoutText = 'this trigger did nothing'
+    string|\Closure $timeoutText = 'this trigger did nothing'
 ): int {
     uu_run_dir();
     $lock = fopen(UU_LOCK_PATH, 'ce');
@@ -154,7 +153,8 @@ function uu_with_lock(
         $deadline = hrtime(true) + $waitSeconds * 1000000000;
         while (!flock($lock, LOCK_EX | LOCK_NB)) {
             if (hrtime(true) >= $deadline) {
-                uu_log("an evaluation held the lock for $waitSeconds s: $timeoutText", $timeoutPrio);
+                $text = $timeoutText instanceof \Closure ? $timeoutText() : $timeoutText;
+                uu_log("an evaluation held the lock for $waitSeconds s: $text", $timeoutPrio);
                 return 1;
             }
             usleep(200000);
