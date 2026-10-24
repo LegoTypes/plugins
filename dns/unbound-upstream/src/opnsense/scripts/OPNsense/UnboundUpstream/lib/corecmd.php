@@ -18,25 +18,32 @@ require_once __DIR__ . '/logline.php';
 require_once __DIR__ . '/state.php';
 
 /**
- * Run a core configd action, or core's own command for it when configd does not answer. configd has answered only
- * when configctl exits 0 and prints OK (trimmed), as a script action that ran replies (ruling R55): configctl also
- * exits 0 on no reply, a swallowed communication error, "Error (n)", "Action not found" and "Execute error". It exits
- * non-zero with no socket or no connection, and 124 when /usr/bin/timeout kills it. Only configctl's stdout is read,
- * and the timeout bounds it; core's own command writes to /dev/null and only its exit status counts, so a child it
- * leaves running (a daemon a restart starts) cannot hold the runner's pipe open and stall the removal (Task 10 N1).
+ * Run a core configd action, or core's own command for it when configd does not answer. configd has answered a
+ * synchronous action only when configctl exits 0 and prints OK (trimmed), as a script action that ran replies:
+ * configctl also exits 0 on no reply, a swallowed communication error, "Error (n)", "Action not found" and "Execute
+ * error". A detached one (configctl -d) is queued only when configctl exits 0 and prints the job's id, a UUID, which
+ * configd sends before it runs anything. configctl exits non-zero with no socket or no connection, and 124 when
+ * /usr/bin/timeout kills it. Only configctl's stdout is read, and the timeout bounds it; core's own command writes to
+ * /dev/null and only its exit status counts, so a child it leaves running (a daemon a restart starts) cannot hold the
+ * runner's pipe open and stall the caller. Core's own command runs synchronously, even for a detached action.
  *
  * @param string $action the configd action, words as configctl takes them ("filter reload")
  * @param string $direct the command core's actions file runs for it (a UU_CORE_* constant)
  * @param callable(string): array{rc: int, out: string} $run runs a shell command line: its exit status and stdout
+ * @param bool $detached queue the action (configctl -d) instead of waiting for it
  * @return array{path: string, configd: string, rc: ?int} path is configd, direct, or failed when core's command
- *     exited non-zero too; configd is what configd did, for a log line ('' when it answered OK); rc is core's
+ *     exited non-zero too; configd is what configd did, for a log line ('' when it answered); rc is core's
  *     command's exit status, null when it did not run
  */
-function uu_core_command(string $action, string $direct, callable $run): array
+function uu_core_command(string $action, string $direct, callable $run, bool $detached = false): array
 {
-    $ctl = $run('/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl ' . $action
-        . ' 2> /dev/null');
-    if ($ctl['rc'] === 0 && trim($ctl['out']) === 'OK') {
+    $ctl = $run('/usr/bin/timeout ' . UU_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl '
+        . ($detached ? '-d ' : '') . $action . ' 2> /dev/null');
+    $reply = trim($ctl['out']);
+    $answered = $detached
+        ? preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iD', $reply) === 1
+        : $reply === 'OK';
+    if ($ctl['rc'] === 0 && $answered) {
         return ['path' => 'configd', 'configd' => '', 'rc' => null];
     }
     if ($ctl['rc'] === 124) {
@@ -44,7 +51,7 @@ function uu_core_command(string $action, string $direct, callable $run): array
     } elseif ($ctl['rc'] !== 0) {
         $configd = "did not answer (configctl exit {$ctl['rc']})";
     } else {
-        $first = trim(explode("\n", trim($ctl['out']))[0]);
+        $first = trim(explode("\n", $reply)[0]);
         $configd = $first === '' ? 'answered nothing' : "answered '" . substr(uu_log_text($first), 0, 120) . "'";
     }
     $rc = $run($direct . ' > /dev/null 2>&1')['rc'];
@@ -89,6 +96,32 @@ function uu_unbound_restart(callable $run, callable $log): bool
             $log("unbound restart failed: configd {$r['configd']}, and core's " . UU_CORE_UNBOUND_RESTART
                 . " exited {$r['rc']}", LOG_ERR);
             return false;
+    }
+}
+
+/**
+ * The filter reload an evaluation queues when the footprint it saved changed, so the footprint's block and pass
+ * come or go at once: queued through configd, else core's own reload, run directly. Each path is logged with what
+ * changed; when neither ran, the rules follow at the next filter reload.
+ *
+ * @param string $change what changed, for the log line
+ * @param callable(string): array{rc: int, out: string} $run
+ * @param callable(string, int): void $log
+ */
+function uu_footprint_reload(string $change, callable $run, callable $log): void
+{
+    $r = uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $run, true);
+    switch ($r['path']) {
+        case 'configd':
+            $log("rules: $change: filter reload queued", LOG_NOTICE);
+            break;
+        case 'direct':
+            $log("rules: $change: configd {$r['configd']}, so core's " . UU_CORE_FILTER_RELOAD . ' ran directly',
+                LOG_WARNING);
+            break;
+        default:
+            $log("rules: $change, but the filter reload failed: configd {$r['configd']}, and core's "
+                . UU_CORE_FILTER_RELOAD . " exited {$r['rc']}: the rules follow at the next filter reload", LOG_ERR);
     }
 }
 
