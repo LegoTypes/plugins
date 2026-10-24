@@ -1368,28 +1368,63 @@ uu_register_suite('apply', function (): int {
         $out !== null && $out['rc'] === 1 && uu_test_acts($out['calls']) === [$ctlReload, $ctlCron]);
 
     // Every stop's Unbound restart and the escalation (I1): core's restart through configd, else core's own command.
-    $restart = function (array $codes): ?array {
+    /* Unbound's pid as successive reads give it (the last one repeats), each read and each wait recorded as "pid" and
+     * "sleep MS" among the calls */
+    $restart = function (array $codes, array $pids = [4242]): ?array {
         $out = null;
-        $ok = uu_try_case(function () use ($codes, &$out): bool {
+        $ok = uu_try_case(function () use ($codes, $pids, &$out): bool {
             $r = uu_test_runner($codes);
-            $out = ['ok' => uu_unbound_restart($r['run'], $r['log']), 'calls' => $r['calls']];
+            $calls = $r['calls'];
+            $left = new ArrayObject($pids);
+            $pid = function () use ($calls, $left): ?int {
+                $calls[] = 'pid';
+                $list = $left->getArrayCopy();
+                $value = count($list) > 1 ? array_shift($list) : $list[0];
+                $left->exchangeArray($list);
+                return $value;
+            };
+            $sleep = function (int $ms) use ($calls): void {
+                $calls[] = "sleep $ms";
+            };
+            $out = ['ok' => uu_unbound_restart($r['run'], $r['log'], $pid, $sleep), 'calls' => $calls];
             return true;
         });
         return $ok ? $out : null;
     };
+    $count = fn (?array $out, string $what): int => $out === null ? -1
+        : count(array_filter($out['calls']->getArrayCopy(), fn (string $c): bool => $c === $what));
     $out = $restart([]);
     uu_check($t, '(I1) Unbound restart, configd answering OK → true, only configctl unbound restart (timeout-bounded), logged through configd',
-        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound]
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === ['pid', $ctlUnbound]
         && uu_test_logged($out['calls'], LOG_NOTICE, 'unbound restart through configd'));
+    uu_check($t, '(I1) Unbound restart, configd answering OK → no wait for the pid: read once before, never after',
+        $count($out, 'pid') === 1 && $count($out, 'sleep 1000') === 0);
     $out = $restart([$ctl => [0, '']]);
     uu_check($t, '(I1) Unbound restart, configctl exiting 0 with no reply → core\'s own restart directly, true, the path logged',
-        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound, $dUnbound]
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === ['pid', $ctlUnbound, $dUnbound]
         && uu_test_logged($out['calls'], LOG_WARNING, 'answered nothing', '/usr/local/sbin/pluginctl -c unbound_start',
             'ran directly'));
-    $out = $restart([$ctl => [124, '']]);
-    uu_check($t, '(I1) Unbound restart, configctl timed out (configd hung) → core\'s own restart directly, true',
-        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound, $dUnbound]
-        && uu_test_logged($out['calls'], LOG_WARNING, 'within 30 s'));
+    /* configctl's timeout leaves configd's restart running: Unbound's pid tells whether it happened, so core's own
+     * restart never races it */
+    $waited = array_merge(['pid', $ctlUnbound], array_merge(['pid'], ...array_fill(0, UU_CONTROL_WAIT_SECONDS - 1,
+        ['sleep 1000', 'pid'])));
+    $out = $restart([$ctl => [124, '']], [4242]);
+    uu_check($t, '(I1) Unbound restart, configctl timed out and the pid unchanged through UU_CONTROL_WAIT_SECONDS → core\'s own restart directly, true',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === array_merge($waited, [$dUnbound])
+        && uu_test_logged($out['calls'], LOG_WARNING, 'within 30 s', 'ran directly'));
+    $out = $restart([$ctl => [124, '']], [4242, 4242, 5151]);
+    uu_check($t, '(I1) Unbound restart, configctl timed out and the pid changed within the wait → configd\'s restart happened: no direct command, true, logged through configd',
+        $out !== null && $out['ok'] === true
+        && uu_test_acts($out['calls']) === ['pid', $ctlUnbound, 'pid', 'sleep 1000', 'pid']
+        && uu_test_logged($out['calls'], LOG_NOTICE, 'unbound restart through configd', 'within 30 s',
+            'took effect', "pid changed")
+        && !uu_test_logged($out['calls'], LOG_WARNING, 'ran directly'));
+    $out = $restart([$ctl => [124, '']], [null]);
+    uu_check($t, '(I1) Unbound restart, configctl timed out and the pid unreadable throughout → core\'s own restart directly, true',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === array_merge($waited, [$dUnbound]));
+    $out = $restart([$ctl => [124, '']], [null, 5151]);
+    uu_check($t, '(I1) Unbound restart, configctl timed out with no pid before and one after (configd started it) → no direct command',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === ['pid', $ctlUnbound, 'pid']);
     $out = $restart(['/' => [1, '']]);
     uu_check($t, '(I1) Unbound restart, both failing → false, one error with both exits',
         $out !== null && $out['ok'] === false
