@@ -20,11 +20,12 @@ declare(strict_types=1);
  * keeps the addresses a table declared without any holds across reloads. Its name is in core's __ namespace,
  * which core's alias-name validator refuses, so no alias can share it.
  *
- * The footprint (spec -04 section 3.2, convention C2): while the state records an address the plugin's route or
- * Unbound's live root may still refer to, that address keeps a block of its own, and a pass on the device of the
- * plugin's route, whatever the settings say, until a stop clears it. Core also calls the hook in the web server's
- * process to list the automatic rules; that process cannot search the root-only run directory, so the listing
- * shows the setting's rules only, while the loaded ruleset has both.
+ * The footprint: while the state records an address the plugin's route or Unbound's live root may still refer to,
+ * that address keeps a block of its own, and a pass on the device of the plugin's route, whatever the settings say,
+ * until a stop clears it, so a stop that could not undo the plugin's changes never leaves them unenforced. Core
+ * also calls the hook in the web GUI's PHP to list the automatic rules; it runs as root, so the listing reads the
+ * same state and shows the footprint's rules too. A process that cannot search the root-only run directory reads
+ * no footprint and renders the setting's rules only.
  */
 
 require_once __DIR__ . '/constants.php';
