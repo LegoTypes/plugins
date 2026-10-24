@@ -26,8 +26,9 @@ declare(strict_types=1);
  *   - nothing probes before a route change reached the data path (fib_sync_ms + UU_FIB_SYNC_MARGIN_MS);
  *   - forward_add is decided by Unbound's live root, never by the state's mode;
  *   - the reject route never replaces a route the plugin did not make, and is never installed while Unbound may
- *     still forward to the resolver (it would black-hole every query); the resolver's route is never deleted then
- *     either (the queries would follow the default route out a WAN);
+ *     still forward to the resolver (it would black-hole every query), except as a removal's last resort, when no
+ *     plugin is left to undo the route; the resolver's route is never deleted then either (the queries would
+ *     follow the default route out a WAN);
  *   - the state's mode and member change only when the step that makes them true succeeded;
  *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type <probe_name> SOA only; stop's
  *     flush_requestlist drops the queries in progress (their clients ask again), never a cache entry.
@@ -119,7 +120,7 @@ final class UuApplyRun
      *         probe_name: string},
      *     members: array<string, array{name: string, interface: string, if: string, next_hop: string,
      *         disabled: bool, force_down: bool, monitor_disable: bool, monitor: string, time_period: int,
-     *         interval: int, loss_interval: int, losshigh: int}>,
+     *         interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
      *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -176,7 +177,7 @@ final class UuApplyRun
      *         probe_name: string},
      *     members: array<string, array{name: string, interface: string, if: string, next_hop: string,
      *         disabled: bool, force_down: bool, monitor_disable: bool, monitor: string, time_period: int,
-     *         interval: int, loss_interval: int, losshigh: int}>,
+     *         interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
      *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -247,8 +248,8 @@ final class UuApplyRun
 
     /**
      * Section 3.7: the configured forwarders back if Unbound may be on the resolver, then the route drained and
-     * deleted. A restore that failed only because the control channel is silent ends in a restart (ruling R24): a
-     * one-shot stop (Save with enabled off, deinstall) has no later evaluation to escalate from.
+     * deleted. A restore that failed ends in a restart (restartForStop()), and when that fails too, in
+     * stopIncomplete().
      */
     private function stop(): void
     {
@@ -259,8 +260,7 @@ final class UuApplyRun
         $this->reasons();
         $wasOnResolver = $this->st['mode'] === 'tunnel' || $this->needsRestore();
         if (!$this->restore() && !$this->restartForStop()) {
-            $this->log('stop: Unbound may still forward to the resolver, so its route stays (without it the '
-                . 'queries would follow the default route)', LOG_ERR);
+            $this->stopIncomplete();
             return;
         }
         $this->drainAndDelete($wasOnResolver);
@@ -268,28 +268,36 @@ final class UuApplyRun
     }
 
     /**
-     * Restart Unbound when this run's restore met a silent control channel with Unbound enabled, running and
-     * cacheflush off (the restart then keeps the cache, section 3.4), and confirm through `forward`, polled for up
-     * to UU_CONTROL_WAIT_SECONDS, that the live root is no longer the resolver. True only when that is confirmed.
-     * An Unbound the user disabled is never restarted, even while its pid is still alive.
+     * Restart Unbound after this run's restore failed, so that Unbound's own start applies the root zone the user
+     * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart on any restore failure:
+     * a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone. Any other
+     * stop (a replaced resolver address, a disabled plugin's tick, dry run's undo) restarts only on a silent
+     * channel (ruling R24), since the next evaluation retries it. Never while Unbound is disabled in its settings,
+     * even with its pid still alive; with cacheflush on only for a removal (owner decision D2: the restart wipes the
+     * cache the user keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`,
+     * polled for up to UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
      */
     private function restartForStop(): bool
     {
-        if (!$this->silent || !$this->s['unbound']['pid_alive']) {
+        $cause = $this->s['stop'];
+        $anyFailure = $cause === UU_STOP_REQUEST || $cause === UU_STOP_REMOVE;
+        if ((!$this->silent && !$anyFailure) || !$this->s['unbound']['pid_alive']) {
             return false;
         }
+        $why = $this->silent ? "Unbound's control channel is silent"
+            : "Unbound's configured root zone could not be restored through its control channel";
         if (!$this->s['unbound']['enabled']) {
-            $this->log("stop: Unbound's control channel is silent, but Unbound is disabled in its settings: no "
-                . 'restart', LOG_ERR);
+            $this->log("stop: $why, but Unbound is disabled in its settings: no restart", LOG_ERR);
             return false;
         }
-        if ($this->s['contract_input']['cacheflush']) {
-            $this->log("stop: Unbound's control channel is silent, and with cacheflush on a restart would wipe its "
-                . 'cache: no restart', LOG_ERR);
+        $flush = $this->s['contract_input']['cacheflush'];
+        if ($flush && $cause !== UU_STOP_REMOVE) {
+            $this->log("stop: $why, and with cacheflush on a restart would wipe its cache: no restart", LOG_ERR);
             return false;
         }
-        $this->log("stop: Unbound's control channel is silent, so only a restart brings back its configured root "
-            . 'zone (section 3.7): restarting Unbound', LOG_WARNING);
+        $this->log("stop: $why, so only a restart brings back its configured root zone (section 3.7): restarting "
+            . 'Unbound' . ($flush ? ', although with cacheflush on it wipes the cache: the package is being removed'
+            : ''), LOG_WARNING);
         if (!($this->io['restart_unbound'])()) {
             $this->log('stop: the Unbound restart failed', LOG_ERR);
             return false;
@@ -318,6 +326,36 @@ final class UuApplyRun
         $this->log('stop: Unbound\'s control channel is still silent ' . UU_CONTROL_WAIT_SECONDS
             . ' s after the restart', LOG_ERR);
         return false;
+    }
+
+    /**
+     * Neither the restore nor a restart took Unbound off the resolver. A removal's last resort (spec -04 section
+     * 3.2, C6) is the reject route over the plugin's route, never a delete: with the plugin gone, no block rule and
+     * no route repair are left for when the member route goes (a wireguard restart deletes it) and the queries
+     * follow the default route out a WAN, while the reject route keeps them local through any device change. The
+     * state keeps the resolver recorded. Any other stop keeps the route for the next try; a requested stop
+     * that leaves a footprint with the plugin disabled says once that the footprint's block stays (C2: once per
+     * change, never by the ticks that retry the stop).
+     */
+    private function stopIncomplete(): void
+    {
+        if ($this->s['stop'] === UU_STOP_REMOVE) {
+            $this->routeReject();
+            if ($this->route['present'] && $this->route['ours'] && $this->route['reject']) {
+                $this->log("stop: the package is being removed while Unbound may still forward to {$this->resolver}, "
+                    . "so its queries to {$this->resolver} are rejected locally until Unbound restarts: run "
+                    . "configctl unbound restart, then route delete -host {$this->resolver}", LOG_ERR);
+                return;
+            }
+        }
+        $this->log('stop: Unbound may still forward to the resolver, so its route stays (without it the '
+            . 'queries would follow the default route)', LOG_ERR);
+        $this->footprint();
+        $disabled = !$this->s['settings']['enabled'];
+        if ($this->s['stop'] === UU_STOP_REQUEST && $disabled && $this->st['resolver'] !== null) {
+            $this->log("the plugin is disabled but Unbound may still forward to {$this->resolver}: its block stays "
+                . 'until a stop restores the forwarders', LOG_WARNING);
+        }
     }
 
     /**
@@ -810,7 +848,7 @@ final class UuApplyRun
  *         probe_name: string},
  *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *         loss_interval: int, losshigh: int}>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -871,7 +909,7 @@ function uu_apply(array $p, array $s, array $io): array
  *         probe_name: string},
  *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
  *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *         loss_interval: int, losshigh: int}>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
