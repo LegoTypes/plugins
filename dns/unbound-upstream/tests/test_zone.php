@@ -114,21 +114,61 @@ uu_register_suite('zone', function (): int {
     /* convention C3 (ruling R9): the zone files are read as regular files only, each up to 1 MiB, so a large
      * blocklist file still counts and no forward-zone lies past 1 MiB; the cut falls at a line's end, so a line
      * past it is lost whole, never shortened */
-    uu_check($t, '(z1) zone texts: a symbolic link, a directory and a named pipe are skipped, the regular file read, '
-        . 'and a 2 MiB file yields its first 1 MiB up to its last whole line',
+    uu_check($t, '(z1) zone texts: the regular files are read, and a 2 MiB file yields its first 1 MiB up to its '
+        . 'last whole line',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
             $line = "local-zone: \"blocked.example\" always_nxdomain\n";
             $big = substr(str_repeat($line, intdiv(2 * UU_SCRATCH_MIB, strlen($line)) + 1), 0, 2 * UU_SCRATCH_MIB);
             $head = substr($big, 0, UU_SCRATCH_MIB);
             file_put_contents($dir . '/a.conf', $root);
-            file_put_contents($dir . '/elsewhere.txt', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
-            symlink($dir . '/elsewhere.txt', $dir . '/b.conf');
-            mkdir($dir . '/c.conf');
             file_put_contents($dir . '/d.conf', $big);
-            uu_scratch_place('fifo', $dir . '/e.conf', '');
             return UU_SCRATCH_MIB % strlen($line) !== 0
                 && uu_zone_texts($dir) === [$root, substr($head, 0, (int)strrpos($head, "\n") + 1)];
+        }));
+    /* a *.conf entry the helper skips may be the file that holds the root zone (core's dot.conf), so the read is
+     * failed, never the files that were left: unrestorable, and never "no . zone", which restores recursion */
+    $skipped = [
+        'symbolic link' => function (string $path): void {
+            file_put_contents($path . '.txt', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
+            symlink($path . '.txt', $path);
+        },
+        'directory' => fn (string $path): bool => mkdir($path),
+        'named pipe' => fn (string $path) => uu_scratch_place('fifo', $path, ''),
+    ];
+    foreach ($skipped as $what => $place) {
+        uu_check($t, "(I3) zone texts: a *.conf $what beside a regular root zone file is a failed read (null), so the "
+            . 'zone is unrestorable, "configuration unreadable"',
+            uu_scratch_case(function (string $dir) use ($place): bool {
+                file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
+                $place($dir . '/dot.conf');
+                $got = uu_zone_texts($dir);
+                return $got === null && uu_root_zone($got)['problems'] === ['configuration unreadable'];
+            }));
+    }
+    uu_check($t, '(I3) zone texts: a *.conf that cannot be opened (a socket) is a failed read (null)',
+        uu_scratch_case(function (string $dir): bool {
+            file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
+            $sock = stream_socket_server('unix://' . $dir . '/dot.conf');
+            if ($sock === false) {
+                echo "  no socket made\n";
+                return false;
+            }
+            try {
+                return filetype($dir . '/dot.conf') === 'socket' && uu_zone_texts($dir) === null;
+            } finally {
+                fclose($sock);
+            }
+        }));
+    uu_check($t, '(I3) zone texts: a link or a named pipe that is a dot file or has another name is not counted: the '
+        . '*.conf files are read',
+        uu_scratch_case(function (string $dir): bool {
+            $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
+            file_put_contents($dir . '/a.conf', $root);
+            symlink($dir . '/a.conf', $dir . '/.hidden.conf');
+            symlink($dir . '/a.conf', $dir . '/notes.txt');
+            uu_scratch_place('fifo', $dir . '/pipe.conf.old', '');
+            return uu_zone_texts($dir) === [$root];
         }));
     uu_check($t, 'zone texts: a forward-addr line that straddles the 1 MiB cut is dropped whole, never shortened to '
         . 'another address',
@@ -171,7 +211,14 @@ uu_register_suite('zone', function (): int {
             mkdir($dir . '/real');
             symlink($dir . '/real', $dir . '/link');
             return $helperRun($dir . '/link') === [1, ''] && $helperRun($dir . '/none') === [1, '']
-                && $helperRun($dir . '/real') === [0, '[]'];
+                && $helperRun($dir . '/real') === [0, '{"texts": [], "skipped": 0}'];
+        }));
+    uu_check($t, '(I3) zone_read.py: every *.conf entry it skips is counted, the regular files still printed',
+        uu_scratch_case(function (string $dir) use ($helperRun): bool {
+            file_put_contents($dir . '/a.conf', 'x');
+            symlink($dir . '/a.conf', $dir . '/b.conf');
+            mkdir($dir . '/c.conf');
+            return $helperRun($dir) === [0, '{"texts": ["eA=="], "skipped": 2}'];
         }));
     uu_check($t, 'zone texts: a reachable directory with no *.conf file (only other names, a dot file) is no files '
         . '([]), shape none as before; only a failed read is null',
@@ -192,7 +239,7 @@ uu_register_suite('zone', function (): int {
     uu_check($t, 'zone: a read that failed (null) is unrestorable, "configuration unreadable", never shape none',
         $try(fn (): bool => uu_root_zone(null) === ['shape' => 'unrestorable', 'addrs' => [], 'tls' => false,
             'problems' => ['configuration unreadable']]));
-    uu_check($t, '(z3) zone texts: a *.conf link to /dev/tun is skipped and clones no tun interface',
+    uu_check($t, '(z3) zone texts: a *.conf link to /dev/tun is a failed read (null) and clones no tun interface',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
             file_put_contents($dir . '/a.conf', $root);
@@ -207,7 +254,7 @@ uu_register_suite('zone', function (): int {
             $before = $ifaces();
             $rc = 1;
             exec('/bin/ln -s /dev/tun ' . escapeshellarg($dir . '/b.conf'), result_code: $rc);
-            $got = $rc === 0 && is_link($dir . '/b.conf') ? uu_zone_texts($dir) : null;
+            $got = $rc === 0 && is_link($dir . '/b.conf') ? uu_zone_texts($dir) : [];
             $after = $ifaces();
             $cloned = $before === null || $after === null ? [] : array_diff($after, $before);
             foreach ($cloned as $name) {
@@ -216,7 +263,7 @@ uu_register_suite('zone', function (): int {
                     exec('/sbin/ifconfig ' . escapeshellarg($name) . ' destroy');
                 }
             }
-            return $before !== null && $after === $before && $got === [$root];
+            return $before !== null && $after === $before && $rc === 0 && $got === null;
         }));
     uu_check($t, 'zone texts: the bytes come back exactly (not UTF-8 too), and a dot file is not listed, as glob(3)',
         uu_scratch_case(function (string $dir): bool {
@@ -225,23 +272,32 @@ uu_register_suite('zone', function (): int {
             file_put_contents($dir . '/.hidden.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 198.51.100.53\n");
             return uu_zone_texts($dir) === [$text];
         }));
-    /* the helper's output, decoded strictly: a JSON list of base64 strings, anything else a failed read */
+    /* the helper's output, decoded strictly: an object of texts, base64 strings, and skipped, a whole number;
+     * anything else a failed read */
     $outputs = [
         'bad JSON' => 'not json',
         'nothing' => '',
         'null' => 'null',
-        'an object, not a list' => '{"0": "eA=="}',
-        'a list holding a non-string' => '[1]',
-        'a nested list' => '[["eA=="]]',
-        'an entry that is not base64' => '["%%%"]',
+        'a list (no object)' => '["eA=="]',
+        'an object without skipped' => '{"texts": []}',
+        'an object with another key' => '{"texts": [], "skipped": 0, "more": 1}',
+        'texts that is an object, not a list' => '{"texts": {"0": "eA=="}, "skipped": 0}',
+        'texts holding a non-string' => '{"texts": [1], "skipped": 0}',
+        'texts holding a nested list' => '{"texts": [["eA=="]], "skipped": 0}',
+        'an entry that is not base64' => '{"texts": ["%%%"], "skipped": 0}',
+        'skipped below zero' => '{"texts": [], "skipped": -1}',
+        'skipped as a string' => '{"texts": [], "skipped": "0"}',
+        'skipped as a fraction' => '{"texts": [], "skipped": 0.5}',
     ];
     foreach ($outputs as $what => $out) {
         uu_check($t, "(z4) zone decode: $what is a failed read (null)",
             $try(fn (): bool => uu_zone_decode($out) === null));
     }
-    uu_check($t, 'zone decode: a list of base64 strings is their bytes, in order; an empty list is no files',
-        $try(fn (): bool => uu_zone_decode("[\"eA==\", \"\", \"/w==\"]\n") === ['x', '', "\xff"]
-            && uu_zone_decode('[]') === []));
+    uu_check($t, 'zone decode: texts of base64 strings are their bytes, in order, with the skip count; an empty list '
+        . 'is no files',
+        $try(fn (): bool => uu_zone_decode("{\"texts\": [\"eA==\", \"\", \"/w==\"], \"skipped\": 0}\n")
+            === ['texts' => ['x', '', "\xff"], 'skipped' => 0]
+            && uu_zone_decode('{"skipped": 2, "texts": []}') === ['texts' => [], 'skipped' => 2]));
     /* the bounded runner: each failure is null, never no files */
     $helpers = [
         'that runs past its 1 s limit is killed' => "import time\ntime.sleep(30)\n",
