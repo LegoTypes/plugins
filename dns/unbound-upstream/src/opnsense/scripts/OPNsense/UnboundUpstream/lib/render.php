@@ -212,9 +212,10 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
  * so a disabled plugin with no footprint reads no records. The setting renders when the settings and the records were
  * both read and name it; its rules go to the resolver only when that is IPv4, so a setting naming anything else
  * leaves the footprint its own rules. A failed settings read renders the footprint as if the setting rendered nothing
- * (its pass and its block); a failed records read leaves the footprint its block alone. Each failed read is part of
- * error, which is null when every read needed succeeded; a state file that cannot be read is no footprint, and its
- * problem is footprint_problem.
+ * (its pass and its block); a failed records read leaves the footprint its block alone, which error then names: DNS
+ * to that address is blocked until a reload can read the records (ruling R48). Each failed read is part of error,
+ * which is null when every read needed succeeded; a state file that cannot be read is no footprint, and its problem
+ * is footprint_problem.
  *
  * @param callable(): array{resolver: string, gateways: ?list<string>} $model the settings: the resolver, and the
  *     group's gateway names when the plugin is on with a group found and a resolver set, else null
@@ -234,10 +235,12 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
     }
     $gateways = $settings['gateways'] ?? null;
     $recs = null;
+    $recsFailed = false;
     if ($gateways !== null || $read['state']['resolver'] !== null) {
         try {
             $recs = $records();
         } catch (\Throwable $e) {
+            $recsFailed = true;
             $errors[] = 'cannot read the gateway records: ' . $e->getMessage();
         }
     }
@@ -253,6 +256,11 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
     }
     $setting = $enabled && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $resolver : '';
     $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
+    if ($recsFailed && $found['footprint'] !== null) {
+        /* the address passed uu_footprint_from_state()'s IPv4 check */
+        $errors[] = 'DNS to ' . $found['footprint']['resolver']
+            . ' is blocked until a filter reload can read the gateway records';
+    }
     return ['enabled' => $enabled, 'resolver' => $resolver, 'members' => $members, 'footprint' => $found['footprint'],
         'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem'],
         'error' => $errors === [] ? null : implode('; ', $errors)];
