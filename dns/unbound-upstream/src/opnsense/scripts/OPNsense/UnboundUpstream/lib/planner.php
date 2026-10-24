@@ -36,8 +36,8 @@ declare(strict_types=1);
  *   the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
- *   3.10's restart for a silent control channel: a skip's in tunnel mode, and the one a disabled plugin's stop may
- *   run when it cannot restore (ruling R52).
+ *   3.10's restart for a silent control channel: a skip's in tunnel mode, and the one a stop other than a requested
+ *   stop or the removal may run when it cannot restore (rulings R52, R53).
  */
 
 require_once __DIR__ . '/constants.php';
@@ -147,6 +147,16 @@ function uu_plan_silent(int $failures, ?int $since, int $now): array
     return ['failures' => $failures, 'since' => $since, 'seconds' => $seconds,
             'reason' => sprintf('Unbound control channel silent (%d evaluations, %d s)', $failures, $seconds),
             'due' => $failures >= UU_ESCALATE_EVALUATIONS && $seconds >= UU_ESCALATE_MIN_SECONDS];
+}
+
+/**
+ * Whether a stop with this cause restarts Unbound for a silent control channel at once (ruling R53): a requested
+ * stop and the removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, the undo
+ * of a replaced address, and any cause added later) waits for uu_plan_silent()'s bound.
+ */
+function uu_plan_restarts_at_once(?string $stop): bool
+{
+    return in_array($stop, [UU_STOP_REQUEST, UU_STOP_REMOVE], true);
 }
 
 /**
@@ -283,18 +293,21 @@ function uu_plan(array $s, array $st): array
     if ($stopReason !== null) {
         $reasons[] = $stopReason;
         $escalate = false;
-        if ($s['stop'] === null && !$s['settings']['enabled'] && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
+        if (!uu_plan_restarts_at_once($s['stop']) && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
             && !$s['unbound']['control_ok']) {
-            /* ruling R52: a disabled plugin's tick, which the minute job runs while a footprint remains, restarts
-             * Unbound for a silent channel only within the bound of tunnel mode's escalation, never every minute */
+            /* rulings R52 and R53: a stop that repeats (a disabled plugin's tick, which the minute job runs while a
+             * footprint remains, and the undo of a replaced address) restarts Unbound for a silent channel only
+             * within the bound of tunnel mode's escalation, never every minute */
             $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
             $st['control_failures'] = $silent['failures'];
             $st['control_silent_since'] = $silent['since'];
             $reasons[] = $silent['reason'];
             if ($silent['due']) {
                 $escalate = true;
-                $reasons[] = sprintf('control channel silent %d evaluations over %d s with the plugin disabled: '
-                    . 'restart Unbound when the stop cannot restore', $silent['failures'], $silent['seconds']);
+                /* apply refuses the restart with cacheflush on (owner decision D2), so the line does not promise it */
+                $reasons[] = sprintf('control channel silent %d evaluations over %d s while stopping: %s',
+                    $silent['failures'], $silent['seconds'], $s['contract_input']['cacheflush']
+                    ? 'restart escalation disabled: cacheflush on' : 'restart Unbound when the stop cannot restore');
                 $st['control_failures'] = 0;
                 $st['control_silent_since'] = null;
             }

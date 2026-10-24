@@ -71,6 +71,21 @@ function unboundupstream_clean(string $msg): string
 }
 
 /**
+ * One error line in the plugin's log (program dnsupstream, facility local4) from a hook: through the plugin's own
+ * uu_logger() (lib/logline.php), or through logger(1) directly when the library is missing. The hooks run inside
+ * core's process and must not openlog() over core's ident.
+ */
+function unboundupstream_log_error(string $msg): void
+{
+    $text = unboundupstream_clean($msg);
+    if (function_exists('uu_logger')) {
+        uu_logger($text, 'err');
+        return;
+    }
+    exec('/usr/bin/logger -t dnsupstream -p local4.err -- ' . escapeshellarg($text) . ' > /dev/null 2>&1');
+}
+
+/**
  * Queue one evaluation, detached.
  */
 function unboundupstream_queue(bool $verbose = false): void
@@ -85,7 +100,7 @@ function unboundupstream_queue(bool $verbose = false): void
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . unboundupstream_clean($e->getMessage()));
+        unboundupstream_log_error('cannot queue an evaluation: ' . $e->getMessage());
     }
 }
 
@@ -113,7 +128,7 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
             echo "done.\n";
         }
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot queue an evaluation: ' . unboundupstream_clean($e->getMessage()));
+        unboundupstream_log_error('cannot queue an evaluation: ' . $e->getMessage());
     }
 }
 
@@ -142,8 +157,8 @@ function unboundupstream_footprint_recorded(): bool
         }
         return uu_state_footprint($read['state']) !== null;
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot read its state for cron, so the minute job follows the enabled '
-            . 'setting alone: ' . unboundupstream_clean($e->getMessage()));
+        unboundupstream_log_error('cron: cannot read the state, so the minute job follows the enabled setting alone: '
+            . $e->getMessage());
         return false;
     }
 }
@@ -154,8 +169,7 @@ function unboundupstream_cron()
     try {
         $enabled = (new \OPNsense\UnboundUpstream\UnboundUpstream())->enabled->isEqual('1');
     } catch (\Throwable $e) {
-        syslog(LOG_ERR, 'unboundupstream: cannot read its settings for cron: '
-            . unboundupstream_clean($e->getMessage()));
+        unboundupstream_log_error('cron: cannot read the settings: ' . $e->getMessage());
         $enabled = false;
     }
     if ($enabled || unboundupstream_footprint_recorded()) {
@@ -181,9 +195,7 @@ function unboundupstream_firewall($fw)
         require_once $lib;
         uu_render_firewall($fw);
     } catch (\Throwable $e) {
-        exec('/usr/bin/logger -t dnsupstream -p local4.err -- '
-            . escapeshellarg('render hook failed: ' . unboundupstream_clean($e->getMessage()))
-            . ' > /dev/null 2>&1');
+        unboundupstream_log_error('render hook failed: ' . $e->getMessage());
     }
 }
 
