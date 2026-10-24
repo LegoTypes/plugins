@@ -52,7 +52,7 @@ Security release.
 * State, record and zone files are read as regular files only, never
   through a link, at most 1 MiB each; pfctl's error file lives in the
   plugin's root-only run directory
-* Control characters are dropped from log lines
+* Control characters are replaced in log lines (a line break by "; ", any other by "?")
 * Every copyright header reads "Copyright (C) 2026 cayossarian"
 
 1.2_1
