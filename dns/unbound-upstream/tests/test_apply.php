@@ -1318,6 +1318,62 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(R54) a trusted run dir with the marker made → null (the removal goes on), nothing run, nothing logged',
         $ok && $out !== null && $out['rc'] === null && count($out['calls']) === 0);
 
+    // Every stop's Unbound restart and the escalation (I1): core's restart through configd, else core's own command.
+    $restart = function (array $codes): ?array {
+        $out = null;
+        $ok = uu_try_case(function () use ($codes, &$out): bool {
+            $r = uu_test_runner($codes);
+            $out = ['ok' => uu_unbound_restart($r['run'], $r['log']), 'calls' => $r['calls']];
+            return true;
+        });
+        return $ok ? $out : null;
+    };
+    $out = $restart([]);
+    uu_check($t, '(I1) Unbound restart, configd answering OK → true, only configctl unbound restart (timeout-bounded), logged through configd',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound]
+        && uu_test_logged($out['calls'], LOG_NOTICE, 'unbound restart through configd'));
+    $out = $restart([$ctl => [0, '']]);
+    uu_check($t, '(I1) Unbound restart, configctl exiting 0 with no reply → core\'s own restart directly, true, the path logged',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound, $dUnbound]
+        && uu_test_logged($out['calls'], LOG_WARNING, 'answered nothing', '/usr/local/sbin/pluginctl -c unbound_start',
+            'ran directly'));
+    $out = $restart([$ctl => [124, '']]);
+    uu_check($t, '(I1) Unbound restart, configctl timed out (configd hung) → core\'s own restart directly, true',
+        $out !== null && $out['ok'] === true && uu_test_acts($out['calls']) === [$ctlUnbound, $dUnbound]
+        && uu_test_logged($out['calls'], LOG_WARNING, 'within 30 s'));
+    $out = $restart(['/' => [1, '']]);
+    uu_check($t, '(I1) Unbound restart, both failing → false, one error with both exits',
+        $out !== null && $out['ok'] === false
+        && uu_test_logged($out['calls'], LOG_ERR, 'unbound restart failed', 'configctl exit 1', 'exited 1'));
+    /* the restart a removal's stop runs, through the same runner: both failing never reads as restarted */
+    $composed = null;
+    $ok = uu_try_case(function () use ($fp, $usable, $all, &$composed): bool {
+        $s = $fp;
+        $s['zone'] = uu_root_zone(null);
+        $s['contract_input']['zone'] = $s['zone'];
+        $s['stop'] = UU_STOP_REMOVE;
+        $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+        $io = uu_test_io($s, $all, ['restarts' => true]);
+        $r = uu_test_runner(['/' => [1, '']]);
+        $calls = $io['calls'];
+        $log = $io['io']['log'];
+        $io['io']['restart_unbound'] = function () use ($r, $log, $all, $calls): bool {
+            $all[] = 'restart';
+            $calls[] = 'restart';
+            return uu_unbound_restart($r['run'], $log);
+        };
+        $composed = ['st' => uu_apply($p, $s, $io['io']), 'calls' => $calls->getArrayCopy()];
+        return true;
+    });
+    $restarted = $composed === null ? [] : array_filter($composed['calls'],
+        fn (string $c): bool => str_starts_with($c, 'log ') && str_contains($c, 'Unbound restarted'));
+    uu_check($t, '(I1) a removal\'s stop whose Unbound restart fails both ways → no "restarted" line, the failure logged, the reject route as the last resort',
+        $ok && $composed !== null && in_array('restart', $composed['calls'], true) && $restarted === []
+        && uu_test_logged(new ArrayObject($composed['calls']), LOG_ERR, 'unbound restart failed', 'exited 1')
+        && in_array($fpReject, $composed['calls'], true)
+        && !in_array('route delete -host 192.0.2.1', $composed['calls'], true)
+        && uu_test_logged(new ArrayObject($composed['calls']), LOG_ERR, 'being removed', 'rejected locally'));
+
     // Task 10 M2: the lock-timeout error names the address the state records, else says <resolver>.
     $named = null;
     $generic = null;

@@ -40,6 +40,7 @@ require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/planner.php';
 require_once __DIR__ . '/snapshot.php';
 require_once __DIR__ . '/log.php';
+require_once __DIR__ . '/corecmd.php';
 
 /**
  * Addresses as `unbound-control forward` prints them, for comparing as sets: "@port" and "#name" dropped, IPv6 in
@@ -1008,7 +1009,8 @@ function uu_drill(string $server, string $name): bool
 
 /**
  * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (section 3.1); a failing
- * route or unbound-control call logs its output here, where the output is known.
+ * route or unbound-control call logs its output here, where the output is known. Every restart, whatever its cause,
+ * is uu_unbound_restart(): core's restart through configd, else core's own command.
  *
  * @param string $statePath where save writes the state (UU_STATE_PATH)
  * @return array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
@@ -1050,15 +1052,7 @@ function uu_live_io(string $statePath): array
             }
             return implode("\n", $out) . "\n";
         },
-        'restart_unbound' => function (): bool {
-            $out = [];
-            $rc = 0;
-            exec('/usr/local/sbin/configctl unbound restart 2>&1', $out, $rc);
-            if ($rc !== 0) {
-                uu_log('configctl unbound restart (exit ' . $rc . '): ' . implode('; ', $out), LOG_ERR);
-            }
-            return $rc === 0;
-        },
+        'restart_unbound' => fn (): bool => uu_unbound_restart('uu_core_shell', 'uu_log'),
         'log' => function (string $msg, int $prio): void {
             uu_log($msg, $prio);
         },
