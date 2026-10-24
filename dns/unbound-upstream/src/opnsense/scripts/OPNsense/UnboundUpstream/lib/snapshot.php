@@ -580,6 +580,23 @@ function uu_zone_decode(string $stdout): ?array
 }
 
 /**
+ * A snapshot evaluate.php record wrote, in this version's shape for replay: a recording made before 1.3 has no
+ * contract_input.core_commands, which reads as nothing drifted, since that version did not check (Task 10 M3).
+ * Anything else is as recorded; replay checks the top-level shape.
+ *
+ * @param array<string, mixed> $snapshot
+ * @return array<string, mixed>
+ */
+function uu_snapshot_recorded(array $snapshot): array
+{
+    if (is_array($snapshot['contract_input'] ?? null)
+        && !array_key_exists('core_commands', $snapshot['contract_input'])) {
+        $snapshot['contract_input']['core_commands'] = [];
+    }
+    return $snapshot;
+}
+
+/**
  * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,

@@ -1,8 +1,8 @@
 
 # The rendered block and pass rules and the minute job go with the plugin's files: reload the filter and
 # regenerate cron once they are gone (the pre-deinstall stop still saw the plugin installed), each through configd
-# when it answers within 30 s, else the command core's actions file runs for it, run directly (convention C6). The
-# reload drops the counting table with its rule; the rules' verification record goes too.
-/usr/bin/timeout 30 /usr/local/sbin/configctl filter reload || /usr/local/etc/rc.filter_configure || true
-/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart || /usr/local/sbin/pluginctl -s cron restart || true
+# when it answers OK within 30 s, else the command core's actions file runs for it, run directly (convention C6,
+# ruling R55). The reload drops the counting table with its rule; the rules' verification record goes too.
+[ "$(/usr/bin/timeout 30 /usr/local/sbin/configctl filter reload)" = OK ] || /usr/local/etc/rc.filter_configure || true
+[ "$(/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart)" = OK ] || /usr/local/sbin/pluginctl -s cron restart || true
 rm -f /var/run/unboundupstream/rules.json

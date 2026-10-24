@@ -13,7 +13,7 @@ declare(strict_types=1);
  * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
  * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
- * cron's running state back.
+ * cron's running state back. It also records and replays one snapshot in a scratch directory it removes.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -503,6 +503,39 @@ uu_register_suite('wiring', function (): int {
     unboundupstream_queue_monitor(false, 'wg-test-429,wg-test-529');
     uu_check($t, 'the monitor hook with a comma-separated string (pluginctl -c monitor) passes the same names',
         uu_test_wait_configd($named, $before));
+
+    /* Task 10 M3: the installed evaluate.php replays a recording made before 1.3 (no contract_input.core_commands)
+     * without a PHP warning; the recording is this box's own, written to a scratch directory and removed, and is
+     * replayed as enabled, since a disabled plugin's plan stops before it reads the contract */
+    $m3 = null;
+    $script = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php';
+    $m3Dir = uu_scratch_dir();
+    try {
+        $rec = "$m3Dir/recording.json";
+        $out = [];
+        $rc = 0;
+        exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec) . ' > /dev/null 2>&1',
+            $out, $rc);
+        $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+        if (is_array($doc) && is_array($doc['snapshot']['contract_input'] ?? null)) {
+            unset($doc['snapshot']['contract_input']['core_commands']);
+            $doc['snapshot']['settings']['enabled'] = true;
+            file_put_contents($rec, json_encode($doc, JSON_THROW_ON_ERROR));
+            exec('/usr/local/bin/php -d log_errors=0 -d display_errors=1 -d error_reporting=-1 ' . $script
+                . ' replay ' . escapeshellarg($rec) . ' 2>&1', $out, $rc);
+            $m3 = ['rc' => $rc, 'out' => implode("\n", $out)];
+        } else {
+            printf("  record exited %d and wrote no snapshot\n", $rc);
+        }
+    } finally {
+        uu_scratch_remove($m3Dir);
+    }
+    $m3Warned = $m3 !== null && preg_match('/\b(Warning|Notice|Deprecated|Fatal error)\b/', $m3['out']) === 1;
+    if ($m3 !== null && ($m3['rc'] !== 0 || $m3Warned)) {
+        printf("  replay exited %d:\n%s\n", $m3['rc'], $m3['out']);
+    }
+    uu_check($t, '(M3) evaluate.php replay of a recording without contract_input.core_commands (the shape before 1.3) plans, exits 0 and prints no PHP warning',
+        $m3 !== null && $m3['rc'] === 0 && !$m3Warned && str_contains($m3['out'], '"plan"'));
 
     $before = uu_test_evaluations();
     shell_exec('/usr/local/sbin/pluginctl -c unbound_start > /dev/null 2>&1');

@@ -633,6 +633,40 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'no stop cause and enabled → no stop reason',
         uu_plan_stop_reason(uu_test_snapshot()) === null);
 
+    /* Task 10 M3: a recording made before 1.3 has no contract_input.core_commands; replay reads it as nothing
+     * drifted, and plans without a PHP warning */
+    $old = uu_test_snapshot();
+    unset($old['contract_input']['core_commands']);
+    $warnings = [];
+    set_error_handler(function (int $no, string $msg) use (&$warnings): bool {
+        $warnings[] = $msg;
+        return true;
+    });
+    try {
+        $bare = uu_try_case(fn (): bool => is_array(uu_plan($old, uu_state_new())));
+        $bareWarned = $warnings !== [];
+        $warnings = [];
+        $upgraded = null;
+        $replayed = uu_try_case(function () use ($old, &$upgraded): bool {
+            $upgraded = uu_snapshot_recorded($old);
+            return uu_plan($upgraded, uu_state_new()) === uu_plan(uu_test_snapshot(), uu_state_new());
+        });
+    } finally {
+        restore_error_handler();
+    }
+    if ($warnings !== []) {
+        printf("  %s\n", implode("\n  ", $warnings));
+    }
+    uu_check($t, '(M3) a pre-1.3 recording (no core_commands): planned bare it warns; as replay reads it, it plans as with no drift and without a warning',
+        $bare && $bareWarned && $replayed && $warnings === [] && $upgraded !== null
+        && $upgraded['contract_input']['core_commands'] === []);
+    uu_check($t, '(M3) a recording that has core_commands keeps them',
+        uu_try_case(function (): bool {
+            $s = uu_test_snapshot();
+            $s['contract_input']['core_commands'] = ['cron restart'];
+            return uu_snapshot_recorded($s) === $s;
+        }));
+
     // Mode recovery (Review Focus 4).
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-b');
     $p = uu_plan($s, uu_state_new());
