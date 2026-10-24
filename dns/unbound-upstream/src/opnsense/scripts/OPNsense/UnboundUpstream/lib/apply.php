@@ -333,9 +333,10 @@ final class UuApplyRun
      * 3.2, C6) is the reject route over the plugin's route, never a delete: with the plugin gone, no block rule and
      * no route repair are left for when the member route goes (a wireguard restart deletes it) and the queries
      * follow the default route out a WAN, while the reject route keeps them local through any device change. The
-     * state keeps the resolver recorded. Any other stop keeps the route for the next try; a requested stop
-     * that leaves a footprint with the plugin disabled says once that the footprint's block stays (C2: once per
-     * change, never by the ticks that retry the stop).
+     * state keeps the resolver recorded. A reject route that cannot be made (a route not ours, a failed route call)
+     * leaves the route as it is, and the error says what to run. Any other stop keeps the route for the next try; a
+     * requested stop that leaves a footprint with the plugin disabled says once that the footprint's block stays
+     * (C2: once per change, never by the ticks that retry the stop).
      */
     private function stopIncomplete(): void
     {
@@ -347,6 +348,9 @@ final class UuApplyRun
                     . "configctl unbound restart, then route delete -host {$this->resolver}", LOG_ERR);
                 return;
             }
+            $this->log("stop: the package is being removed while Unbound may still forward to {$this->resolver}, "
+                . 'and its route could not be made a reject route: run configctl unbound restart', LOG_ERR);
+            return;
         }
         $this->log('stop: Unbound may still forward to the resolver, so its route stays (without it the '
             . 'queries would follow the default route)', LOG_ERR);
