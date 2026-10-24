@@ -142,9 +142,9 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
 }
 
 /**
- * Whether the state records a footprint (spec -04 section 3.2), by the plugin's own uu_state_footprint(). Loads only
- * lib/state.php and lib/logline.php, which need only the constants, and neither when its functions are already
- * there. A state file that cannot be read counts as no footprint, in one line; nothing throws into core.
+ * Whether the state records a footprint, by the plugin's own uu_state_footprint(). Loads only lib/state.php and
+ * lib/logline.php, which need only the constants, and neither when its functions are already there. A state file that
+ * cannot be read counts as no footprint, in one line; nothing throws into core.
  */
 function unboundupstream_footprint_recorded(): bool
 {
@@ -183,14 +183,14 @@ function unboundupstream_cron()
     }
     if ($enabled || unboundupstream_footprint_recorded()) {
         /* every minute, and while a footprint is recorded even disabled, so a stop that could not restore is retried
-         * (spec -04 decision D4); generate_cron_job() defaults the minute to 0, so pass '*' */
+         * until it does; generate_cron_job() defaults the minute to 0, so pass '*' */
         $jobs[]['autocron'] = ['/usr/local/sbin/configctl unboundupstream evaluate', '*'];
     }
     return $jobs;
 }
 
 /**
- * Rendered rules (spec 3.6b, and the footprint's of spec -04 section 3.2) at every filter reload. Never throws: a
+ * Rendered rules (spec 3.6b, and the footprint's while the state records one) at every filter reload. Never throws: a
  * missing library renders nothing, and what each other failure keeps is uu_render_firewall()'s. Lines go through
  * logger(1): the hook runs inside core's filter reload and must not openlog() over core's ident.
  */

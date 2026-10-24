@@ -7,10 +7,10 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core's own commands for a removal (spec -04 section 3.2, convention C6): through configd when it answers OK
- * within UU_CONFIGD_TIMEOUT_SECONDS, else the command core's actions file names, run directly (rulings R4, R5, R55).
- * Not the plugin's own configd actions: a removal deletes them. The runner is injected, so the order is testable;
- * uu_core_shell() is the real one.
+ * Core's own commands, as the plugin runs them: through configd when it answers properly within
+ * UU_CONFIGD_TIMEOUT_SECONDS, else the command core's actions file names, run directly, so a configd that is down,
+ * hung or failing never leaves the box without what the command does. Not the plugin's own configd actions: a removal
+ * deletes them. The runner is injected, so the order is testable; uu_core_shell() is the real one.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -126,9 +126,9 @@ function uu_footprint_reload(string $change, callable $run, callable $log): void
 }
 
 /**
- * What remove runs after its stop (ruling R4): the filter reload, so the rules follow the footprint the stop left,
- * and the cron restart, so the minute job follows it too; each logged with the path it took, and "through
- * configd" only when configd answered OK.
+ * What remove runs after its stop: the filter reload, so the rules follow the footprint the stop left, and the cron
+ * restart, so the minute job follows it too; each logged with the path it took, and "through configd" only when
+ * configd answered OK.
  *
  * @param callable(string): array{rc: int, out: string} $run
  * @param callable(string, int): void $log
@@ -250,9 +250,9 @@ function uu_remove_timeout_text(?string $resolver): string
 }
 
 /**
- * That error as the wait runs out (Task 10 N2): the state read then, without the lock as status reads it, so the
- * remedy names the address recorded at that moment; a state that cannot be read gives the placeholder, and nothing
- * is thrown, so the error is always logged.
+ * That error as the wait runs out: the state read then, without the lock as status reads it, so the remedy names
+ * the address recorded at that moment, not when the wait began; a state that cannot be read gives the placeholder,
+ * and nothing is thrown, so the error is always logged.
  */
 function uu_remove_timeout_remedy(string $statePath): string
 {

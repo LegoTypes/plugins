@@ -103,8 +103,8 @@ function uu_main(array $args): int
 
 /**
  * configd's cron restart, which reads unboundupstream_cron(): the minute job is installed while the plugin is enabled
- * or the state records a footprint (decision D4), and removed otherwise. A failure is logged; the evaluation still
- * runs.
+ * or the state records a footprint (so a disabled plugin's stop that could not restore is retried), and removed
+ * otherwise. A failure is logged; the evaluation still runs.
  */
 function uu_cron_regenerate(): void
 {
@@ -167,13 +167,13 @@ function uu_remove(): int
 
 /**
  * One evaluation. stop and remove run as stops whatever the settings say, and so does every evaluation while the
- * removal marker exists, as a tick of the removal (uu_plan_causes(), ruling R51); the cause goes to the planner
- * (Snapshot.stop), which logs it. The settings are read under the lock, so an evaluation that waited for it acts on
- * the last Save. When the state records a resolver address other than the setting's (a Save changed it, ruling
- * R31), that address's route and forwarders are undone first by a stop for it, under the run's cause (ruling R50:
- * a requested stop's or a removal's undo restarts Unbound when it cannot restore, and a removal's leaves the reject
- * route), and the members' resolver-failed marks, which were about it, are forgotten; if the undo does not finish,
- * the run ends there and the new address waits for the next evaluation.
+ * removal marker exists, as a tick of the removal (uu_plan_causes()); the cause goes to the planner (Snapshot.stop),
+ * which logs it. The settings are read under the lock, so an evaluation that waited for it acts on the last Save. When
+ * the state records a resolver address other than the setting's (a Save changed it), that address's route and
+ * forwarders are undone first by a stop for it, under the run's cause (a requested stop's or a removal's undo restarts
+ * Unbound when it cannot restore, and a removal's leaves the reject route), and the members' resolver-failed marks,
+ * which were about it, are forgotten; if the undo does not finish, the run ends there and the new address waits for the
+ * next evaluation.
  *
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param list<string> $named

@@ -111,8 +111,9 @@ function uu_configd_action_command(string $conf, string $section): ?string
 }
 
 /**
- * The names of core's commands a removal falls back to (spec -04 section 3.2, C6) that core's actions files no
- * longer run as the plugin's constants say (ruling R6); an unreadable file counts as changed.
+ * The names of core's commands the plugin falls back to when configd does not answer that core's actions files no
+ * longer run as the plugin's constants say, so a core change is noted as drift; an unreadable file counts as
+ * changed.
  *
  * @return list<string>
  */
@@ -290,7 +291,7 @@ function uu_pf_observe(string $resolver, array $members, ?array $record, int $wa
  * `pfctl: DIOCGETRULE: Device busy` when a load cut a listing short) ever reaches a parser. A pfctl that cannot
  * be started, or that exits non-zero (a signal mid-listing too), gets a `pfctl:` line on stderr, so its listing
  * is unusable (uu_pf_listing_usable()); its stdout is kept, and nothing else reads stderr. The temporary file
- * lives in the root-only run directory, never in /tmp (convention C3): tempnam() silently falls back to the
+ * lives in the root-only run directory, never in world-writable /tmp: tempnam() silently falls back to the
  * system temporary directory when runDir is unusable, so a file anywhere else is removed and pfctl is not run.
  * The temporary file goes in every case. $binary and $runDir are for the tests.
  *
@@ -331,10 +332,10 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
 }
 
 /**
- * Ruling R22: a live route equal to the one the plugin last installed (the state's route_installed) is the
- * plugin's own even when no current member explains it, so a group renamed or deleted in tunnel mode lets
- * fallback and stop replace or delete the plugin's stale route instead of reading it as foreign. evaluate.php
- * applies it to every snapshot before planning; a route matching neither stays foreign.
+ * A live route equal to the one the plugin last installed (the state's route_installed) is the plugin's own even when
+ * no current member explains it, so a group renamed or deleted in tunnel mode lets fallback and stop replace or delete
+ * the plugin's stale route instead of reading it as foreign. evaluate.php applies it to every snapshot before planning;
+ * a route matching neither stays foreign.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -399,7 +400,7 @@ function uu_route_adopt(array $s, ?array $installed): array
 }
 
 /**
- * The settings as the scripts use them, checked again (convention C7): a restored configuration bypasses the
+ * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
  * model's masks. A resolver that is not IPv4 is '' (unset), a probe name outside UU_PROBE_NAME_MASK is '.', a
  * failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per
  * substitution; none quotes the value.
@@ -443,7 +444,7 @@ function uu_settings_clean(array $raw): array
 /**
  * The plugin's settings, cleaned by uu_settings_clean(). The group is the NAME of the gateway group the stored
  * UUID points at, '' when the group is gone or none is chosen. $warn logs each substitution at LOG_WARNING: the
- * evaluations pass it, status (polled every 30 s) and record do not (ruling R8).
+ * evaluations pass it, status (polled every 30 s, so it would repeat the line) and record do not.
  *
  * @return array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *     probe_name: string}

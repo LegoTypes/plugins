@@ -14,9 +14,9 @@ declare(strict_types=1);
 require_once __DIR__ . '/constants.php';
 
 /**
- * A log line as one printable line (convention C7, H3): CR and LF become "; ", every other control byte
- * (0x00-0x1F, 0x7F) and every UTF-8 C1 pair (U+0080 to U+009F) becomes "?". No /u: bytes that are not UTF-8 pass
- * through untouched instead of making the result null.
+ * A log line as one printable line, so a value from outside never forges or breaks one: CR and LF become "; ",
+ * every other control byte (0x00-0x1F, 0x7F) and every UTF-8 C1 pair (U+0080 to U+009F) becomes "?". No /u: bytes
+ * that are not UTF-8 pass through untouched instead of making the result null.
  */
 function uu_log_text(string $msg): string
 {

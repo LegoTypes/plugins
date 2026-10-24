@@ -22,12 +22,12 @@ declare(strict_types=1);
  * tls_applied the TLS flag the plugin last gave forward_add (Unbound cannot print it back; null before the plugin
  * set the forwarders) and blocked the counting table's blocked packets at the last evaluation, so a rise is logged.
  * route_installed is the resolver route the plugin last added or changed (null after its delete), so the route
- * stays the plugin's own when the group that explained it is renamed or deleted (ruling R22). resolver is the
- * address that route and Unbound's live root referred to (null once nothing does), so a Save that changes the
- * resolver setting undoes the old address's route and forwarders first (ruling R31). A file that cannot
+ * stays the plugin's own when the group that explained it is renamed or deleted. resolver is the address that
+ * route and Unbound's live root referred to (null once nothing does), so a Save that changes the resolver setting
+ * undoes the old address's route and forwarders first. A file that cannot
  * be read back exactly as written is discarded: the planner derives the mode from the live forwarders and route,
  * so a fresh state costs only the failback timers. The file lives in the root-only run directory and is read as a
- * regular file only (convention C3).
+ * regular file only.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -35,8 +35,9 @@ require_once __DIR__ . '/constants.php';
 const UU_STATE_VERSION = 5;
 
 /**
- * The plugin's runtime directory (UU_RUN_DIR by default, convention C3): created 0700 when missing, put back to
- * 0700 when its mode differs, refused when the path is a symbolic link or not a directory.
+ * The plugin's runtime directory (UU_RUN_DIR by default), root's alone, since what it holds is trusted: created
+ * 0700 when missing, put back to 0700 when its mode differs, refused when the path is a symbolic link or not a
+ * directory.
  */
 function uu_run_dir(string $dir = UU_RUN_DIR): void
 {
@@ -62,12 +63,12 @@ function uu_run_dir(string $dir = UU_RUN_DIR): void
 }
 
 /**
- * A file the plugin trusts, read as a regular file only (convention C3): the path is no symbolic link and a regular
- * file (lstat), and the file opened is the one checked (the same device and inode), so a swap between the check and
- * the open is refused, and the open never blocks. The open still follows a link swapped in after the lstat, so this
- * reader is for files in a directory only root can write (UU_RUN_DIR); Unbound's goes through zone_read.py (ruling
- * R43). A missing path, or one below a directory this process cannot search, has no text and no problem; with a
- * problem there is no text either.
+ * A file the plugin trusts, read as a regular file only: the path is no symbolic link and a regular file (lstat), and
+ * the file opened is the one checked (the same device and inode), so a swap between the check and the open is refused,
+ * and the open never blocks. The open still follows a link swapped in after the lstat, so this reader is for files in a
+ * directory only root can write (UU_RUN_DIR); Unbound's goes through zone_read.py, which opens no path through a link.
+ * A missing path, or one below a directory this process cannot search, has no text and no problem; with a problem there
+ * is no text either.
  *
  * @return array{text: ?string, problem: ?string} problem: 'a symbolic link', 'not a regular file', 'larger than
  *     1 MiB' (the default limit) or 'unreadable'
@@ -357,9 +358,9 @@ function uu_state_load(string $path): array
 }
 
 /**
- * The plugin's footprint (spec -04 section 3.2): the address the state records while the plugin's route or Unbound's
- * live root may still refer to it, when that is an IPv4 address, else null. The one definition the rendered rules,
- * an evaluation's filter reload and the minute job share.
+ * The plugin's footprint: the address the state records while the plugin's route or Unbound's live root may still
+ * refer to it (so its block stays until a stop has really undone it), when that is an IPv4 address, else null. The
+ * one definition the rendered rules, an evaluation's filter reload and the minute job share.
  *
  * @param array{resolver: ?string} $state
  */
@@ -370,12 +371,11 @@ function uu_state_footprint(array $state): ?string
 }
 
 /**
- * What an evaluation runs once it has saved a changed footprint (spec -04 section 3.2, ruling R4): a filter reload
- * whenever the footprint changed, since the rules follow it; and, with the plugin disabled, a cron restart when a
- * footprint came or went, since the minute job is installed exactly while the plugin is enabled or a footprint is
- * recorded (decision D4). Nothing in remove itself (UU_STOP_REMOVE), which runs core's reload and cron restart once
- * its stop is over; a tick while the removal marker exists (UU_STOP_REMOVING) is an evaluation and follows (ruling
- * R51).
+ * What an evaluation runs once it has saved a changed footprint: a filter reload whenever the footprint changed,
+ * since the rules follow it; and, with the plugin disabled, a cron restart when a footprint came or went, since the
+ * minute job is installed exactly while the plugin is enabled or a footprint is recorded (a disabled plugin's stop
+ * needs a tick to retry it). Nothing in remove itself (UU_STOP_REMOVE), which runs core's reload and cron restart
+ * once its stop is over; a tick while the removal marker exists (UU_STOP_REMOVING) is an evaluation and follows.
  *
  * @param ?string $stop the run's UU_STOP_* cause, or null
  * @return array{reload: bool, cron: bool}
@@ -389,8 +389,8 @@ function uu_footprint_actions(?string $before, ?string $after, bool $enabled, ?s
 }
 
 /**
- * The state once the plugin's footprint on another resolver address has been undone (ruling R31): every member's
- * resolver-failed mark and probe failure count were about that address, so none holds for the new one.
+ * The state once the plugin's footprint on another resolver address has been undone: every member's resolver-failed
+ * mark and probe failure count were about that address, so none holds for the new one.
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,

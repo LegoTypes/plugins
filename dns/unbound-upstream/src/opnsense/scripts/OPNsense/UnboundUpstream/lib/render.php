@@ -50,7 +50,7 @@ function uu_label_backstop(): string
     return md5('uu-backstop');
 }
 
-/** The pf label of the footprint block; the rules verdict ignores it (spec -04 decision D3). */
+/** The pf label of the footprint block; the rules verdict ignores it, so it is not the backstop's label. */
 function uu_label_footprint(): string
 {
     return md5('uu-footprint');
@@ -58,7 +58,7 @@ function uu_label_footprint(): string
 
 /**
  * The pf label of the footprint pass on a member interface. Not uu_label_pass(): the verdict requires every line under
- * a member's pass label to go to the setting's resolver, and the footprint pass goes to another address (ruling R2).
+ * a member's pass label to go to the setting's resolver, and the footprint pass goes to another address.
  */
 function uu_label_footprint_pass(string $opt): string
 {
@@ -66,9 +66,8 @@ function uu_label_footprint_pass(string $opt): string
 }
 
 /**
- * The rules, every pass before every block (ruling R47), so that no block, the counting block's table included, can
- * shadow a pass: the setting's passes, the footprint's pass when it has an interface, the setting's blocks, the
- * footprint's block.
+ * The rules, every pass before every block, so that no block, the counting block's table included, can shadow a pass:
+ * the setting's passes, the footprint's pass when it has an interface, the setting's blocks, the footprint's block.
  *
  * @param list<array{interface: string}> $members
  * @param ?array{resolver: string, interface: string} $footprint
@@ -159,12 +158,12 @@ function uu_block_conf(string $to, string $label, string $descr): array
 }
 
 /**
- * The footprint (ruling R1): the address the state records, when it is IPv4 and not the address the setting's rules
- * already go to ($settingResolver, '' when they render none), with the friendly interface of the plugin's route. That
- * interface is the one of the gateway record on the route's device with the route's next hop, the first such record
- * by name that has one; it is '' when the route is no member route or no record names it, and the footprint then
- * has its block only, since core renders an interface it does not know as a placeholder that breaks the ruleset.
- * A recorded address that is not IPv4 is no footprint but a problem, which never quotes the address.
+ * The footprint: the address the state records, when it is IPv4 and not the address the setting's rules already go to
+ * ($settingResolver, '' when they render none), with the friendly interface of the plugin's route. That interface is
+ * the one of the gateway record on the route's device with the route's next hop, the first such record by name that has
+ * one; it is '' when the route is no member route or no record names it, and the footprint then has its block only,
+ * since core renders an interface it does not know as a placeholder that breaks the ruleset. A recorded address that is
+ * not IPv4 is no footprint but a problem, which never quotes the address.
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
@@ -206,15 +205,14 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
 }
 
 /**
- * What to render (ruling R48). The state file at $statePath is read first, on its own; core's settings ($model) are
- * read next, and the gateway records ($records) only when the setting may render or the state records an address,
- * so a disabled plugin with no footprint reads no records. The setting renders when the settings and the records were
- * both read and name it; its rules go to the resolver only when that is IPv4, so a setting naming anything else
- * leaves the footprint its own rules. A failed settings read renders the footprint as if the setting rendered nothing
- * (its pass and its block); a failed records read leaves the footprint its block alone, which error then names: DNS
- * to that address is blocked until a reload can read the records (ruling R48). Each failed read is part of error,
- * which is null when every read needed succeeded; a state file that cannot be read is no footprint, and its problem
- * is footprint_problem.
+ * What to render. The state file at $statePath is read first, on its own; core's settings ($model) are read next, and
+ * the gateway records ($records) only when the setting may render or the state records an address, so a disabled plugin
+ * with no footprint reads no records. The setting renders when the settings and the records were both read and name it;
+ * its rules go to the resolver only when that is IPv4, so a setting naming anything else leaves the footprint its own
+ * rules. A failed settings read renders the footprint as if the setting rendered nothing (its pass and its block); a
+ * failed records read leaves the footprint its block alone, which error then names: DNS to that address is blocked
+ * until a reload can read the records. Each failed read is part of error, which is null when every read needed
+ * succeeded; a state file that cannot be read is no footprint, and its problem is footprint_problem.
  *
  * @param callable(): array{resolver: string, gateways: ?list<string>} $model the settings: the resolver, and the
  *     group's gateway names when the plugin is on with a group found and a resolver set, else null

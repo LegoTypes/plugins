@@ -37,7 +37,7 @@ declare(strict_types=1);
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
  *   3.10's restart for a silent control channel: a skip's in tunnel mode, and the one a stop other than a requested
- *   stop or the removal may run when it cannot restore (rulings R52, R53).
+ *   stop or the removal may run when it cannot restore, within the same bound, since the minute job repeats it.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -150,8 +150,8 @@ function uu_plan_silent(int $failures, ?int $since, int $now): array
 }
 
 /**
- * Whether a stop with this cause restarts Unbound for a silent control channel at once (ruling R53): a requested
- * stop and the removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, the undo
+ * Whether a stop with this cause restarts Unbound for a silent control channel at once: a requested stop and the
+ * removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, the undo
  * of a replaced address, a tick while the removal marker exists, and any cause added later) waits for
  * uu_plan_silent()'s bound.
  */
@@ -163,9 +163,10 @@ function uu_plan_restarts_at_once(?string $stop): bool
 /**
  * The causes of one evaluation's runs: its own (run), and that of the stop for a replaced resolver address that comes
  * first when the state records one (undo). An evaluation with no cause that finds the removal marker is a tick of
- * the removal (ruling R51): it stops, as the ticks do, but only remove itself has the removal's rules. The undo runs
- * under the run's cause (ruling R50), so a requested stop's or a removal's undo has their restart and last resort; an
- * evaluation's undo is the replaced address's own stop.
+ * the removal: it stops, as the ticks do, but only remove itself has the removal's restart and last resort, since
+ * the package is still installed while the marker exists. The undo runs under the run's cause, so a requested stop's
+ * or a removal's undo has their restart and last resort (else pkg delete could leave the old address's route and
+ * forwarders with nothing enforcing them); an evaluation's undo is the replaced address's own stop.
  *
  * @return array{run: ?string, undo: string}
  */
@@ -312,17 +313,17 @@ function uu_plan(array $s, array $st): array
         $escalate = false;
         if (!uu_plan_restarts_at_once($s['stop']) && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
             && !$s['unbound']['control_ok']) {
-            /* rulings R52, R53 and R51: a stop that repeats (a disabled plugin's tick, which the minute job runs
-             * while a footprint remains, the undo of a replaced address, and a tick while the removal marker exists)
-             * restarts Unbound for a silent channel only within the bound of tunnel mode's escalation, never every
-             * minute */
+            /* a stop that repeats (a disabled plugin's tick, which the minute job runs while a footprint remains, the
+             * undo of a replaced address, and a tick while the removal marker exists) restarts Unbound for a silent
+             * channel only within the bound of tunnel mode's escalation, never every minute */
             $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
             $st['control_failures'] = $silent['failures'];
             $st['control_silent_since'] = $silent['since'];
             $reasons[] = $silent['reason'];
             if ($silent['due']) {
                 $escalate = true;
-                /* apply refuses the restart with cacheflush on (owner decision D2), so the line does not promise it */
+                /* apply refuses the restart with cacheflush on (the cache is the user's), so the line does not
+                 * promise it */
                 $reasons[] = sprintf('control channel silent %d evaluations over %d s while stopping: %s',
                     $silent['failures'], $silent['seconds'], $s['contract_input']['cacheflush']
                     ? 'restart escalation disabled: cacheflush on' : 'restart Unbound when the stop cannot restore');
