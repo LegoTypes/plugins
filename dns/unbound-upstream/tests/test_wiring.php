@@ -195,6 +195,8 @@ uu_register_suite('wiring', function (): int {
         str_contains($view, "return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<')"
             . ".replace(/&gt;/g, '>').replace(/&amp;/g, '&');")
         && !str_contains($view, '.html('));
+    uu_check($t, 'the installed status view sets each refusal and note as text on its own line, not joined into one',
+        str_contains($view, "box.append($('<div/>').text(n));") && !str_contains($view, 'notes.join('));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
