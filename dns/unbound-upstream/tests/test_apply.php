@@ -1374,6 +1374,47 @@ uu_register_suite('apply', function (): int {
         && !in_array('route delete -host 192.0.2.1', $composed['calls'], true)
         && uu_test_logged(new ArrayObject($composed['calls']), LOG_ERR, 'being removed', 'rejected locally'));
 
+    // The footprint's filter reload (M3): queued only when configctl -d answers with a job id, else core's reload.
+    $ctlQueue = '/usr/bin/timeout 30 /usr/local/sbin/configctl -d filter reload 2> /dev/null';
+    $job = "c18b2884-b530-40e4-ae7f-761324e280f5\n";
+    $queue = function (array $codes): ?ArrayObject {
+        $calls = null;
+        $ok = uu_try_case(function () use ($codes, &$calls): bool {
+            $r = uu_test_runner($codes);
+            uu_footprint_reload('the address the plugin last used changed from 192.0.2.1 to none', $r['run'],
+                $r['log']);
+            $calls = $r['calls'];
+            return true;
+        });
+        return $ok ? $calls : null;
+    };
+    $calls = $queue([$ctl => [0, $job]]);
+    uu_check($t, '(M3) footprint reload, configctl -d answering a job id → queued, only the configctl -d line, logged as queued',
+        $calls !== null && uu_test_acts($calls) === [$ctlQueue]
+        && uu_test_logged($calls, LOG_NOTICE, 'changed from 192.0.2.1 to none', 'filter reload queued'));
+    $notQueued = ['exit 0 with no reply' => [0, ''], 'exit 0 with OK, not a job id' => [0, "OK\n"],
+                  'exit 0 with an error' => [0, "Execute error\n"], 'no socket (exit 255)' => [255, '']];
+    foreach ($notQueued as $what => $code) {
+        $calls = $queue([$ctl => $code]);
+        uu_check($t, "(M3) footprint reload, configctl -d $what → core's own reload directly, never \"queued\"",
+            $calls !== null && uu_test_acts($calls) === [$ctlQueue, $dReload]
+            && uu_test_logged($calls, LOG_WARNING, 'changed from 192.0.2.1 to none', 'rc.filter_configure',
+                'ran directly')
+            && !uu_test_logged($calls, LOG_NOTICE, 'queued'));
+    }
+    $calls = $queue(['/' => [1, '']]);
+    uu_check($t, '(M3) footprint reload, both failing → one error, the rules follow at the next filter reload',
+        $calls !== null && uu_test_logged($calls, LOG_ERR, 'the filter reload failed', 'configctl exit 1', 'exited 1',
+            'next filter reload') && !uu_test_logged($calls, LOG_NOTICE, 'queued'));
+    $out = null;
+    $ok = uu_try_case(function () use (&$out): bool {
+        $r = uu_test_runner([$ctl => [0, "C18B2884-B530-40E4-AE7F-761324E280F5x\n"]]);
+        $out = uu_core_command('filter reload', UU_CORE_FILTER_RELOAD, $r['run'], true)['path'];
+        return true;
+    });
+    uu_check($t, '(M3) a detached reply that is a job id with anything after it is no job id',
+        $ok && $out === 'direct');
+
     // Task 10 M2: the lock-timeout error names the address the state records, else says <resolver>.
     $named = null;
     $generic = null;

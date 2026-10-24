@@ -267,11 +267,11 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 }
 
 /**
- * The rules and the minute job follow the footprint the run saved (spec -04 section 3.2, ruling R4, decision D4): a
- * footprint that changed reloads the filter, so its block and pass come or go at once, and one that came or went
- * while the plugin is disabled restarts cron, so the minute job that retries the stop is installed exactly while one
- * is recorded; in remove itself, both wait until its stop is over (uu_remove()). The state is read back, so a run
- * that failed after a checkpoint follows what it saved; nothing is thrown, so such a run still ends in its own error.
+ * The rules and the minute job follow the footprint the run saved: a footprint that changed reloads the filter
+ * (uu_footprint_reload()), so its block and pass come or go at once, and one that came or went while the plugin is
+ * disabled restarts cron, so the minute job that retries the stop is installed exactly while one is recorded; in remove
+ * itself, both wait until its stop is over (uu_remove()). The state is read back, so a run that failed after a
+ * checkpoint follows what it saved; nothing is thrown, so such a run still ends in its own error.
  *
  * @param ?string $stop the run's UU_STOP_* cause, or null
  */
@@ -281,17 +281,8 @@ function uu_footprint_follow(?string $before, bool $enabled, ?string $stop): voi
         $after = uu_state_footprint(uu_state_load(UU_STATE_PATH));
         $actions = uu_footprint_actions($before, $after, $enabled, $stop);
         if ($actions['reload']) {
-            $out = [];
-            $rc = 0;
-            exec('/usr/local/sbin/configctl -d filter reload > /dev/null 2>&1', $out, $rc);
-            $change = 'the address the plugin last used changed from ' . ($before ?? 'none') . ' to '
-                . ($after ?? 'none');
-            if ($rc === 0) {
-                uu_log("rules: $change: filter reload queued", LOG_NOTICE);
-            } else {
-                uu_log("rules: $change, but the filter reload could not be queued (configctl exit $rc): the rules "
-                    . 'follow at the next filter reload', LOG_ERR);
-            }
+            uu_footprint_reload('the address the plugin last used changed from ' . ($before ?? 'none') . ' to '
+                . ($after ?? 'none'), 'uu_core_shell', 'uu_log');
         }
         if ($actions['cron']) {
             uu_cron_regenerate();
