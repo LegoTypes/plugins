@@ -20,6 +20,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/se
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/log.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
+require_once __DIR__ . '/scratch.php';
 
 /** Every daily file of one log directory under /var/log, in order. */
 function uu_test_log_dir(string $name): string
@@ -97,6 +98,43 @@ function uu_test_wait_configd(string $needle, int $before): bool
         usleep(200000);
     }
     return false;
+}
+
+/**
+ * Run $body with the saved state at $path moved to $aside, and put it back whatever happens; $body writes its state
+ * only through the callable it is given. The file at $path is removed only once that has written it, and the saved
+ * one is renamed back only when it was moved aside, so a failure never deletes the real state: a move aside that
+ * fails runs nothing and touches nothing. A throw is printed, as in uu_try_case().
+ *
+ * @param callable(callable(array<string, mixed>): void): void $body
+ * @param callable(string, string): bool $rename rename(), or a stub
+ */
+function uu_test_state_aside(string $path, string $aside, callable $body, callable $rename): void
+{
+    $moved = false;
+    if (file_exists($path)) {
+        if (!$rename($path, $aside)) {
+            printf("  cannot set the saved state aside: nothing run\n");
+            return;
+        }
+        $moved = true;
+    }
+    $written = false;
+    try {
+        $body(function (array $state) use ($path, &$written): void {
+            uu_state_save($path, $state);
+            $written = true;
+        });
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        if ($written) {
+            @unlink($path);
+        }
+        if ($moved && !$rename($aside, $path)) {
+            printf("  the saved state could not be put back from %s\n", $aside);
+        }
+    }
 }
 
 /** Whether cron runs (rc.d's status; the batch stops it for the scenarios and starts it at the end). */
@@ -247,15 +285,13 @@ uu_register_suite('wiring', function (): int {
      * and the listing shows the setting's rules only (spec -04 section 3.2) */
     $aside = UU_STATE_PATH . '.r9';
     $had = file_exists(UU_STATE_PATH);
+    $saved = $had ? (string)file_get_contents(UU_STATE_PATH) : null;
     $r9 = null;
-    try {
-        if ($had && !rename(UU_STATE_PATH, $aside)) {
-            throw new RuntimeException('cannot set the saved state aside');
-        }
+    uu_run_dir();
+    uu_test_state_aside(UU_STATE_PATH, $aside, function (callable $place) use (&$r9): void {
         $recorded = uu_state_new();
         $recorded['resolver'] = '192.0.2.1';
-        uu_run_dir();
-        uu_state_save(UU_STATE_PATH, $recorded);
+        $place($recorded);
         /* one line per read, so a php that dies on the second still shows the first */
         $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
             . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
@@ -268,14 +304,7 @@ uu_register_suite('wiring', function (): int {
                'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
         $r9['root_wanted'] = uu_wanted_from(fn (): array => ['resolver' => '', 'gateways' => null],
             fn (): array => [], UU_STATE_PATH);
-    } catch (\Throwable $e) {
-        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
-    } finally {
-        @unlink(UU_STATE_PATH);
-        if ($had) {
-            rename($aside, UU_STATE_PATH);
-        }
-    }
+    }, 'rename');
     $fresh = json_decode((string)json_encode(uu_state_new()), true);
     $nobody = $r9['nobody'] ?? [null, null];
     if ($r9 !== null && (!is_array($nobody[0]) || !is_array($nobody[1]))) {
@@ -292,7 +321,43 @@ uu_register_suite('wiring', function (): int {
         is_array($nobody[1]) && array_key_exists('footprint', $nobody[1]) && $nobody[1]['footprint'] === null
         && array_key_exists('footprint_problem', $nobody[1]) && $nobody[1]['footprint_problem'] === null
         && ($r9['root_wanted']['footprint'] ?? null) === ['resolver' => '192.0.2.1', 'interface' => '']);
-    uu_check($t, '(r9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $had && !file_exists($aside));
+    uu_check($t, '(r9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $had && !file_exists($aside)
+        && ($had ? (string)file_get_contents(UU_STATE_PATH) : null) === $saved);
+
+    /* I1: the state set aside is put back exactly, and a move aside that fails runs nothing and touches nothing */
+    $savedState = uu_state_new();
+    $savedState['resolver'] = '192.0.2.7';
+    $mine = uu_state_new();
+    $mine['resolver'] = '192.0.2.1';
+    uu_check($t, '(I1) a move aside that fails: nothing runs, the saved state stays as it was, no aside file',
+        uu_scratch_case(function (string $dir) use ($savedState, $mine): bool {
+            $path = $dir . '/state.json';
+            uu_state_save($path, $savedState);
+            $ran = false;
+            uu_test_state_aside($path, $path . '.aside', function (callable $place) use (&$ran, $mine): void {
+                $ran = true;
+                $place($mine);
+            }, fn (string $from, string $to): bool => false);
+            return !$ran && uu_state_read($path)['state'] === $savedState && !file_exists($path . '.aside');
+        }));
+    uu_check($t, '(I1) a body that writes its state and throws: the saved state is back, no aside file',
+        uu_scratch_case(function (string $dir) use ($savedState, $mine): bool {
+            $path = $dir . '/state.json';
+            uu_state_save($path, $savedState);
+            uu_test_state_aside($path, $path . '.aside', function (callable $place) use ($mine): void {
+                $place($mine);
+                throw new RuntimeException('test: the body throws');
+            }, 'rename');
+            return uu_state_read($path)['state'] === $savedState && !file_exists($path . '.aside');
+        }));
+    uu_check($t, '(I1) no saved state: the body\'s state is removed, nothing is left',
+        uu_scratch_case(function (string $dir) use ($mine): bool {
+            $path = $dir . '/state.json';
+            uu_test_state_aside($path, $path . '.aside', function (callable $place) use ($mine): void {
+                $place($mine);
+            }, 'rename');
+            return !file_exists($path) && !file_exists($path . '.aside');
+        }));
 
     $files = array_map('strval', array_keys(plugins_scan()));
     $unbound = array_search('unbound', $files, true);
@@ -327,6 +392,7 @@ uu_register_suite('wiring', function (): int {
     $e2 = null;
     $e2Aside = UU_STATE_PATH . '.e2';
     $e2Had = file_exists(UU_STATE_PATH);
+    $e2Saved = $e2Had ? (string)file_get_contents(UU_STATE_PATH) : null;
     $e2Tab = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
     $e2Cron = uu_test_cron_running();
     $e2Lock = false;
@@ -339,27 +405,22 @@ uu_register_suite('wiring', function (): int {
         if (!uu_test_clear_of_tick(20)) {
             throw new RuntimeException('the minute\'s tick did not move 20 s away within 60 s');
         }
-        if ($e2Had && !rename(UU_STATE_PATH, $e2Aside)) {
-            throw new RuntimeException('cannot set the saved state aside');
-        }
-        $recorded = uu_state_new();
-        $recorded['resolver'] = '192.0.2.1';
-        uu_state_save(UU_STATE_PATH, $recorded);
-        $e2 = ['cron_with' => unboundupstream_cron()];
-        shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
-        $e2['status_with'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
-        $e2['tab_with'] = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
-        unlink(UU_STATE_PATH);
-        $e2['cron_without'] = unboundupstream_cron();
-        shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
-        $e2['status_without'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
+        uu_test_state_aside(UU_STATE_PATH, $e2Aside, function (callable $place) use (&$e2): void {
+            $recorded = uu_state_new();
+            $recorded['resolver'] = '192.0.2.1';
+            $place($recorded);
+            $e2 = ['cron_with' => unboundupstream_cron()];
+            shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
+            $e2['status_with'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
+            $e2['tab_with'] = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
+            unlink(UU_STATE_PATH);
+            $e2['cron_without'] = unboundupstream_cron();
+            shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
+            $e2['status_without'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
+        }, 'rename');
     } catch (\Throwable $e) {
         printf("  threw %s: %s\n", get_class($e), $e->getMessage());
     } finally {
-        @unlink(UU_STATE_PATH);
-        if ($e2Had) {
-            rename($e2Aside, UU_STATE_PATH);
-        }
         if ((string)shell_exec('/usr/bin/crontab -l 2>/dev/null') !== $e2Tab) {
             $found = tempnam('/tmp', 'uu_cron');
             if ($found !== false && file_put_contents($found, $e2Tab) !== false) {
@@ -388,6 +449,7 @@ uu_register_suite('wiring', function (): int {
         && ($e2['status_without'] ?? null) === 'unboundupstream is not running');
     uu_check($t, '(e2) the saved state, the crontab and cron\'s running state are back as found',
         file_exists(UU_STATE_PATH) === $e2Had && !file_exists($e2Aside)
+        && ($e2Had ? (string)file_get_contents(UU_STATE_PATH) : null) === $e2Saved
         && (string)shell_exec('/usr/bin/crontab -l 2>/dev/null') === $e2Tab && uu_test_cron_running() === $e2Cron);
 
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);

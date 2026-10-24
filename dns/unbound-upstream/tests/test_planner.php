@@ -498,7 +498,14 @@ uu_register_suite('planner', function (): int {
         && $d3['state']['control_silent_since'] === null
         && uu_test_reason_has($d1['reasons'], 'disabled in settings')
         && uu_test_reason_has($d1['reasons'], 'silent (1 evaluations, 0 s)')
-        && uu_test_reason_has($d3['reasons'], 'plugin disabled', 'restart'));
+        && uu_test_reason_has($d3['reasons'], 'while stopping', 'restart Unbound when the stop cannot restore'));
+    /* M5: with cacheflush on, the due tick's line says no restart follows, as tunnel mode's does */
+    $flushTick = $tick;
+    $flushTick['contract_input']['cacheflush'] = true;
+    $flushDue = uu_plan($flushTick, $d2['state']);
+    uu_check($t, '(R52, M5) the due tick with cacheflush on → its line says the restart escalation is disabled, and promises no restart',
+        uu_test_reason_has($flushDue['reasons'], 'while stopping', 'restart escalation disabled: cacheflush on')
+        && !uu_test_reason_has($flushDue['reasons'], 'restart Unbound'));
     $tick['now'] = $now;
     $e1 = uu_plan($tick, $footprint);
     $tick['now'] = $now + 20;
@@ -529,9 +536,33 @@ uu_register_suite('planner', function (): int {
     $tickRequested = $tick;
     $tickRequested['stop'] = UU_STOP_REQUEST;
     $tickRequestedPlan = uu_plan($tickRequested, $counted);
-    uu_check($t, '(R52) a stopped Unbound, or a requested stop (whose restart is apply\'s own), → no count and no escalation',
+    $tickRemove = $tick;
+    $tickRemove['stop'] = UU_STOP_REMOVE;
+    $tickRemovePlan = uu_plan($tickRemove, $counted);
+    uu_check($t, '(R52, R53) a stopped Unbound, a requested stop or the removal (whose restarts are apply\'s own, at once) → no count and no escalation',
         !$tickDeadPlan['escalate_restart'] && $tickDeadPlan['state']['control_failures'] === 0
-        && !$tickRequestedPlan['escalate_restart'] && $tickRequestedPlan['state']['control_failures'] === 0);
+        && !$tickRequestedPlan['escalate_restart'] && $tickRequestedPlan['state']['control_failures'] === 0
+        && !$tickRemovePlan['escalate_restart'] && $tickRemovePlan['state']['control_failures'] === 0);
+
+    /* ruling R53: every other silent-channel stop waits for the same bound, so the undo of a replaced address, which a
+     * disabled plugin's tick runs first while the setting names another, restarts at most once per bound */
+    foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
+        $undo = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+        $undo['settings']['enabled'] = $on;
+        $undo['stop'] = UU_STOP_RESOLVER;
+        $undo['unbound']['control_ok'] = false;
+        $undo['unbound']['live_root'] = null;
+        $u1 = uu_plan($undo, $footprint);
+        $undo['now'] = $now + 60;
+        $u2 = uu_plan($undo, $u1['state']);
+        $undo['now'] = $now + UU_ESCALATE_MIN_SECONDS;
+        $u3 = uu_plan($undo, $u2['state']);
+        uu_check($t, "(R53) the undo of a replaced address, plugin $what, silent channel → no restart on the first and second evaluations, one on the third at 120 s",
+            $u1['action'] === 'stop' && !$u1['escalate_restart'] && $u1['state']['control_failures'] === 1
+            && !$u2['escalate_restart'] && $u2['state']['control_failures'] === 2
+            && $u3['escalate_restart'] && $u3['state']['control_failures'] === 0
+            && uu_test_reason_has($u1['reasons'], 'resolver setting changed'));
+    }
 
     /* each stop says why: a requested stop, a removal and a replaced resolver while enabled are not the setting */
     $stops = [];

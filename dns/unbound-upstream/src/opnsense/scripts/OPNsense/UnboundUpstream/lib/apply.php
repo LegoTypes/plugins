@@ -269,28 +269,30 @@ final class UuApplyRun
 
     /**
      * Restart Unbound after this run's restore failed, so that Unbound's own start applies the root zone the user
-     * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart on any restore failure:
-     * a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone. Any other
-     * stop (a replaced resolver address, a disabled plugin's tick, dry run's undo) restarts only on a silent
-     * channel (ruling R24), since the next evaluation retries it; a disabled plugin's tick, which the minute job
-     * repeats while a footprint remains, only once the planner's escalate_restart says the silence has lasted
-     * section 3.10's bound (ruling R52). Never while Unbound is disabled in its settings, even with its pid still
-     * alive; with cacheflush on only for a removal (owner decision D2: the restart wipes the cache the user keeps,
-     * and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for up to
-     * UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
+     * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart at once, on any restore
+     * failure: a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone. Any
+     * other stop (a replaced resolver address, a disabled plugin's tick, dry run's undo) restarts only on a silent
+     * channel (ruling R24), and only once the planner's escalate_restart says the silence has lasted section 3.10's
+     * bound (rulings R52, R53): the minute job repeats those stops, while a footprint remains even disabled. Never
+     * while Unbound is disabled in its settings, even with its pid still alive; with cacheflush on only for a
+     * removal (owner decision D2: the restart wipes the cache the user keeps, and a removal has nothing after it but
+     * the reject route). Confirmed through `forward`, polled for up to UU_CONTROL_WAIT_SECONDS: true only when the
+     * live root is no longer the resolver.
      */
     private function restartForStop(): bool
     {
         $cause = $this->s['stop'];
-        $anyFailure = $cause === UU_STOP_REQUEST || $cause === UU_STOP_REMOVE;
-        $bounded = $cause === null && !$this->s['settings']['enabled'] && !$this->p['escalate_restart'];
-        if ((!$this->silent && !$anyFailure) || !$this->s['unbound']['pid_alive'] || $bounded) {
+        $atOnce = uu_plan_restarts_at_once($cause);
+        if ((!$this->silent && !$atOnce) || !$this->s['unbound']['pid_alive']) {
             return false;
         }
         $why = $this->silent ? "Unbound's control channel is silent"
             : "Unbound's configured root zone could not be restored through its control channel";
         if (!$this->s['unbound']['enabled']) {
             $this->log("stop: $why, but Unbound is disabled in its settings: no restart", LOG_ERR);
+            return false;
+        }
+        if (!$atOnce && !$this->p['escalate_restart']) {
             return false;
         }
         $flush = $this->s['contract_input']['cacheflush'];

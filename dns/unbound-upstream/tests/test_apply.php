@@ -813,6 +813,49 @@ uu_register_suite('apply', function (): int {
     uu_apply(uu_plan($silentStop, $atBound), $silentStop, $r['io']);
     uu_check($t, 'after the restart the log says what was checked: the live root is no longer the resolver',
         uu_test_logged($r['calls'], LOG_WARNING, 'no longer forwards to the resolver'));
+
+    // Ruling R53: only a requested stop and the removal restart at once for a silent channel; every other stop waits
+    // for the bound, the undo of a replaced address included.
+    $silentTail = [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain,
+        'route delete -host ' . $silentTunnel['settings']['resolver']];
+    $silentRoot = ['192.0.2.53', '2001:db8::53'];
+    /* disabled, footprint A, setting B: each tick first undoes A, as UU_STOP_RESOLVER, on the same counter */
+    $undo = $silentStop;
+    $undo['stop'] = UU_STOP_RESOLVER;
+    $acts = [];
+    $st = uu_test_plan_state('wg-a', $usable);
+    foreach ([0, 60, UU_ESCALATE_MIN_SECONDS] as $i => $offset) {
+        $undo['now'] = $now + $offset;
+        $p = uu_plan($undo, $st);
+        $r = uu_test_io($undo, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => $i === 2]);
+        $st = uu_apply($p, $undo, $r['io']);
+        $acts[] = uu_test_acts($r['calls']);
+    }
+    uu_check($t, '(R53) disabled, footprint A, setting B, silent channel: the undo restarts on no tick before the third, at 120 s, then the tail',
+        $acts[0] === [$restoreDot] && $acts[1] === [$restoreDot] && $acts[2] === $silentTail
+        && $st['mode'] === 'fallback' && $st['resolver'] === null);
+    $undoOn = $silentTunnel;
+    $undoOn['stop'] = UU_STOP_RESOLVER;
+    $p = uu_plan($undoOn, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($undoOn, $all, ['silent' => true, 'restart_live' => $silentRoot]);
+    $st = uu_apply($p, $undoOn, $r['io']);
+    uu_check($t, '(R53) the undo of a replaced address, silent channel, fresh count → no restart, the route stays',
+        uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
+        && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
+    $p = uu_plan($undoOn, $atBound);
+    $r = uu_test_io($undoOn, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => true]);
+    $st = uu_apply($p, $undoOn, $r['io']);
+    uu_check($t, '(R53) the same at the bound → restart, the configured root confirmed, then the tail',
+        uu_test_acts($r['calls']) === $silentTail && $st['mode'] === 'fallback');
+    foreach ([UU_STOP_REQUEST => 'a requested stop', UU_STOP_REMOVE => 'the removal'] as $cause => $what) {
+        $immediate = $silentTunnel;
+        $immediate['stop'] = $cause;
+        $p = uu_plan($immediate, uu_test_plan_state('wg-a', $usable));
+        $r = uu_test_io($immediate, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => true]);
+        $st = uu_apply($p, $immediate, $r['io']);
+        uu_check($t, "(R53) $what, silent channel, fresh count → restart at once, then the tail",
+            !$p['escalate_restart'] && uu_test_acts($r['calls']) === $silentTail && $st['mode'] === 'fallback');
+    }
     $p = uu_plan($silentStop, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($silentStop, $all, ['uc_fail' => ['forward_add']]);
     $st = uu_apply($p, $silentStop, $r['io']);
