@@ -172,7 +172,8 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
             'probe_failures' => $timer['probe_failures'],
         ];
     }
-    /* the address the footprint block is rendered for (ruling R21): one the setting's rules do not already cover */
+    /* the address the footprint block is rendered for, as the render reads it: one the setting's rules do not
+     * already cover */
     $setting = $s['settings']['enabled'] && $s['contract_input']['group_found'] ? $s['settings']['resolver'] : '';
     $footprint = uu_footprint_from_state($st, [], $setting)['footprint'];
 

@@ -282,9 +282,9 @@ function uu_rules_check(?array $record, string $inputs, callable $checksum, call
 }
 
 /**
- * The saved record, or null when the file is missing, not a regular file within the limit (convention C3),
- * truncated or not exactly the Record shape (a record without inputs, from a build before them, is null too: the
- * next evaluation lists once).
+ * The saved record, or null when the file is missing, not a regular file within the limit (never read through a link),
+ * truncated or not exactly the Record shape (a record without inputs, from a build before them, is null too: the next
+ * evaluation lists once).
  *
  * @return ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}
  */

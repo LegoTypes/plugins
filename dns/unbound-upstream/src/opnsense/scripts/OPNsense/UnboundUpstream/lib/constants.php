@@ -22,11 +22,11 @@ const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many ev
 const UU_ESCALATE_MIN_SECONDS = 120;      /* and silent at least this long, so a fresh start is never restarted */
 const UU_LOCK_WAIT_SECONDS = 60;          /* wait for the evaluate lock */
 const UU_REMOVE_LOCK_WAIT_SECONDS = 2 * UU_LOCK_WAIT_SECONDS; /* remove waits longer: an evaluation in flight is
-                                           * bounded, and the removal marker stops every later one (spec -04 3.2) */
+                                           * bounded, and the removal marker stops every later one */
 const UU_CONFIGD_TIMEOUT_SECONDS = 30;    /* a core command configctl has not answered in this long runs directly
-                                           * (ruling R5; the package scripts repeat the 30) */
-/* core 26.7.7's command: values, verbatim, run directly when configd does not answer (convention C6); the contract
- * notes any that core's actions files no longer name (ruling R6) */
+                                           * (the package scripts repeat the 30) */
+/* core 26.7.7's command: values, verbatim, run directly when configd does not answer, so a removal or a restart
+ * never depends on it; the contract notes any that core's actions files no longer name */
 const UU_CORE_FILTER_RELOAD = '/usr/local/etc/rc.filter_configure'; /* actions_filter.conf [reload] */
 const UU_CORE_CRON_RESTART = '/usr/local/sbin/pluginctl -s cron restart'; /* actions_cron.conf [restart] */
 const UU_CORE_UNBOUND_RESTART = '/usr/local/sbin/pluginctl -c unbound_start'; /* actions_unbound.conf [restart] */
@@ -38,7 +38,7 @@ const UU_FAILBACK_DEFAULT = 120;          /* the model's failback_delay default,
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */
 const UU_BLOCK_TABLE = '__unboundupstream_block'; /* the counting block's table, in core's __ namespace, which no
                                                      * alias can take (spec section 3.6c, P7) */
-const UU_RUN_DIR = '/var/run/unboundupstream'; /* root's, mode 0700, made at use (uu_run_dir()): never /tmp (C3) */
+const UU_RUN_DIR = '/var/run/unboundupstream'; /* root's, mode 0700, made at use (uu_run_dir()): never /tmp */
 const UU_STATE_PATH = UU_RUN_DIR . '/state.json'; /* the runtime state (state.php) */
 const UU_RULES_PATH = UU_RUN_DIR . '/rules.json'; /* the rules verification record (section 3.6c) */
 const UU_FILE_MAX_BYTES = 1048576;        /* the most read of a state, record or zone file (uu_read_regular_file(),
@@ -50,8 +50,7 @@ const UU_RULES_LIST_PAIRS = 2;            /* checksum-listing-checksum tries bef
 const UU_STOP_REQUEST = 'request';        /* Snapshot.stop: evaluate.php stop (the service's stop, or a Save) */
 const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being removed */
 const UU_STOP_RESOLVER = 'resolver';      /* Snapshot.stop: undoing the resolver address a Save replaced */
-const UU_STOP_REMOVING = 'removing';      /* Snapshot.stop: any other evaluation while the removal marker exists
-                                           * (ruling R51) */
+const UU_STOP_REMOVING = 'removing';      /* Snapshot.stop: any other evaluation while the removal marker exists */
 const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect timeout */
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
 const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the model's notify_url <Mask>, byte for byte:

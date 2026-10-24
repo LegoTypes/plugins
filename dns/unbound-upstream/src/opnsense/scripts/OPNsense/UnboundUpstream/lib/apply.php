@@ -17,8 +17,8 @@ declare(strict_types=1);
  *   route runs route(8) with the verb (add, change or delete); uc runs unbound-control and returns its output, null
  *   when it failed or timed out; each probe is one `drill -D <name> @<server> SOA` tried UU_PROBE_TRIES times and
  *   passes on NOERROR with the ad flag; log takes a syslog priority; save writes the State (state.php) the run has
- *   reached, after every successful route or forwarder change and when an exception escapes (ruling R26), so the
- *   route record of ruling R22 survives a failure partway through.
+ *   reached, after every successful route or forwarder change and when an exception escapes, so the route record
+ *   (state.php's route_installed) survives a failure partway through.
  *
  * Every path keeps these:
  *   - a route is changed in place (change, or add when absent), never deleted and added: in the gap the resolver
@@ -235,7 +235,7 @@ final class UuApplyRun
                     $this->none();
             }
         } catch (\Throwable $e) {
-            /* ruling R26: what this run changed (the route record above all) is saved before the failure escapes */
+            /* what this run changed (the route record above all) is saved before the failure escapes */
             try {
                 $this->checkpoint();
             } catch (\Throwable $saveError) {
@@ -270,16 +270,15 @@ final class UuApplyRun
 
     /**
      * Restart Unbound after this run's restore failed, so that Unbound's own start applies the root zone the user
-     * configured (spec -04 section 3.2, ruling R3). A requested stop and a removal restart at once, on any restore
-     * failure: a silent channel, a refused forward_add, a `forward` that does not confirm, an unrestorable zone; so
-     * does their undo of a replaced address, which runs under their cause (ruling R50). Any other stop (a replaced
-     * resolver address in an evaluation, a disabled plugin's tick, a tick while the removal marker exists, dry run's
-     * undo) restarts only on a silent channel (ruling R24), and only once the planner's escalate_restart says the
-     * silence has lasted section 3.10's bound (rulings R51, R52, R53): the minute job repeats those stops, while a
-     * footprint remains even disabled. Never while Unbound is disabled in its settings, even with its pid still
-     * alive; with cacheflush on only for remove itself (owner decision D2: the restart wipes the cache the user
-     * keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for up
-     * to UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
+     * configured. A requested stop and a removal restart at once, on any restore failure: a silent channel, a refused
+     * forward_add, a `forward` that does not confirm, an unrestorable zone; so does their undo of a replaced address,
+     * which runs under their cause. Any other stop (a replaced resolver address in an evaluation, a disabled plugin's
+     * tick, a tick while the removal marker exists, dry run's undo) restarts only on a silent channel, which nothing
+     * else can undo, and only once the planner's escalate_restart says the silence has lasted section 3.10's bound: the
+     * minute job repeats those stops, while a footprint remains even disabled. Never while Unbound is disabled in its
+     * settings, even with its pid still alive; with cacheflush on only for remove itself (the restart wipes the cache
+     * the user keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for
+     * up to UU_CONTROL_WAIT_SECONDS: true only when the live root is no longer the resolver.
      */
     private function restartForStop(): bool
     {
@@ -336,15 +335,15 @@ final class UuApplyRun
     }
 
     /**
-     * Neither the restore nor a restart took Unbound off the resolver. A removal's last resort (spec -04 section
-     * 3.2, C6), in remove itself only (a tick while the removal marker exists keeps the route, ruling R51), is the
-     * reject route over the plugin's route, never a delete: with the plugin gone, no block rule and no route repair
-     * are left for when the member route goes (a wireguard restart deletes it) and the queries follow the default
-     * route out a WAN, while the reject route keeps them local through any device change. The state keeps the
-     * resolver recorded. A reject route that cannot be made (a route not ours, a failed route call)
-     * leaves the route as it is, and the error says what to run. Any other stop keeps the route for the next try; a
-     * requested stop that leaves a footprint with the plugin disabled says once that the footprint's block stays
-     * (C2: once per change, never by the ticks that retry the stop).
+     * Neither the restore nor a restart took Unbound off the resolver. A removal's last resort, in remove itself only
+     * (a tick while the removal marker exists keeps the route: the package is still installed), is the reject route
+     * over the plugin's route, never a delete: with the plugin gone, no block rule and no route repair are left for
+     * when the member route goes (a wireguard restart deletes it) and the queries follow the default route out a
+     * WAN, while the reject route keeps them local through any device change. The state keeps the resolver
+     * recorded. A reject route that cannot be made (a route not ours, a failed route call) leaves the route as it
+     * is, and the error says what to run. Any other stop keeps the route for the next try; a requested stop that
+     * leaves a footprint with the plugin disabled says once that the footprint's block stays (once per change,
+     * never by the ticks that retry the stop).
      */
     private function stopIncomplete(): void
     {
@@ -371,15 +370,15 @@ final class UuApplyRun
     }
 
     /**
-     * Rulings R25 and R29: once the route is gone and the filter reload has removed the block rule, a retry Unbound
-     * still sends to the resolver follows the default route out a WAN, and those retries ran up to 14.5 s after the
-     * restore on the VM. So the resolver goes to the reject route first: from our member route, already there
-     * after a recent fallback, or added when the route is missing while Unbound was on the resolver (a stop in a
-     * route-loss window, such as right after a wireguard restart, when the block rule has been dropping those very
-     * retries). Then flush_requestlist drops the queries Unbound was working on (they start again on the restored
-     * forwarders; the cache is untouched), and the reject route is held for the drain before the delete. A reject
-     * route or a flush that failed keeps the route: Unbound may still retry the resolver. A stopped Unbound has
-     * nothing in flight; a route that is not ours is never touched.
+     * Why stop drains: once the route is gone and the filter reload has removed the block rule, a retry Unbound still
+     * sends to the resolver follows the default route out a WAN, and those retries ran up to 14.5 s after the restore
+     * on the VM. So the resolver goes to the reject route first: from our member route, already there after a recent
+     * fallback, or added when the route is missing while Unbound was on the resolver (a stop in a route-loss window,
+     * such as right after a wireguard restart, when the block rule has been dropping those very retries). Then
+     * flush_requestlist drops the queries Unbound was working on (they start again on the restored forwarders; the
+     * cache is untouched), and the reject route is held for the drain before the delete. A reject route or a flush that
+     * failed keeps the route: Unbound may still retry the resolver. A stopped Unbound has nothing in flight; a route
+     * that is not ours is never touched.
      *
      * @param bool $wasOnResolver the run started in tunnel mode, or with Unbound on the resolver
      */
@@ -807,7 +806,7 @@ final class UuApplyRun
         }
     }
 
-    /** Save what the run has reached (ruling R26). */
+    /** Save what the run has reached, so a failure later in the run keeps it. */
     private function checkpoint(): void
     {
         $this->footprint();
@@ -815,10 +814,10 @@ final class UuApplyRun
     }
 
     /**
-     * Ruling R31: record the resolver address while the plugin's route refers to it or Unbound may forward to it,
-     * and null once neither holds, so a later change of the resolver setting knows which address to undo. The
-     * route is this run's live view of it, not route_installed: a record can outlive a route the kernel deleted
-     * (device recreation), and it must not pin an address nothing refers to.
+     * Record the resolver address while the plugin's route refers to it or Unbound may forward to it, and null once
+     * neither holds, so a later change of the resolver setting knows which address to undo. The route is this run's
+     * live view of it, not route_installed: a record can outlive a route the kernel deleted (device recreation), and it
+     * must not pin an address nothing refers to.
      */
     private function footprint(): void
     {
@@ -885,7 +884,7 @@ function uu_apply(array $p, array $s, array $io): array
     }
     $changed = $p['state']['mode'] === 'tunnel' || ($s['route']['present'] && $s['route']['ours']);
     if ($changed && $p['action'] === 'skip') {
-        /* ruling R24: through a silent channel nothing can be undone; the skip runs as planned, its escalation
+        /* through a silent channel nothing can be undone; the skip runs as planned, its escalation
          * included, and the undo waits for the channel to answer */
         return (new UuApplyRun($p, $s, $io))->run();
     }

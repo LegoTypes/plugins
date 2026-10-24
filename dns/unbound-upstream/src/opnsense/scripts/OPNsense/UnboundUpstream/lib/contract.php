@@ -82,8 +82,8 @@ function uu_contract(array $c): array
     } elseif ($c['members'] === 0) {
         $failures[] = 'group has no members';
     }
-    /* ruling R6: a removal's fallback that no longer matches core fails closed (the loaded rules keep the plugin's
-     * blocks until core's next reload), so refusing tunnel mode would buy nothing */
+    /* a note, not a failure: a removal's fallback that no longer matches core fails closed (the loaded rules keep
+     * the plugin's blocks until core's next reload), so refusing tunnel mode would buy nothing */
     foreach ($c['core_commands'] as $name) {
         $notes[] = "core command changed: $name (a removal that configd does not answer runs the old command)";
     }

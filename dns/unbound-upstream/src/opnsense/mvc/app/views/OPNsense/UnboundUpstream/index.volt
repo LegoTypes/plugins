@@ -26,7 +26,7 @@
             'none': "{{ lang._('none') }}"
         };
         /* section 3.6c: loaded, verifying (the ruleset changed since the last evaluation) or the named problems; then
-           the address the footprint block keeps (spec -04 section 3.2), when there is one */
+           the address the footprint block keeps while the plugin may still be using it, when there is one */
         function rulesText(data) {
             var r = data.rules || {};
             var text = r.state === 'loaded' ? "{{ lang._('yes') }}"

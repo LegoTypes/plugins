@@ -12,7 +12,7 @@ declare(strict_types=1);
  * Reads the forward zones out of Unbound's generated configuration and reports whether the root zone has a
  * shape forward_add can restore: no "." zone, or exactly one whose only options are forward-addr and
  * forward-tls-upstream. Anything else is "unrestorable" and its problems are named, and so is a configuration that
- * could not be read (ruling R44): it is never "no . zone", which restores as recursion over the WAN.
+ * could not be read in full: "could not look" is never "no . zone", which restores as recursion over the WAN.
  *
  * ZoneBlock = array{name: string, lines: list<array{0: string, 1: string}>}  (lines are [option, value])
  * Zone      = array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}
@@ -21,8 +21,7 @@ declare(strict_types=1);
 
 /**
  * Whether a forward-addr value, as Unbound prints and takes it, is an address with an optional port and an optional
- * authentication name and nothing else (convention C5), so text from Unbound never reaches the page or the log
- * unchecked.
+ * authentication name and nothing else, so text from Unbound never reaches the page, the log or forward_add unchecked.
  */
 function uu_forward_addr_ok(string $value): bool
 {

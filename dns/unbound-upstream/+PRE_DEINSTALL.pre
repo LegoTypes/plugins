@@ -1,10 +1,10 @@
 
 # Leave tunnel mode and delete the resolver's route while the plugin's files still exist (spec 3.7); the removal
 # marker keeps every later evaluation stopped until the files are gone (or an upgrade's post-install deletes it).
-# This runs on an upgrade too (decision D6): between the old files' removal and the new install a filter reload
-# renders without the plugin's rules, so tunnel mode must not outlive the old package. A stop that cannot restore
-# Unbound's forwarders restarts Unbound onto its configured root zone; when that fails too, the plugin's route
-# becomes a reject route (never deleted, so no query leaves by the default route) and an error names the remedy.
-# remove then reloads the filter and restarts cron through configd, else core's own scripts. The || true stays: pkg
-# must not be left half-way by a removal that failed, and the plugin log says what remove could not do.
+# This runs on an upgrade too: between the old files' removal and the new install a filter reload renders without
+# the plugin's rules, so tunnel mode must not outlive the old package. A stop that cannot restore Unbound's
+# forwarders restarts Unbound onto its configured root zone; when that fails too, the plugin's route becomes a
+# reject route (never deleted, so no query leaves by the default route) and an error names the remedy. remove then
+# reloads the filter and restarts cron through configd, else core's own scripts. The || true stays: pkg must not be
+# left half-way by a removal that failed, and the plugin log says what remove could not do.
 /usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php remove || true
