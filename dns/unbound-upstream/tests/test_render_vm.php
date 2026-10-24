@@ -33,7 +33,8 @@ uu_register_suite('render_vm', function (): int {
     $b['name'] = 'wg-b';
     $b['interface'] = 'opt2';
     $b['if'] = 'wg2';
-    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b]]);
+    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b],
+        'footprint' => null, 'footprint_problem' => null]);
     $text = $fw->outputFilterRules();
     uu_check($t, 'rendered on the tunnel device wg1', str_contains($text, 'on wg1 '));
     uu_check($t, 'rendered on the tunnel device wg2', str_contains($text, 'on wg2 '));
@@ -44,6 +45,23 @@ uu_register_suite('render_vm', function (): int {
     uu_check($t, 'the table is declared bare: no persist, no file',
         preg_match('/^table <__unboundupstream_block>$/m', $fw->tablesToText()) === 1);
     uu_check($t, 'no unresolved ## placeholder', !str_contains($text, '##'));
+    printf("%s", preg_replace('/^/m', '    | ', $text));
+
+    /* (r10) the footprint's rules with the plugin disabled (spec -04 section 3.2): a pass on the route's device */
+    $fw = new \OPNsense\Firewall\Plugin();
+    $fw->setInterfaceMapping($mapping);
+    uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '', 'members' => [],
+        'footprint' => ['resolver' => '192.0.2.1', 'interface' => 'opt1'], 'footprint_problem' => null]);
+    $text = $fw->outputFilterRules();
+    uu_check($t, '(r10) the footprint pass on opt1 renders on wg1, from its address, to 192.0.2.1 port 53, under '
+        . 'its own label',
+        preg_match('/on wg1 inet proto \{tcp udp\} from \{\(wg1\)\} to \{192\.0\.2\.1\} port \{53\}[^\n]*label "'
+            . md5('uu-footprint-pass-opt1') . '"/', $text) === 1);
+    uu_check($t, '(r10) the footprint block to the address, under its own label',
+        preg_match('/block out log quick inet from \{any\} to \{192\.0\.2\.1\}[^\n]*label "' . md5('uu-footprint')
+            . '"/', $text) === 1);
+    uu_check($t, '(r10) no table and no unresolved ## placeholder',
+        !str_contains($text, UU_BLOCK_TABLE) && !str_contains($text, '##') && trim($fw->tablesToText()) === '');
     printf("%s", preg_replace('/^/m', '    | ', $text));
     return uu_tally_report('render_vm', $t);
 });

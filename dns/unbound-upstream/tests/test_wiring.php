@@ -10,12 +10,15 @@ declare(strict_types=1);
  * The plugin's wiring on the test VM (spec sections 3.1 and 3.11): the hook table, the hook order, the privileges,
  * configd's answers and the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
- * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, and writes two
- * uu-wiring marker lines to the plugin's log.
+ * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
+ * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
+ * one read as nobody, then puts the saved one back.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/log.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
 
 /** Every daily file of one log directory under /var/log, in order. */
 function uu_test_log_dir(string $name): string
@@ -191,6 +194,56 @@ uu_register_suite('wiring', function (): int {
         unboundupstream_clean("a\x1bb\nc") === 'a?b; c' && unboundupstream_clean('plain') === 'plain');
     uu_check($t, 'cron is empty while the plugin is disabled', unboundupstream_cron() === []);
     uu_check($t, 'services is empty while the plugin is disabled', unboundupstream_services() === []);
+
+    /* (r9) core lists the automatic rules from the web server's process, which cannot search the root-only run
+     * directory: there the state reads as missing, with no problem, so the render's footprint read has nothing to log
+     * and the listing shows the setting's rules only (spec -04 section 3.2) */
+    $aside = UU_STATE_PATH . '.r9';
+    $had = file_exists(UU_STATE_PATH);
+    $r9 = null;
+    try {
+        if ($had && !rename(UU_STATE_PATH, $aside)) {
+            throw new RuntimeException('cannot set the saved state aside');
+        }
+        $recorded = uu_state_new();
+        $recorded['resolver'] = '192.0.2.1';
+        uu_run_dir();
+        uu_state_save(UU_STATE_PATH, $recorded);
+        /* one line per read, so a php that dies on the second still shows the first */
+        $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
+            . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
+            . 'echo json_encode(uu_wanted_from(false, "", [], [], UU_STATE_PATH)), PHP_EOL;';
+        $out = (string)shell_exec('/usr/bin/su -m nobody -c '
+            . escapeshellarg('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code)) . ' 2>&1');
+        $lines = explode("\n", $out);
+        $r9 = ['root' => uu_state_read(UU_STATE_PATH), 'out' => $out,
+               'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
+        $r9['root_wanted'] = uu_wanted_from(false, '', [], [], UU_STATE_PATH);
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        @unlink(UU_STATE_PATH);
+        if ($had) {
+            rename($aside, UU_STATE_PATH);
+        }
+    }
+    $fresh = json_decode((string)json_encode(uu_state_new()), true);
+    $nobody = $r9['nobody'] ?? [null, null];
+    if ($r9 !== null && (!is_array($nobody[0]) || !is_array($nobody[1]))) {
+        printf("  as nobody: %s\n", uu_log_text(substr($r9['out'], 0, 400)));
+    }
+    uu_check($t, '(r9) as nobody, a state recording a footprint reads as missing: a fresh state and no problem '
+        . '(root reads its footprint)',
+        ($r9['root']['state']['resolver'] ?? null) === '192.0.2.1'
+        && array_key_exists('problem', $r9['root']) && $r9['root']['problem'] === null
+        && is_array($nobody[0]) && array_key_exists('problem', $nobody[0]) && $nobody[0]['problem'] === null
+        && ($nobody[0]['state'] ?? null) === $fresh);
+    uu_check($t, '(r9) as nobody, the render\'s footprint read gives no footprint and nothing to log; as root, the '
+        . 'footprint',
+        is_array($nobody[1]) && array_key_exists('footprint', $nobody[1]) && $nobody[1]['footprint'] === null
+        && array_key_exists('footprint_problem', $nobody[1]) && $nobody[1]['footprint_problem'] === null
+        && ($r9['root_wanted']['footprint'] ?? null) === ['resolver' => '192.0.2.1', 'interface' => '']);
+    uu_check($t, '(r9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $had && !file_exists($aside));
 
     $files = array_map('strval', array_keys(plugins_scan()));
     $unbound = array_search('unbound', $files, true);

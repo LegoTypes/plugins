@@ -24,7 +24,8 @@
             'cached': "{{ lang._('cached (last reading of the gateway watcher)') }}",
             'none': "{{ lang._('none') }}"
         };
-        /* section 3.6c: loaded, verifying (the ruleset changed since the last evaluation) or the named problems */
+        /* section 3.6c: loaded, verifying (the ruleset changed since the last evaluation) or the named problems; then
+           the address the footprint block keeps (spec -04 section 3.2), when there is one */
         function rulesText(data) {
             var r = data.rules || {};
             var text = r.state === 'loaded' ? "{{ lang._('yes') }}"
@@ -34,7 +35,8 @@
                 text += ' (' + "{{ lang._('verified') }} " + new Date(r.verified_at * 1000).toLocaleString() + ')';
             }
             return text + ', ' + (data.counter_armed && data.blocked !== null
-                ? data.blocked + " {{ lang._('blocked packets') }}" : "{{ lang._('counter not armed') }}");
+                ? data.blocked + " {{ lang._('blocked packets') }}" : "{{ lang._('counter not armed') }}")
+                + (data.footprint ? "; {{ lang._('footprint block for') }} " + plain(data.footprint) : '');
         }
         function lastDown(d) {
             return d ? new Date(d.at * 1000).toLocaleString() + ': ' + plain(d.reason) : '';

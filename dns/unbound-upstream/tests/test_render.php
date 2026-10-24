@@ -8,13 +8,17 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Rendered allow-list for the resolver (spec section 3.6b): the confs, and the registration hook's
- * never-throws behaviour. The text core renders from them is checked by test_render_vm.php.
+ * never-throws behaviour. The text core renders from them is checked by test_render_vm.php. The footprint's rules
+ * (spec -04 section 3.2) are rendered from a state file in a scratch directory, as uu_wanted_render() reads the
+ * plugin's own.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
 require_once __DIR__ . '/test_verdict.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * A stand-in for core's firewall plugin registry that only records what is registered. Its constructor skips
@@ -66,7 +70,7 @@ uu_register_suite('render', function (): int {
     $b['interface'] = 'opt15';
     $b['if'] = 'wg5';
 
-    $c = uu_rule_confs('10.2.0.1', [$a, $b], true);
+    $c = uu_rule_confs('10.2.0.1', [$a, $b], true, null);
     uu_check($t, 'rules: passes, counting block, backstop in that order',
         count($c) === 4 && $c[0]['type'] === 'pass' && $c[1]['type'] === 'pass'
         && $c[2]['label'] === md5('uu-block') && $c[3]['label'] === md5('uu-backstop'));
@@ -86,19 +90,21 @@ uu_register_suite('render', function (): int {
             'to' => '10.2.0.1', 'label' => md5('uu-backstop'),
             'descr' => 'Unbound upstream: the resolver never leaves by another interface (backstop)']);
     uu_check($t, 'two members on one interface render one pass',
-        count(uu_rule_confs('10.2.0.1', [$a, $a], true)) === 3);
+        count(uu_rule_confs('10.2.0.1', [$a, $a], true, null)) === 3);
     uu_check($t, 'no members still blocks the resolver everywhere: counting block and backstop',
-        count(uu_rule_confs('10.2.0.1', [], true)) === 2 && uu_rule_confs('10.2.0.1', [], true)[1]['to'] === '10.2.0.1');
+        count(uu_rule_confs('10.2.0.1', [], true, null)) === 2
+        && uu_rule_confs('10.2.0.1', [], true, null)[1]['to'] === '10.2.0.1');
     uu_check($t, 'a member without a friendly interface gets no pass',
-        count(uu_rule_confs('10.2.0.1', [array_merge($a, ['interface' => ''])], true)) === 2);
-    $nc = uu_rule_confs('10.2.0.1', [$a], false);
+        count(uu_rule_confs('10.2.0.1', [array_merge($a, ['interface' => ''])], true, null)) === 2);
+    $nc = uu_rule_confs('10.2.0.1', [$a], false, null);
     uu_check($t, 'rules: no counting block without its table (a registerTable failure)',
         count($nc) === 2 && $nc[1]['label'] === md5('uu-backstop') && $nc[1]['to'] === '10.2.0.1'
-        && uu_rule_confs('10.2.0.1', [], false) === [$nc[1]]);
+        && uu_rule_confs('10.2.0.1', [], false, null) === [$nc[1]]);
     uu_check($t, 'priority is the constant', UU_RULE_PRIORITY === 99998);
 
     $wanted = function () use ($a, $b): array {
-        return ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b]];
+        return ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b], 'footprint' => null,
+                'footprint_problem' => null];
     };
     $fw = uu_test_fw();
     uu_render_firewall($fw, $wanted);
@@ -124,7 +130,8 @@ uu_register_suite('render', function (): int {
         && $logged === ['rules: counting block not rendered: table; failed']);
 
     $fw = uu_test_fw();
-    uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '10.2.0.1', 'members' => [$a]]);
+    uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '10.2.0.1', 'members' => [$a],
+        'footprint' => null, 'footprint_problem' => null]);
     uu_check($t, 'disabled: no rules registered', $fw->rules === [] && $fw->tables === []);
 
     $fw = uu_test_fw();
@@ -144,7 +151,8 @@ uu_register_suite('render', function (): int {
 
     $fw = uu_test_fw();
     $logged = [];
-    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => 'not an address', 'members' => [$a]],
+    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => 'not an address', 'members' => [$a],
+        'footprint' => null, 'footprint_problem' => null],
         function (string $msg) use (&$logged): void {
             $logged[] = $msg;
         });
@@ -157,6 +165,150 @@ uu_register_suite('render', function (): int {
         $logged[] = $msg;
     });
     uu_check($t, 'the failure line carries no control characters', $logged === ['rules not rendered: bad?[0m?value']);
+
+    /* the footprint (spec -04 section 3.2; rulings R1, R2, R11): the address the plugin last used, from the state */
+    uu_check($t, 'labels: the footprint block and a footprint pass have labels of their own',
+        uu_scratch_case(fn (string $dir): bool => uu_label_footprint() === md5('uu-footprint')
+            && uu_label_footprint_pass('opt14') === md5('uu-footprint-pass-opt14')
+            && uu_label_footprint_pass('opt14') !== uu_label_pass('opt14')));
+    $records = ['wg-a' => ['interface' => 'opt14', 'if' => 'wg1', 'gateway' => '192.0.2.2']];
+    $onWg1 = ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'];
+    $stateOf = function (?string $resolver, ?array $route): array {
+        $st = uu_state_new();
+        $st['mode'] = 'tunnel';
+        $st['member'] = 'wg-a';
+        $st['resolver'] = $resolver;
+        $st['route_installed'] = $route;
+        return $st;
+    };
+    $fpPass = ['type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => 'opt14', 'ipprotocol' => 'inet',
+        'protocol' => 'tcp/udp', 'from' => 'opt14ip', 'to' => '192.0.2.1', 'to_port' => '53', 'disablereplyto' => true,
+        'label' => md5('uu-footprint-pass-opt14'),
+        'descr' => 'Unbound upstream: the address the plugin last used, through the device of its route'];
+    $fpBlock = ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+        'to' => '192.0.2.1', 'label' => md5('uu-footprint'),
+        'descr' => 'Unbound upstream: the address the plugin last used never leaves by another interface'];
+    $today = uu_rule_confs('192.0.2.9', [$a, $b], true, null);
+    $at = fn (array $confs): array => array_map(fn (array $conf): array => [UU_RULE_PRIORITY, $conf], $confs);
+    /*
+     * Render what uu_wanted_from() gives for the setting and the state file at $path: the registry, the tables and
+     * the lines logged, each as [level, message].
+     *
+     * @return array{rules: list<array{int, array<string, string|bool>}>, tables: list<array{string, bool, ?string}>,
+     *     logged: list<array{string, string}>}
+     */
+    $render = function (string $path, bool $enabled, string $resolver, array $recs) use ($a, $b): array {
+        $w = uu_wanted_from($enabled, $resolver, [$a, $b], $recs, $path);
+        $fw = uu_test_fw();
+        $logged = [];
+        uu_render_firewall($fw, fn (): array => $w, function (string $msg, string $level = '') use (&$logged): void {
+            $logged[] = [$level, $msg];
+        });
+        return ['rules' => $fw->rules, 'tables' => $fw->tables, 'logged' => $logged];
+    };
+    uu_check($t, '(r1) disabled, a footprint on a member route: exactly the footprint pass on the record\'s interface '
+        . 'and the footprint block; no table, no counting block, no line',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $fpPass, $fpBlock): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
+            $r = $render($dir . '/state.json', false, '', $records);
+            return $r['rules'] === $at([$fpPass, $fpBlock]) && $r['tables'] === [] && $r['logged'] === [];
+        }));
+    uu_check($t, '(r2) no gateway record names the route\'s device and next hop: the footprint block only',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $records, $at, $fpBlock): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', ['kind' => 'member', 'next_hop' => '192.0.2.2',
+                'if' => 'wg9']));
+            $r = $render($dir . '/state.json', false, '', $records);
+            return $r['rules'] === $at([$fpBlock]) && $r['tables'] === [] && $r['logged'] === [];
+        }));
+    uu_check($t, '(r3) enabled on 192.0.2.9 with the footprint 192.0.2.1: the setting\'s passes, counting block and '
+        . 'backstop, then the footprint pass and block, all at UU_RULE_PRIORITY in that order',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $today, $fpPass,
+            $fpBlock): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
+            $r = $render($dir . '/state.json', true, '192.0.2.9', $records);
+            return count($today) === 4 && $r['rules'] === $at([...$today, $fpPass, $fpBlock])
+                && $r['tables'] === [[UU_BLOCK_TABLE, false, null]] && $r['logged'] === [];
+        }));
+    uu_check($t, '(r4) a footprint equal to the resolver renders nothing extra: today\'s rules exactly',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $today): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.9', $onWg1));
+            $r = $render($dir . '/state.json', true, '192.0.2.9', $records);
+            return $r['rules'] === $at($today) && $r['logged'] === [];
+        }));
+    uu_check($t, '(r5) a recorded address that is not IPv4: today\'s rules, and one warning that never quotes it',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $today): bool {
+            uu_state_save($dir . '/state.json', $stateOf('not-an-ip', $onWg1));
+            $r = $render($dir . '/state.json', true, '192.0.2.9', $records);
+            return $r['rules'] === $at($today) && count($r['logged']) === 1 && $r['logged'][0][0] === 'warning'
+                && str_contains($r['logged'][0][1], 'not an IPv4 address')
+                && !str_contains($r['logged'][0][1], 'not-an-ip');
+        }));
+    uu_check($t, '(r6) a directory at the state path: today\'s rules, and one warning naming "not a regular file"',
+        uu_scratch_case(function (string $dir) use ($render, $records, $at, $today): bool {
+            uu_scratch_place('dir', $dir . '/state.json', '');
+            $r = $render($dir . '/state.json', true, '192.0.2.9', $records);
+            return $r['rules'] === $at($today) && count($r['logged']) === 1 && $r['logged'][0][0] === 'warning'
+                && str_contains($r['logged'][0][1], 'not a regular file');
+        }));
+    uu_check($t, '(r7) enabled with the resolver "x" and the footprint 192.0.2.1: only the footprint rules, no table, '
+        . 'and one error for the resolver',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $fpPass,
+            $fpBlock): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
+            $r = $render($dir . '/state.json', true, 'x', $records);
+            return $r['rules'] === $at([$fpPass, $fpBlock]) && $r['tables'] === []
+                && count($r['logged']) === 1 && $r['logged'][0][0] === 'err'
+                && str_contains($r['logged'][0][1], 'resolver is not an IPv4 address');
+        }));
+    uu_check($t, '(r8) no state file: today\'s rules and no line',
+        uu_scratch_case(function (string $dir) use ($render, $records, $at, $today): bool {
+            $r = $render($dir . '/state.json', true, '192.0.2.9', $records);
+            return $r['rules'] === $at($today) && $r['logged'] === [];
+        }));
+
+    /* the footprint reader itself (ruling R1) */
+    uu_check($t, 'footprint: none recorded is none, and no problem',
+        uu_scratch_case(fn (string $dir): bool => uu_footprint_from_state($stateOf(null, null), $records, '')
+            === ['footprint' => null, 'problem' => null]));
+    uu_check($t, 'footprint: a reject route, or none, gives the block only (no interface)',
+        uu_scratch_case(fn (string $dir): bool => uu_footprint_from_state($stateOf('192.0.2.1', ['kind' => 'reject',
+            'next_hop' => '', 'if' => 'lo0']), $records, '')
+            === ['footprint' => ['resolver' => '192.0.2.1', 'interface' => ''], 'problem' => null]
+            && uu_footprint_from_state($stateOf('192.0.2.1', null), $records, '')
+            === ['footprint' => ['resolver' => '192.0.2.1', 'interface' => ''], 'problem' => null]));
+    uu_check($t, 'footprint: a record on the device with another next hop is not the route\'s',
+        uu_scratch_case(fn (string $dir): bool => uu_footprint_from_state($stateOf('192.0.2.1', ['kind' => 'member',
+            'next_hop' => '192.0.2.3', 'if' => 'wg1']), $records, '')['footprint']
+            === ['resolver' => '192.0.2.1', 'interface' => '']));
+    uu_check($t, 'footprint: of two matching records the first by sorted name wins, and one without an interface '
+        . 'is passed over',
+        uu_scratch_case(fn (string $dir): bool => uu_footprint_from_state($stateOf('192.0.2.1', $onWg1),
+            ['wg-c' => ['interface' => 'opt16', 'if' => 'wg1', 'gateway' => '192.0.2.2'],
+             'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')['footprint']
+            === ['resolver' => '192.0.2.1', 'interface' => 'opt15']
+            && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1),
+                ['wg-a' => ['interface' => '', 'if' => 'wg1', 'gateway' => '192.0.2.2'],
+                 'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')['footprint']
+            === ['resolver' => '192.0.2.1', 'interface' => 'opt15']));
+    uu_check($t, 'footprint: the setting\'s own address is no footprint; another setting, or none, leaves it one',
+        uu_scratch_case(fn (string $dir): bool
+            => uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.1')
+                === ['footprint' => null, 'problem' => null]
+            && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.9')['footprint']
+                === ['resolver' => '192.0.2.1', 'interface' => 'opt14']));
+    uu_check($t, 'footprint: a recorded address that is not IPv4 (an IPv6 one too) is a problem, not a footprint',
+        uu_scratch_case(fn (string $dir): bool
+            => uu_footprint_from_state($stateOf('2001:db8::1', $onWg1), $records, '')['footprint'] === null
+            && is_string(uu_footprint_from_state($stateOf('2001:db8::1', $onWg1), $records, '')['problem'])));
+    uu_check($t, 'wanted: disabled, or a setting with an address that is not IPv4, covers no footprint',
+        uu_scratch_case(function (string $dir) use ($stateOf, $onWg1, $records): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
+            $off = uu_wanted_from(false, '192.0.2.1', [], $records, $dir . '/state.json');
+            $bad = uu_wanted_from(true, '192.0.2.1/32', [], $records, $dir . '/state.json');
+            return $off['footprint'] === ['resolver' => '192.0.2.1', 'interface' => 'opt14']
+                && $bad['footprint'] === ['resolver' => '192.0.2.1', 'interface' => 'opt14']
+                && $off['footprint_problem'] === null;
+        }));
 
     return uu_tally_report('render', $t);
 });

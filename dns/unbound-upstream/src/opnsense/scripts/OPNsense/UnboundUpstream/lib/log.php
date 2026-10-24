@@ -16,6 +16,7 @@ require_once __DIR__ . '/logline.php';
 require_once __DIR__ . '/verdict.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/contract.php';
+require_once __DIR__ . '/render.php';
 
 /**
  * Log from evaluate.php's own process as program UU_SYSLOG_IDENT at local4, which the plugin's syslog-ng filter
@@ -132,7 +133,7 @@ function uu_duration_text(int $seconds): string
  *     tls_applied: ?bool,
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool, flags: list<string>},
  *     rules_loaded: bool, rules: array{state: string, problems: list<string>, verified_at: ?int},
- *     counter_armed: bool, blocked: ?int,
+ *     footprint: ?string, counter_armed: bool, blocked: ?int,
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}},
  *     members: list<array{name: string, tier: int, kind: string, verdict: ?string, usable: bool,
@@ -171,6 +172,9 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
             'probe_failures' => $timer['probe_failures'],
         ];
     }
+    /* the address the footprint block is rendered for (ruling R21): one the setting's rules do not already cover */
+    $setting = $s['settings']['enabled'] && $s['contract_input']['group_found'] ? $s['settings']['resolver'] : '';
+    $footprint = uu_footprint_from_state($st, [], $setting)['footprint'];
 
     return [
         'enabled' => $s['settings']['enabled'],
@@ -188,6 +192,7 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
         'rules_loaded' => $s['rules']['state'] === 'loaded',
         'rules' => ['state' => $s['rules']['state'], 'problems' => $s['rules']['problems'],
                     'verified_at' => $s['rules']['verified_at']],
+        'footprint' => $footprint === null ? null : $footprint['resolver'],
         'counter_armed' => $blockTable['armed'],
         'blocked' => $blockTable['blocked'],
         'checks' => $st['checks'],
