@@ -12,7 +12,8 @@ declare(strict_types=1);
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
  * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
- * one read as nobody, then puts the saved one back.
+ * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
+ * cron's running state back.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -91,6 +92,52 @@ function uu_test_wait_configd(string $needle, int $before): bool
     $deadline = hrtime(true) + 5000000000;
     while (hrtime(true) < $deadline) {
         if (substr_count(uu_test_configd_log(), $needle) > $before) {
+            return true;
+        }
+        usleep(200000);
+    }
+    return false;
+}
+
+/** Whether cron runs (rc.d's status; the batch stops it for the scenarios and starts it at the end). */
+function uu_test_cron_running(): bool
+{
+    $out = [];
+    $rc = 1;
+    exec('/usr/sbin/service cron onestatus > /dev/null 2>&1', $out, $rc);
+    return $rc === 0;
+}
+
+/**
+ * The evaluate lock, as evaluate.php takes it (exclusive, waiting up to UU_LOCK_WAIT_SECONDS), so no evaluation runs
+ * while it is held; false when it could not be taken. Closing the handle releases it.
+ *
+ * @return resource|false
+ */
+function uu_test_evaluate_lock()
+{
+    $lock = fopen(UU_RUN_DIR . '/evaluate.lock', 'ce');
+    if ($lock === false) {
+        return false;
+    }
+    $deadline = hrtime(true) + UU_LOCK_WAIT_SECONDS * 1000000000;
+    while (!flock($lock, LOCK_EX | LOCK_NB)) {
+        if (hrtime(true) >= $deadline) {
+            fclose($lock);
+            return false;
+        }
+        usleep(200000);
+    }
+    return $lock;
+}
+
+/** Wait up to 60 s until cron's next minute tick is at least $margin seconds away. */
+function uu_test_clear_of_tick(int $margin): bool
+{
+    $deadline = hrtime(true) + 60000000000;
+    while (hrtime(true) < $deadline) {
+        $second = (int)date('s');
+        if ($second >= 1 && 60 - $second >= $margin) {
             return true;
         }
         usleep(200000);
@@ -272,6 +319,77 @@ uu_register_suite('wiring', function (): int {
         $running === 'unboundupstream is running'
         && !str_contains((string)shell_exec('/usr/bin/crontab -l 2>/dev/null'), $job)
         && trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status')) === 'unboundupstream is not running');
+
+    /* (e2) decision D4: with the plugin disabled, a state recording a footprint keeps the minute job, so a stop that
+     * could not restore is retried; without one the job goes. The evaluate lock is held throughout and the minute's
+     * tick is at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
+     * runs; the saved state, the crontab and cron's running state are put back as found */
+    $e2 = null;
+    $e2Aside = UU_STATE_PATH . '.e2';
+    $e2Had = file_exists(UU_STATE_PATH);
+    $e2Tab = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
+    $e2Cron = uu_test_cron_running();
+    $e2Lock = false;
+    try {
+        uu_run_dir();
+        $e2Lock = uu_test_evaluate_lock();
+        if ($e2Lock === false) {
+            throw new RuntimeException('an evaluation held the evaluate lock for 60 s');
+        }
+        if (!uu_test_clear_of_tick(20)) {
+            throw new RuntimeException('the minute\'s tick did not move 20 s away within 60 s');
+        }
+        if ($e2Had && !rename(UU_STATE_PATH, $e2Aside)) {
+            throw new RuntimeException('cannot set the saved state aside');
+        }
+        $recorded = uu_state_new();
+        $recorded['resolver'] = '192.0.2.1';
+        uu_state_save(UU_STATE_PATH, $recorded);
+        $e2 = ['cron_with' => unboundupstream_cron()];
+        shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
+        $e2['status_with'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
+        $e2['tab_with'] = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
+        unlink(UU_STATE_PATH);
+        $e2['cron_without'] = unboundupstream_cron();
+        shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
+        $e2['status_without'] = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        @unlink(UU_STATE_PATH);
+        if ($e2Had) {
+            rename($e2Aside, UU_STATE_PATH);
+        }
+        if ((string)shell_exec('/usr/bin/crontab -l 2>/dev/null') !== $e2Tab) {
+            $found = tempnam('/tmp', 'uu_cron');
+            if ($found !== false && file_put_contents($found, $e2Tab) !== false) {
+                shell_exec('/usr/bin/crontab ' . escapeshellarg($found));
+            }
+            if ($found !== false) {
+                unlink($found);
+            }
+        }
+        if (uu_test_cron_running() !== $e2Cron) {
+            shell_exec('/usr/sbin/service cron ' . ($e2Cron ? 'onestart' : 'onestop') . ' > /dev/null 2>&1');
+        }
+        if ($e2Lock !== false) {
+            fclose($e2Lock);
+        }
+    }
+    $minuteJob = [['autocron' => [$job, '*']]];
+    if ($e2 !== null && ($e2['cron_with'] !== $minuteJob || $e2['status_with'] !== 'unboundupstream is running')) {
+        printf("  with the footprint: cron %s, status '%s', crontab lines with the job: %d\n",
+            json_encode($e2['cron_with']), $e2['status_with'], substr_count($e2['tab_with'], $job));
+    }
+    uu_check($t, '(e2) disabled, a state recording 192.0.2.1 → unboundupstream_cron() returns the minute job, and after a cron restart status reads running',
+        $e2 !== null && $e2['cron_with'] === $minuteJob && $e2['status_with'] === 'unboundupstream is running');
+    uu_check($t, '(e2) disabled, the state removed → no job, and after a cron restart status reads not running',
+        $e2 !== null && ($e2['cron_without'] ?? null) === []
+        && ($e2['status_without'] ?? null) === 'unboundupstream is not running');
+    uu_check($t, '(e2) the saved state, the crontab and cron\'s running state are back as found',
+        file_exists(UU_STATE_PATH) === $e2Had && !file_exists($e2Aside)
+        && (string)shell_exec('/usr/bin/crontab -l 2>/dev/null') === $e2Tab && uu_test_cron_running() === $e2Cron);
+
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);
     uu_check($t, 'configctl state returns the status JSON', is_array($state) && isset($state['mode'], $state['members'])
         && $state['enabled'] === false);

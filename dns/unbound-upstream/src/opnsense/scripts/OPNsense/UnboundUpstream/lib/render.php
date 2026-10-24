@@ -178,12 +178,10 @@ function uu_block_conf(string $to, string $label, string $descr): array
  */
 function uu_footprint_from_state(array $state, array $records, string $settingResolver): array
 {
-    $address = $state['resolver'];
+    $address = uu_state_footprint($state);
     if ($address === null) {
-        return ['footprint' => null, 'problem' => null];
-    }
-    if (filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-        return ['footprint' => null, 'problem' => 'the address the plugin last used is not an IPv4 address'];
+        return ['footprint' => null, 'problem' => $state['resolver'] === null ? null
+            : 'the address the plugin last used is not an IPv4 address'];
     }
     if ($address === $settingResolver) {
         return ['footprint' => null, 'problem' => null];

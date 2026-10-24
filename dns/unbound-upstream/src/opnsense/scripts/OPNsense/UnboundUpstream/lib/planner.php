@@ -35,7 +35,9 @@ declare(strict_types=1);
  *   checks. reassert and route_repair are the section 3.4 reconcile and are only set with 'none'. state carries
  *   the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
- *   control_failures and control_silent_since; apply records switches and last_switch.
+ *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
+ *   3.10's restart for a silent control channel: a skip's in tunnel mode, and the one a disabled plugin's stop may
+ *   run when it cannot restore (ruling R52).
  */
 
 require_once __DIR__ . '/constants.php';
@@ -128,6 +130,23 @@ function uu_plan_result(
     return ['action' => $action, 'candidates' => $candidates, 'reassert' => $reassert,
             'route_repair' => $routeRepair, 'escalate_restart' => $escalate, 'state' => $st,
             'reasons' => $reasons];
+}
+
+/**
+ * One more evaluation with Unbound's control channel silent (section 3.10): the count, the first such evaluation's
+ * time, how long the channel has been silent, its reason line, and whether a restart is due: after
+ * UU_ESCALATE_EVALUATIONS evaluations over at least UU_ESCALATE_MIN_SECONDS, so a fresh start is never restarted.
+ *
+ * @return array{failures: int, since: int, seconds: int, reason: string, due: bool}
+ */
+function uu_plan_silent(int $failures, ?int $since, int $now): array
+{
+    $failures++;
+    $since = $since ?? $now;
+    $seconds = max(0, $now - $since);
+    return ['failures' => $failures, 'since' => $since, 'seconds' => $seconds,
+            'reason' => sprintf('Unbound control channel silent (%d evaluations, %d s)', $failures, $seconds),
+            'due' => $failures >= UU_ESCALATE_EVALUATIONS && $seconds >= UU_ESCALATE_MIN_SECONDS];
 }
 
 /**
@@ -262,10 +281,28 @@ function uu_plan(array $s, array $st): array
 
     $stopReason = uu_plan_stop_reason($s);
     if ($stopReason !== null) {
-        $st['control_failures'] = 0;
-        $st['control_silent_since'] = null;
         $reasons[] = $stopReason;
-        return uu_plan_result('stop', $candidates, false, false, false, $st, $reasons);
+        $escalate = false;
+        if ($s['stop'] === null && !$s['settings']['enabled'] && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
+            && !$s['unbound']['control_ok']) {
+            /* ruling R52: a disabled plugin's tick, which the minute job runs while a footprint remains, restarts
+             * Unbound for a silent channel only within the bound of tunnel mode's escalation, never every minute */
+            $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
+            $st['control_failures'] = $silent['failures'];
+            $st['control_silent_since'] = $silent['since'];
+            $reasons[] = $silent['reason'];
+            if ($silent['due']) {
+                $escalate = true;
+                $reasons[] = sprintf('control channel silent %d evaluations over %d s with the plugin disabled: '
+                    . 'restart Unbound when the stop cannot restore', $silent['failures'], $silent['seconds']);
+                $st['control_failures'] = 0;
+                $st['control_silent_since'] = null;
+            }
+        } else {
+            $st['control_failures'] = 0;
+            $st['control_silent_since'] = null;
+        }
+        return uu_plan_result('stop', $candidates, false, false, $escalate, $st, $reasons);
     }
     if (!$s['unbound']['enabled'] || !$s['unbound']['pid_alive']) {
         /* the user stopped Unbound: a silent control channel is no fault and nothing escalates (Review Focus 3) */
@@ -275,20 +312,18 @@ function uu_plan(array $s, array $st): array
         return uu_plan_result('stop', $candidates, false, false, false, $st, $reasons);
     }
     if (!$s['unbound']['control_ok']) {
-        $st['control_failures']++;
-        $st['control_silent_since'] = $st['control_silent_since'] ?? $now;
-        $silentFor = max(0, $now - $st['control_silent_since']);
-        $reasons[] = sprintf('Unbound control channel silent (%d evaluations, %d s)', $st['control_failures'],
-            $silentFor);
+        $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
+        $st['control_failures'] = $silent['failures'];
+        $st['control_silent_since'] = $silent['since'];
+        $reasons[] = $silent['reason'];
         $escalate = false;
-        if ($mode === 'tunnel' && $st['control_failures'] >= UU_ESCALATE_EVALUATIONS
-            && $silentFor >= UU_ESCALATE_MIN_SECONDS) {
+        if ($mode === 'tunnel' && $silent['due']) {
             if ($s['contract_input']['cacheflush']) {
                 $reasons[] = 'restart escalation disabled: cacheflush on';
             } else {
                 $escalate = true;
                 $reasons[] = sprintf('control channel silent %d evaluations over %d s in tunnel mode: restart Unbound',
-                    $st['control_failures'], $silentFor);
+                    $silent['failures'], $silent['seconds']);
                 /* the restart starts the count again, so a channel still silent after it waits as long again */
                 $st['control_failures'] = 0;
                 $st['control_silent_since'] = null;

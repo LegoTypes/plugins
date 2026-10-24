@@ -288,6 +288,35 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'run dir: a regular file at the path throws',
         $refuses(fn (string $dir): bool => file_put_contents($dir . '/run', 'x') === 1));
 
+    // The footprint (spec -04 section 3.2): one definition, and what an evaluation that changed it runs (ruling R4,
+    // decision D4).
+    $recorded = uu_state_new();
+    $recorded['resolver'] = '192.0.2.1';
+    $named = uu_state_new();
+    $named['resolver'] = 'resolver.example';
+    uu_check($t, 'footprint: the recorded address when it is IPv4; none when nothing is recorded or it is not IPv4',
+        uu_try_case(fn (): bool => uu_state_footprint($recorded) === '192.0.2.1'
+            && uu_state_footprint(uu_state_new()) === null && uu_state_footprint($named) === null));
+    /* the minute job is there while the plugin is enabled or a footprint is recorded: disabled, it comes and goes
+     * with the footprint */
+    $cases = [
+        'null → A, enabled: reload only' => [null, '192.0.2.1', true, true, false],
+        'null → A, disabled: reload, and cron so the job stays for it' => [null, '192.0.2.1', false, true, true],
+        'A → null, enabled: reload only' => ['192.0.2.1', null, true, true, false],
+        'A → null, disabled: reload, and cron so the job goes' => ['192.0.2.1', null, false, true, true],
+        'A → A, enabled: nothing' => ['192.0.2.1', '192.0.2.1', true, false, false],
+        'A → A, disabled: nothing' => ['192.0.2.1', '192.0.2.1', false, false, false],
+        'A → B, enabled: reload only' => ['192.0.2.1', '192.0.2.9', true, true, false],
+        'A → B, disabled: reload only, the job stays' => ['192.0.2.1', '192.0.2.9', false, true, false],
+        'null → null, enabled: nothing' => [null, null, true, false, false],
+        'null → null, disabled: nothing' => [null, null, false, false, false],
+    ];
+    foreach ($cases as $what => [$before, $after, $enabled, $reload, $cron]) {
+        uu_check($t, "(e1) footprint $what",
+            uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled)
+                === ['reload' => $reload, 'cron' => $cron]));
+    }
+
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);
     return uu_tally_report('state', $t);

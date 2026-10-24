@@ -11,8 +11,8 @@ declare(strict_types=1);
  * The plugin's single entry point (spec 2026-10-17 sections 3.1, 3.4, 3.7, 3.8 and 3.10):
  *   evaluate.php [evaluate] [NAMES]   one evaluation (configd, cron, hooks); NAMES is ONE comma-separated list of
  *                                     the gateways the monitor hook passed (configd hands %s over as one parameter)
- *   evaluate.php start                regenerate cron (the minute job exists only while enabled), then one
- *                                     evaluation (Save with enabled on while the job is missing)
+ *   evaluate.php start                regenerate cron (the minute job exists while enabled, or while a footprint is
+ *                                     recorded), then one evaluation (Save with enabled on while the job is missing)
  *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
  *                                     whatever the settings say (Save with enabled off)
  *   evaluate.php remove               the package's deinstall: leave the removal marker, then stop; every
@@ -95,14 +95,16 @@ function uu_main(array $args): int
 
 /**
  * configd's cron restart, which reads unboundupstream_cron(): the minute job is installed while the plugin is enabled
- * and removed otherwise. A failure is logged; the evaluation still runs.
+ * or the state records a footprint (decision D4), and removed otherwise. A failure is logged; the evaluation still
+ * runs.
  */
 function uu_cron_regenerate(): void
 {
     uu_load_core();
     $out = trim((new \OPNsense\Core\Backend())->configdRun('cron restart'));
     if ($out !== 'OK') {
-        uu_log("cron restart answered '$out': the minute job may not match the enabled setting", LOG_WARNING);
+        uu_log("cron restart answered '$out': the minute job may not match the enabled setting and the footprint",
+            LOG_WARNING);
     }
 }
 
@@ -193,7 +195,8 @@ function uu_evaluate(?string $stop, array $named): int
 
 /**
  * Snapshot, the rules' verification saved when this run made one, plan, apply, the counting table's upkeep and
- * blocked-count line, save, then the switch notification when the run switched (section 3.11), for one set of
+ * blocked-count line, save, the filter reload (and cron restart) when the footprint changed, except in a removal
+ * (uu_footprint_follow()), then the switch notification when the run switched (section 3.11), for one set of
  * settings. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with
  * changes the checksum anyway; the stop for a replaced resolver address would also verify the rules against an
  * address they are no longer rendered for and save that verdict under the live checksum.
@@ -215,30 +218,71 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         }
     }
     $st = uu_state_load(UU_STATE_PATH);
-    $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
-        $st['resolver']);
+    $before = uu_state_footprint($st);
     $previousSwitch = $st['last_switch'];
-    $s = uu_route_adopt($s, $st['route_installed']);
-    $s = uu_wait_control($s, $st['mode']);
-    $p = uu_plan($s, $st);
-    $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
+    try {
+        $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
+            $settings['resolver'], $st['resolver']);
+        $s = uu_route_adopt($s, $st['route_installed']);
+        $s = uu_wait_control($s, $st['mode']);
+        $p = uu_plan($s, $st);
+        $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
 
-    $blocked = null;
-    if (uu_plan_stop_reason($s) === null) {
-        /* the removal marker can appear while this run holds the lock: a deinstall's remove waits for it */
-        if ($table['fill'] && !is_file(UU_REMOVING_PATH)) {
-            uu_block_table_fill($settings['resolver']);
+        $blocked = null;
+        if (uu_plan_stop_reason($s) === null) {
+            /* the removal marker can appear while this run holds the lock: a deinstall's remove waits for it */
+            if ($table['fill'] && !is_file(UU_REMOVING_PATH)) {
+                uu_block_table_fill($settings['resolver']);
+            }
+            $blocked = $table['blocked'];
+            $line = uu_blocked_line($st['blocked'], $blocked);
+            if ($line !== null) {
+                uu_log($line, LOG_NOTICE);
+            }
         }
-        $blocked = $table['blocked'];
-        $line = uu_blocked_line($st['blocked'], $blocked);
-        if ($line !== null) {
-            uu_log($line, LOG_NOTICE);
+        $st['blocked'] = $blocked;
+        uu_state_save(UU_STATE_PATH, $st);
+    } finally {
+        /* a removal's reload and cron restart wait until its stop is over (ruling R4) */
+        if ($stop !== UU_STOP_REMOVE) {
+            uu_footprint_follow($before, $settings['enabled']);
         }
     }
-    $st['blocked'] = $blocked;
-    uu_state_save(UU_STATE_PATH, $st);
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
+    }
+}
+
+/**
+ * The rules and the minute job follow the footprint the run saved (spec -04 section 3.2, ruling R4, decision D4): a
+ * footprint that changed reloads the filter, so its block and pass come or go at once, and one that came or went
+ * while the plugin is disabled restarts cron, so the minute job that retries the stop is installed exactly while one
+ * is recorded. The state is read back, so a run that failed after a checkpoint follows what it saved; nothing is
+ * thrown, so such a run still ends in its own error.
+ */
+function uu_footprint_follow(?string $before, bool $enabled): void
+{
+    try {
+        $after = uu_state_footprint(uu_state_load(UU_STATE_PATH));
+        $actions = uu_footprint_actions($before, $after, $enabled);
+        if ($actions['reload']) {
+            $out = [];
+            $rc = 0;
+            exec('/usr/local/sbin/configctl -d filter reload > /dev/null 2>&1', $out, $rc);
+            $change = 'the address the plugin last used changed from ' . ($before ?? 'none') . ' to '
+                . ($after ?? 'none');
+            if ($rc === 0) {
+                uu_log("rules: $change: filter reload queued", LOG_NOTICE);
+            } else {
+                uu_log("rules: $change, but the filter reload could not be queued (configctl exit $rc): the rules "
+                    . 'follow at the next filter reload', LOG_ERR);
+            }
+        }
+        if ($actions['cron']) {
+            uu_cron_regenerate();
+        }
+    } catch (\Throwable $e) {
+        uu_log('the rules or the minute job could not follow the footprint: ' . $e->getMessage(), LOG_ERR);
     }
 }
 
