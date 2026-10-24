@@ -29,9 +29,10 @@ declare(strict_types=1);
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing else
  *                                     but the run directory (uu_run_dir())
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
- * evaluate, start, stop and remove run under the evaluate lock, waiting up to UU_LOCK_WAIT_SECONDS (remove:
- * UU_REMOVE_LOCK_WAIT_SECONDS) for an evaluation in flight, so a trigger that arrives meanwhile runs after it instead
- * of being dropped. Every failure is logged and exits non-zero; nothing is thrown into configd.
+ * evaluate, start, stop and remove run under the evaluate lock, waiting as long as uu_lock_policy() says for the mode
+ * (UU_LOCK_WAIT_SECONDS; remove UU_REMOVE_LOCK_WAIT_SECONDS) for an evaluation in flight, so a trigger that arrives
+ * meanwhile runs after it instead of being dropped. Every failure is logged and exits non-zero; nothing is thrown into
+ * configd.
  */
 
 require_once __DIR__ . '/lib/constants.php';
@@ -42,6 +43,7 @@ require_once __DIR__ . '/lib/apply.php';
 require_once __DIR__ . '/lib/log.php';
 require_once __DIR__ . '/lib/notify.php';
 require_once __DIR__ . '/lib/corecmd.php';
+require_once __DIR__ . '/lib/lock.php';
 
 const UU_LOCK_PATH = UU_RUN_DIR . '/evaluate.lock';
 const UU_REMOVING_PATH = UU_RUN_DIR . '/removing';  /* +POST_INSTALL.post deletes it by this path */
@@ -82,19 +84,18 @@ function uu_main(array $args): int
             return uu_replay_main($args[1] ?? '');
         case 'start':
             uu_cron_regenerate();
-            return uu_with_lock(fn (): int => uu_evaluate(null, []));
+            return uu_with_lock($mode, fn (): int => uu_evaluate(null, []));
         case 'remove':
             $refused = uu_remove_prepare('uu_remove_marker', 'uu_core_shell', 'uu_log');
             if ($refused !== null) {
                 return $refused;
             }
-            return uu_with_lock('uu_remove', UU_REMOVE_LOCK_WAIT_SECONDS, LOG_ERR,
-                fn (): string => uu_remove_timeout_remedy(UU_STATE_PATH));
+            return uu_with_lock($mode, 'uu_remove', fn (): string => uu_remove_timeout_remedy(UU_STATE_PATH));
         case 'stop':
             uu_cron_regenerate();
-            return uu_with_lock(fn (): int => uu_evaluate(UU_STOP_REQUEST, []));
+            return uu_with_lock($mode, fn (): int => uu_evaluate(UU_STOP_REQUEST, []));
         default:
-            return uu_with_lock(fn (): int => uu_evaluate(null, uu_names($args[1] ?? '')));
+            return uu_with_lock($mode, fn (): int => uu_evaluate(null, uu_names($args[1] ?? '')));
     }
 }
 
@@ -131,38 +132,17 @@ function uu_names(string $arg): array
 }
 
 /**
- * Run fn under the evaluate lock: exclusive, blocking up to waitSeconds, never dropping a trigger at once; a wait
- * that runs out logs timeoutText at timeoutPrio and returns 1. A Closure is the text built when the wait runs out, so
- * it can name what holds then. The lock is close-on-exec, so a child (configctl unbound restart) never holds it.
+ * Run fn under the evaluate lock in the run directory, waiting as long as the mode's policy says (uu_lock_policy())
+ * for an evaluation in flight; a wait that runs out logs timeoutText and returns 1.
  *
  * @param callable(): int $fn
  * @param string|\Closure(): string $timeoutText
  */
-function uu_with_lock(
-    callable $fn,
-    int $waitSeconds = UU_LOCK_WAIT_SECONDS,
-    int $timeoutPrio = LOG_WARNING,
-    string|\Closure $timeoutText = 'this trigger did nothing'
-): int {
+function uu_with_lock(string $mode, callable $fn, string|\Closure $timeoutText = 'this trigger did nothing'): int
+{
     uu_run_dir();
-    $lock = fopen(UU_LOCK_PATH, 'ce');
-    if ($lock === false) {
-        throw new RuntimeException('cannot open ' . UU_LOCK_PATH);
-    }
-    try {
-        $deadline = hrtime(true) + $waitSeconds * 1000000000;
-        while (!flock($lock, LOCK_EX | LOCK_NB)) {
-            if (hrtime(true) >= $deadline) {
-                $text = $timeoutText instanceof \Closure ? $timeoutText() : $timeoutText;
-                uu_log("an evaluation held the lock for $waitSeconds s: $text", $timeoutPrio);
-                return 1;
-            }
-            usleep(200000);
-        }
-        return $fn();
-    } finally {
-        fclose($lock);
-    }
+    $policy = uu_lock_policy($mode);
+    return uu_lock_run(UU_LOCK_PATH, $fn, $policy['seconds'], $policy['prio'], $timeoutText, 'uu_log');
 }
 
 /** remove's preparation (rulings R54, R56): a run directory it can trust, then the removal marker in it. */
