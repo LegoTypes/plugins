@@ -10,7 +10,8 @@ declare(strict_types=1);
  * Runtime state (spec 2026-10-05 section 3.8): what does not belong in config. Ownership itself -- the
  * hold records -- is in the plugin's Holds model, saved with force_down, and a record proves a hold by the boot id it
  * carries (wf_reconcile()); this file only resumes an apply a crash interrupted, notices held changes the engine did
- * not make and knows the boot before, which the early hook releases. The file is root's alone and read as a regular file
+ * not make, knows the boot before, which the early hook releases, and proves which entries of 1.3_1's held list were
+ * the plugin's own (wf_legacy_import_plan()). The file is root's alone and read as a regular file
  * only, and a field of the wrong type discards it: wrong-typed state would throw a TypeError every minute, which
  * stops failover. The file helpers below touch the paths they are given; the rest is pure.
  */
@@ -326,12 +327,14 @@ function wf_state_save(string $path, array $state): void
  * @param array<string, bool> $forceDown every configured gateway name => force_down
  * @param array<string, string> $applyPending name => hold|release, written before an engine save
  * @param list<string> $lastHeld the record names the engine last wrote (or last saw after a foreign change)
+ * @param list<string> $legacy the gateways 1.3_1's held list, still in the config, names: their records may yet be
+ *     imported, so a difference from lastHeld there is no change outside the engine
  * @return array{owned: list<string>, manual_released: list<string>, redo_apply: list<string>, redo_replay: list<string>,
  *               foreign: list<string>, apply_pending: array<string, string>, log: list<string>,
  *               foreign_records: list<string>, unproven: list<string>}
  */
 function wf_reconcile(array $records, array $forceDown, array $applyPending, array $lastHeld, string $liveBoot,
-                      string $prevBoot = ''): array
+                      string $prevBoot = '', array $legacy = []): array
 {
     $out = ['owned' => [], 'manual_released' => [], 'redo_apply' => [], 'redo_replay' => [], 'foreign' => [],
             'apply_pending' => [], 'log' => [], 'foreign_records' => [], 'unproven' => []];
@@ -372,11 +375,37 @@ function wf_reconcile(array $records, array $forceDown, array $applyPending, arr
     }
     $names = array_keys($records);
     $changed = array_merge(array_diff($names, $lastHeld), array_diff($lastHeld, $names));
-    $out['foreign'] = array_values(array_diff(array_unique($changed), array_keys($applyPending)));
+    $out['foreign'] = array_values(array_diff(array_unique($changed), array_keys($applyPending), $legacy));
     foreach ($out['foreign'] as $name) {
         $out['log'][] = "held changed outside the engine for {$name} (a config revert or restore); re-syncing routing";
     }
     return $out;
+}
+
+/**
+ * Whether a state's boot id names no boot: the state file was missing (''), or could not be read ('corrupt', as the
+ * callers mark it). Such a state proves no hold.
+ */
+function wf_boot_unread(string $stateBootId): bool
+{
+    return $stateBootId === '' || $stateBootId === 'corrupt';
+}
+
+/**
+ * What the plugin's own state file proves of the holds it took: the boot it names and the gateways the engine last
+ * wrote as held in it (last_held), or no boot and nothing when the file could not be read. 1.3_1 writes last_held after
+ * every engine write too, so this proves 1.3_1's holds as well as 1.4's. Load the state without the live boot id
+ * (wf_state_load($path, '')), so that a missing file names no boot.
+ *
+ * @param array{state: array, corrupt: bool} $loaded wf_state_load()
+ * @return array{boot: string, held: list<string>}
+ */
+function wf_state_proof(array $loaded): array
+{
+    if ($loaded['corrupt']) {
+        return ['boot' => '', 'held' => []];
+    }
+    return ['boot' => $loaded['state']['boot_id'], 'held' => $loaded['state']['last_held']];
 }
 
 /**
@@ -388,28 +417,59 @@ function wf_reconcile(array $records, array $forceDown, array $applyPending, arr
  */
 function wf_boot_release_set(array $records, string $stateBootId): array
 {
-    if ($stateBootId === '' || $stateBootId === 'corrupt') {
+    if (wf_boot_unread($stateBootId)) {
         return [];
     }
     return array_keys(array_filter($records, fn (array $r): bool => $r['boot'] === $stateBootId));
 }
 
 /**
- * What the early hook does with the hold records, and the note the first evaluation logs for it: the boot before's
- * records released, every other one pruned with its gateway left as it is, all in one write. With the state unreadable
- * nothing is proven and nothing is written; the first evaluation then prunes the records as foreign.
+ * What the early hook does with 1.3_1's held list when it is still in the config (an upgrade whose migration did not
+ * run, then a reboot before any evaluation): the entries the state proves the boot before took (wf_legacy_proven())
+ * are released, every other one is left as it is, and the list goes in the same write.
+ *
+ * @param ?string $csv the raw held list, null when the config has none
+ * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
+ * @return array{present: bool, release: list<string>, left: list<string>, unknown: int}
+ */
+function wf_boot_legacy(?string $csv, array $nameByUuid, array $proof): array
+{
+    if ($csv === null) {
+        return ['present' => false, 'release' => [], 'left' => [], 'unknown' => 0];
+    }
+    $entries = wf_legacy_entries($csv, $nameByUuid);
+    $release = [];
+    $left = [];
+    foreach ($entries['named'] as $name) {
+        if (wf_legacy_proven($name, $proof['boot'], $proof)) {
+            $release[] = $name;
+        } else {
+            $left[] = $name;
+        }
+    }
+    return ['present' => true, 'release' => $release, 'left' => $left, 'unknown' => count($entries['unknown'])];
+}
+
+/**
+ * What the early hook does with the hold records and 1.3_1's held list, and the note the first evaluation logs for
+ * it: the boot before's records and proven entries released, every other record pruned and every other entry dropped,
+ * their gateways left as they are, all in one write. With the state unreadable nothing is proven and nothing is
+ * written; the first evaluation then prunes the records as foreign and finds the list's entries not proven.
  *
  * @param array<string, array{boot: string, since: int}> $records by gateway name
  * @param int $dropped rows that name no gateway or repeat one (wf_resolve_records()'s stale and dupes)
- * @return array{release: list<string>, pruned: list<string>, note: string}
+ * @param array{present: bool, release: list<string>, left: list<string>, unknown: int} $legacy wf_boot_legacy()
+ * @return array{release: list<string>, pruned: list<string>, drop_legacy: bool, note: string}
  */
-function wf_boot_outcome(array $records, int $dropped, string $stateBootId): array
+function wf_boot_outcome(array $records, int $dropped, string $stateBootId, array $legacy): array
 {
-    if ($stateBootId === '' || $stateBootId === 'corrupt') {
-        return ['release' => [], 'pruned' => [], 'note' => 'boot: state unreadable; no hold released'];
+    if (wf_boot_unread($stateBootId)) {
+        return ['release' => [], 'pruned' => [], 'drop_legacy' => false, 'note' => 'boot: state unreadable; no hold released'];
     }
-    $release = wf_boot_release_set($records, $stateBootId);
-    $pruned = array_values(array_diff(array_keys($records), $release));
+    $fromRecords = wf_boot_release_set($records, $stateBootId);
+    $release = array_values(array_unique(array_merge($fromRecords, $legacy['release'])));
+    $pruned = array_values(array_diff(array_keys($records), $fromRecords));
     $parts = [];
     if ($release !== []) {
         $parts[] = 'released ' . implode(',', $release);
@@ -421,7 +481,17 @@ function wf_boot_outcome(array $records, int $dropped, string $stateBootId): arr
         $parts[] = "dropped {$dropped} " . ($dropped === 1 ? 'record that names no gateway or repeats one'
             : 'records that name no gateway or repeat one');
     }
-    return ['release' => $release, 'pruned' => $pruned, 'note' => 'boot: ' . implode('; ', $parts)];
+    foreach ($legacy['left'] as $n) {
+        $parts[] = "1.3_1's held entry for {$n} not proven by this plugin's state, left as it is";
+    }
+    if ($legacy['unknown'] > 0) {
+        $parts[] = "dropped {$legacy['unknown']} " . ($legacy['unknown'] === 1 ? "entry of 1.3_1's held list that names no gateway"
+            : "entries of 1.3_1's held list that name no gateway");
+    }
+    if ($parts === []) {
+        $parts[] = "1.3_1's empty held list removed";
+    }
+    return ['release' => $release, 'pruned' => $pruned, 'drop_legacy' => $legacy['present'], 'note' => 'boot: ' . implode('; ', $parts)];
 }
 
 /**
@@ -470,59 +540,93 @@ function wf_holds_rows(array $recordsAfter, array $uuidByName): array
 }
 
 /**
- * The hold records an upgrade makes of 1.3_1's held list, a comma list of gateway UUIDs in the settings model: one
- * per UUID that names a gateway, each UUID once, stamped with this boot and the upgrade's time. A hold in place at
- * the upgrade was taken in this boot (the early hook releases every hold at boot), so the plugin goes on owning it.
- * With the boot id unreadable none is made: a record has to say which boot took it.
+ * 1.3_1's held list, a comma list of gateway UUIDs in the settings model, read against the gateways configured now:
+ * each UUID once, by the gateway it names, and those that name none.
  *
  * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
- * @return list<array{gateway: string, boot: string, since: int}>
+ * @return array{named: array<string, string>, unknown: list<string>} named: UUID => gateway name, in the list's order
  */
-function wf_import_legacy_held(string $csv, array $nameByUuid, string $bootId, int $now): array
+function wf_legacy_entries(string $csv, array $nameByUuid): array
 {
-    if ($bootId === '') {
-        return [];
-    }
-    $records = [];
+    $named = [];
+    $unknown = [];
     foreach (array_unique(explode(',', $csv)) as $uuid) {
         if (isset($nameByUuid[$uuid])) {
-            $records[] = ['gateway' => $uuid, 'boot' => $bootId, 'since' => $now];
+            $named[$uuid] = $nameByUuid[$uuid];
+        } elseif ($uuid !== '') {
+            $unknown[] = $uuid;
+        }
+    }
+    return ['named' => $named, 'unknown' => $unknown];
+}
+
+/**
+ * Whether the plugin's own state proves that it held $name in the boot $boot: the state names that boot and the
+ * gateway is in its last_held. A list in the config alone proves nothing, as a restored backup carries one too; the
+ * state file is root's alone and survives an upgrade, and 1.3_1 kept last_held as the holds it wrote.
+ *
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
+ */
+function wf_legacy_proven(string $name, string $boot, array $proof): bool
+{
+    return $boot !== '' && !wf_boot_unread($proof['boot']) && $proof['boot'] === $boot && in_array($name, $proof['held'], true);
+}
+
+/**
+ * The hold records an upgrade makes of 1.3_1's held list: one per entry whose gateway the plugin's state proves it
+ * held in this boot (wf_legacy_proven()), stamped with this boot and the upgrade's time, so the plugin goes on owning
+ * the holds it took before the upgrade. No other entry makes a record. With the boot id unreadable none is made: a
+ * record has to say which boot took it.
+ *
+ * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
+ * @return list<array{gateway: string, boot: string, since: int}>
+ */
+function wf_import_legacy_held(string $csv, array $nameByUuid, string $bootId, int $now, array $proof): array
+{
+    $records = [];
+    foreach (wf_legacy_entries($csv, $nameByUuid)['named'] as $uuid => $name) {
+        if (wf_legacy_proven($name, $bootId, $proof)) {
+            $records[] = ['gateway' => (string)$uuid, 'boot' => $bootId, 'since' => $now];
         }
     }
     return $records;
 }
 
 /**
- * The import of 1.3_1's held list, decided: whether there is one (its raw config node; null when absent), the records
- * it makes (wf_import_legacy_held()) and the lines to log. A node that is there is imported even when empty, as
- * 1.3_1 left it with nothing held, so that the node is removed. Both the migration and an evaluation that finds the
- * node still there apply this one decision.
+ * The import of 1.3_1's held list, decided: whether to import (the raw config node is there; null when absent), the
+ * records it makes (wf_import_legacy_held()) and the lines to log. An entry the plugin's state does not prove (a
+ * restored backup's, or one met with the state file missing or damaged) makes no record and leaves its gateway's
+ * force_down as it is, which the unowned alert then covers: it is never released on a guess. A node that is there is
+ * imported even when empty, as 1.3_1 left it with nothing held, so that the node is removed. With the boot id
+ * unreadable nothing is imported and the node stays, for an evaluation that can read it. Both the migration and an
+ * evaluation that finds the node still there apply this one decision.
  *
  * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  * @return array{import: bool, records: list<array{gateway: string, boot: string, since: int}>,
  *               lines: list<array{0: int, 1: string}>} lines: priority and text
  */
-function wf_legacy_import_plan(?string $csv, array $nameByUuid, string $bootId, int $now): array
+function wf_legacy_import_plan(?string $csv, array $nameByUuid, string $bootId, int $now, array $proof): array
 {
     if ($csv === null) {
         return ['import' => false, 'records' => [], 'lines' => []];
     }
-    $records = wf_import_legacy_held($csv, $nameByUuid, $bootId, $now);
+    if ($bootId === '') {
+        return ['import' => false, 'records' => [], 'lines' => [[LOG_WARNING,
+            "kern.boot_id cannot be read, so 1.3_1's held list stays in the config until it can"]]];
+    }
+    $records = wf_import_legacy_held($csv, $nameByUuid, $bootId, $now, $proof);
+    $carried = array_column($records, 'gateway');
+    $entries = wf_legacy_entries($csv, $nameByUuid);
     $lines = [];
-    foreach ($records as $r) {
-        $lines[] = [LOG_NOTICE, 'hold of ' . $nameByUuid[$r['gateway']] . " carried over, taken in boot {$bootId}"];
+    foreach ($entries['named'] as $uuid => $name) {
+        $lines[] = in_array((string)$uuid, $carried, true)
+            ? [LOG_NOTICE, "hold of {$name} carried over, taken in boot {$bootId}"]
+            : [LOG_WARNING, "held entry for {$name} not proven by this plugin's state; left as it is"];
     }
-    $named = [];
-    foreach (array_unique(explode(',', $csv)) as $uuid) {
-        if (isset($nameByUuid[$uuid])) {
-            $named[] = $nameByUuid[$uuid];
-        } elseif ($uuid !== '') {
-            $lines[] = [LOG_NOTICE, "held entry {$uuid} names no gateway; dropped"];
-        }
-    }
-    if ($bootId === '' && $named !== []) {
-        $lines[] = [LOG_WARNING, 'kern.boot_id cannot be read, so no hold is carried over; each of ' . implode(', ', $named)
-            . ' keeps its force_down until it is cleared by hand'];
+    foreach ($entries['unknown'] as $uuid) {
+        $lines[] = [LOG_NOTICE, "held entry {$uuid} names no gateway; dropped"];
     }
     return ['import' => true, 'records' => $records, 'lines' => $lines];
 }

@@ -113,16 +113,17 @@ wf_register_suite('state', function (): int {
         $r['unproven'] === ['WAN_A', 'WAN_B', 'WAN_C'] && $r['owned'] === [] && $r['manual_released'] === []
         && $r['foreign_records'] === [] && $r['log'] === []);
 
-    $b = wf_boot_outcome($three, 0, 'b400');
+    $noList = ['present' => false, 'release' => [], 'left' => [], 'unknown' => 0];
+    $b = wf_boot_outcome($three, 0, 'b400', $noList);
     wf_check($t, '(b1) at boot the previous boot\'s records are released and the others pruned, in one note',
         $b['release'] === ['WAN_A'] && $b['pruned'] === ['WAN_B', 'WAN_C']
         && $b['note'] === "boot: released WAN_A; pruned WAN_B,WAN_C (not this plugin's)");
-    $b = wf_boot_outcome($rec('b400', 'WAN_A'), 2, 'b400');
+    $b = wf_boot_outcome($rec('b400', 'WAN_A'), 2, 'b400', $noList);
     wf_check($t, '(b1) stale or duplicate rows are dropped and counted in the note',
         $b['release'] === ['WAN_A'] && $b['pruned'] === []
         && $b['note'] === 'boot: released WAN_A; dropped 2 records that name no gateway or repeat one');
-    $b = wf_boot_outcome($three, 0, 'corrupt');
-    $b2 = wf_boot_outcome($three, 0, '');
+    $b = wf_boot_outcome($three, 0, 'corrupt', $noList);
+    $b2 = wf_boot_outcome($three, 0, '', $noList);
     wf_check($t, '(b2) at boot with the state unreadable nothing is released or pruned, and the note says so',
         $b['release'] === [] && $b['pruned'] === [] && $b['note'] === 'boot: state unreadable; no hold released' && $b2 === $b);
 
@@ -364,27 +365,49 @@ wf_register_suite('state', function (): int {
     wf_check($t, "(s12) every default of wf_state_new() fits the shape check" . ($bad === [] ? '' : ': not ' . implode(', ', $bad)),
         $bad === [] && wf_shape_ok(wf_judgement_new(0), $spec['judgements']['*']));
 
-    $r = wf_import_legacy_held('u1,u2,u1', ['u1' => 'WAN_A'], 'b500', 1000);
-    wf_check($t, '(m1) the legacy held list gives one record per UUID that names a gateway, each once, stamped with this boot and now',
-        $r === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]);
+    /* 1.3_1's held list: the state 1.3_1 wrote names this boot (b500) and the gateways it held in last_held */
+    $proves = ['boot' => 'b500', 'held' => ['WAN_A']];
+    $r = wf_import_legacy_held('u1,u2,u1', ['u1' => 'WAN_A'], 'b500', 1000, $proves);
+    wf_check($t, '(m1) the legacy held list gives one record per UUID that names a gateway the state proves, each once, '
+        . 'stamped with this boot and now', $r === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]);
     wf_check($t, '(m2) with the boot id unreadable no hold record is made',
-        wf_import_legacy_held('u1', ['u1' => 'WAN_A'], '', 1000) === []);
+        wf_import_legacy_held('u1', ['u1' => 'WAN_A'], '', 1000, $proves) === []);
     wf_check($t, '(m3) an empty legacy held list gives no hold record',
-        wf_import_legacy_held('', ['u1' => 'WAN_A'], 'b500', 1000) === []);
-    $p = wf_legacy_import_plan(null, ['u1' => 'WAN_A'], 'b500', 1000);
+        wf_import_legacy_held('', ['u1' => 'WAN_A'], 'b500', 1000, $proves) === []);
+    $p = wf_legacy_import_plan(null, ['u1' => 'WAN_A'], 'b500', 1000, $proves);
     wf_check($t, '(m4) with no legacy held node there is nothing to import', !$p['import'] && $p['records'] === [] && $p['lines'] === []);
-    $p = wf_legacy_import_plan('', ['u1' => 'WAN_A'], 'b500', 1000);
+    $p = wf_legacy_import_plan('', ['u1' => 'WAN_A'], 'b500', 1000, $proves);
     wf_check($t, '(m4) an empty legacy held node (1.3_1 holding nothing) is imported: no record, the node removed',
         $p['import'] && $p['records'] === [] && $p['lines'] === []);
-    $p = wf_legacy_import_plan('u1,u9', ['u1' => 'WAN_A'], 'b500', 1000);
+    $p = wf_legacy_import_plan('u1,u9', ['u1' => 'WAN_A'], 'b500', 1000, $proves);
     wf_check($t, '(m5) a legacy list is imported with one line per carried hold and per dropped entry',
         $p['import'] && $p['records'] === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]
         && $p['lines'] === [[LOG_NOTICE, 'hold of WAN_A carried over, taken in boot b500'],
                             [LOG_NOTICE, 'held entry u9 names no gateway; dropped']]);
-    $p = wf_legacy_import_plan('u1', ['u1' => 'WAN_A'], '', 1000);
-    wf_check($t, '(m5) with the boot id unreadable nothing is carried over, and one warning names what keeps its force_down',
-        $p['import'] && $p['records'] === [] && $p['lines'] === [[LOG_WARNING,
-            'kern.boot_id cannot be read, so no hold is carried over; each of WAN_A keeps its force_down until it is cleared by hand']]);
+    $p = wf_legacy_import_plan('u1', ['u1' => 'WAN_A'], '', 1000, $proves);
+    wf_check($t, '(m5) with the boot id unreadable nothing is imported and the node stays, for an evaluation that can read it; '
+        . 'one warning says so',
+        !$p['import'] && $p['records'] === [] && $p['lines'] === [[LOG_WARNING,
+            "kern.boot_id cannot be read, so 1.3_1's held list stays in the config until it can"]]);
+
+    /* a restored backup carries a held list the plugin's state does not prove: never carried over as the plugin's */
+    $map = ['u1' => 'WAN_A', 'u2' => 'WAN_B'];
+    $notProven = [LOG_WARNING, "held entry for WAN_B not proven by this plugin's state; left as it is"];
+    $p = wf_legacy_import_plan('u2', $map, 'b500', 1000, $proves);
+    wf_check($t, '(l1) a restored list naming a gateway the state of this boot did not hold (not in last_held) makes no record: '
+        . 'the node goes, one line says the entry is left as it is',
+        $p['import'] && $p['records'] === [] && $p['lines'] === [$notProven]);
+    $p = wf_legacy_import_plan('u1,u2', $map, 'b500', 1000, $proves);
+    wf_check($t, '(l1) a list with a proven and an unproven entry carries over the proven one only',
+        $p['import'] && $p['records'] === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]
+        && $p['lines'] === [[LOG_NOTICE, 'hold of WAN_A carried over, taken in boot b500'], $notProven]);
+    $p = wf_legacy_import_plan('u2', $map, 'b500', 1000, ['boot' => 'b499', 'held' => ['WAN_B']]);
+    wf_check($t, '(l2) a state of another boot proves nothing, even naming the gateway in last_held',
+        $p['import'] && $p['records'] === [] && $p['lines'] === [$notProven]);
+    $p = wf_legacy_import_plan('u2', $map, 'b500', 1000, ['boot' => '', 'held' => []]);
+    $p2 = wf_legacy_import_plan('u2', $map, 'b500', 1000, ['boot' => 'corrupt', 'held' => ['WAN_B']]);
+    wf_check($t, '(l3) with the state file missing or damaged nothing is proven: no record, the gateway left as it is',
+        $p['import'] && $p['records'] === [] && $p['lines'] === [$notProven] && $p2 === $p);
 
     wf_check($t, '(g1) a changed gateway whose force_down moved since the snapshot is named',
         wf_write_guard(['WAN_A' => true], ['WAN_A' => false], ['WAN_A' => true]) === ['WAN_A']);
@@ -406,5 +429,38 @@ wf_register_suite('state', function (): int {
         wf_holds_rows(['WAN_A' => ['boot' => 'b500', 'since' => 100], 'WAN_C' => ['boot' => 'b500', 'since' => 100]], ['WAN_A' => $uuidA])
             === ['rows' => [['gateway' => $uuidA, 'boot' => 'b500', 'since' => 100]], 'missing' => ['WAN_C']]);
     wf_check($t, '(k3) no record after the write leaves no row', wf_holds_rows([], ['WAN_A' => $uuidA]) === ['rows' => [], 'missing' => []]);
+
+    $good = wf_state_new('b500');
+    $good['last_held'] = ['WAN_A'];
+    wf_check($t, '(l4) the state proves the boot it names and its last_held; a damaged one proves nothing',
+        wf_state_proof(['state' => $good, 'corrupt' => false]) === ['boot' => 'b500', 'held' => ['WAN_A']]
+        && wf_state_proof(['state' => wf_state_new(''), 'corrupt' => true]) === ['boot' => '', 'held' => []]
+        && wf_boot_unread('') && wf_boot_unread('corrupt') && !wf_boot_unread('b500'));
+    $d = wf_t_scratch('l4');
+    $l = wf_state_load("{$d}/state.json", '');
+    wf_check($t, '(l4) a missing state file, loaded without the live boot id, names no boot and proves nothing',
+        wf_state_proof($l) === ['boot' => '', 'held' => []]);
+    wf_t_rmtree($d);
+
+    /* at boot: b400 is the boot before, the one the state names; WAN_A was held in it, WAN_B was not */
+    $before = ['boot' => 'b400', 'held' => ['WAN_A']];
+    $legacy = wf_boot_legacy('u1,u2,u9', $map, $before);
+    $b = wf_boot_outcome([], 0, 'b400', $legacy);
+    wf_check($t, '(l5) at boot 1.3_1\'s held list still in the config: the entry the state proves for the boot before is '
+        . 'released, the other left as it is, the one naming no gateway dropped, and the list goes in the same write',
+        $legacy === ['present' => true, 'release' => ['WAN_A'], 'left' => ['WAN_B'], 'unknown' => 1]
+        && $b['release'] === ['WAN_A'] && $b['pruned'] === [] && $b['drop_legacy']
+        && $b['note'] === "boot: released WAN_A; 1.3_1's held entry for WAN_B not proven by this plugin's state, left as it is; "
+            . "dropped 1 entry of 1.3_1's held list that names no gateway");
+    $b = wf_boot_outcome($rec('b400', 'WAN_B'), 0, 'b400', wf_boot_legacy('u1', $map, $before));
+    wf_check($t, '(l5) a record and a list entry of the boot before are released together',
+        $b['release'] === ['WAN_B', 'WAN_A'] && $b['drop_legacy'] && $b['note'] === 'boot: released WAN_B,WAN_A');
+    $b = wf_boot_outcome([], 0, '', wf_boot_legacy('u1', $map, ['boot' => '', 'held' => []]));
+    wf_check($t, '(l5) at boot with the state unreadable the list\'s entries are not released, and nothing is written',
+        $b['release'] === [] && !$b['drop_legacy'] && $b['note'] === 'boot: state unreadable; no hold released');
+    $b = wf_boot_outcome([], 0, 'b400', wf_boot_legacy('', $map, $before));
+    wf_check($t, '(l5) an empty list at boot is removed with a note, and nothing is released',
+        $b['release'] === [] && $b['drop_legacy'] && $b['note'] === "boot: 1.3_1's empty held list removed"
+        && wf_boot_legacy(null, $map, $before) === ['present' => false, 'release' => [], 'left' => [], 'unknown' => 0]);
     return wf_tally_report('state', $t);
 });

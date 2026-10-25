@@ -56,7 +56,7 @@ function wf_main(string $mode, array $args): int
     if ($mode === '--plan-from') {
         $snap = json_decode((string)file_get_contents($args[1] ?? ''), true, 64, JSON_THROW_ON_ERROR);
         $snap += ['release' => null, 'failback_now' => false, 'failback_delay' => 0, 'holds' => [], 'holds_stale' => [],
-                  'holds_dupes' => []];
+                  'holds_dupes' => [], 'legacy_held' => []];
         $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
         echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
         return 0;
@@ -160,9 +160,12 @@ function wf_main(string $mode, array $args): int
     wf_trace_prune(WF_TRACE, time(), WF_TRACE_KEEP_DAYS);
 
     /* 1.3_1's held list still in the config: an upgrade whose migration has not run yet (or failed) is imported here,
-     * before the snapshot, so a hold taken before the upgrade reads as this plugin's and not as a foreign force_down */
-    if (wf_holds_legacy_present()) {
-        wf_holds_import_legacy(wf_boot_id());
+     * before the snapshot, so a hold the plugin's state proves it took before the upgrade reads as this plugin's and
+     * not as a foreign force_down; an entry it does not prove (a restored backup's) is dropped, its gateway left as it
+     * is. With kern.boot_id unreadable the list waits, and the snapshot names its gateways (legacy_held) */
+    $bootId = wf_boot_id();
+    if ($bootId !== '' && wf_holds_legacy_csv() !== null) {
+        wf_holds_import_legacy($bootId, wf_state_proof(wf_state_load(WF_STATE, '')));
     }
     $snap = wf_snapshot();
     $loaded = wf_state_load(WF_STATE, $snap['boot_id']);

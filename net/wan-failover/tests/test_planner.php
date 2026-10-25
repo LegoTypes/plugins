@@ -31,7 +31,7 @@ function wf_t_snap(int $now, array $primary, array $wan2, array $extra = []): ar
              'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '172.16.12.1', 2, $wan2 + ['if' => 'igc2', 'route_target' => '172.16.12.1@igc2'])];
     return array_merge(['now' => $now, 'boot_id' => 'b1', 'enabled' => true, 'failback' => true,
         'default_gw' => '203.0.113.1@igc1', 'wans' => $wans, 'unresolved' => [], 'holds' => [], 'holds_stale' => [], 'holds_dupes' => [],
-        'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
+        'legacy_held' => [], 'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
         'contract' => ['judging' => [], 'command' => []], 'dry' => false, 'release' => null,
         'failback_delay' => 0, 'failback_now' => false], $extra);
 }
@@ -456,6 +456,29 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '(d1) a dry run simulates its holds as records of the live boot; leaving it takes the real records\' names',
         $view['holds'] === wf_t_rec('WAN_B', 'b500', 31100) && $view['force_down']['WAN_B'] && $exit['last_held'] === ['WAN_A']
         && $exit['dry_held'] === []);
+
+    /* 1.3_1's held list still in the config after the evaluation's import (it failed, or waits for kern.boot_id): WAN_B
+     * forced down with no record, as the upgrade window leaves it, and last_held from 1.3_1 naming it */
+    $s = wf_state_new('b500');
+    $s['last_held'] = ['WAN_B'];
+    $pending = ['legacy_held' => ['WAN_B']];
+    $r = wf_plan(wf_t_ab(31200, [], ['loss' => 30.0] + $fdB, $pending), $s);
+    $r2 = wf_plan(wf_t_ab(31260, [], ['loss' => 30.0] + $fdB, $pending), $r['state']);
+    wf_check($t, '(u1) a forced-down gateway 1.3_1\'s held list still names raises no unowned alert and no re-sync, though '
+        . 'last_held names it; nothing is released, held or written; one line, not repeated next tick',
+        $r['plan']['alerts'] === [] && $r['plan']['foreign'] === [] && $r['plan']['release'] === [] && $r['plan']['hold'] === []
+        && !$r['plan']['write'] && $lines($r['plan'], "1.3_1's held list is still in the config for WAN_B") === 1
+        && $lines($r['plan'], 'outside the engine') === 0
+        && $r2['plan']['alerts'] === [] && $lines($r2['plan'], "1.3_1's held list") === 0);
+    $r3 = wf_plan(wf_t_ab(31320, [], ['loss' => 30.0] + $fdB), $r2['state']);
+    wf_check($t, '(u1) once the list is gone with no record made, the gateway forced down is alerted on',
+        count($r3['plan']['alerts']) === 1 && str_starts_with($r3['plan']['alerts'][0], 'unowned-force-down WAN_B'));
+    $r = wf_plan(wf_t_ab(31400, [], ['loss' => 30.0], ['legacy_held' => ['WAN_B']]), wf_state_new('b500'));
+    wf_check($t, '(u2) a gateway the list names but that is not forced down is planned as any other: a lossy one is held',
+        $r['plan']['hold'] === ['WAN_B'] && $r['plan']['legacy_held'] === ['WAN_B']);
+    wf_check($t, '(u3) a write while the list waits keeps the proof of its entries in last_held, and never adds one',
+        wf_last_held(['WAN_A'], ['WAN_B', 'WAN_C'], ['WAN_B', 'WAN_D']) === ['WAN_A', 'WAN_B']
+        && wf_last_held([], [], ['WAN_B']) === [] && wf_last_held(['WAN_A'], ['WAN_B'], []) === ['WAN_A']);
 
     /* every state the planner and apply write loads back as saved: a state wrongly found corrupt releases every hold */
     $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@igc2'];

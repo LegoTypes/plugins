@@ -77,7 +77,11 @@ function wf_plan(array $snap, array $state): array
     }
 
     $records = $snap['holds'];
-    $rec = wf_reconcile($records, $snap['force_down'], $state['apply_pending'], $state['last_held'], $snap['boot_id'], $prevBoot);
+    /* 1.3_1's held list still in the config after the evaluation's import (it failed, or kern.boot_id cannot be read)
+     * may name the plugin's own holds: no unowned alert and no re-sync for those gateways until it is carried over */
+    $legacy = $snap['legacy_held'];
+    $rec = wf_reconcile($records, $snap['force_down'], $state['apply_pending'], $state['last_held'], $snap['boot_id'], $prevBoot,
+        $legacy);
     $state['apply_pending'] = $rec['apply_pending'];
     $log = array_merge($log, $rec['log']);
     foreach ($rec['manual_released'] as $n) {
@@ -85,6 +89,11 @@ function wf_plan(array $snap, array $state): array
     }
     $line = wf_once($state['said'], 'unproven', $rec['unproven'] === [] ? null : 'kern.boot_id unreadable: the hold records for '
         . implode(', ', $rec['unproven']) . ' are neither released nor pruned until it reads again');
+    if ($line !== null) {
+        $log[] = $line;
+    }
+    $line = wf_once($state['said'], 'legacy', $legacy === [] ? null : "1.3_1's held list is still in the config for "
+        . implode(', ', $legacy) . ': no alert and no re-sync for them until it is carried over');
     if ($line !== null) {
         $log[] = $line;
     }
@@ -172,8 +181,9 @@ function wf_plan(array $snap, array $state): array
             $j['recovering'] = true;
         }
         $state['judgements'][$name] = $j;
-        /* an unproven record may well be ours: no alert until the boot id reads again */
-        if ($manual && !$unproven) {
+        /* an unproven record may well be ours, and so may a gateway 1.3_1's held list still names: no alert until the
+         * boot id reads again, or the list is carried over */
+        if ($manual && !$unproven && !in_array($name, $legacy, true)) {
             $last = $state['unowned_alerted_at'][$name] ?? null;
             if ($last === null || $now - $last >= 3600) {
                 $alerts[] = "unowned-force-down {$name}: force_down is set but not by wan-failover; left alone";
@@ -354,14 +364,29 @@ function wf_dry_view(array $snap, array $dryHeld): array
 }
 
 /**
+ * The state's last_held after a write: the names written, and every gateway already there that 1.3_1's held list,
+ * still in the config, names. last_held is what proves an entry of that list to be the plugin's own
+ * (wf_legacy_proven()), so a write while the list waits to be carried over keeps that proof; it never adds one.
+ *
+ * @param list<string> $names the record names the write leaves
+ * @param list<string> $lastHeld the state's last_held before the write
+ * @param list<string> $legacy the gateways 1.3_1's held list names (the snapshot's legacy_held)
+ * @return list<string>
+ */
+function wf_last_held(array $names, array $lastHeld, array $legacy): array
+{
+    return array_values(array_unique(array_merge($names, array_intersect($lastHeld, $legacy))));
+}
+
+/**
  * Record a dry plan as if it had been applied.
  *
- * @param array{held_after: list<string>} $plan
+ * @param array{held_after: list<string>, legacy_held: list<string>} $plan
  */
 function wf_dry_after(array $state, array $plan): array
 {
     $state['dry_held'] = $plan['held_after'];
-    $state['last_held'] = $plan['held_after'];
+    $state['last_held'] = wf_last_held($plan['held_after'], $state['last_held'], $plan['legacy_held']);
     $state['apply_pending'] = [];
     return $state;
 }
@@ -370,12 +395,12 @@ function wf_dry_after(array $state, array $plan): array
  * Leave dry run: drop the simulated holds and take the real records' names as the last ones written, so the
  * first live plan does not read the difference as a foreign config change.
  *
- * @param array{holds: array<string, array{boot: string, since: int}>} $snap the live snapshot
+ * @param array{holds: array<string, array{boot: string, since: int}>, legacy_held: list<string>} $snap the live snapshot
  */
 function wf_dry_exit(array $state, array $snap): array
 {
     if ($state['dry_held'] !== []) {
-        $state['last_held'] = array_keys($snap['holds']);
+        $state['last_held'] = wf_last_held(array_keys($snap['holds']), $state['last_held'], $snap['legacy_held']);
         $state['dry_held'] = [];
     }
     return $state;
@@ -424,11 +449,12 @@ function wf_plan_result(array $hold, array $release, array $recordsAfter, bool $
     foreach (array_merge($hold, $release) as $n) {
         $expectedDown[$n] = $snap['force_down'][$n] ?? false;
     }
-    /* records_after is what the writer leaves in the Holds model, exactly; held_after is its names, for last_held and dry run */
+    /* records_after is what the writer leaves in the Holds model, exactly; held_after is its names, for last_held and dry
+     * run; legacy_held, the gateways 1.3_1's held list still names, keeps their proof in last_held (wf_last_held()) */
     $plan = ['hold' => $hold, 'release' => $release, 'held_after' => array_keys($recordsAfter), 'records_after' => $recordsAfter,
              'expected' => $expectedDown, 'held_now' => array_keys($snap['holds']), 'write' => $write,
              'redo_apply' => $rec['redo_apply'], 'redo_replay' => $rec['redo_replay'], 'foreign' => $rec['foreign'],
-             'foreign_records' => $rec['foreign_records'],
+             'foreign_records' => $rec['foreign_records'], 'legacy_held' => $snap['legacy_held'],
              'kill_targets' => $killTargets, 'failback' => $failback, 'expected_default' => $expected,
              'alerts' => $alerts, 'log' => $log, 'stopped' => $stopped];
     $plan['acting'] = $write || $rec['redo_apply'] !== [] || $rec['redo_replay'] !== [] || $rec['foreign'] !== [] || $failback !== [];

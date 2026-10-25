@@ -85,7 +85,8 @@ function wf_t_plan(array $over = []): array
     return array_merge(['hold' => [], 'release' => [], 'held_after' => [], 'records_after' => [], 'expected' => [], 'held_now' => [],
                         'write' => false, 'redo_apply' => [],
                         'redo_replay' => [], 'foreign' => [], 'kill_targets' => [], 'failback' => [],
-                        'expected_default' => null, 'alerts' => [], 'log' => [], 'acting' => true, 'stopped' => false], $over);
+                        'expected_default' => null, 'alerts' => [], 'log' => [], 'acting' => true, 'stopped' => false,
+                        'legacy_held' => []], $over);
 }
 
 wf_register_suite('apply', function (): int {
@@ -235,15 +236,27 @@ wf_register_suite('apply', function (): int {
     wf_check($t, '(w6) the writer is handed the plan\'s changes, expected force_down and records after, as the plan has them',
         $r['ok'] && $got->getArrayCopy() === [[['WAN_A' => true, 'WAN_C' => false], $wPlan['expected'], $wPlan['records_after']]]);
 
+    $f = wf_t_io();
+    $s = wf_state_new('b500');
+    $s['last_held'] = ['WAN_B', 'WAN_C'];
+    $r = wf_apply(wf_t_plan(['hold' => ['WAN_A'], 'held_after' => ['WAN_A'], 'records_after' => ['WAN_A' => ['boot' => 'b500', 'since' => 1000]],
+                             'expected' => ['WAN_A' => false], 'write' => true, 'legacy_held' => ['WAN_B']]), $s, $snap, $f['io']);
+    wf_check($t, '(u4) a write while 1.3_1\'s held list waits to be carried over keeps its proven entry in last_held, and '
+        . 'drops what the list does not name', $r['ok'] && $r['state']['last_held'] === ['WAN_A', 'WAN_B']);
+
     $line = [LOG_NOTICE, 'hold of WAN_B carried over, taken in boot b500'];
-    $a = wf_import_attempt(fn (): ?array => [$line]);
-    wf_check($t, '(m6) an import that returned its lines is imported: the migration may drop the raw list',
+    $a = wf_legacy_import_attempt(fn (): array => ['import' => true, 'lines' => [$line]]);
+    wf_check($t, '(m6) an import that decided to import and completed is imported: the migration may drop the raw list',
         $a === ['imported' => true, 'lines' => [$line], 'error' => null]);
-    $a = wf_import_attempt(fn (): ?array => null);
+    $a = wf_legacy_import_attempt(fn (): array => ['import' => false, 'lines' => []]);
     wf_check($t, '(m6) an import that found no list is not imported: nothing to drop',
         $a === ['imported' => false, 'lines' => [], 'error' => null]);
+    $warn = [LOG_WARNING, "kern.boot_id cannot be read, so 1.3_1's held list stays in the config until it can"];
+    $a = wf_legacy_import_attempt(fn (): array => ['import' => false, 'lines' => [$warn]]);
+    wf_check($t, '(m6) an import that could not read kern.boot_id is not imported, so the list stays, and its line is kept to log',
+        $a === ['imported' => false, 'lines' => [$warn], 'error' => null]);
     $added = new ArrayObject();
-    $a = wf_import_attempt(function () use ($added): ?array {
+    $a = wf_legacy_import_attempt(function () use ($added): array {
         $added[] = 'WAN_A';
         throw new TypeError('setNodes(): Argument #1 must be of type array');
     });
@@ -324,7 +337,7 @@ wf_register_suite('apply', function (): int {
         'loss_interval' => 4];
     $dsnap = fn (int $now, bool $bDown): array => ['now' => $now, 'boot_id' => 'b500', 'release' => null, 'failback_now' => false,
         'enabled' => true, 'dry' => false, 'failback' => true, 'failback_delay' => 0, 'tailscale_restart' => true,
-        'default_gw' => '192.0.2.1@vtnet1', 'unresolved' => [], 'holds_stale' => [], 'holds_dupes' => [],
+        'default_gw' => '192.0.2.1@vtnet1', 'unresolved' => [], 'holds_stale' => [], 'holds_dupes' => [], 'legacy_held' => [],
         'wans' => ['WAN_A' => $wan('192.0.2.1', 'vtnet1', true), 'WAN_B' => $wan('198.51.100.1', 'vtnet2', $bDown)],
         'holds' => ['WAN_A' => ['boot' => 'b500', 'since' => 900], 'WAN_B' => ['boot' => 'b500', 'since' => 900]],
         'force_down' => ['WAN_A' => true, 'WAN_B' => $bDown], 'contract' => ['judging' => [], 'command' => [], 'tailscale' => []]];

@@ -12,8 +12,9 @@ declare(strict_types=1);
  * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the evaluation's config writer, which
  * saves force_down and exactly the plan's hold records together without a config backup (the owner's decision), and
  * writes nothing when a changed gateway's force_down moved since the snapshot the plan decided on. The one other
- * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()); the migration
- * shares its import (wf_holds_import_into()). While the package removal's marker exists, neither writes, except the
+ * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()), carrying over only
+ * the holds the plugin's own state proves; the migration shares its import (wf_holds_import_into()). While the package
+ * removal's marker exists, neither writes, except the
  * removal's own write. wf_deinstall_io() is the removal's I/O: wf_live_io()'s, re-syncing routing through core's
  * commands only (wf_core_command()), since the plugin's own configd actions go with the package; wf_deinstall_run()
  * tries the removal's release until it lands or its time is up. wf_apply() reports a change that did not land, and its
@@ -36,7 +37,7 @@ require_once __DIR__ . '/planner.php';
  *               held_now: list<string>, write: bool,
  *               redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>,
  *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
- *               acting: bool, stopped: bool} $plan wf_plan()
+ *               acting: bool, stopped: bool, legacy_held: list<string>} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
  * @param array{now: int, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
  * @param array{configd: callable(string, list<string>): string,
@@ -108,7 +109,8 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             }
         }
         $replay = array_values(array_unique(array_merge($replay, array_keys($changes), $plan['foreign'], $changedDuringHold)));
-        $state['last_held'] = $plan['write'] ? $plan['held_after'] : $plan['held_now'];
+        $state['last_held'] = wf_last_held($plan['write'] ? $plan['held_after'] : $plan['held_now'], $state['last_held'],
+            $plan['legacy_held']);
     }
 
     $replayOk = true;
@@ -220,14 +222,16 @@ function wf_removing(): bool
  * never pin a hold; the plugin itself only touches force_down and its hold records. While the package removal's marker
  * exists, only the removal's own write lands: the marker is read once Config::lock() is held, and the removal writes it
  * before anything else, so an evaluation that was waiting for the lock cannot re-take a hold the removal releases.
+ * The early hook also removes 1.3_1's held list in the same save ($dropLegacy), once it has dealt with its entries.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
  * @param array<string, array{boot: string, since: int}> $recordsAfter every hold record after the write, by gateway name
  * @param bool $removal true for the package removal's own write, the one write the removal's marker lets through
+ * @param bool $dropLegacy true to remove 1.3_1's held list from the raw config in the same save
  * @return array{ok: bool, skipped: list<string>} skipped: the changed gateways whose force_down moved, when ok is false
  */
-function wf_write_holds(array $changes, array $expected, array $recordsAfter, bool $removal = false): array
+function wf_write_holds(array $changes, array $expected, array $recordsAfter, bool $removal = false, bool $dropLegacy = false): array
 {
     $releaseOnly = !in_array(true, $changes, true);
     try {
@@ -270,6 +274,9 @@ function wf_write_holds(array $changes, array $expected, array $recordsAfter, bo
             }
             $gateways->serializeToConfig(false, $releaseOnly);
             $holds->serializeToConfig(false, $releaseOnly);
+            if ($dropLegacy) {
+                wf_holds_drop_legacy();
+            }
             $cfg->save(null, false);
             return ['ok' => true, 'skipped' => []];
         } finally {
@@ -313,56 +320,50 @@ function wf_gateway_unlock(mixed $lock): void
     }
 }
 
-/** Whether 1.3_1's held list is still in the config, read from the raw config: the settings model no longer has it. */
-function wf_holds_legacy_present(): bool
-{
-    return isset(\OPNsense\Core\Config::getInstance()->object()->OPNsense->WanFailover->held);
-}
-
 /**
- * 1.3_1's held list added to $holds as hold records, as wf_legacy_import_plan() decides, against the gateways in the
- * config as it now is. It changes the model only. The caller saves it, and only then removes the raw list
- * (wf_holds_drop_legacy()), so a save that fails leaves the list for the next try. The migration runs this on the model
- * core hands it, which core then saves; an evaluation runs it under its own locks (wf_holds_import_legacy()).
+ * 1.3_1's held list ($csv, the raw node's text; null when the config has none) added to $holds as hold records, as
+ * wf_legacy_import_plan() decides, against the gateways in the config as it now is and the plugin's own state
+ * ($proof). It changes the model only. The caller saves it, and only then removes the raw list
+ * (wf_holds_drop_legacy()), so a save that fails leaves the list for the next try. The migration runs this on the
+ * model core hands it, which core then saves; an evaluation runs it under its own locks (wf_holds_import_legacy()).
  *
- * @return ?list<array{0: int, 1: string}> the lines to log once saved (priority, text), or null when there is no list
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
+ * @return array{import: bool, lines: list<array{0: int, 1: string}>} import: the list is to be removed once saved;
+ *     lines: what to log (priority, text), when imported once saved
  */
-function wf_holds_import_into(\OPNsense\WanFailover\Holds $holds, string $bootId, int $now): ?array
+function wf_holds_import_into(\OPNsense\WanFailover\Holds $holds, ?string $csv, string $bootId, int $now, array $proof): array
 {
-    $root = \OPNsense\Core\Config::getInstance()->object();
-    $csv = isset($root->OPNsense->WanFailover->held) ? (string)$root->OPNsense->WanFailover->held : null;
     $nameByUuid = [];
     if ($csv !== null) {
         foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $uuid => $gw) {
             $nameByUuid[(string)$uuid] = $gw->name->getValue();
         }
     }
-    $plan = wf_legacy_import_plan($csv, $nameByUuid, $bootId, $now);
-    if (!$plan['import']) {
-        return null;
+    $plan = wf_legacy_import_plan($csv, $nameByUuid, $bootId, $now, $proof);
+    if ($plan['import']) {
+        foreach ($plan['records'] as $r) {
+            $holds->hold->Add()->setNodes(['gateway' => $r['gateway'], 'boot' => $r['boot'], 'since' => (string)$r['since']]);
+        }
     }
-    foreach ($plan['records'] as $r) {
-        $holds->hold->Add()->setNodes(['gateway' => $r['gateway'], 'boot' => $r['boot'], 'since' => (string)$r['since']]);
-    }
-    return $plan['lines'];
+    return ['import' => $plan['import'], 'lines' => $plan['lines']];
 }
 
 /**
- * One run of an import (wf_holds_import_into() bound to its model), for the migration: imported only when the import
- * returned its lines. One that found no list, or threw part way through, is not, and the caller then keeps the raw
- * list for the next evaluation to import.
+ * One run of the migration's import of 1.3_1's held list (wf_holds_import_into() bound to its model): imported only
+ * when the import decided to import and completed. One that found no list, could not read kern.boot_id, or threw
+ * part way through, is not, and the caller then keeps the raw list for the next evaluation to import.
  *
- * @param callable(): ?list<array{0: int, 1: string}> $import
+ * @param callable(): array{import: bool, lines: list<array{0: int, 1: string}>} $import
  * @return array{imported: bool, lines: list<array{0: int, 1: string}>, error: ?string}
  */
-function wf_import_attempt(callable $import): array
+function wf_legacy_import_attempt(callable $import): array
 {
     try {
-        $lines = $import();
+        $r = $import();
     } catch (\Throwable $e) {
         return ['imported' => false, 'lines' => [], 'error' => $e->getMessage()];
     }
-    return ['imported' => $lines !== null, 'lines' => $lines ?? [], 'error' => null];
+    return ['imported' => $r['import'], 'lines' => $r['lines'], 'error' => null];
 }
 
 /** 1.3_1's held list removed from the raw config, so the settings model's next save cannot bring it back; the caller saves. */
@@ -372,19 +373,22 @@ function wf_holds_drop_legacy(): void
 }
 
 /**
- * An evaluation's import of 1.3_1's held list, when the upgrade's migration has not run yet or failed: the gateway
- * lock, then Config::lock() (which reloads the config), the models built after it, the records added, the raw list
- * removed, one save without a backup, then the unlocks. It never throws: a failure is logged and the list stays for
- * the next evaluation. A package removal under way imports nothing: the marker is read once Config::lock() is held.
+ * An evaluation's import of 1.3_1's held list, when the upgrade's migration has not run yet or failed, or a restored
+ * backup carries the list: the gateway lock, then Config::lock() (which reloads the config), the models built after
+ * it, the records the plugin's state proves added ($proof), the raw list removed, one save without a backup, then the
+ * unlocks. It never throws: a failure is logged and the list stays for the next evaluation, whose snapshot then names
+ * the list's gateways (legacy_held), which the planner neither alerts on nor re-syncs for. A package removal under way
+ * imports nothing: the marker is read once Config::lock() is held. The raw list is read with wf_holds_legacy_csv()
+ * (snapshot.php).
  *
- * @return string imported, none (no list once locked), removing (the removal's marker exists) or failed
+ * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  */
-function wf_holds_import_legacy(string $bootId): string
+function wf_holds_import_legacy(string $bootId, array $proof): void
 {
     $gw = wf_gateway_lock();
     if ($gw === null) {
         wf_log('held list import: gateway lock busy for 30 s; the list waits for the next evaluation', LOG_WARNING);
-        return 'failed';
+        return;
     }
     try {
         $cfg = \OPNsense\Core\Config::getInstance();
@@ -392,30 +396,31 @@ function wf_holds_import_legacy(string $bootId): string
         try {
             if (wf_removing()) {
                 wf_log('held list import: the package is being removed; nothing imported');
-                return 'removing';
+                return;
             }
             $holds = new \OPNsense\WanFailover\Holds();
-            $lines = wf_holds_import_into($holds, $bootId, time());
-            if ($lines === null) {
-                return 'none';
+            $r = wf_holds_import_into($holds, wf_holds_legacy_csv(), $bootId, time(), $proof);
+            if ($r['import']) {
+                $holds->serializeToConfig();
+                wf_holds_drop_legacy();
+                $cfg->save(null, false);
             }
-            $holds->serializeToConfig();
-            wf_holds_drop_legacy();
-            $cfg->save(null, false);
         } finally {
             $cfg->unlock();
         }
     } catch (\Throwable $e) {
         wf_log('held list import failed: ' . $e->getMessage() . '; the list waits for the next evaluation', LOG_ERR);
-        return 'failed';
+        return;
     } finally {
         wf_gateway_unlock($gw);
     }
-    wf_log("held list import: 1.3_1's held list was still in the config, as the upgrade's migration had not run; imported");
-    foreach ($lines as [$priority, $line]) {
+    if ($r['import']) {
+        wf_log("held list import: 1.3_1's held list was still in the config (an upgrade whose migration had not run, or a "
+            . "restored backup); each entry is carried over only where this plugin's state proves the hold");
+    }
+    foreach ($r['lines'] as [$priority, $line]) {
         wf_log("held list import: {$line}", $priority);
     }
-    return 'imported';
 }
 
 /**

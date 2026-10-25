@@ -18,6 +18,7 @@ require_once 'plugins.inc.d/dpinger.inc';
 require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/pfstate.php';
 require_once __DIR__ . '/contract.php';
+require_once __DIR__ . '/state.php';
 
 function wf_boot_id(): string
 {
@@ -42,6 +43,16 @@ function wf_live_default(): ?string
 }
 
 /**
+ * 1.3_1's held list, read from the raw config (the settings model no longer has it): the node's text, or null when
+ * the config has no such node. An upgrade's migration, or an evaluation's import, removes it.
+ */
+function wf_holds_legacy_csv(): ?string
+{
+    $root = \OPNsense\Core\Config::getInstance()->object();
+    return isset($root->OPNsense->WanFailover->held) ? (string)$root->OPNsense->WanFailover->held : null;
+}
+
+/**
  * @return list<string>
  */
 function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
@@ -55,9 +66,10 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               failback_delay: int, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
- *               force_down: array<string, bool>,
+ *               legacy_held: list<string>, force_down: array<string, bool>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
- *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile())
+ *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
+ *     legacy_held: the gateways 1.3_1's held list names while it is still in the config
  */
 function wf_snapshot(): array
 {
@@ -85,6 +97,8 @@ function wf_snapshot(): array
     }
     $wansRes['names'] = $usable;
     $holds = wf_resolve_records((new \OPNsense\WanFailover\Holds())->records(), $nameByUuid);
+    $legacyCsv = wf_holds_legacy_csv();
+    $legacy = $legacyCsv === null ? [] : array_values(wf_legacy_entries($legacyCsv, $nameByUuid)['named']);
     $status = dpinger_status();
     $instances = dpinger_instances(true);
     $defaultOut = (string)shell_exec('/sbin/route -n get -inet default 2>/dev/null');
@@ -163,7 +177,7 @@ function wf_snapshot(): array
         'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
-        'force_down' => $forceDown,
+        'legacy_held' => $legacy, 'force_down' => $forceDown,
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale],
     ];
 }
