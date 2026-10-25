@@ -67,6 +67,7 @@ DEFAULTS = {
 _REFUSAL_CODE = {
     "state_dir": "state_unusable",
     "last_file": "state_unusable",
+    "plugin_lock": "state_unusable",
     "cache_file": "state_unusable",
     "lock_file": "lock_unusable",
     "alias_name": "core_changed",
@@ -147,6 +148,23 @@ def _last_file_problem(cfg):
     return None
 
 
+def _plugin_lock_problem(cfg):
+    """ the plugin's flush lock may be absent (the flush creates it) or a regular file with one
+    link; anything else blocks, as the flush will not open it
+    """
+    path = state_paths(cfg)["plugin_lock"]
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return _problem("plugin_lock", "the plugin's flush lock at %s cannot be checked (%s)" % (path, e.strerror),
+                        True)
+    if _single_regular(st):
+        return None
+    return _problem("plugin_lock", "the plugin's flush lock at %s is not a regular file with one link" % path, True)
+
+
 def _lock_file_problem(cfg):
     """ core's update-tables lock may be absent (core's flock(1) creates it on use) or a
     regular file with one link; anything else blocks, as the plugin will not open it
@@ -165,8 +183,8 @@ def _lock_file_problem(cfg):
 
 def _cache_file_problem(cfg):
     """ core loads its MAC alias cache without checking it, so say when it is not a regular
-    file owned by root. A flush replaces it atomically and is the remedy, so only a directory,
-    which os.replace cannot replace, blocks one. Absent is normal after a boot.
+    file owned by root with one link. A flush replaces it atomically and is the remedy, so
+    only a directory, which os.replace cannot replace, blocks one. Absent is normal after a boot.
     """
     path = cfg["cache_file"]
     try:
@@ -178,7 +196,7 @@ def _cache_file_problem(cfg):
     if stat.S_ISDIR(st.st_mode):
         return _problem("cache_file", "core's MAC alias cache at %s is a directory" % path, True)
     if not _single_regular(st) or st.st_uid != os.geteuid():
-        return _problem("cache_file", "core's MAC alias cache at %s is not a regular file owned by root; "
+        return _problem("cache_file", "core's MAC alias cache at %s is not a regular file owned by root with one link; "
                         "core may be loading forged content" % path, False)
     return None
 
@@ -206,8 +224,8 @@ def problems(cfg, tables=None):
     if tables is None:
         tables = read_tables(cfg)
     # nothing inside a state directory that failed its check is looked at
-    found = [state, None if state else _last_file_problem(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg),
-             _alias_name_problem(tables)]
+    found = [state, None if state else _last_file_problem(cfg), None if state else _plugin_lock_problem(cfg),
+             _lock_file_problem(cfg), _cache_file_problem(cfg), _alias_name_problem(tables)]
     return [problem for problem in found if problem] + lib.core_contract(read_core_texts(cfg))
 
 
@@ -332,7 +350,9 @@ def _write_json_atomic(path, obj, mode=0o644):
 def _sweep_stale_temps(path, now, max_age=60):
     """ delete our own atomic-write temp files beside path (name .<basename>.<random>.tmp,
     see _write_json_atomic) older than max_age seconds; catches orphans left by a kill
-    between mkstemp and os.replace
+    between mkstemp and os.replace. Core's cache is in /tmp, where any user can make such a
+    name, so only a regular file of ours with one link is removed, and an entry that cannot be
+    looked at or removed is skipped rather than stopping the flush
     """
     directory = os.path.dirname(path) or "."
     prefix = ".%s." % os.path.basename(path)
@@ -345,10 +365,11 @@ def _sweep_stale_temps(path, now, max_age=60):
             continue
         full = os.path.join(directory, name)
         try:
-            if now - os.stat(full).st_mtime > max_age:
+            st = os.lstat(full)
+            if _single_regular(st) and st.st_uid == os.geteuid() and now - st.st_mtime > max_age:
                 os.unlink(full)
-        except FileNotFoundError:
-            pass
+        except OSError:
+            pass  # gone already, or not ours to remove
 
 
 def read_tables(cfg):
@@ -493,8 +514,8 @@ def acquire_plugin_lock(cfg):
     fd = _open_lock(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
     if fd is None:
         return refusal([_problem(
-            "state_dir", "the plugin's flush lock at %s is not a regular file with one link "
-                         "that the plugin can open safely" % path, True)])
+            "plugin_lock", "the plugin's flush lock at %s is not a regular file with one link "
+                           "that the plugin can open safely" % path, True)])
     handle = _fdopen(fd, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)

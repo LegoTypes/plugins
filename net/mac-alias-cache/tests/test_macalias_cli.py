@@ -391,6 +391,37 @@ def test_flush_sweeps_stale_temp_files_for_cache_file(env):
     assert fresh.exists()
 
 
+def test_flush_sweeps_only_its_own_temp_files(env, monkeypatch):
+    # core's cache is in /tmp, where any user can make a name of the temp pattern: a link
+    # looping to itself, a directory, another user's file or a hard link must neither stop the
+    # flush nor be removed; only a stale regular file of ours with one link is swept
+    cfg, tmp = env
+    stale = (5000.0 - 120, 5000.0 - 120)
+    loop = tmp / ".arp.cache.loop.tmp"
+    os.symlink(loop.name, loop)
+    os.utime(loop, stale, follow_symlinks=False)
+    directory = tmp / ".arp.cache.dir.tmp"
+    directory.mkdir()
+    foreign = tmp / ".arp.cache.foreign.tmp"
+    foreign.write_text("theirs")
+    elsewhere = tmp / "elsewhere"
+    elsewhere.write_text("linked")
+    linked = tmp / ".arp.cache.linked.tmp"
+    os.link(elsewhere, linked)
+    ours = tmp / ".arp.cache.ours.tmp"
+    ours.write_text("stale")
+    for path in (directory, foreign, linked, ours):
+        os.utime(path, stale)
+    _patch_stat(monkeypatch, "lstat", foreign, _UID, os.geteuid() + 1)
+    out = _flush(cfg)
+    assert "error" not in out
+    assert os.path.islink(loop)
+    assert directory.is_dir()
+    assert foreign.read_text() == "theirs"
+    assert linked.read_text() == "linked"
+    assert not ours.exists()
+
+
 def test_flush_too_soon_changes_nothing(env):
     cfg, tmp = env
     _write_last(cfg, {"at": 4995.0, "summary": []})
@@ -544,7 +575,7 @@ def _within(seconds):
         signal.signal(signal.SIGALRM, previous)
 
 
-CACHE_FORGED = ("core's MAC alias cache at %s is not a regular file owned by root; "
+CACHE_FORGED = ("core's MAC alias cache at %s is not a regular file owned by root with one link; "
                 "core may be loading forged content")
 CACHE_DIRECTORY = "core's MAC alias cache at %s is a directory"
 LOCK_NOT_REGULAR = "core's alias update lock at %s is not a regular file with one link"
@@ -552,8 +583,11 @@ LAST_DIRECTORY = "plugin flush record at %s is a directory"
 LAST_IGNORED = ("plugin flush record at %s is not a regular file owned by root; "
                 "it is ignored and the next flush replaces it")
 LAST_LINKED = "plugin flush record at %s has more than one link; it is ignored and the next flush replaces it"
+PLUGIN_LOCK_NOT_REGULAR = "the plugin's flush lock at %s is not a regular file with one link"
+PLUGIN_LOCK_UNUSABLE = PLUGIN_LOCK_NOT_REGULAR + " that the plugin can open safely"
 CANNOT_CHECK = {
     "last_file": "plugin flush record at %s cannot be checked (%s)",
+    "plugin_lock": "the plugin's flush lock at %s cannot be checked (%s)",
     "lock_file": "core's alias update lock at %s cannot be checked (%s)",
     "cache_file": "core's MAC alias cache at %s cannot be checked (%s)",
 }
@@ -779,7 +813,7 @@ def test_status_reports_cache_file_problem_for_foreign_owner(env, monkeypatch, f
 
 def test_cache_file_problem_text_names_cores_path_by_default():
     assert CACHE_FORGED % macalias.DEFAULTS["cache_file"] == (
-        "core's MAC alias cache at /tmp/alias_filter_arp.cache is not a regular file owned by root; "
+        "core's MAC alias cache at /tmp/alias_filter_arp.cache is not a regular file owned by root with one link; "
         "core may be loading forged content")
 
 
@@ -1053,15 +1087,39 @@ def test_concurrent_flush_runs_one_rebuild(env, monkeypatch):
     assert (tmp / "update_args").read_text().strip().splitlines() == ["--aliases DevMacs,Parent"]
 
 
-def test_flush_refuses_when_plugin_lock_is_not_a_regular_file(env):
+@pytest.mark.parametrize("kind", ["directory", "symlink", "fifo", "hard-link"])
+def test_flush_refuses_when_plugin_lock_is_not_a_regular_file(env, kind):
+    # status names the flush lock too, so the page still shows why after the refusal's own text is gone
     cfg, tmp = env
     os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
-    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
-    out = _flush(cfg)
-    assert out["error"] == "state_unusable"
-    assert macalias.state_paths(cfg)["plugin_lock"] in out["detail"]
-    assert out["problems"] == [{"item": "state_dir", "problem": out["detail"], "blocks_flush": True}]
-    assert not (tmp / "update_args").exists()
+    path = macalias.state_paths(cfg)["plugin_lock"]
+    elsewhere = tmp / "elsewhere"
+    elsewhere.write_text("")
+    if kind == "directory":
+        os.mkdir(path)
+    elif kind == "symlink":
+        os.symlink(elsewhere, path)
+    elif kind == "fifo":
+        os.mkfifo(path, 0o600)
+    else:
+        os.link(elsewhere, path)
+    with _within(5):
+        status = macalias.cmd_status(cfg, now=0.0)
+        before = _snapshot(tmp)
+        out = _flush(cfg)
+    assert _items(status, "plugin_lock") == [
+        {"item": "plugin_lock", "problem": PLUGIN_LOCK_NOT_REGULAR % path, "blocks_flush": True}]
+    problem = {"item": "plugin_lock", "problem": PLUGIN_LOCK_UNUSABLE % path, "blocks_flush": True}
+    assert out == {"error": "state_unusable", "detail": problem["problem"], "problems": [problem]}
+    _unchanged(tmp, cfg, before)
+
+
+def test_status_accepts_an_absent_or_regular_plugin_lock(env):
+    cfg, tmp = env
+    assert _items(macalias.cmd_status(cfg, now=0.0), "plugin_lock") == []
+    assert "error" not in _flush(cfg)
+    assert os.path.isfile(macalias.state_paths(cfg)["plugin_lock"])
+    assert _items(macalias.cmd_status(cfg, now=0.0), "plugin_lock") == []
 
 
 @pytest.mark.parametrize("case", ["success", "too_soon", "hosts_unavailable", "state_unusable", "update_oserror"])
@@ -1488,8 +1546,18 @@ def test_status_lists_problems(env):
     assert _items(out, "alias_name")[0]["problem"] == ALIAS_NAME % "'Dev Macs'"
     assert _items(out, "emptied_table")[0]["problem"] == EMPTIED_NOTE
 
-    # a flush refuses with the first class that blocks and carries every problem
+    # with the state directory usable, what is inside it is listed too
     pathlib.Path(cfg["state_dir"]).unlink()
+    os.mkdir(cfg["state_dir"], 0o700)
+    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
+    with _within(5):
+        out = macalias.cmd_status(cfg, now=0.0)
+    assert [(p["item"], p["blocks_flush"]) for p in out["problems"]] == [
+        ("plugin_lock", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True),
+        ("emptied_table", False)]
+    os.rmdir(macalias.state_paths(cfg)["plugin_lock"])
+
+    # a flush refuses with the first class that blocks and carries every problem
     with _within(5):
         out = _flush(cfg)
     assert out["error"] == "lock_unusable"
@@ -1504,12 +1572,13 @@ def test_status_lists_problems(env):
 
 
 @pytest.mark.parametrize("item, code", [
-    ("last_file", "state_unusable"), ("lock_file", "lock_unusable"), ("cache_file", "state_unusable")])
+    ("last_file", "state_unusable"), ("plugin_lock", "state_unusable"), ("lock_file", "lock_unusable"),
+    ("cache_file", "state_unusable")])
 def test_lstat_error_other_than_absent_blocks(env, monkeypatch, item, code):
     # a path that cannot even be looked at is not taken for absent
     cfg, tmp = env
     os.mkdir(cfg["state_dir"], 0o700)
-    path = str(_last(cfg)) if item == "last_file" else cfg[item]
+    path = macalias.state_paths(cfg)[item] if item in ("last_file", "plugin_lock") else cfg[item]
     real_lstat = os.lstat
 
     def lstat(arg, *args, **kwargs):
@@ -1533,6 +1602,7 @@ def test_every_problem_item_has_a_refusal_code(env):
     seen = set()
     os.mkdir(cfg["state_dir"], 0o700)
     _last(cfg).mkdir()
+    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
     os.mkfifo(cfg["lock_file"])
     (tmp / "arp.cache").unlink()
     (tmp / "arp.cache").mkdir()
@@ -1541,6 +1611,7 @@ def test_every_problem_item_has_a_refusal_code(env):
     with _within(5):
         seen.update(p["item"] for p in macalias.problems(cfg))
     _last(cfg).rmdir()
+    os.rmdir(macalias.state_paths(cfg)["plugin_lock"])
     os.rmdir(cfg["state_dir"])
     pathlib.Path(cfg["state_dir"]).write_text("x")
     shutil.copytree(FIXTURES, tmp / "core")
@@ -1552,6 +1623,8 @@ def test_every_problem_item_has_a_refusal_code(env):
     for item, code in macalias._REFUSAL_CODE.items():
         assert code in ("state_unusable", "lock_unusable", "core_changed"), item
         assert macalias.refusal([{"item": item, "problem": "p", "blocks_flush": True}])["error"] == code
+    assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "state_unusable"} == {
+        "state_dir", "last_file", "plugin_lock", "cache_file"}
     assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "core_changed"} == {
         "alias_name", "arpcache", "update_lock", "md5_marker", "targeted_mode", "emptied_table", "list_hosts"}
 
