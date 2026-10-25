@@ -381,18 +381,20 @@ function wf_dry_view(array $snap, array $dryHeld): array
 }
 
 /**
- * The state's last_held after a write: the names written, and every gateway already there that 1.3_1's held list,
- * still in the config, names. last_held is what proves an entry of that list to be the plugin's own
- * (wf_legacy_proven()), so a write while the list waits to be carried over keeps that proof; it never adds one.
+ * The state's last_held after a write: the names written, and every gateway the state shows really held
+ * (wf_really_held()) that 1.3_1's held list, still in the config, names. That is what proves an entry of the list to
+ * be the plugin's own (wf_state_proof()), so a write while the list waits to be carried over keeps exactly the proof
+ * the import will accept: it never adds one, and keeps no name the import would then drop, which the next tick would
+ * take for a change outside the engine.
  *
  * @param list<string> $names the record names the write leaves
- * @param list<string> $lastHeld the state's last_held before the write
+ * @param array $state the state before the write, the shape returned by wf_state_new()
  * @param list<string> $legacy the gateways 1.3_1's held list names (the snapshot's legacy_held)
  * @return list<string>
  */
-function wf_last_held(array $names, array $lastHeld, array $legacy): array
+function wf_last_held(array $names, array $state, array $legacy): array
 {
-    return array_values(array_unique(array_merge($names, array_intersect($lastHeld, $legacy))));
+    return array_values(array_unique(array_merge($names, array_intersect(wf_really_held($state), $legacy))));
 }
 
 /**
@@ -402,8 +404,8 @@ function wf_last_held(array $names, array $lastHeld, array $legacy): array
  */
 function wf_dry_after(array $state, array $plan): array
 {
+    $state['last_held'] = wf_last_held($plan['held_after'], $state, $plan['legacy_held']);
     $state['dry_held'] = $plan['held_after'];
-    $state['last_held'] = wf_last_held($plan['held_after'], $state['last_held'], $plan['legacy_held']);
     $state['apply_pending'] = [];
     return $state;
 }
@@ -417,7 +419,7 @@ function wf_dry_after(array $state, array $plan): array
 function wf_dry_exit(array $state, array $snap): array
 {
     if ($state['dry_held'] !== []) {
-        $state['last_held'] = wf_last_held(array_keys($snap['holds']), $state['last_held'], $snap['legacy_held']);
+        $state['last_held'] = wf_last_held(array_keys($snap['holds']), $state, $snap['legacy_held']);
         $state['dry_held'] = [];
     }
     return $state;

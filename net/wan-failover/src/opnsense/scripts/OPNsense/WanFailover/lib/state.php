@@ -462,10 +462,24 @@ function wf_boot_unread(string $stateBootId): bool
 }
 
 /**
+ * The gateways a state shows the engine really holding: its last_held without the holds dry run only simulates
+ * (dry_held). In dry run last_held names the simulated holds too (wf_dry_after()), and a simulated hold never forced a
+ * gateway down, so it proves nothing about a held list in the config; a real hold is released before dry run
+ * simulates one, by 1.3_1 as by 1.4, so no real hold is ever left out.
+ *
+ * @param array{last_held: list<string>, dry_held: list<string>} $state the shape returned by wf_state_new()
+ * @return list<string>
+ */
+function wf_really_held(array $state): array
+{
+    return array_values(array_diff($state['last_held'], $state['dry_held']));
+}
+
+/**
  * What the plugin's own state file proves of the holds it took: the boot it names and the gateways the engine last
- * wrote as held in it (last_held), or no boot and nothing when the file could not be read. 1.3_1 writes last_held after
- * every engine write too, so this proves 1.3_1's holds as well as 1.4's. Load the state without the live boot id
- * (wf_state_load($path, '')), so that a missing file names no boot.
+ * wrote as really held in it (wf_really_held()), or no boot and nothing when the file could not be read. 1.3_1 writes
+ * last_held after every engine write too, so this proves 1.3_1's holds as well as 1.4's. Load the state without the
+ * live boot id (wf_state_load($path, '')), so that a missing file names no boot.
  *
  * @param array{state: array, corrupt: bool} $loaded wf_state_load()
  * @return array{boot: string, held: list<string>}
@@ -475,7 +489,7 @@ function wf_state_proof(array $loaded): array
     if ($loaded['corrupt']) {
         return ['boot' => '', 'held' => []];
     }
-    return ['boot' => $loaded['state']['boot_id'], 'held' => $loaded['state']['last_held']];
+    return ['boot' => $loaded['state']['boot_id'], 'held' => wf_really_held($loaded['state'])];
 }
 
 /**

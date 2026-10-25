@@ -447,6 +447,18 @@ wf_register_suite('state', function (): int {
         wf_state_proof($l) === ['boot' => '', 'held' => []]);
     wf_t_rmtree($d);
 
+    /* dry run on, simulating a hold of WAN_B: last_held names it, though nothing forced WAN_B down */
+    $dry = wf_state_new('b500');
+    $dry['last_held'] = ['WAN_B'];
+    $dry['dry_held'] = ['WAN_B'];
+    $p = wf_legacy_import_plan('u2', $map, 'b500', 1000, wf_state_proof(['state' => $dry, 'corrupt' => false]));
+    wf_check($t, '(l6) a hold dry run only simulates proves nothing: a restored list naming that gateway makes no record, and '
+        . 'the entry is said not proven', $p['import'] && $p['records'] === [] && $p['lines'] === [$notProven]);
+    $dry['boot_id'] = 'b400';
+    $legacy = wf_boot_legacy('u2', $map, wf_state_proof(['state' => $dry, 'corrupt' => false]));
+    wf_check($t, '(l7) at boot a hold dry run only simulated in the boot before is not released as proven: the entry is left as it is',
+        $legacy['release'] === [] && $legacy['left'] === ['WAN_B']);
+
     /* at boot: b400 is the boot before, the one the state names; WAN_A was held in it, WAN_B was not */
     $before = ['boot' => 'b400', 'held' => ['WAN_A']];
     $legacy = wf_boot_legacy('u1,u2,u9', $map, $before);

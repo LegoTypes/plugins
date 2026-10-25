@@ -112,8 +112,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             }
         }
         $replay = array_values(array_unique(array_merge($replay, array_keys($changes), $plan['foreign'], $changedDuringHold)));
-        $state['last_held'] = wf_last_held($plan['write'] ? $plan['held_after'] : $plan['held_now'], $state['last_held'],
-            $plan['legacy_held']);
+        $state['last_held'] = wf_last_held($plan['write'] ? $plan['held_after'] : $plan['held_now'], $state, $plan['legacy_held']);
     }
 
     $replayOk = true;

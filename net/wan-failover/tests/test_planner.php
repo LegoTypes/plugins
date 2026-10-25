@@ -498,9 +498,21 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_ab(31400, [], ['loss' => 30.0], ['legacy_held' => ['WAN_B']]), wf_state_new('b500'));
     wf_check($t, '(u2) a gateway the list names but that is not forced down is planned as any other: a lossy one is held',
         $r['plan']['hold'] === ['WAN_B'] && $r['plan']['legacy_held'] === ['WAN_B']);
+    $held = fn (array $lastHeld, array $dryHeld = []): array => array_merge(wf_state_new('b500'),
+        ['last_held' => $lastHeld, 'dry_held' => $dryHeld]);
     wf_check($t, '(u3) a write while the list waits keeps the proof of its entries in last_held, and never adds one',
-        wf_last_held(['WAN_A'], ['WAN_B', 'WAN_C'], ['WAN_B', 'WAN_D']) === ['WAN_A', 'WAN_B']
-        && wf_last_held([], [], ['WAN_B']) === [] && wf_last_held(['WAN_A'], ['WAN_B'], []) === ['WAN_A']);
+        wf_last_held(['WAN_A'], $held(['WAN_B', 'WAN_C']), ['WAN_B', 'WAN_D']) === ['WAN_A', 'WAN_B']
+        && wf_last_held([], $held([]), ['WAN_B']) === [] && wf_last_held(['WAN_A'], $held(['WAN_B']), []) === ['WAN_A']);
+    wf_check($t, '(u5) a hold dry run only simulates is no proof: a write while the list waits does not keep it in last_held',
+        wf_last_held(['WAN_A'], $held(['WAN_B'], ['WAN_B']), ['WAN_B']) === ['WAN_A']);
+    /* dry run simulating WAN_B while 1.3_1's list naming WAN_B waits, then dry run turned off */
+    $s = $held(['WAN_B'], ['WAN_B']);
+    $exit = wf_dry_exit($s, wf_t_ab(31500, [], $fdB, ['legacy_held' => ['WAN_B']]));
+    $r = wf_plan(wf_t_ab(31560, [], $fdB), wf_t_applied($exit, ['held_after' => $exit['last_held']]));
+    wf_check($t, '(u6) leaving dry run while the list waits keeps no simulated hold in last_held, so once the import drops the '
+        . 'entry as not proven, the next tick takes nothing for a change outside the engine',
+        $exit['last_held'] === [] && $exit['dry_held'] === [] && $r['plan']['foreign'] === []
+        && $lines($r['plan'], 'outside the engine') === 0);
 
     /* every state the planner and apply write loads back as saved: a state wrongly found corrupt releases every hold */
     $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@vtnet2'];
