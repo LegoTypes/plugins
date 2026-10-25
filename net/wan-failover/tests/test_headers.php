@@ -27,8 +27,10 @@ wf_register_suite('headers', function (): int {
 
     $headers = 0;
     foreach ($files as $path) {
-        $lines = file($path, FILE_IGNORE_NEW_LINES);
+        $lines = @file($path, FILE_IGNORE_NEW_LINES);
         if ($lines === false) {
+            /* a file that cannot be read cannot be shown to carry no copyright line other than the handle's */
+            wf_check($t, 'readable for the header check: ' . substr($path, strlen($root) + 1), false);
             continue;
         }
         $held = [];

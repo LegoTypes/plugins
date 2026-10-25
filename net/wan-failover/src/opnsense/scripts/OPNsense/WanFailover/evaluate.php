@@ -69,9 +69,12 @@ function wf_main(string $mode, array $args): int
             exec($cmd . ' 2>/dev/null', $lines, $rc);
             return ['out' => implode("\n", $lines), 'rc' => $rc];
         });
-        /* a hold logs the answer as its kill line; a rejected target, which no hold sends, is logged here */
+        /* a hold logs the answer as its kill line too; a rejected target, which no hold sends, and a listing that failed
+         * are logged here as well, so a kill run by hand leaves its failure in the log */
         if ($r['line'] === 'rejected target') {
             wf_log('kill-states: the target is not gateway@interface; nothing killed', LOG_WARNING);
+        } elseif (str_starts_with($r['line'], 'listing failed')) {
+            wf_log("kill-states {$args[1]}: {$r['line']}; nothing killed", LOG_WARNING);
         }
         echo $r['line'], "\n";
         return $r['rc'];
@@ -138,7 +141,7 @@ function wf_main(string $mode, array $args): int
     }
 
     wf_private_dir(WF_RUN_DIR);
-    $lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');
+    $lock = wf_lock_open(WF_RUN_DIR . '/evaluate.lock');
     $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
     /* a release (the page's button, or stop on disable) and fail back now wait for an evaluation in
      * flight instead of silently doing nothing; a routine evaluation just leaves it to the one running */
@@ -170,7 +173,7 @@ function wf_main(string $mode, array $args): int
     $snap = wf_snapshot();
     $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
     if ($loaded['corrupt']) {
-        wf_log("state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
+        wf_log('state file unreadable (' . wf_state_problem($loaded) . '); starting from a fresh state', LOG_WARNING);
         $loaded['state']['boot_id'] = 'corrupt';
     }
     $state = $loaded['state'];
@@ -193,7 +196,7 @@ function wf_main(string $mode, array $args): int
     }
     /* dry run never keeps a real hold: one it finds (dry was just turned on) is released for real first */
     $dry = $snap['dry'] && $snap['enabled'] && $snap['release'] === null;
-    if ($dry && $snap['holds'] !== []) {
+    if ($dry && wf_dry_must_release($snap, $state)) {
         $snap['release'] = 'dry';
         $dry = false;
     }
@@ -258,7 +261,7 @@ function wf_deinstall(): int
     $startedAt = time();
     try {
         wf_private_dir(WF_RUN_DIR);
-        $lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');
+        $lock = wf_lock_open(WF_RUN_DIR . '/evaluate.lock');
         $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
         while (!$locked && $lock !== false && time() - $startedAt < WF_DEINSTALL_WAIT_SECONDS) {
             sleep(1);

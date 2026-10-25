@@ -315,9 +315,10 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '(q2) two held WANs that share a gateway address get one kill target each, told apart by interface',
         $r['plan']['hold'] === ['WAN_A', 'WAN_B'] && $r['plan']['kill_targets'] === ['192.0.2.1@vtnet1', '192.0.2.1@vtnet2']);
     $r = wf_plan(wf_t_snap(14300, [], ['loss' => 30.0, 'if' => 'vt;1', 'route_target' => '172.16.12.1@vt;1']), wf_state_new('b1'));
-    $skips = array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'kill states for WAN2'));
+    $skips = array_values(array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'kill states for WAN2')));
     wf_check($t, '(q3) a kill target whose interface is not a plain name is skipped with one line',
-        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === [] && count($skips) === 1);
+        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === []
+        && $skips === ['kill states for WAN2 skipped: no valid IPv4 gateway@interface target']);
 
     /* ownership: a record proves a hold only by the boot that took it; b500 is the live boot, b400 the one before */
     $fdB = ['force_down' => true, 'status' => 'force_down'];
@@ -466,6 +467,18 @@ wf_register_suite('planner', function (): int {
         $view['holds'] === wf_t_rec('WAN_B', 'b500', 31100) && $view['force_down']['WAN_B'] && $exit['last_held'] === ['WAN_A']
         && $exit['dry_held'] === []);
 
+    $fdA = ['force_down' => true, 'status' => 'force_down'];
+    $mustRelease = fn (array $extra, string $stateBoot = 'b500'): bool
+        => wf_dry_must_release(wf_t_ab(31150, $fdA, [], array_merge(['dry' => true], $extra)), wf_state_new($stateBoot));
+    wf_check($t, '(y1) dry run releases for real first only a hold the plugin proves: this boot\'s, released by hand or not, '
+        . 'and the boot before\'s at a boot the early hook missed; never an unproven or a foreign record, which would end the '
+        . 'simulation every tick for nothing',
+        $mustRelease(['holds' => wf_t_rec('WAN_A', 'b500')]) && $mustRelease(['holds' => wf_t_rec('WAN_B', 'b500')])
+        && $mustRelease(['holds' => wf_t_rec('WAN_A', 'b400')], 'b400')
+        && !$mustRelease(['holds' => wf_t_rec('WAN_A', 'b400')], 'corrupt')
+        && !$mustRelease(['holds' => wf_t_rec('WAN_A', 'b500'), 'boot_id' => ''])
+        && !$mustRelease(['holds' => wf_t_rec('WAN_A', 'deadbeef')]) && !$mustRelease([]));
+
     /* 1.3_1's held list still in the config after the evaluation's import (it failed, or waits for kern.boot_id): WAN_B
      * forced down with no record, as the upgrade window leaves it, and last_held from 1.3_1 naming it */
     $s = wf_state_new('b500');
@@ -517,7 +530,7 @@ wf_register_suite('planner', function (): int {
     $all = array_values($produced);
     $any = fn (callable $f): bool => array_filter($all, $f) !== [];
     wf_check($t, 'the round-trip states cover every nested field: apply_pending, ts, a failback counting and one due, '
-        . 'an unowned alert, no_rehold, dry_held, said, a fractional settled loss, a foreign record pruned',
+        . 'an unowned alert, no_rehold, dry_held, said, a settled loss with no fraction (5.0), a foreign record pruned',
         $any(fn (array $x): bool => $x['foreign_pruned'] !== []) &&
         $any(fn (array $x): bool => $x['apply_pending'] !== []) && $any(fn (array $x): bool => $x['ts']['default_gw'] !== null)
         && $any(fn (array $x): bool => isset($x['pending_failbacks']['WAN2']) && $x['pending_failbacks']['WAN2']['due'] === null)

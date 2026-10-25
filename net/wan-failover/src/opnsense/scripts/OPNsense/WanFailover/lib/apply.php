@@ -145,9 +145,13 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         /* a kill that did not run in full is a warning; the hold stands either way */
         foreach ($plan['kill_targets'] as $target) {
             $out = trim(($io['configd'])('wanfailover kill_states', [$target]));
-            $log("kill states via {$target}: {$out}", preg_match('/^killed \d+ states \(0 failed\)\z/', $out) === 1 ? LOG_NOTICE : LOG_WARNING);
+            $log("kill states via {$target}: {$out}", wf_kill_answer_clean($out) ? LOG_NOTICE : LOG_WARNING);
         }
-        $state['apply_pending'] = [];
+        /* what this apply wrote or resumed is finished; a pending apply kept while nothing can be proven (an unreadable
+         * kern.boot_id, wf_reconcile()) waits for the boot id */
+        foreach (array_merge(array_keys($changes), $plan['redo_apply'], $plan['redo_replay']) as $n) {
+            unset($state['apply_pending'][$n]);
+        }
     }
 
     $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
@@ -607,7 +611,7 @@ function wf_deinstall_run(int $startedAt, callable $read, callable $ioFor, calla
         $loaded = $r['loaded'];
         if ($loaded['corrupt']) {
             if (!$corruptSaid) {
-                $log("deinstall: state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
+                $log('deinstall: state file unreadable (' . wf_state_problem($loaded) . '); starting from a fresh state', LOG_WARNING);
                 $corruptSaid = true;
             }
             $loaded['state']['boot_id'] = 'corrupt';

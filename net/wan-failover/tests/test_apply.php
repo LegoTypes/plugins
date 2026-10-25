@@ -225,7 +225,7 @@ wf_register_suite('apply', function (): int {
     $r = wf_apply(wf_t_plan(['hold' => ['WAN_A'], 'held_after' => ['WAN_A'], 'records_after' => ['WAN_A' => ['boot' => 'b1', 'since' => 1000]],
                              'expected' => ['WAN_A' => false], 'write' => true, 'kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    wf_check($t, '(w5) a write skipped because force_down moved since the snapshot says so as its problem, keeps the pending '
+    wf_check($t, '(x1) a write skipped because force_down moved since the snapshot says so as its problem, keeps the pending '
         . 'hold, and runs neither the routing reconfigure, the replay nor a kill; the caller logs the problem, not apply',
         !$r['ok'] && $r['state']['apply_pending'] === ['WAN_A' => 'hold']
         && $r['problem'] === 'force_down on WAN_A changed since the snapshot'
@@ -244,8 +244,28 @@ wf_register_suite('apply', function (): int {
     $wPlan = wf_t_plan(['hold' => ['WAN_A'], 'release' => ['WAN_C'], 'held_after' => ['WAN_B', 'WAN_A'], 'records_after' => $records,
                         'expected' => ['WAN_A' => false, 'WAN_C' => true], 'write' => true]);
     $r = wf_apply($wPlan, $state, $snap, $f['io']);
-    wf_check($t, '(w6) the writer is handed the plan\'s changes, expected force_down and records after, as the plan has them',
+    wf_check($t, '(x2) the writer is handed the plan\'s changes, expected force_down and records after, as the plan has them',
         $r['ok'] && $got->getArrayCopy() === [[['WAN_A' => true, 'WAN_C' => false], $wPlan['expected'], $wPlan['records_after']]]);
+
+    $f = wf_t_io();
+    $s = wf_state_new('b500');
+    $s['apply_pending'] = ['WAN_B' => 'hold'];
+    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN_A']]), $s, $snap, $f['io']);
+    wf_check($t, '(x3) a pending apply that no plan step handled (kept while kern.boot_id is unreadable) survives the apply; '
+        . 'the one it resumed is finished', $r['ok'] && $r['state']['apply_pending'] === ['WAN_B' => 'hold']);
+
+    $f = wf_t_io([], true, true, [$pfStale]);
+    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN2', 'x;y'], 'failback' => ['x;y' => ['top' => true]]]), $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    $x4 = in_array('configd wanfailover replay_alarm WAN2', $c, true)
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd ') && str_contains($x, 'x;y')) === []
+        && count(array_filter($c, fn (string $x): bool => $x === 'log replay skipped for an invalid gateway name')) === 1
+        && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd wanfailover replay_alarm'))) === 2;
+    wf_check($t, '(x4) a gateway name that is not plain never reaches an alarm replay, and is said once for the whole apply, '
+        . 'across the hold\'s replay and the failback\'s', $x4);
+    if (!$x4) {
+        printf("    calls: %s\n", json_encode($c));
+    }
 
     $f = wf_t_io();
     $s = wf_state_new('b500');
@@ -357,7 +377,7 @@ wf_register_suite('apply', function (): int {
     $read = function () use ($snaps, $reads): array {
         $s = $snaps[count($reads)];
         $reads[] = $s['now'];
-        return ['snap' => $s, 'loaded' => ['state' => wf_state_new('b500'), 'corrupt' => false, 'problem' => null]];
+        return ['snap' => $s, 'loaded' => ['state' => wf_state_new('b500'), 'corrupt' => false, 'problem' => null, 'field' => null]];
     };
     $clock = new ArrayObject([2000]);
     $slept = new ArrayObject();
@@ -424,7 +444,7 @@ wf_register_suite('apply', function (): int {
         $f['io']['write'] = $write;
         $dio = wf_deinstall_io($f['io'], $run, $fallback);
         wf_deinstall_run($snapNow['now'], fn (): array => ['snap' => $snapNow, 'loaded' => ['state' => wf_state_new('b500'),
-            'corrupt' => false, 'problem' => null]], fn (array $snap): array => $dio, fn (): int => $snapNow['now'],
+            'corrupt' => false, 'problem' => null, 'field' => null]], fn (array $snap): array => $dio, fn (): int => $snapNow['now'],
             fn (int $s): int => 0, $logTo);
         return ['log' => $logged->getArrayCopy(), 'calls' => $f['calls']->getArrayCopy()];
     };

@@ -172,5 +172,9 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, '(p9) failback pairs floating states only: the bound anchor is skipped and the bound in-state is no partner',
         count($mixed) === 3 && count($mixedFlows) === 1 && $mixedFlows[0]['anchor']['id'] === 'd0000000000000d7'
         && $mixedFlows[0]['kind'] === 'local' && $mixedFlows[0]['partner'] === null);
+    wf_check($t, '(h4) a kill answer is clean only when every state it found was killed, as wf_kill_states_run() says it',
+        wf_kill_answer_clean('killed 3 states (0 failed)') && wf_kill_answer_clean('killed 0 states (0 failed)')
+        && !wf_kill_answer_clean('killed 3 states (1 failed)') && !wf_kill_answer_clean('listing failed: pfctl exited 1')
+        && !wf_kill_answer_clean("killed 3 states (0 failed)\n") && !wf_kill_answer_clean('rejected target'));
     return wf_tally_report('pfstate', $t);
 });

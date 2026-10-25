@@ -154,7 +154,7 @@ wf_register_suite('wiring', function (): int {
     $above = ["if (\$mode === '--plan-from')", "if (\$mode === 'kill-states')", "if (\$mode === 'status')",
               "if (\$mode === 'holds')", "if (\$mode === 'deinstall')"];
     $below = ["if (\$mode === 'start' || \$mode === 'stop')", "if (\$mode === '--snapshot')", "if (\$mode === '--dry')",
-              "\$lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');", 'wf_holds_import_legacy('];
+              "\$lock = wf_lock_open(WF_RUN_DIR . '/evaluate.lock');", 'wf_holds_import_legacy('];
     $misplaced = [];
     foreach ($above as $needle) {
         $at = strpos($src, $needle);

@@ -43,6 +43,23 @@ function wf_state_new(string $bootId): array
 }
 
 /**
+ * What lstat() found at a path, by its file type: link, dir, file or other. The plugin's one reading of the type bits,
+ * so the rule that a trusted file is a regular file and never a link lives in one place.
+ *
+ * @param array{mode: int} $st lstat()'s answer
+ * @return string link, dir, file or other
+ */
+function wf_stat_type(array $st): string
+{
+    return match ($st['mode'] & 0170000) {
+        0120000 => 'link',
+        0040000 => 'dir',
+        0100000 => 'file',
+        default => 'other',
+    };
+}
+
+/**
  * A directory of the plugin's, root's alone, since what it holds is trusted: created 0700 when missing, put back to
  * 0700 when its mode differs (1.3_1 made them 0750), refused when the path is a symbolic link or not a directory.
  */
@@ -58,10 +75,10 @@ function wf_private_dir(string $dir): void
     if ($st === false) {
         throw new RuntimeException("cannot create {$dir}");
     }
-    if (($st['mode'] & 0170000) === 0120000) {
+    if (wf_stat_type($st) === 'link') {
         throw new RuntimeException("{$dir} is a symbolic link");
     }
-    if (($st['mode'] & 0170000) !== 0040000) {
+    if (wf_stat_type($st) !== 'dir') {
         throw new RuntimeException("{$dir} is not a directory");
     }
     if (($st['mode'] & 07777) !== 0700 && !@chmod($dir, 0700)) {
@@ -86,10 +103,10 @@ function wf_read_regular_file(string $path, int $maxBytes = WF_FILE_MAX_BYTES): 
     if ($link === false) {
         return ['text' => null, 'problem' => null];
     }
-    if (($link['mode'] & 0170000) === 0120000) {
+    if (wf_stat_type($link) === 'link') {
         return ['text' => null, 'problem' => 'a symbolic link'];
     }
-    if (($link['mode'] & 0170000) !== 0100000) {
+    if (wf_stat_type($link) !== 'file') {
         return ['text' => null, 'problem' => 'not a regular file'];
     }
     /* n is O_NONBLOCK (the plain-files wrapper): a FIFO or device swapped in after the lstat opens at once, and the
@@ -139,6 +156,24 @@ function wf_write_private(string $path, string $data): void
         @unlink($tmp);
         throw new RuntimeException("cannot write {$path}");
     }
+}
+
+/**
+ * The evaluate lock's file, opened close-on-exec, root's alone like every file of the plugin's: made 0600, and one
+ * 1.3_1 made under the umask put back to 0600. The lock is never written; its directory is the caller's
+ * (wf_private_dir()).
+ *
+ * @return resource|false
+ */
+function wf_lock_open(string $path): mixed
+{
+    $umask = umask(0077);
+    $fh = @fopen($path, 'ce');
+    umask($umask);
+    if ($fh !== false) {
+        @chmod($path, 0600);
+    }
+    return $fh;
 }
 
 /**
@@ -209,58 +244,74 @@ function wf_state_spec(): array
 }
 
 /**
+ * Where a value first leaves its shape: the path to the first value that fails (the keys from $path down, joined by
+ * dots, as judgements.WAN_A.since), or null when it has the shape throughout.
+ *
  * @param string|array $spec a field of wf_state_spec()
  */
-function wf_shape_ok(mixed $value, string|array $spec): bool
+function wf_shape_problem(mixed $value, string|array $spec, string $path): ?string
 {
     if (is_string($spec)) {
-        return in_array(get_debug_type($value), explode('|', $spec), true);
+        return in_array(get_debug_type($value), explode('|', $spec), true) ? null : $path;
     }
     if (isset($spec['='])) {
-        return in_array($value, $spec['='], true);
+        return in_array($value, $spec['='], true) ? null : $path;
     }
     if (!is_array($value) || (isset($spec['#']) && !array_is_list($value))) {
-        return false;
+        return $path;
     }
     if (isset($spec['*']) || isset($spec['#'])) {
-        foreach ($value as $item) {
-            if (!wf_shape_ok($item, $spec['*'] ?? $spec['#'])) {
-                return false;
+        foreach ($value as $key => $item) {
+            $failed = wf_shape_problem($item, $spec['*'] ?? $spec['#'], "{$path}.{$key}");
+            if ($failed !== null) {
+                return $failed;
             }
         }
-        return true;
+        return null;
     }
     foreach ($spec as $key => $field) {
         $name = ltrim($key, '?');
         if (!array_key_exists($name, $value)) {
             if ($name === $key) {
-                return false;
+                return "{$path}.{$name}";
             }
-        } elseif (!wf_shape_ok($value[$name], $field)) {
-            return false;
+        } else {
+            $failed = wf_shape_problem($value[$name], $field, "{$path}.{$name}");
+            if ($failed !== null) {
+                return $failed;
+            }
         }
     }
-    return true;
+    return null;
+}
+
+/**
+ * @param string|array $spec a field of wf_state_spec()
+ */
+function wf_shape_ok(mixed $value, string|array $spec): bool
+{
+    return wf_shape_problem($value, $spec, '') === null;
 }
 
 /**
  * A decoded state file of this version in the shape the plugin writes (wf_state_spec()): its version must be an int,
- * and every field it has must have that shape to its depth, or the whole file is corrupt; a field it lacks takes its
- * default, and keys the plugin does not read are kept. A gateway_ips entry that is not an IPv4 address is dropped,
- * which costs only a state kill's fallback address.
+ * and every field it has must have that shape to its depth, or the whole file is corrupt, the first field that failed
+ * named; a field it lacks takes its default, and keys the plugin does not read are kept. A gateway_ips entry that is
+ * not an IPv4 address is dropped, which costs only a state kill's fallback address.
  *
  * @param array<array-key, mixed> $data
- * @return array{state: array, corrupt: bool}
+ * @return array{state: array, corrupt: bool, field: ?string}
  */
 function wf_state_shape(array $data, string $bootId): array
 {
     $new = wf_state_new($bootId);
     if (!is_int($data['version'] ?? null)) {
-        return ['state' => $new, 'corrupt' => true];
+        return ['state' => $new, 'corrupt' => true, 'field' => 'version'];
     }
     foreach (wf_state_spec() as $key => $spec) {
-        if (array_key_exists($key, $data) && !wf_shape_ok($data[$key], $spec)) {
-            return ['state' => $new, 'corrupt' => true];
+        $failed = array_key_exists($key, $data) ? wf_shape_problem($data[$key], $spec, $key) : null;
+        if ($failed !== null) {
+            return ['state' => $new, 'corrupt' => true, 'field' => $failed];
         }
     }
     $ips = [];
@@ -270,24 +321,25 @@ function wf_state_shape(array $data, string $bootId): array
         }
     }
     $data['gateway_ips'] = $ips;
-    return ['state' => array_merge($new, $data), 'corrupt' => false];
+    return ['state' => array_merge($new, $data), 'corrupt' => false, 'field' => null];
 }
 
 /**
  * A file that cannot be read as a regular file, or holds no state of this version's shape, loads fresh and corrupt,
- * with the problem named; a missing file loads fresh and not corrupt.
+ * with the problem named, and for a shape the first field that failed; a missing file loads fresh and not corrupt.
  *
- * @return array{state: array, corrupt: bool, problem: ?string}
+ * @return array{state: array, corrupt: bool, problem: ?string, field: ?string}
  */
 function wf_state_load(string $path, string $bootId): array
 {
-    $corrupt = fn (string $problem): array => ['state' => wf_state_new($bootId), 'corrupt' => true, 'problem' => $problem];
+    $corrupt = fn (string $problem, ?string $field = null): array
+        => ['state' => wf_state_new($bootId), 'corrupt' => true, 'problem' => $problem, 'field' => $field];
     $read = wf_read_regular_file($path);
     if ($read['problem'] !== null) {
         return $corrupt($read['problem']);
     }
     if ($read['text'] === null) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null];
+        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null, 'field' => null];
     }
     try {
         $data = json_decode($read['text'], true, 64, JSON_THROW_ON_ERROR);
@@ -300,10 +352,22 @@ function wf_state_load(string $path, string $bootId): array
     /* another version (an upgrade): start fresh in this boot; ownership lives in config, so nothing is
      * released and held gateways stay held until they read loss-free */
     if (is_int($data['version'] ?? null) && $data['version'] !== WF_STATE_VERSION) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null];
+        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null, 'field' => null];
     }
     $shaped = wf_state_shape($data, $bootId);
-    return $shaped['corrupt'] ? $corrupt("not this version's shape") : $shaped + ['problem' => null];
+    return $shaped['corrupt'] ? $corrupt("not this version's shape", $shaped['field'])
+        : ['state' => $shaped['state'], 'corrupt' => false, 'problem' => null, 'field' => null];
+}
+
+/**
+ * Why a state file loaded as corrupt, for the log: the problem, and for a shape the first field that failed, since a
+ * state found corrupt releases every live hold and the owner then needs to know what was wrong.
+ *
+ * @param array{problem: ?string, field: ?string} $loaded wf_state_load()
+ */
+function wf_state_problem(array $loaded): string
+{
+    return (string)$loaded['problem'] . ($loaded['field'] === null ? '' : " at {$loaded['field']}");
 }
 
 /**
@@ -320,8 +384,8 @@ function wf_state_save(string $path, array $state): void
  * by the planner's boot detector alone, the boot before. A proven record is owned while its gateway reads force_down
  * 1, and was released by hand once it reads 0. Any other record (a restored backup, a hand-edited config) is foreign:
  * pruned, and its gateway's force_down left as it is. With the live boot id unreadable nothing can be proven, so
- * every record is kept as it is, neither released nor pruned (unproven; the planner says so). Names with no
- * configured gateway are skipped.
+ * every record is kept as it is, neither released nor pruned (unproven; the planner says so), and every pending apply
+ * is kept as it is too, neither finished nor dropped. Names with no configured gateway are skipped.
  *
  * @param array<string, array{boot: string, since: int}> $records the hold records by gateway name (wf_resolve_records())
  * @param array<string, bool> $forceDown every configured gateway name => force_down
@@ -359,6 +423,12 @@ function wf_reconcile(array $records, array $forceDown, array $applyPending, arr
         }
     }
     foreach ($applyPending as $name => $what) {
+        /* with nothing provable a pending apply is neither finished nor dropped: it waits, as its record does, for the
+         * boot id to read again */
+        if ($liveBoot === '') {
+            $out['apply_pending'][$name] = $what;
+            continue;
+        }
         /* a hold is finished (replay, state kill) only on a record this plugin wrote; a release, once no record is left */
         $inHeld = $what === 'hold' ? isset($proven[$name]) : isset($records[$name]);
         if ($what === 'hold' && $inHeld) {

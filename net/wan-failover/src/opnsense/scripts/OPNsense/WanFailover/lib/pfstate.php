@@ -256,6 +256,15 @@ function wf_kill_states_run(string $target, callable $run): array
 }
 
 /**
+ * Whether a kill's answer (wf_kill_states_run()'s line, as configd hands it back) says that every state it found was
+ * killed: the format lives here, beside the code that prints it.
+ */
+function wf_kill_answer_clean(string $answer): bool
+{
+    return preg_match('/^killed \d+ states \(0 failed\)\z/', $answer) === 1;
+}
+
+/**
  * The gateways of a group's first tier that has any: core numbers tiers 1-5 and keeps an empty tier
  * as [''].
  *

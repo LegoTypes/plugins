@@ -344,6 +344,23 @@ function wf_failback_wait(array $p, int $now, int $delay): array
 }
 
 /**
+ * Whether a dry run must first release real holds, for real: one it finds (dry run was just turned on) is a hold the
+ * plugin proves it took (this boot's record, or the boot before's when the boot detector would release it), and a dry
+ * run never keeps a real hold. A record proving nothing does not end the simulation: an unproven one (kern.boot_id
+ * unreadable) is kept as it is anyway, and a foreign one was never the plugin's.
+ *
+ * @param array $snap the shape returned by wf_snapshot() (snapshot.php)
+ * @param array $state the shape returned by wf_state_new()
+ */
+function wf_dry_must_release(array $snap, array $state): bool
+{
+    $before = $snap['boot_id'] !== '' && !wf_boot_unread($state['boot_id']) && $state['boot_id'] !== $snap['boot_id']
+        ? $state['boot_id'] : '';
+    $rec = wf_reconcile($snap['holds'], $snap['force_down'], [], [], $snap['boot_id'], $before);
+    return $rec['owned'] !== [] || $rec['manual_released'] !== [];
+}
+
+/**
  * Dry run simulates ownership: the planner sees the simulated holds as records of the live boot and force_down,
  * exactly as a live hold would look, so a dry run decides each change once and rehearses hysteresis and failback.
  *

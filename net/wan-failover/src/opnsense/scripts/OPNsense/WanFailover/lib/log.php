@@ -14,6 +14,18 @@ declare(strict_types=1);
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/state.php';
 
+/**
+ * A log line as one printable line, so a value from outside (a gateway name or a hold record in a restored config)
+ * never forges or breaks one: CR and LF become "; ", every other control byte (0x00-0x1F, 0x7F) and every UTF-8 C1 pair
+ * (U+0080 to U+009F) becomes "?". No /u: bytes that are not UTF-8 pass through untouched instead of making the result
+ * null.
+ */
+function wf_log_text(string $msg): string
+{
+    $msg = str_replace(["\r", "\n"], '; ', $msg);
+    return (string)preg_replace('/[\x00-\x1F\x7F]|\xC2[\x80-\x9F]/', '?', $msg);
+}
+
 function wf_log(string $msg, int $prio = LOG_NOTICE): void
 {
     static $open = false;
@@ -21,7 +33,7 @@ function wf_log(string $msg, int $prio = LOG_NOTICE): void
         openlog('wanfailover', LOG_PID, LOG_LOCAL4);
         $open = true;
     }
-    syslog($prio, $msg);
+    syslog($prio, wf_log_text($msg));
 }
 
 /**
@@ -56,9 +68,9 @@ function wf_trace(string $dir, array $record): void
     clearstatcache(true, $file);
     $st = @lstat($file);
     $problem = null;
-    if ($st !== false && ($st['mode'] & 0170000) === 0120000) {
+    if ($st !== false && wf_stat_type($st) === 'link') {
         $problem = 'is a symbolic link';
-    } elseif ($st !== false && ($st['mode'] & 0170000) !== 0100000) {
+    } elseif ($st !== false && wf_stat_type($st) !== 'file') {
         $problem = 'is not a regular file';
     } elseif ($st !== false && ($st['mode'] & 07777) !== 0600 && !@chmod($file, 0600)) {
         $problem = 'cannot be made mode 0600';

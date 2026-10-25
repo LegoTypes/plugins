@@ -112,6 +112,11 @@ wf_register_suite('state', function (): int {
         . '(the planner says so once)',
         $r['unproven'] === ['WAN_A', 'WAN_B', 'WAN_C'] && $r['owned'] === [] && $r['manual_released'] === []
         && $r['foreign_records'] === [] && $r['log'] === []);
+    $r = wf_reconcile($three, ['WAN_A' => true, 'WAN_B' => true, 'WAN_C' => false], ['WAN_B' => 'hold', 'WAN_D' => 'release'],
+        ['WAN_A', 'WAN_B', 'WAN_C'], '');
+    wf_check($t, '(o10) with the live boot id unreadable a pending apply is kept as it is, neither finished nor dropped, and '
+        . 'nothing is logged for it', $r['apply_pending'] === ['WAN_B' => 'hold', 'WAN_D' => 'release'] && $r['redo_apply'] === []
+        && $r['redo_replay'] === [] && $r['log'] === []);
 
     $noList = ['present' => false, 'release' => [], 'left' => [], 'unknown' => 0];
     $b = wf_boot_outcome($three, 0, 'b400', $noList);
@@ -257,7 +262,7 @@ wf_register_suite('state', function (): int {
         file_put_contents("{$d}/state.json", json_encode(['version' => 3] + $fields));
         $l = wf_state_load("{$d}/state.json", 'b500');
         wf_check($t, "(s11) {$what}: loads as written, not corrupt", !$l['corrupt'] && $l['problem'] === null
-            && array_intersect_key($l['state'], $fields) == $fields);
+            && array_intersect_key($l['state'], $fields) === $fields);
     }
     file_put_contents("{$d}/state.json", '{"version":3,"gateway_ips":{"WAN_A":5,"WAN_B":"198.51.100.1"}}');
     $l = wf_state_load("{$d}/state.json", 'b500');
@@ -422,13 +427,13 @@ wf_register_suite('state', function (): int {
     $uuidB = 'aaaaaaaa-0000-4000-8000-00000000000b';
     $w = wf_holds_rows(['WAN_B' => ['boot' => 'b500', 'since' => 200], 'WAN_A' => ['boot' => 'b400', 'since' => 100]],
         ['WAN_A' => $uuidA, 'WAN_B' => $uuidB]);
-    wf_check($t, '(k1) the rows a write leaves are the records after it, one per gateway by its UUID, boot and since as given',
+    wf_check($t, '(j1) the rows a write leaves are the records after it, one per gateway by its UUID, boot and since as given',
         $w === ['rows' => [['gateway' => $uuidB, 'boot' => 'b500', 'since' => 200], ['gateway' => $uuidA, 'boot' => 'b400', 'since' => 100]],
                 'missing' => []]);
-    wf_check($t, '(k2) a record whose gateway has no UUID now is missing, so the writer writes nothing',
+    wf_check($t, '(j2) a record whose gateway has no UUID now is missing, so the writer writes nothing',
         wf_holds_rows(['WAN_A' => ['boot' => 'b500', 'since' => 100], 'WAN_C' => ['boot' => 'b500', 'since' => 100]], ['WAN_A' => $uuidA])
             === ['rows' => [['gateway' => $uuidA, 'boot' => 'b500', 'since' => 100]], 'missing' => ['WAN_C']]);
-    wf_check($t, '(k3) no record after the write leaves no row', wf_holds_rows([], ['WAN_A' => $uuidA]) === ['rows' => [], 'missing' => []]);
+    wf_check($t, '(j3) no record after the write leaves no row', wf_holds_rows([], ['WAN_A' => $uuidA]) === ['rows' => [], 'missing' => []]);
 
     $good = wf_state_new('b500');
     $good['last_held'] = ['WAN_A'];
@@ -467,5 +472,44 @@ wf_register_suite('state', function (): int {
             . 'longer exists'
         && wf_write_guard_problem(['WAN_B'], ['WAN_A' => true]) === 'WAN_B no longer exists'
         && wf_write_guard_problem(['WAN_A'], ['WAN_A' => true]) === 'force_down on WAN_A changed since the snapshot');
+    $d = wf_t_scratch('h1');
+    $lock = wf_lock_open("{$d}/evaluate.lock");
+    $fresh = wf_t_mode("{$d}/evaluate.lock");
+    if ($lock !== false) {
+        fclose($lock);
+    }
+    file_put_contents("{$d}/old.lock", '');
+    chmod("{$d}/old.lock", 0644);
+    $old = wf_lock_open("{$d}/old.lock");
+    if ($old !== false) {
+        fclose($old);
+    }
+    wf_check($t, '(h1) the evaluate lock is made 0600, and one 1.3_1 made under the umask is put back to 0600',
+        $lock !== false && $fresh === 0600 && $old !== false && wf_t_mode("{$d}/old.lock") === 0600);
+    mkdir("{$d}/dir");
+    touch("{$d}/file");
+    symlink("{$d}/file", "{$d}/link");
+    wf_check($t, '(h2) the type lstat() found: a link, a directory, a regular file, anything else (a device)',
+        wf_stat_type((array)lstat("{$d}/link")) === 'link' && wf_stat_type((array)lstat("{$d}/dir")) === 'dir'
+        && wf_stat_type((array)lstat("{$d}/file")) === 'file' && wf_stat_type((array)lstat('/dev/null')) === 'other');
+    $at = function (array $fields) use ($d): array {
+        file_put_contents("{$d}/state.json", json_encode(['version' => 3] + $fields));
+        return wf_state_load("{$d}/state.json", 'b500');
+    };
+    $l = $at(['judgements' => ['WAN_A' => ['since' => 'x'] + wf_judgement_new(100)]]);
+    $l2 = $at(['judgements' => ['WAN_A' => array_diff_key(wf_judgement_new(100), ['recovering' => true])]]);
+    $l3 = $at(['last_held' => ['WAN_A', 5]]);
+    file_put_contents("{$d}/state.json", '{"version":"3"}');
+    $l4 = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s13) a state found corrupt names the first field that failed, the problem text unchanged, so the log says '
+        . 'what released every hold',
+        $l['corrupt'] && $l['problem'] === "not this version's shape" && $l['field'] === 'judgements.WAN_A.since'
+        && $l2['field'] === 'judgements.WAN_A.recovering' && $l3['field'] === 'last_held.1' && $l4['field'] === 'version'
+        && wf_state_problem($l) === "not this version's shape at judgements.WAN_A.since"
+        && wf_state_problem(['problem' => 'a symbolic link', 'field' => null]) === 'a symbolic link');
+    wf_t_rmtree($d);
+    wf_check($t, '(h3) a log line is one printable line: CR and LF become "; ", other control bytes and UTF-8 C1 pairs "?"',
+        wf_log_text("hold record for WAN\x1b[2J_B\r\nforged\xc2\x85x") === 'hold record for WAN?[2J_B; ; forged?x'
+        && wf_log_text("caf\xc3\xa9 \xff") === "caf\xc3\xa9 \xff");
     return wf_tally_report('state', $t);
 });

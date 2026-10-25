@@ -121,9 +121,15 @@ class HLD1_0_0 extends BaseModelMigration
         }
     }
 
-    /** Logged under the plugin's name, whether or not its libraries could be loaded. */
+    /**
+     * Logged under the plugin's name, whether or not its libraries could be loaded; once they are, the reason is cleaned
+     * as wf_log() cleans a line.
+     */
     private static function failed(string $why): void
     {
+        if (function_exists('wf_log_text')) {
+            $why = wf_log_text($why);
+        }
         openlog('wanfailover', LOG_PID, LOG_LOCAL4);
         syslog(LOG_ERR, "migration: the held list was not carried over ({$why}); it stays in the config, and the next"
             . ' evaluation imports it');
