@@ -1144,3 +1144,15 @@ def test_descriptor_is_closed_when_fdopen_fails(env, monkeypatch, which):
     assert len(fds) == 1
     with pytest.raises(OSError):
         os.fstat(fds[0])   # EBADF: closed
+
+
+def test_failed_fdopen_that_closed_the_descriptor_itself_surfaces_its_own_error(env, monkeypatch):
+    cfg, tmp = env
+
+    def self_closing_fdopen(fd, *args, **kwargs):
+        os.close(fd)
+        raise MemoryError
+
+    monkeypatch.setattr(macalias.os, "fdopen", self_closing_fdopen)
+    with pytest.raises(MemoryError):
+        macalias._open_regular(cfg["tables_conf"])

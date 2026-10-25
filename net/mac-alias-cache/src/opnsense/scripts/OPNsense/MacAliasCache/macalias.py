@@ -194,11 +194,14 @@ def refusal(found):
 
 
 def _fdopen(fd, *args, **kwargs):
-    """ os.fdopen that closes fd itself when wrapping it fails, so no descriptor is left over """
+    """ os.fdopen that closes fd when wrapping it fails, so no descriptor is left over """
     try:
         return os.fdopen(fd, *args, **kwargs)
     except BaseException:
-        os.close(fd)
+        try:
+            os.close(fd)
+        except OSError:
+            pass  # io.open closes the descriptor itself when it fails after creating the file object
         raise
 
 
