@@ -41,14 +41,18 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import macaliascache_lib as lib  # noqa: E402
 
+# item -> core's file, for each file the flush imitates; the contract checks the programs it runs
+_CORE_FILES = {item: path for item, path, _expected, _note in lib.CORE_CONTRACT}
+
 DEFAULTS = {
     "tables_conf": "/usr/local/etc/filter_tables.conf",
     "cache_file": "/tmp/alias_filter_arp.cache",
     "lock_file": "/tmp/filter_update_tables.lock",
     "state_dir": "/var/run/macaliascache",
     "aliastables_dir": "/var/db/aliastables",
-    "list_hosts": ["/usr/local/opnsense/scripts/interfaces/list_hosts.py", "-n"],
-    "update_tables": "/usr/local/opnsense/scripts/filter/update_tables.py",
+    "list_hosts": [_CORE_FILES["list_hosts"], "-n"],
+    "update_tables": _CORE_FILES["targeted_mode"],
+    "core_files": _CORE_FILES,
     "pfctl": "/sbin/pfctl",
     "lock_timeout": 15.0,
     "lock_retry": 0.25,
@@ -56,14 +60,17 @@ DEFAULTS = {
     "update_timeout": 60,
 }
 
-# the error code each blocking problem item refuses a flush with; when items of several
-# codes block at once, the earliest code in _REFUSAL_ORDER wins
+# every item problems() can list, with the error code it refuses a flush with when it blocks;
+# when items of several codes block at once, the earliest code in _REFUSAL_ORDER wins. Every
+# core-contract item is core_changed, emptied_table too, although it never blocks
 _REFUSAL_CODE = {
     "state_dir": "state_unusable",
     "last_file": "state_unusable",
     "cache_file": "state_unusable",
     "lock_file": "lock_unusable",
+    "alias_name": "core_changed",
 }
+_REFUSAL_CODE.update((item, "core_changed") for item in _CORE_FILES)
 _REFUSAL_ORDER = ("state_unusable", "lock_unusable", "core_changed")
 
 
@@ -130,8 +137,11 @@ def _last_file_problem(cfg):
         return _problem("last_file", "plugin flush record at %s cannot be checked (%s)" % (path, e.strerror), True)
     if stat.S_ISDIR(st.st_mode):
         return _problem("last_file", "plugin flush record at %s is a directory" % path, True)
-    if not _single_regular(st) or st.st_uid != os.geteuid():
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
         return _problem("last_file", "plugin flush record at %s is not a regular file owned by root; "
+                        "it is ignored and the next flush replaces it" % path, False)
+    if st.st_nlink != 1:
+        return _problem("last_file", "plugin flush record at %s has more than one link; "
                         "it is ignored and the next flush replaces it" % path, False)
     return None
 
@@ -172,14 +182,32 @@ def _cache_file_problem(cfg):
     return None
 
 
-def problems(cfg):
+def _alias_name_problem(tables):
+    """ every name the flush refreshes becomes a path under the alias tables directory and a
+    pfctl -t argument, so each must pass core's own alias name pattern. Names come only from
+    core's filter_tables.conf, so this catches a restored config that bypassed the model.
+    Core's internal tables (__lan_network ...) fail the pattern and are never refreshed
+    """
+    bad = [name for name in lib.refresh_set(tables) if not lib.valid_alias_name(name)]
+    if not bad:
+        return None
+    return _problem("alias_name", "alias names that do not match core's alias name pattern: %s; "
+                    "the flush would use them in a file path and as a pfctl table name"
+                    % ", ".join(repr(name) for name in bad), True)
+
+
+def problems(cfg, tables=None):
     """ what makes the plugin's state or core's files unsafe to use, for status and for a
-    flush before it takes core's lock; ensure_state_dir puts the state directory in place
+    flush before it takes core's lock; ensure_state_dir puts the state directory in place.
+    tables is filter_tables.conf as the caller parsed it, so the names checked are the names used
     """
     state = ensure_state_dir(cfg)
+    if tables is None:
+        tables = read_tables(cfg)
     # nothing inside a state directory that failed its check is looked at
-    found = [state, None if state else _last_file_problem(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg)]
-    return [problem for problem in found if problem]
+    found = [state, None if state else _last_file_problem(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg),
+             _alias_name_problem(tables)]
+    return [problem for problem in found if problem] + lib.core_contract(read_core_texts(cfg))
 
 
 def refusal(found):
@@ -205,11 +233,12 @@ def _fdopen(fd, *args, **kwargs):
         raise
 
 
-def _open_regular(path):
-    """ path opened to read as UTF-8 text when it is a regular file with one link, owned by
-    the running user, else None. O_NOFOLLOW refuses a symlink and O_NONBLOCK keeps a FIFO
-    from waiting for a writer; the link count refuses a hard link planted in /tmp to another
-    root-owned file. Any OSError means absent: FreeBSD answers a symlink with EMLINK, not ELOOP.
+def _open_regular(path, errors="strict"):
+    """ path opened to read as UTF-8 text (errors as open() takes them) when it is a regular
+    file with one link, owned by the running user, else None. O_NOFOLLOW refuses a symlink and
+    O_NONBLOCK keeps a FIFO from waiting for a writer; the link count refuses a hard link
+    planted in /tmp to another root-owned file. Any OSError means absent: FreeBSD answers a
+    symlink with EMLINK, not ELOOP.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -222,7 +251,7 @@ def _open_regular(path):
     if st is None or not _single_regular(st) or st.st_uid != os.geteuid():
         os.close(fd)
         return None
-    return _fdopen(fd, encoding="utf-8")
+    return _fdopen(fd, encoding="utf-8", errors=errors)
 
 
 def _read_json(path, schema):
@@ -239,6 +268,45 @@ def _read_json(path, schema):
     except (OSError, ValueError, RecursionError):
         return None
     return schema(data)
+
+
+def _read_text(path):
+    """ the text of a core file, None when it is not a regular file of root's or cannot be
+    read; a byte that is not UTF-8 does not hide the texts around it
+    """
+    f = _open_regular(path, errors="replace")
+    if f is None:
+        return None
+    try:
+        with f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _executable(path):
+    """ path is a regular file with an execute bit, as subprocess needs to run it """
+    try:
+        st = os.stat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode) and bool(st.st_mode & 0o111)
+
+
+def read_core_texts(cfg):
+    """ {item: text} of each core file the flush imitates, read once per file: None for a
+    file that is missing or unusable; list_hosts only has to be executable, so its text is
+    "exists" or None
+    """
+    texts, read = {}, {}
+    for item, path in cfg["core_files"].items():
+        if item == "list_hosts":
+            texts[item] = "exists" if _executable(path) else None
+            continue
+        if path not in read:
+            read[path] = _read_text(path)
+        texts[item] = read[path]
+    return texts
 
 
 def _write_json_atomic(path, obj, mode=0o644):
@@ -282,29 +350,22 @@ def _sweep_stale_temps(path, now, max_age=60):
             pass
 
 
-def seed_cache(rows, now):
-    """ {mac: {"items": [ip, ...], "last_seen": now}} in core's ArpCache format; the
-    MAC key is kept exactly as list_hosts returns it (core's current_cache does the same)
-    """
-    cache = {}
-    for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, (list, tuple)) and len(row) >= 3:
-            cache.setdefault(row[1], {"items": [], "last_seen": now})["items"].append(row[2])
-    return cache
-
-
 def read_tables(cfg):
     with open(cfg["tables_conf"]) as f:
         return lib.parse_tables(f.read())
 
 
 def read_hosts(cfg):
-    """ (source, rows) from list_hosts.py; (None, []) when it fails or prints non-JSON """
+    """ (source, rows) from list_hosts.py; (None, []) when it fails or prints non-JSON, and no
+    rows when its rows are not a list
+    """
     try:
         proc = subprocess.run(cfg["list_hosts"], capture_output=True, text=True, timeout=30)
         data = json.loads(proc.stdout)
-        return data.get("source"), data.get("rows", [])
-    except (OSError, ValueError, subprocess.SubprocessError, AttributeError):
+        rows = data.get("rows", [])
+        return data.get("source"), rows if isinstance(rows, list) else []
+    # RecursionError is nesting deeper than the parser goes
+    except (OSError, ValueError, RecursionError, subprocess.SubprocessError, AttributeError):
         return None, []
 
 
@@ -401,21 +462,23 @@ def _flush_emptied_tables(cfg, names):
 
 
 def cmd_status(cfg, now):
-    found = problems(cfg)
     tables = read_tables(cfg)
+    found = problems(cfg, tables)
     source, hosts = read_hosts(cfg)
+    good, _rejected = lib.validate_rows(hosts)
     cache = _read_json(cfg["cache_file"], lib.cache_schema) or {}
     names = list(lib.mac_aliases(tables))
     pf_counts = {}
     for name in names:
-        members = pf_set(cfg, name)
+        # a name outside core's pattern is listed as a problem and never passed to pfctl
+        members = pf_set(cfg, name) if lib.valid_alias_name(name) else None
         pf_counts[name] = len(members) if members is not None else None
     # nothing inside a state directory that failed its check is read
     state_ok = not any(problem["item"] == "state_dir" for problem in found)
     last = _read_json(state_paths(cfg)["last_file"], lib.last_schema) if state_ok else None
     return {
         "source": source,
-        "aliases": lib.alias_view(tables, cache, hosts, pf_counts, now),
+        "aliases": lib.alias_view(tables, cache, good, pf_counts, now),
         "last_flush": last,
         "problems": found,
     }
@@ -466,7 +529,9 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         return {"error": "busy", "detail": "another flush is running"}
     lock = None
     try:
-        refused = refusal(problems(cfg))
+        # read once, so the names the problem list checks are the names the flush uses
+        tables = read_tables(cfg)
+        refused = refusal(problems(cfg, tables))
         if refused:
             return refused
         last_file = state_paths(cfg)["last_file"]
@@ -490,7 +555,6 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         _sweep_stale_temps(cfg["cache_file"], now)
         _sweep_stale_temps(last_file, now)
 
-        tables = read_tables(cfg)
         names = lib.refresh_set(tables)
         if not names:
             return {"aliases": [], "note": "no mac aliases"}
@@ -498,11 +562,19 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # Read the host list before any side effect. Core's ArpCache.current_cache()
         # turns a list_hosts failure into {} without raising; with the cache gone
         # that would empty every mac alias and every alias nesting one. Refuse
-        # instead, change nothing and leave the rate limit unarmed.
+        # instead, change nothing and leave the rate limit unarmed. Only rows with a
+        # MAC and an address where core's cache takes them are written: core turns the
+        # cache into the alias's .txt, and pfctl -T replace -f resolves a hostname there.
         source, rows = read_hosts(cfg)
-        seeded = seed_cache(rows, now) if source is not None else {}
-        if not seeded:
+        if source is None or not rows:
             return {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
+        good, rejected = lib.validate_rows(rows)
+        if not good:
+            return {"error": "hosts_malformed",
+                    "detail": "%d host rows, none with a MAC and an address in the expected columns; nothing changed"
+                              % len(rows),
+                    "rejected": rejected}
+        seeded = lib.seed_cache(good, now)
 
         before = {name: pf_set(cfg, name) for name in names}
 
@@ -552,7 +624,8 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)
     _write_json_atomic(last_file, {"at": now, "summary": summary}, mode=0o600)
-    return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied}
+    return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied,
+            "rows_rejected": len(rows) - len(good), "rejected": rejected}
 
 
 def main(argv):

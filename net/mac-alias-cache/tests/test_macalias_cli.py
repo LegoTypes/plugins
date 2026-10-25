@@ -4,6 +4,7 @@ import fcntl
 import json
 import os
 import pathlib
+import shutil
 import signal
 import socket
 import stat
@@ -14,6 +15,7 @@ import textwrap
 import pytest
 
 import macalias
+import macaliascache_lib as lib
 
 TABLES = """<?xml version="1.0"?>
 <tabledef>
@@ -21,6 +23,17 @@ TABLES = """<?xml version="1.0"?>
   <table><name>Parent</name><type>host</type><address>DevMacs</address><ttl>300</ttl></table>
 </tabledef>
 """
+
+# the core files the flush imitates, relative to /usr/local/opnsense; the fixtures mirror them
+CORE_FILES = {
+    "arpcache": "scripts/filter/lib/alias/arpcache.py",
+    "update_lock": "service/conf/actions.d/actions_filter.conf",
+    "md5_marker": "scripts/filter/lib/alias/__init__.py",
+    "targeted_mode": "scripts/filter/update_tables.py",
+    "emptied_table": "scripts/filter/update_tables.py",
+    "list_hosts": "scripts/interfaces/list_hosts.py",
+}
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "core"
 
 
 def _exe(path, body):
@@ -62,6 +75,8 @@ def env(tmp_path):
     hosts = _exe(tmp_path / "list_hosts.py", """
         echo '{"source": "discovery", "rows": [["vlan0.120", "aa:bb:cc:00:00:01", "192.0.2.50"]]}'
     """)
+    # a copy of the fixtures, so a case may change a core file
+    shutil.copytree(FIXTURES, tmp_path / "core")
     cfg = dict(macalias.DEFAULTS)
     cfg.update(
         tables_conf=str(tmp_path / "filter_tables.conf"),
@@ -74,8 +89,36 @@ def env(tmp_path):
         pfctl=pfctl,
         lock_timeout=0.5,
         lock_retry=0.05,
+        core_files={item: str(tmp_path / "core" / path) for item, path in CORE_FILES.items()},
     )
     return cfg, tmp_path
+
+
+@pytest.fixture(autouse=True)
+def problems_name_only_mapped_items():
+    """ every problem any case here produces or refuses with names an item that has a refusal
+    code, so an item added without one fails here instead of raising KeyError in a flush
+    """
+    real_problems, real_refusal = macalias.problems, macalias.refusal
+
+    def check(found):
+        unmapped = [problem["item"] for problem in found if problem["item"] not in macalias._REFUSAL_CODE]
+        assert unmapped == [], found
+
+    def problems(*args, **kwargs):
+        found = real_problems(*args, **kwargs)
+        check(found)
+        return found
+
+    def refusal(found):
+        check(found)
+        return real_refusal(found)
+
+    # a separate MonkeyPatch, so a case's own monkeypatch.undo() leaves this in place
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(macalias, "problems", problems)
+        patch.setattr(macalias, "refusal", refusal)
+        yield
 
 
 def _last(cfg):
@@ -151,6 +194,7 @@ def test_flush_seeds_every_ip_per_mac_and_skips_short_rows(env):
     cfg["list_hosts"] = [_exe(tmp / "multi_hosts", "echo '%s'\n" % listing), "-n"]
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert "error" not in out
+    assert out["rows_rejected"] == 1 and out["rejected"] == [repr(["vlan0.120", "aa:bb:cc:00:00:02"])]
     # MAC keys kept exactly as list_hosts returns them, as core's ArpCache.current_cache does
     assert json.loads((tmp / "arp.cache").read_text()) == {
         "aa:bb:cc:00:00:01": {"items": ["192.0.2.50", "2001:db8::50"], "last_seen": 5000.0},
@@ -240,9 +284,15 @@ def _snapshot(tmp):
 @pytest.mark.parametrize("body", [
     "echo not-json\n",
     "echo '{\"source\": \"discovery\", \"rows\": []}'\n",
-    "echo '{\"source\": \"discovery\", \"rows\": [[\"vlan0.120\", \"aa:bb:cc:00:00:01\"]]}'\n",
     "exit 1\n",
-], ids=["non-json", "empty-rows", "only-short-rows", "no-output"])
+    "echo '{\"rows\": [[\"vlan0.120\", \"aa:bb:cc:00:00:01\", \"192.0.2.50\"]]}'\n",
+    "echo '{\"source\": \"discovery\", \"rows\": {\"vlan0.120\": [\"aa:bb:cc:00:00:01\", \"192.0.2.50\"]}}'\n",
+    "echo '{\"source\": \"discovery\", \"rows\": \"aa:bb:cc:00:00:01 192.0.2.50\"}'\n",
+    "echo '{\"source\": \"discovery\", \"rows\": null}'\n",
+    "echo '[[\"vlan0.120\", \"aa:bb:cc:00:00:01\", \"192.0.2.50\"]]'\n",
+    "head -c 200000 /dev/zero | tr '\\0' '['\n",
+], ids=["non-json", "empty-rows", "no-output", "no-source", "rows-object", "rows-string", "rows-null",
+        "top-level-list", "nested-beyond-the-parser"])
 def test_flush_refuses_when_hosts_unavailable(env, body):
     cfg, tmp = env
     cfg["list_hosts"] = [_exe(tmp / "bad_hosts", body), "-n"]
@@ -501,6 +551,14 @@ LOCK_NOT_REGULAR = "core's alias update lock at %s is not a regular file with on
 LAST_DIRECTORY = "plugin flush record at %s is a directory"
 LAST_IGNORED = ("plugin flush record at %s is not a regular file owned by root; "
                 "it is ignored and the next flush replaces it")
+LAST_LINKED = "plugin flush record at %s has more than one link; it is ignored and the next flush replaces it"
+CANNOT_CHECK = {
+    "last_file": "plugin flush record at %s cannot be checked (%s)",
+    "lock_file": "core's alias update lock at %s cannot be checked (%s)",
+    "cache_file": "core's MAC alias cache at %s cannot be checked (%s)",
+}
+EMPTIED_NOTE = ("core may now flush emptied tables itself (core #10950); "
+                "the plugin's own flush is redundant but harmless")
 
 
 def _items(out, item):
@@ -765,7 +823,8 @@ def test_status_notes_non_file_last_json_and_flush_replaces_it(env, monkeypatch,
     with _within(5):
         status = macalias.cmd_status(cfg, now=5000.0)
         out = _flush(cfg)
-    assert _items(status, "last_file") == [{"item": "last_file", "problem": LAST_IGNORED % path, "blocks_flush": False}]
+    text = (LAST_LINKED if kind == "hard-link" else LAST_IGNORED) % path
+    assert _items(status, "last_file") == [{"item": "last_file", "problem": text, "blocks_flush": False}]
     assert status["last_flush"] is None
     assert "error" not in out
     st = os.lstat(path)
@@ -1156,3 +1215,336 @@ def test_failed_fdopen_that_closed_the_descriptor_itself_surfaces_its_own_error(
     monkeypatch.setattr(macalias.os, "fdopen", self_closing_fdopen)
     with pytest.raises(MemoryError):
         macalias._open_regular(cfg["tables_conf"])
+
+
+def _list_hosts(cfg, tmp, rows):
+    """ list_hosts prints rows from a file, so a row may hold any text """
+    listing = tmp / "listing.json"
+    listing.write_text(json.dumps({"source": "discovery", "rows": rows}))
+    cfg["list_hosts"] = [_exe(tmp / "listed_hosts", 'cat "%s"\n' % listing), "-n"]
+
+
+def _core(cfg, item):
+    return pathlib.Path(cfg["core_files"][item])
+
+
+def _unchanged(tmp, cfg, before):
+    """ nothing a flush writes was written: core's cache, the .md5.txt marks, update_tables, last.json """
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert not _last(cfg).exists()
+
+
+@pytest.mark.parametrize("row", [
+    ["vlan0.10", "laptop.lan", "aa:bb:cc:00:00:01"],
+    ["vlan0.120", "aa:bb:cc:00:00:01"],
+], ids=["columns-swapped", "only-short-rows"])
+def test_flush_refuses_when_all_rows_malformed(env, row):
+    cfg, tmp = env
+    _list_hosts(cfg, tmp, [row])
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out == {
+        "error": "hosts_malformed",
+        "detail": "1 host rows, none with a MAC and an address in the expected columns; nothing changed",
+        "rejected": [repr(row)],
+    }
+    _unchanged(tmp, cfg, before)
+
+
+def test_flush_refuses_when_all_rows_malformed_counts_every_row(env):
+    cfg, tmp = env
+    rows = [["vlan0.10", "laptop-%d.lan" % n, "aa:bb:cc:00:00:01"] for n in range(7)]
+    _list_hosts(cfg, tmp, rows)
+    out = _flush(cfg)
+    assert out["error"] == "hosts_malformed"
+    assert out["detail"].startswith("7 host rows, none with")
+    assert out["rejected"] == [repr(row) for row in rows[:5]]
+
+
+def test_flush_drops_malformed_rows_and_reports_count(env):
+    cfg, tmp = env
+    hostname_row = ["vlan0.10", "aa:bb:cc:00:00:01", "laptop.lan"]
+    _list_hosts(cfg, tmp, [["vlan0.10", "aa:bb:cc:00:00:01", "192.0.2.50"], hostname_row])
+    out = _flush(cfg)
+    assert "error" not in out
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["192.0.2.50"], "last_seen": 5000.0}}
+    assert out["rows_rejected"] == 1
+    assert out["rejected"] == [repr(hostname_row)]
+
+
+def test_clean_flush_reports_no_rejected_rows(env):
+    cfg, tmp = env
+    out = _flush(cfg)
+    assert out["rows_rejected"] == 0 and out["rejected"] == []
+
+
+def test_flush_with_only_link_local_rows_seeds_them(env):
+    # (r8) host discovery may be IPv6-heavy on a segment; unzoned link-local rows are real devices
+    cfg, tmp = env
+    _list_hosts(cfg, tmp, [["vlan0.10", "aa:bb:cc:00:00:01", "fe80::5"], ["vlan0.10", "aa:bb:cc:00:00:01", "fe80::6"]])
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["rows_rejected"] == 0
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["fe80::5", "fe80::6"], "last_seen": 5000.0}}
+    assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
+
+
+def test_status_shows_only_checked_rows(env):
+    cfg, tmp = env
+    _list_hosts(cfg, tmp, [["vlan0.10", None, "192.0.2.60"], ["vlan0.10", "aa:bb:cc:00:00:01", "laptop.lan"],
+                           ["vlan0.10", "aa:bb:cc:00:00:01", "192.0.2.50"]])
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["aliases"][0]["macs"][0]["current_items"] == ["192.0.2.50"]
+
+
+def test_core_files_are_the_files_the_flush_imitates_and_runs():
+    core = macalias.DEFAULTS["core_files"]
+    assert core == {item: "/usr/local/opnsense/" + path for item, path in CORE_FILES.items()}
+    # the contract checks the very programs the flush runs
+    assert macalias.DEFAULTS["list_hosts"] == [core["list_hosts"], "-n"]
+    assert macalias.DEFAULTS["update_tables"] == core["targeted_mode"]
+    # and core's texts it expects are the paths the plugin writes and locks
+    expected = {item: texts for item, _path, texts, _note in lib.CORE_CONTRACT}
+    assert macalias.DEFAULTS["cache_file"] in expected["arpcache"]
+    assert macalias.DEFAULTS["lock_file"] in expected["update_lock"]
+
+
+def test_stock_core_files_give_no_problem(env):
+    # (c7) the fixtures hold 26.7.7's own lines, so a stock box raises no problem
+    cfg, tmp = env
+    texts = macalias.read_core_texts(cfg)
+    assert set(texts) == set(CORE_FILES)
+    assert texts["list_hosts"] == "exists"
+    assert None not in texts.values()
+    assert lib.core_contract(texts) == []
+    assert macalias.cmd_status(cfg, now=0.0)["problems"] == []
+
+
+def test_read_core_texts_replaces_undecodable_bytes(env):
+    cfg, tmp = env
+    with open(_core(cfg, "targeted_mode"), "ab") as f:
+        f.write(b"# \xff\xfe\n")
+    texts = macalias.read_core_texts(cfg)
+    assert "�" in texts["targeted_mode"] and "--aliases" in texts["targeted_mode"]
+    assert macalias.cmd_status(cfg, now=0.0)["problems"] == []
+
+
+@pytest.mark.parametrize("change", ["drift", "missing", "symlink", "not-executable", "directory"])
+def test_flush_refuses_on_blocking_contract_problem(env, change):
+    cfg, tmp = env
+    item = "list_hosts" if change == "not-executable" else "arpcache"
+    path = _core(cfg, item)
+    if change == "drift":
+        path.write_text(path.read_text().replace("/tmp/alias_filter_arp.cache", "/var/cache/alias_filter_arp.cache"))
+    elif change == "missing":
+        path.unlink()
+    elif change == "symlink":
+        path.rename(tmp / "arpcache.real")
+        os.symlink(tmp / "arpcache.real", path)
+    elif change == "not-executable":
+        path.chmod(0o644)
+    else:
+        path.unlink()
+        path.mkdir()
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    assert [p["item"] for p in out["problems"]] == [item]
+    assert out["problems"][0]["blocks_flush"] is True
+    assert out["detail"] == out["problems"][0]["problem"]
+    _unchanged(tmp, cfg, before)
+
+
+def test_flush_refuses_when_update_tables_is_missing(env):
+    # the same file holds the targeted-mode and the emptied-table texts: only the blocking item is listed
+    cfg, tmp = env
+    _core(cfg, "targeted_mode").unlink()
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    assert [p["item"] for p in out["problems"]] == ["targeted_mode"]
+    _unchanged(tmp, cfg, before)
+
+
+def test_flush_runs_on_non_blocking_contract_note(env):
+    cfg, tmp = env
+    path = _core(cfg, "emptied_table")
+    path.write_text(path.read_text().replace("else cnt_alias_content", "else alias.get_pf_addr_count()"))
+    out = _flush(cfg)
+    assert "error" not in out
+    assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
+    assert macalias.cmd_status(cfg, now=0.0)["problems"] == [
+        {"item": "emptied_table", "problem": EMPTIED_NOTE, "blocks_flush": False}]
+
+
+BAD_NAME_TABLES = """<?xml version="1.0"?>
+<tabledef>
+  <table><name>DevMacs</name><type>mac</type><address>aa:bb:cc:00:00:01</address><ttl>30</ttl></table>
+  <table><name>Dev Macs</name><type>mac</type><address>aa:bb:cc:00:00:02</address><ttl>30</ttl></table>
+  <table><name>Parent</name><type>host</type><address>DevMacs
+Dev Macs</address><ttl>300</ttl></table>
+</tabledef>
+"""
+ALIAS_NAME = ("alias names that do not match core's alias name pattern: %s; "
+              "the flush would use them in a file path and as a pfctl table name")
+
+
+def _record_pf_set(monkeypatch):
+    names = []
+    real_pf_set = macalias.pf_set
+
+    def pf_set(cfg_, name):
+        names.append(name)
+        return real_pf_set(cfg_, name)
+
+    monkeypatch.setattr(macalias, "pf_set", pf_set)
+    return names
+
+
+def test_flush_refuses_on_bad_alias_name(env, monkeypatch):
+    cfg, tmp = env
+    (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
+    pf_names = _record_pf_set(monkeypatch)
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    problem = {"item": "alias_name", "problem": ALIAS_NAME % "'Dev Macs'", "blocks_flush": True}
+    assert out == {"error": "core_changed", "detail": problem["problem"], "problems": [problem]}
+    assert pf_names == []
+    _unchanged(tmp, cfg, before)
+
+
+def test_status_never_passes_a_bad_alias_name_to_pfctl(env, monkeypatch):
+    cfg, tmp = env
+    (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
+    pf_names = _record_pf_set(monkeypatch)
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert pf_names == ["DevMacs"]
+    assert {row["name"]: row["pf_count"] for row in out["aliases"]} == {"Dev Macs": None, "DevMacs": 2}
+    assert _items(out, "alias_name") == [
+        {"item": "alias_name", "problem": ALIAS_NAME % "'Dev Macs'", "blocks_flush": True}]
+
+
+INTERNAL_TABLE = "<table><name>__lan_network</name><type>network</type><address>%s</address></table>"
+
+
+def test_alias_name_checks_the_refresh_set_only(env):
+    # (n3) core's own internal tables (__lan_network and the like) fail the pattern, and are no
+    # concern of the flush until one nests a mac alias and so joins the refresh set
+    cfg, tmp = env
+    conf = tmp / "filter_tables.conf"
+    conf.write_text(TABLES.replace("</tabledef>", INTERNAL_TABLE % "192.0.2.0/24" + "\n</tabledef>"))
+    assert _items(macalias.cmd_status(cfg, now=0.0), "alias_name") == []
+    assert "error" not in _flush(cfg)
+
+    conf.write_text(TABLES.replace("</tabledef>", INTERNAL_TABLE % "DevMacs" + "\n</tabledef>"))
+    problem = {"item": "alias_name", "problem": ALIAS_NAME % "'__lan_network'", "blocks_flush": True}
+    assert _items(macalias.cmd_status(cfg, now=0.0), "alias_name") == [problem]
+    refused = macalias.cmd_flush(cfg, clock=lambda: 6000.0, sleep=lambda s: None)
+    assert refused == {"error": "core_changed", "detail": problem["problem"], "problems": [problem]}
+
+
+def test_flush_reads_filter_tables_once(env, monkeypatch):
+    # the names the problem list checks are the names the flush then uses
+    cfg, tmp = env
+    reads = []
+    real_read_tables = macalias.read_tables
+
+    def read_tables(cfg_):
+        reads.append(cfg_["tables_conf"])
+        return real_read_tables(cfg_)
+
+    monkeypatch.setattr(macalias, "read_tables", read_tables)
+    assert "error" not in _flush(cfg)
+    assert reads == [cfg["tables_conf"]]
+
+
+def test_status_lists_problems(env):
+    cfg, tmp = env
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    os.mkfifo(cfg["lock_file"])
+    (tmp / "arp.cache").rename(tmp / "real.cache")
+    os.symlink(tmp / "real.cache", tmp / "arp.cache")
+    (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
+    arpcache = _core(cfg, "arpcache")
+    arpcache.write_text(arpcache.read_text().replace("/tmp/alias_filter_arp.cache", "/var/cache/alias_filter_arp.cache"))
+    update_tables = _core(cfg, "emptied_table")
+    update_tables.write_text(update_tables.read_text().replace("else cnt_alias_content", "else alias.get_pf_addr_count()"))
+    with _within(5):
+        out = macalias.cmd_status(cfg, now=0.0)
+    assert "error" not in out
+    assert [(p["item"], p["blocks_flush"]) for p in out["problems"]] == [
+        ("state_dir", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True),
+        ("emptied_table", False)]
+    assert _items(out, "cache_file")[0]["problem"] == CACHE_FORGED % cfg["cache_file"]
+    assert _items(out, "alias_name")[0]["problem"] == ALIAS_NAME % "'Dev Macs'"
+    assert _items(out, "emptied_table")[0]["problem"] == EMPTIED_NOTE
+
+    # a flush refuses with the first class that blocks and carries every problem
+    pathlib.Path(cfg["state_dir"]).unlink()
+    with _within(5):
+        out = _flush(cfg)
+    assert out["error"] == "lock_unusable"
+    assert [p["item"] for p in out["problems"]] == ["lock_file", "cache_file", "alias_name", "arpcache", "emptied_table"]
+    os.unlink(cfg["lock_file"])
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    blocking = [p["problem"] for p in out["problems"] if p["blocks_flush"]]
+    assert [p["item"] for p in out["problems"] if p["blocks_flush"]] == ["alias_name", "arpcache"]
+    assert out["detail"] == "; ".join(blocking)
+    assert not (tmp / "update_args").exists()
+
+
+@pytest.mark.parametrize("item, code", [
+    ("last_file", "state_unusable"), ("lock_file", "lock_unusable"), ("cache_file", "state_unusable")])
+def test_lstat_error_other_than_absent_blocks(env, monkeypatch, item, code):
+    # a path that cannot even be looked at is not taken for absent
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    path = str(_last(cfg)) if item == "last_file" else cfg[item]
+    real_lstat = os.lstat
+
+    def lstat(arg, *args, **kwargs):
+        if os.fspath(arg) == path:
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES), arg)
+        return real_lstat(arg, *args, **kwargs)
+
+    monkeypatch.setattr(macalias.os, "lstat", lstat)
+    problem = {"item": item, "problem": CANNOT_CHECK[item] % (path, os.strerror(errno.EACCES)), "blocks_flush": True}
+    assert _items(macalias.cmd_status(cfg, now=0.0), item) == [problem]
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out == {"error": code, "detail": problem["problem"], "problems": [problem]}
+    _unchanged(tmp, cfg, before)
+
+
+def test_every_problem_item_has_a_refusal_code(env):
+    # the items, driven from the module's one table of them, are each produced by some case
+    # below and each has a code; the autouse check holds every other case to the same table
+    cfg, tmp = env
+    seen = set()
+    os.mkdir(cfg["state_dir"], 0o700)
+    _last(cfg).mkdir()
+    os.mkfifo(cfg["lock_file"])
+    (tmp / "arp.cache").unlink()
+    (tmp / "arp.cache").mkdir()
+    (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
+    shutil.rmtree(tmp / "core")
+    with _within(5):
+        seen.update(p["item"] for p in macalias.problems(cfg))
+    _last(cfg).rmdir()
+    os.rmdir(cfg["state_dir"])
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    shutil.copytree(FIXTURES, tmp / "core")
+    update_tables = _core(cfg, "emptied_table")
+    update_tables.write_text(update_tables.read_text().replace("else cnt_alias_content", ""))
+    with _within(5):
+        seen.update(p["item"] for p in macalias.problems(cfg))
+    assert seen == set(macalias._REFUSAL_CODE)
+    for item, code in macalias._REFUSAL_CODE.items():
+        assert code in ("state_unusable", "lock_unusable", "core_changed"), item
+        assert macalias.refusal([{"item": item, "problem": "p", "blocks_flush": True}])["error"] == code
+    assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "core_changed"} == {
+        "alias_name", "arpcache", "update_lock", "md5_marker", "targeted_mode", "emptied_table", "list_hosts"}

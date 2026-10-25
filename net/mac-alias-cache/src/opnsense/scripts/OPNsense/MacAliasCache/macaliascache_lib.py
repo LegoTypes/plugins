@@ -27,11 +27,34 @@ Pure logic for the MAC alias cache plugin: no I/O, no subprocesses.
 Inputs mirror what core uses: /usr/local/etc/filter_tables.conf (applied
 alias definitions), list_hosts.py rows and the ArpCache JSON file.
 """
+import ipaddress
 import math
 import re
 import xml.etree.ElementTree as ET
 
 _SPLIT = re.compile(r"[,\n]")
+_MAC = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
+# core's AliasNameField pattern (26.7.7), verbatim: at most 31 characters, as pf allows. Core's
+# reserved words are left out: they are pf syntax refused at Save, and this guards a file path
+# and a pfctl -t argument
+_ALIAS_NAME = re.compile(r"([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9])[_a-zA-Z0-9]{0,29}))")
+_SAMPLES = 5
+_SAMPLE_LENGTH = 60
+
+_CORE = "/usr/local/opnsense/"
+# What the flush imitates in core: the item, core's file, the texts that file must still hold
+# (None: it only has to be an executable file) and, for an item whose absence does not block a
+# flush, the note shown instead
+CORE_CONTRACT = (
+    ("arpcache", _CORE + "scripts/filter/lib/alias/arpcache.py",
+     ("/tmp/alias_filter_arp.cache", "items", "last_seen"), None),
+    ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", ("/tmp/filter_update_tables.lock",), None),
+    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (".md5.txt",), None),
+    ("targeted_mode", _CORE + "scripts/filter/update_tables.py", ("--aliases",), None),
+    ("emptied_table", _CORE + "scripts/filter/update_tables.py", ("else cnt_alias_content",),
+     "core may now flush emptied tables itself (core #10950); the plugin's own flush is redundant but harmless"),
+    ("list_hosts", _CORE + "scripts/interfaces/list_hosts.py", None, None),
+)
 
 
 def parse_tables(xml_text):
@@ -95,11 +118,90 @@ def refresh_set(tables):
     return sorted(macs | set(nesting_closure(tables, macs)))
 
 
+def valid_mac(s):
+    """ a full six-octet MAC, as core's host discovery reports them, in either case """
+    return type(s) is str and _MAC.fullmatch(s) is not None
+
+
+def valid_ip(s):
+    """ a plain IPv4 or IPv6 address. ipaddress also takes an int, a bool and a scoped address
+    such as fe80::1%vlan0.10, which core never writes; an unzoned link-local address is kept
+    """
+    if type(s) is not str or "%" in s:
+        return False
+    try:
+        ipaddress.ip_address(s)
+    except ValueError:
+        return False
+    return True
+
+
+def _valid_row(row):
+    """ a list_hosts row with a MAC and an address in the columns core's cache takes them from """
+    return isinstance(row, (list, tuple)) and len(row) >= 3 and valid_mac(row[1]) and valid_ip(row[2])
+
+
+def validate_rows(rows):
+    """ (good, rejected): the rows core's cache may be written from, each kept as returned,
+    and short samples of up to five of the others for the reply and the log
+    """
+    good, rejected = [], []
+    for row in rows:
+        if _valid_row(row):
+            good.append(row)
+        elif len(rejected) < _SAMPLES:
+            rejected.append(repr(row)[:_SAMPLE_LENGTH])
+    return good, rejected
+
+
+def seed_cache(good, now):
+    """ {mac: {"items": [ip, ...], "last_seen": now}} in core's ArpCache format, from the rows
+    validate_rows kept; the MAC key is kept exactly as list_hosts returns it (core's
+    current_cache does the same). This is what core's cache is written from, so a row that
+    fails the check is left out here too
+    """
+    cache = {}
+    for row in good:
+        if _valid_row(row):
+            cache.setdefault(row[1], {"items": [], "last_seen": now})["items"].append(row[2])
+    return cache
+
+
+def valid_alias_name(name):
+    """ name passes core's own alias name pattern, so it is safe in a file path and as a pfctl table name """
+    return type(name) is str and _ALIAS_NAME.fullmatch(name) is not None
+
+
+def core_contract(texts):
+    """ problems with the core files the flush imitates. texts maps each item to its file's
+    text, None when the file is missing or unreadable ("exists" or None for list_hosts). A
+    missing file blocks; the emptied-table note needs its file, whose absence already blocks
+    """
+    found = []
+    for item, path, expected, note in CORE_CONTRACT:
+        text = texts.get(item)
+        if text is None:
+            if note is None:
+                absent = "not executable" if expected is None else "cannot be read"
+                found.append({"item": item, "problem": "core's %s is missing or %s" % (path, absent),
+                              "blocks_flush": True})
+            continue
+        missing = [part for part in expected or () if part not in text]
+        if not missing:
+            continue
+        if note is None:
+            found.append({"item": item, "problem": "core's %s no longer contains %s; the flush imitates it, so it refuses"
+                          % (path, ", ".join(repr(part) for part in missing)), "blocks_flush": True})
+        else:
+            found.append({"item": item, "problem": note, "blocks_flush": False})
+    return found
+
+
 def alias_view(tables, cache, hosts, pf_counts, now):
-    """ status rows, one per mac alias """
+    """ status rows, one per mac alias, from the host rows that pass the row check """
     current = {}
     for row in hosts:
-        if len(row) >= 3:
+        if _valid_row(row):
             current.setdefault(row[1].lower(), set()).add(row[2])
     cache = {mac.lower(): value for mac, value in cache.items()}
     known = set(current) | set(cache)
