@@ -194,6 +194,10 @@ wf_register_suite('wiring', function (): int {
     if ($misplaced !== []) {
         printf("    gate at %s; misplaced: %s\n", $gate === false ? '(not found)' : (string)$gate, implode(' | ', $misplaced));
     }
+    /* a cron-only drift is a removal drift too, and must not stop the removal running core's routing command itself */
+    wf_check($t, '(d12) the removal decides its routing fallback with wf_contract_routes_fallback(), not from an empty removal list',
+        str_contains($src, "wf_contract_routes_fallback(\$snap['contract']['removal'])")
+        && !str_contains($src, "\$snap['contract']['removal'] === []"));
     $boot = (string)@file_get_contents(dirname($evaluate) . '/boot.php');
     wf_check($t, '(d7) boot.php checks the removal marker before it reads or writes anything',
         str_contains($boot, "\ntry {\n    if (wf_removing()) {\n        exit(0);\n    }\n    \$bootId = wf_boot_id();\n"));

@@ -524,7 +524,7 @@ function wf_core_shell(string $cmdline): int
  * @param array $io the shape returned by wf_live_io()
  * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
  * @param bool $fallback whether core's own routing command may run when configd does not answer (the snapshot's
- *     contract reports no removal drift)
+ *     contract reports no [routes.configure] drift: wf_contract_routes_fallback())
  * @return array the same shape, as wf_apply() takes it
  */
 function wf_deinstall_io(array $io, callable $run, bool $fallback): array
