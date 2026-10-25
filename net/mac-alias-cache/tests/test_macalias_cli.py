@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -453,10 +454,25 @@ def _flush(cfg):
     return macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
 
 
-def _with_uid(st, uid):
-    fields = list(st)
-    fields[4] = uid
-    return os.stat_result(fields)
+_NLINK, _UID = 3, 4   # positions in an os.stat_result
+
+
+def _patch_stat(monkeypatch, name, path, field, value):
+    """ make os.<name> (fstat or lstat) report value in field for the file now at path, matched
+    by device and inode; every other file keeps its real stat
+    """
+    target = os.lstat(path)
+    real = getattr(os, name)
+
+    def patched(arg, *args, **kwargs):
+        st = real(arg, *args, **kwargs)
+        if (st.st_dev, st.st_ino) != (target.st_dev, target.st_ino):
+            return st
+        fields = list(st)
+        fields[field] = value
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(macalias.os, name, patched)
 
 
 class _Hung(Exception):
@@ -481,7 +497,10 @@ def _within(seconds):
 CACHE_FORGED = ("core's MAC alias cache at %s is not a regular file owned by root; "
                 "core may be loading forged content")
 CACHE_DIRECTORY = "core's MAC alias cache at %s is a directory"
-LOCK_NOT_REGULAR = "core's alias update lock at %s is not a regular file"
+LOCK_NOT_REGULAR = "core's alias update lock at %s is not a regular file with one link"
+LAST_DIRECTORY = "plugin flush record at %s is a directory"
+LAST_IGNORED = ("plugin flush record at %s is not a regular file owned by root; "
+                "it is ignored and the next flush replaces it")
 
 
 def _items(out, item):
@@ -537,13 +556,7 @@ def test_flush_refuses_when_state_dir_is_a_regular_file(env):
 def test_flush_refuses_when_state_dir_is_not_ours(env, monkeypatch):
     cfg, tmp = env
     os.mkdir(cfg["state_dir"], 0o700)
-    real_lstat = os.lstat
-
-    def foreign(path, *args, **kwargs):
-        st = real_lstat(path, *args, **kwargs)
-        return _with_uid(st, st.st_uid + 1) if os.fspath(path) == cfg["state_dir"] else st
-
-    monkeypatch.setattr(macalias.os, "lstat", foreign)
+    _patch_stat(monkeypatch, "fstat", cfg["state_dir"], _UID, os.geteuid() + 1)
     before = _snapshot(tmp)
     out = _flush(cfg)
     assert out["error"] == "state_unusable"
@@ -591,11 +604,40 @@ def test_read_json_returns_at_once_on_fifo(env):
 def test_read_json_ignores_foreign_owner(env, monkeypatch):
     cfg, tmp = env
     _write_last(cfg, {"at": 4995.0, "summary": []})
-    real_fstat = os.fstat
-    monkeypatch.setattr(macalias.os, "fstat", lambda fd: _with_uid(real_fstat(fd), os.geteuid() + 1))
+    _patch_stat(monkeypatch, "fstat", _last(cfg), _UID, os.geteuid() + 1)
     assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
     out = _flush(cfg)
     assert "error" not in out   # the rate limit did not fire
+
+
+def test_read_refuses_hard_linked_file(env, monkeypatch):
+    # a hard link passes the type and owner checks, so the link count is checked too
+    cfg, tmp = env
+    _write_last(cfg, {"at": 4995.0, "summary": []})
+    _patch_stat(monkeypatch, "fstat", cfg["cache_file"], _NLINK, 2)
+    assert macalias.cmd_status(cfg, now=5000.0)["aliases"][0]["macs"][0]["cache_items"] == []
+    monkeypatch.undo()
+    _patch_stat(monkeypatch, "fstat", _last(cfg), _NLINK, 2)
+    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
+    assert "error" not in _flush(cfg)   # the rate limit did not fire
+
+
+def test_acquire_lock_refuses_hard_linked_lock_path(env, monkeypatch):
+    cfg, tmp = env
+    pathlib.Path(cfg["lock_file"]).write_text("")
+    _patch_stat(monkeypatch, "fstat", cfg["lock_file"], _NLINK, 2)
+    before = _snapshot(tmp)
+    lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+    assert isinstance(lock, dict) and lock["error"] == "lock_unusable"
+    out = _flush(cfg)
+    assert out["error"] == "lock_unusable"
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert not _last(cfg).exists()
+    # status names it too, so the problem list foretells the refusal
+    _patch_stat(monkeypatch, "lstat", cfg["lock_file"], _NLINK, 2)
+    assert _items(macalias.cmd_status(cfg, now=0.0), "lock_file") == [
+        {"item": "lock_file", "problem": LOCK_NOT_REGULAR % cfg["lock_file"], "blocks_flush": True}]
 
 
 @pytest.mark.parametrize("content", [
@@ -612,17 +654,19 @@ def test_read_json_rejects_bad_schema(env, content):
     assert "error" not in out   # the rate limit did not fire
 
 
-@pytest.mark.parametrize("at", ["NaN", "Infinity", "-Infinity"])
-def test_last_json_with_non_finite_at_neither_arms_nor_blocks_the_rate_limit(env, at):
-    # (s7) Python's json reads these literals as floats
+@pytest.mark.parametrize("at, now", [("NaN", 5000.0), ("Infinity", 5000.0), ("-Infinity", 5000.0), ("true", 5.0)],
+                         ids=["nan", "infinity", "minus-infinity", "true"])
+def test_last_json_with_non_finite_or_bool_at_neither_arms_nor_blocks_the_rate_limit(env, at, now):
+    # (s7) Python's json reads NaN and Infinity as floats, and true is an int (1) in Python's
+    # arithmetic: 5.0 - true would be 4 s ago and refuse as too_soon. None of them is a time.
     cfg, tmp = env
     os.mkdir(cfg["state_dir"], 0o700)
     _last(cfg).write_text('{"at": %s, "summary": []}' % at)
     _last(cfg).chmod(0o600)
-    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
-    out = _flush(cfg)
+    assert macalias.cmd_status(cfg, now=now)["last_flush"] is None
+    out = macalias.cmd_flush(cfg, clock=lambda: now, sleep=lambda s: None)
     assert "error" not in out
-    assert json.loads(_last(cfg).read_text())["at"] == 5000.0
+    assert json.loads(_last(cfg).read_text())["at"] == now
 
 
 def test_status_cache_schema_drops_malformed_entries(env):
@@ -666,15 +710,10 @@ def test_status_reports_cache_file_problem_for_fifo_and_symlink(env):
     assert not (tmp / "update_args").exists()
 
 
-def test_status_reports_cache_file_problem_for_foreign_owner(env, monkeypatch):
+@pytest.mark.parametrize("field, value", [(_UID, os.geteuid() + 1), (_NLINK, 2)], ids=["foreign-owner", "hard-link"])
+def test_status_reports_cache_file_problem_for_foreign_owner(env, monkeypatch, field, value):
     cfg, tmp = env
-    real_lstat = os.lstat
-
-    def foreign(path, *args, **kwargs):
-        st = real_lstat(path, *args, **kwargs)
-        return _with_uid(st, st.st_uid + 1) if os.fspath(path) == cfg["cache_file"] else st
-
-    monkeypatch.setattr(macalias.os, "lstat", foreign)
+    _patch_stat(monkeypatch, "lstat", cfg["cache_file"], field, value)
     out = macalias.cmd_status(cfg, now=0.0)
     assert _items(out, "cache_file") == [
         {"item": "cache_file", "problem": CACHE_FORGED % cfg["cache_file"], "blocks_flush": False}]
@@ -684,6 +723,54 @@ def test_cache_file_problem_text_names_cores_path_by_default():
     assert CACHE_FORGED % macalias.DEFAULTS["cache_file"] == (
         "core's MAC alias cache at /tmp/alias_filter_arp.cache is not a regular file owned by root; "
         "core may be loading forged content")
+
+
+def test_flush_refuses_before_writing_when_last_json_is_a_directory(env):
+    # os.replace cannot put the flush record over a directory; without the check the flush
+    # would fail only after update_tables had run, with the rate limit unarmed
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    _last(cfg).mkdir()
+    problem = {"item": "last_file", "problem": LAST_DIRECTORY % _last(cfg), "blocks_flush": True}
+    assert _items(macalias.cmd_status(cfg, now=0.0), "last_file") == [problem]
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out == {"error": "state_unusable", "detail": LAST_DIRECTORY % _last(cfg), "problems": [problem]}
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert _last(cfg).is_dir()
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "socket", "foreign-owner", "hard-link"])
+def test_status_notes_non_file_last_json_and_flush_replaces_it(env, monkeypatch, kind):
+    # unlike a directory these are no obstacle to os.replace, so the flush is the remedy
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    path = _last(cfg)
+    if kind == "symlink":
+        (tmp / "elsewhere.json").write_text(json.dumps({"at": 4995.0, "summary": []}))
+        os.symlink(tmp / "elsewhere.json", path)
+    elif kind == "fifo":
+        os.mkfifo(path, 0o600)
+    elif kind == "socket":
+        monkeypatch.chdir(cfg["state_dir"])   # a socket path is limited to about 100 bytes
+        listener = socket.socket(socket.AF_UNIX)
+        listener.bind(path.name)
+        listener.close()
+    else:
+        _write_last(cfg, {"at": 4995.0, "summary": []})
+        field, value = (_UID, os.geteuid() + 1) if kind == "foreign-owner" else (_NLINK, 2)
+        _patch_stat(monkeypatch, "lstat", path, field, value)
+        _patch_stat(monkeypatch, "fstat", path, field, value)
+    with _within(5):
+        status = macalias.cmd_status(cfg, now=5000.0)
+        out = _flush(cfg)
+    assert _items(status, "last_file") == [{"item": "last_file", "problem": LAST_IGNORED % path, "blocks_flush": False}]
+    assert status["last_flush"] is None
+    assert "error" not in out
+    st = os.lstat(path)
+    assert stat.S_ISREG(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o600
+    assert _items(macalias.cmd_status(cfg, now=5000.0), "last_file") == []
 
 
 def test_acquire_lock_refuses_symlink_lock_path(env):
@@ -717,7 +804,7 @@ def test_write_json_atomic_sets_mode_0600_under_state_dir(env):
 
 
 def test_status_lists_state_dir_problem_when_state_dir_is_a_regular_file(env):
-    # (s8) one JSON object with the problem, never an internal error
+    # (s8) an unusable state directory is reported as a problem in one JSON object, never an internal error
     cfg, tmp = env
     pathlib.Path(cfg["state_dir"]).write_text("x")
     out = macalias.cmd_status(cfg, now=0.0)
@@ -730,7 +817,7 @@ def test_status_lists_state_dir_problem_when_state_dir_is_a_regular_file(env):
 
 
 def test_status_creates_state_dir_0700(env):
-    # (s9) and writes nothing else there
+    # (s9) status puts the state directory in place right after an upgrade, and writes nothing else there
     cfg, tmp = env
     assert not os.path.exists(cfg["state_dir"])
     out = macalias.cmd_status(cfg, now=0.0)
@@ -809,7 +896,7 @@ def test_status_without_cache_file_has_no_problem_and_flush_creates_it(env):
 
 @pytest.mark.parametrize("target", ["last", "cache"])
 def test_undecodable_bytes_read_as_absent(env, target):
-    # (s13)
+    # (s13) undecodable bytes read as absent, never an exception
     cfg, tmp = env
     if target == "last":
         os.mkdir(cfg["state_dir"], 0o700)

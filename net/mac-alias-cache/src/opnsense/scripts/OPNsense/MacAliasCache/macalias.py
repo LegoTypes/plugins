@@ -60,6 +60,7 @@ DEFAULTS = {
 # codes block at once, the earliest code in _REFUSAL_ORDER wins
 _REFUSAL_CODE = {
     "state_dir": "state_unusable",
+    "last_file": "state_unusable",
     "cache_file": "state_unusable",
     "lock_file": "lock_unusable",
 }
@@ -81,33 +82,63 @@ def _problem(item, text, blocks_flush):
 def ensure_state_dir(cfg):
     """ create the state directory 0700 when missing and narrow a wider mode back to 0700;
     a blocking state_dir problem when it is not a directory owned by root, else None.
+    The checks and the mode fix go through one descriptor opened without following a link.
     /var/run is root's alone, so this catches an operator's mistake more than an attacker
     """
     path = cfg["state_dir"]
     try:
         os.makedirs(path, 0o700, exist_ok=True)
     except FileExistsError:
-        pass  # something other than a directory holds the path; lstat names it below
+        pass  # something other than a directory holds the path; the open below refuses it
     except OSError as e:
         return _problem("state_dir", "plugin state directory %s cannot be created (%s)" % (path, e.strerror), True)
     try:
-        st = os.lstat(path)
-        if stat.S_ISLNK(st.st_mode):
-            return _problem("state_dir", "plugin state directory %s is a symbolic link" % path, True)
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return _problem("state_dir", "plugin state directory %s is not a directory, or is a symbolic link" % path, True)
+    try:
+        st = os.fstat(fd)
         if not stat.S_ISDIR(st.st_mode):
             return _problem("state_dir", "plugin state directory %s is not a directory" % path, True)
         if st.st_uid != os.geteuid():
             return _problem("state_dir", "plugin state directory %s is not owned by root" % path, True)
         if st.st_mode & 0o077:
-            os.chmod(path, 0o700)
+            os.fchmod(fd, 0o700)
     except OSError as e:
         return _problem("state_dir", "plugin state directory %s cannot be checked (%s)" % (path, e.strerror), True)
+    finally:
+        os.close(fd)
+    return None
+
+
+def _single_regular(st):
+    """ a regular file with one link: a hard link passes the type and owner checks """
+    return stat.S_ISREG(st.st_mode) and st.st_nlink == 1
+
+
+def _last_file_problem(cfg):
+    """ the flush writes its record over last.json with os.replace, which cannot replace a
+    directory, so one there blocks the flush before it writes anything. Anything else that is
+    not a regular file of ours is ignored on read, and the flush's own write replaces it.
+    """
+    path = state_paths(cfg)["last_file"]
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return _problem("last_file", "plugin flush record at %s cannot be checked (%s)" % (path, e.strerror), True)
+    if stat.S_ISDIR(st.st_mode):
+        return _problem("last_file", "plugin flush record at %s is a directory" % path, True)
+    if not _single_regular(st) or st.st_uid != os.geteuid():
+        return _problem("last_file", "plugin flush record at %s is not a regular file owned by root; "
+                        "it is ignored and the next flush replaces it" % path, False)
     return None
 
 
 def _lock_file_problem(cfg):
     """ core's update-tables lock may be absent (core's flock(1) creates it on use) or a
-    regular file; anything else blocks, as the plugin will not open it
+    regular file with one link; anything else blocks, as the plugin will not open it
     """
     path = cfg["lock_file"]
     try:
@@ -116,9 +147,9 @@ def _lock_file_problem(cfg):
         return None
     except OSError as e:
         return _problem("lock_file", "core's alias update lock at %s cannot be checked (%s)" % (path, e.strerror), True)
-    if stat.S_ISREG(st.st_mode):
+    if _single_regular(st):
         return None
-    return _problem("lock_file", "core's alias update lock at %s is not a regular file" % path, True)
+    return _problem("lock_file", "core's alias update lock at %s is not a regular file with one link" % path, True)
 
 
 def _cache_file_problem(cfg):
@@ -135,7 +166,7 @@ def _cache_file_problem(cfg):
         return _problem("cache_file", "core's MAC alias cache at %s cannot be checked (%s)" % (path, e.strerror), True)
     if stat.S_ISDIR(st.st_mode):
         return _problem("cache_file", "core's MAC alias cache at %s is a directory" % path, True)
-    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+    if not _single_regular(st) or st.st_uid != os.geteuid():
         return _problem("cache_file", "core's MAC alias cache at %s is not a regular file owned by root; "
                         "core may be loading forged content" % path, False)
     return None
@@ -145,7 +176,9 @@ def problems(cfg):
     """ what makes the plugin's state or core's files unsafe to use, for status and for a
     flush before it takes core's lock; ensure_state_dir puts the state directory in place
     """
-    found = [ensure_state_dir(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg)]
+    state = ensure_state_dir(cfg)
+    # nothing inside a state directory that failed its check is looked at
+    found = [state, None if state else _last_file_problem(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg)]
     return [problem for problem in found if problem]
 
 
@@ -161,9 +194,10 @@ def refusal(found):
 
 
 def _open_regular(path):
-    """ path opened to read as UTF-8 text when it is a regular file owned by the running
-    user, else None. O_NOFOLLOW refuses a symlink and O_NONBLOCK keeps a FIFO from waiting
-    for a writer. Any OSError means absent: FreeBSD answers a symlink with EMLINK, not ELOOP.
+    """ path opened to read as UTF-8 text when it is a regular file with one link, owned by
+    the running user, else None. O_NOFOLLOW refuses a symlink and O_NONBLOCK keeps a FIFO
+    from waiting for a writer; the link count refuses a hard link planted in /tmp to another
+    root-owned file. Any OSError means absent: FreeBSD answers a symlink with EMLINK, not ELOOP.
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -173,7 +207,7 @@ def _open_regular(path):
         st = os.fstat(fd)
     except OSError:
         st = None
-    if st is None or not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+    if st is None or not _single_regular(st) or st.st_uid != os.geteuid():
         os.close(fd)
         return None
     return os.fdopen(fd, encoding="utf-8")
@@ -275,15 +309,15 @@ def pf_set(cfg, name):
 
 def _open_lock(path, flags, mode):
     """ fd of the lock file at path, opened with flags that follow no symlink and never wait
-    on a FIFO; None when it cannot be opened or is not a regular file. Any OSError counts:
-    FreeBSD answers a symlink with EMLINK, not ELOOP.
+    on a FIFO; None when it cannot be opened or is not a regular file with one link. Any
+    OSError counts: FreeBSD answers a symlink with EMLINK, not ELOOP.
     """
     try:
         fd = os.open(path, flags, mode)
     except OSError:
         return None
     try:
-        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+        regular = _single_regular(os.fstat(fd))
     except OSError:
         regular = False
     if not regular:
@@ -294,14 +328,15 @@ def _open_lock(path, flags, mode):
 
 def acquire_lock(cfg, sleep):
     """ core's update-tables lock (flock(2), same as util-linux flock(1)): the handle, None on
-    timeout, or a lock_unusable reply when the path is not a regular file the plugin can open
-    safely. Core's own flock(1) wrappers would follow a symlink there; the plugin does not.
+    timeout, or a lock_unusable reply when the path is not a regular file with one link that
+    the plugin can open safely. Core's own flock(1) wrappers would follow a symlink there; the plugin does not.
     """
     path = cfg["lock_file"]
     fd = _open_lock(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644)
     if fd is None:
         return {"error": "lock_unusable",
-                "detail": "core's alias update lock at %s is not a regular file the plugin can open safely" % path}
+                "detail": "core's alias update lock at %s is not a regular file with one link "
+                          "that the plugin can open safely" % path}
     handle = os.fdopen(fd, "a")
     deadline = cfg["lock_timeout"]
     waited = 0.0
