@@ -98,7 +98,7 @@
                     banners.push(banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}"));
                 }
                 $.each(data.problems || [], function (i, p) {
-                    banners.push(banner(p.blocks_flush ? 'danger' : 'warning', p.problem));
+                    banners.push(banner(p.blocks_flush ? 'danger' : 'warning', p.problem || p.item));
                 });
                 if (!data.aliases.length) {
                     tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
@@ -166,7 +166,9 @@
                 built.push(summaryHeading(resultHeadingText(totals)));
                 built.push(summaryTable(data.summary));
                 if (data.rows_rejected > 0) {
-                    built.push($('<div class="alert alert-warning"/>').text(data.rows_rejected + " {{ lang._('host rows were ignored (no MAC and address in the expected columns)') }}"));
+                    built.push($('<div class="alert alert-warning"/>').text(data.rows_rejected === 1
+                        ? "{{ lang._('1 host row was ignored (no MAC and address in the expected columns)') }}"
+                        : data.rows_rejected + " {{ lang._('host rows were ignored (no MAC and address in the expected columns)') }}"));
                 }
                 if (data.update_tables && data.update_tables.rc !== 0) {
                     built.push($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
