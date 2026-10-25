@@ -264,8 +264,9 @@ function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): ar
         'log' => function (string $m): void {
             wf_log($m);
         },
+        /* the VM's crash tests name the point in a root-only flag file; the point consumes it */
         'crash_point' => function (string $p): void {
-            if (getenv('WF_TEST_CRASH_AT') === $p) {
+            if (wf_crash_due(WF_CRASH_FLAG, $p)) {
                 wf_log("test crash at {$p}", LOG_WARNING);
                 exit(70);
             }

@@ -14,8 +14,6 @@ declare(strict_types=1);
  * the state keeps the old boot id and evaluate's own boot detector releases the holds instead.
  */
 
-const WF_STATE = '/var/db/wanfailover/state.json';
-
 require_once 'script/load_phalcon.php';
 require_once __DIR__ . '/lib/snapshot.php';
 require_once __DIR__ . '/lib/state.php';

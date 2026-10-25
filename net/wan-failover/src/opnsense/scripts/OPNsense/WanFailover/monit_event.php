@@ -12,21 +12,24 @@ declare(strict_types=1);
  * core-contract change), so Monit notifies without repeating itself.
  */
 
-const WF_EVENT = '/var/run/wanfailover/event';
-const WF_NOTIFIED = '/var/run/wanfailover/notified';
+require_once __DIR__ . '/lib/constants.php';
+require_once __DIR__ . '/lib/state.php';
 
-if (!is_readable(WF_EVENT)) {
-    exit(0);
-}
-$event = trim((string)file_get_contents(WF_EVENT));
+/* both files are the plugin's own, root's alone: read as regular files only, and one that is not reads as absent */
+$event = trim((string)wf_read_regular_file(WF_EVENT)['text']);
 if ($event === '') {
     exit(0);
 }
 $fingerprint = hash('sha256', $event);
-$sent = is_readable(WF_NOTIFIED) ? trim((string)file_get_contents(WF_NOTIFIED)) : '';
+$sent = trim((string)wf_read_regular_file(WF_NOTIFIED)['text']);
 if (hash_equals($fingerprint, $sent)) {
     exit(0);
 }
-file_put_contents(WF_NOTIFIED, $fingerprint);
 echo "WAN failover event:\n{$event}\n";
+try {
+    wf_private_dir(WF_RUN_DIR);
+    wf_write_private(WF_NOTIFIED, $fingerprint);
+} catch (RuntimeException $e) {
+    echo "(not recorded as notified, so it is reported again: {$e->getMessage()})\n";
+}
 exit(1);

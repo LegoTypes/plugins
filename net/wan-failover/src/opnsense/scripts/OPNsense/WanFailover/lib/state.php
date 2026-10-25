@@ -9,9 +9,12 @@ declare(strict_types=1);
  *
  * Runtime state (spec 2026-10-05 section 3.8): what does not belong in config. Ownership itself -- the
  * held list -- is in the plugin model, saved with force_down; this file only resumes an apply a crash
- * interrupted and notices held changes the engine did not make. Load/save touch one file; the rest is pure.
+ * interrupted and notices held changes the engine did not make. The file is root's alone and read as a regular file
+ * only, and a field of the wrong type discards it: wrong-typed state would throw a TypeError every minute, which
+ * stops failover. The file helpers below touch the paths they are given; the rest is pure.
  */
 
+require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/tailscale.php';
 
 const WF_STATE_VERSION = 3;
@@ -36,6 +39,119 @@ function wf_state_new(string $bootId): array
 }
 
 /**
+ * A directory of the plugin's, root's alone, since what it holds is trusted: created 0700 when missing, put back to
+ * 0700 when its mode differs (1.3_1 made them 0750), refused when the path is a symbolic link or not a directory.
+ */
+function wf_private_dir(string $dir): void
+{
+    clearstatcache(true, $dir);
+    if (@lstat($dir) === false) {
+        /* a failure, or another process's mkdir in between, is judged by the checks below */
+        @mkdir($dir, 0700, true);
+        clearstatcache(true, $dir);
+    }
+    $st = @lstat($dir);
+    if ($st === false) {
+        throw new RuntimeException("cannot create {$dir}");
+    }
+    if (($st['mode'] & 0170000) === 0120000) {
+        throw new RuntimeException("{$dir} is a symbolic link");
+    }
+    if (($st['mode'] & 0170000) !== 0040000) {
+        throw new RuntimeException("{$dir} is not a directory");
+    }
+    if (($st['mode'] & 07777) !== 0700 && !@chmod($dir, 0700)) {
+        throw new RuntimeException("cannot make {$dir} mode 0700");
+    }
+}
+
+/**
+ * A file the plugin trusts, read as a regular file only: the path is no symbolic link and a regular file (lstat), and
+ * the file opened is the one checked (the same device and inode), so a swap between the check and the open is refused,
+ * and the open never blocks. The open still follows a link swapped in after the lstat, so this reader is for files in a
+ * directory only root can write (wf_private_dir()). A missing path has no text and no problem; with a problem there is
+ * no text either.
+ *
+ * @return array{text: ?string, problem: ?string} problem: 'a symbolic link', 'not a regular file', 'larger than
+ *     1 MiB' (the default limit) or 'unreadable'
+ */
+function wf_read_regular_file(string $path, int $maxBytes = WF_FILE_MAX_BYTES): array
+{
+    clearstatcache(true, $path);
+    $link = @lstat($path);
+    if ($link === false) {
+        return ['text' => null, 'problem' => null];
+    }
+    if (($link['mode'] & 0170000) === 0120000) {
+        return ['text' => null, 'problem' => 'a symbolic link'];
+    }
+    if (($link['mode'] & 0170000) !== 0100000) {
+        return ['text' => null, 'problem' => 'not a regular file'];
+    }
+    /* n is O_NONBLOCK (the plain-files wrapper): a FIFO or device swapped in after the lstat opens at once, and the
+     * identity check below refuses it, instead of the open blocking until a writer appears; a regular file ignores
+     * the flag */
+    $fh = @fopen($path, 'rbn');
+    if ($fh === false) {
+        return ['text' => null, 'problem' => 'unreadable'];
+    }
+    try {
+        $st = fstat($fh);
+        if ($st === false || $st['dev'] !== $link['dev'] || $st['ino'] !== $link['ino']) {
+            return ['text' => null, 'problem' => 'unreadable'];
+        }
+        $text = stream_get_contents($fh, $maxBytes + 1);
+        if ($text === false) {
+            return ['text' => null, 'problem' => 'unreadable'];
+        }
+        if (strlen($text) > $maxBytes) {
+            $limit = $maxBytes > 0 && $maxBytes % 1048576 === 0
+                ? intdiv($maxBytes, 1048576) . ' MiB' : "{$maxBytes} bytes";
+            return ['text' => null, 'problem' => "larger than {$limit}"];
+        }
+        return ['text' => $text, 'problem' => null];
+    } finally {
+        fclose($fh);
+    }
+}
+
+/**
+ * Replace a file of the plugin's whole: the data goes to a new file beside it (tempnam, in the same directory, so the
+ * rename is atomic), made 0600, then renamed over the path, so a reader sees the old file or the new one and a link at
+ * the path is replaced, never followed. The caller makes the directory first (wf_private_dir()).
+ */
+function wf_write_private(string $path, string $data): void
+{
+    $dir = dirname($path);
+    $tmp = @tempnam($dir, basename($path) . '.');
+    /* tempnam falls back to the system's temporary directory when it cannot create the file in $dir */
+    if ($tmp === false || dirname($tmp) !== realpath($dir)) {
+        if ($tmp !== false) {
+            @unlink($tmp);
+        }
+        throw new RuntimeException("cannot write {$path}");
+    }
+    if (@file_put_contents($tmp, $data) !== strlen($data) || !@chmod($tmp, 0600) || !@rename($tmp, $path)) {
+        @unlink($tmp);
+        throw new RuntimeException("cannot write {$path}");
+    }
+}
+
+/**
+ * The test hook for a crash at one point of an apply: the flag file names the point. It fires once, at that point:
+ * the flag is removed first, and a point it cannot remove does not fire. A flag naming another point is kept for that
+ * one; a link or anything but a regular file never fires.
+ */
+function wf_crash_due(string $flagPath, string $point): bool
+{
+    $flag = wf_read_regular_file($flagPath);
+    if ($flag['text'] === null || trim($flag['text']) !== $point) {
+        return false;
+    }
+    return @unlink($flagPath);
+}
+
+/**
  * A recurring condition is logged once when it appears or changes, and forgotten when it clears.
  *
  * @param array<string, string> $said the state's said map
@@ -55,27 +171,71 @@ function wf_once(array &$said, string $key, ?string $line): ?string
 }
 
 /**
+ * A decoded state file of this version in wf_state_new()'s shape: its version must be an int and every field it has
+ * must have its default's type (installed_at, last_now and contract_judging_since an int or null, boot_note a string
+ * or null), or the whole file is corrupt; a field it lacks takes its default. A gateway_ips entry that is not an
+ * IPv4 address is dropped, which costs only a state kill's fallback address.
+ *
+ * @param array<array-key, mixed> $data
  * @return array{state: array, corrupt: bool}
+ */
+function wf_state_shape(array $data, string $bootId): array
+{
+    $new = wf_state_new($bootId);
+    if (!is_int($data['version'] ?? null)) {
+        return ['state' => $new, 'corrupt' => true];
+    }
+    $nullable = ['installed_at' => 'int', 'last_now' => 'int', 'contract_judging_since' => 'int', 'boot_note' => 'string'];
+    foreach ($new as $key => $default) {
+        if (!array_key_exists($key, $data)) {
+            continue;
+        }
+        $type = get_debug_type($data[$key]);
+        if (isset($nullable[$key]) ? $type !== 'null' && $type !== $nullable[$key] : $type !== get_debug_type($default)) {
+            return ['state' => $new, 'corrupt' => true];
+        }
+    }
+    $ips = [];
+    foreach ($data['gateway_ips'] ?? [] as $name => $ip) {
+        if (is_string($name) && is_string($ip) && filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
+            $ips[$name] = $ip;
+        }
+    }
+    $data['gateway_ips'] = $ips;
+    return ['state' => array_merge($new, $data), 'corrupt' => false];
+}
+
+/**
+ * A file that cannot be read as a regular file, or holds no state of this version's shape, loads fresh and corrupt,
+ * with the problem named; a missing file loads fresh and not corrupt.
+ *
+ * @return array{state: array, corrupt: bool, problem: ?string}
  */
 function wf_state_load(string $path, string $bootId): array
 {
-    if (!is_file($path)) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => false];
+    $corrupt = fn (string $problem): array => ['state' => wf_state_new($bootId), 'corrupt' => true, 'problem' => $problem];
+    $read = wf_read_regular_file($path);
+    if ($read['problem'] !== null) {
+        return $corrupt($read['problem']);
+    }
+    if ($read['text'] === null) {
+        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null];
     }
     try {
-        $data = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+        $data = json_decode($read['text'], true, 64, JSON_THROW_ON_ERROR);
     } catch (JsonException) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => true];
+        return $corrupt('not JSON');
     }
-    if (!is_array($data) || !is_int($data['version'] ?? null)) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => true];
+    if (!is_array($data)) {
+        return $corrupt("not this version's shape");
     }
     /* another version (an upgrade): start fresh in this boot; ownership lives in config, so nothing is
      * released and held gateways stay held until they read loss-free */
-    if ($data['version'] !== WF_STATE_VERSION) {
-        return ['state' => wf_state_new($bootId), 'corrupt' => false];
+    if (is_int($data['version'] ?? null) && $data['version'] !== WF_STATE_VERSION) {
+        return ['state' => wf_state_new($bootId), 'corrupt' => false, 'problem' => null];
     }
-    return ['state' => array_merge(wf_state_new($bootId), $data), 'corrupt' => false];
+    $shaped = wf_state_shape($data, $bootId);
+    return $shaped['corrupt'] ? $corrupt("not this version's shape") : $shaped + ['problem' => null];
 }
 
 /**
@@ -83,13 +243,8 @@ function wf_state_load(string $path, string $bootId): array
  */
 function wf_state_save(string $path, array $state): void
 {
-    $dir = dirname($path);
-    if (!is_dir($dir)) {
-        mkdir($dir, 0750, true);
-    }
-    $tmp = $path . '.tmp';
-    file_put_contents($tmp, json_encode($state, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
-    rename($tmp, $path);
+    wf_private_dir(dirname($path));
+    wf_write_private($path, json_encode($state, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . "\n");
 }
 
 /**

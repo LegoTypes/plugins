@@ -7,11 +7,49 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state, held reconciliation and boot reset, spec 3.8 and 3.11.
+ * Runtime state, held reconciliation and boot reset, spec 3.8 and 3.11; the plugin's files: root's alone, read as
+ * regular files only, the state's shape checked on load, and the crash-test flag.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/state.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/log.php';
+
+/** A fresh, empty scratch directory under the system's temporary directory. */
+function wf_t_scratch(string $case): string
+{
+    $dir = rtrim(sys_get_temp_dir(), '/') . "/wf-test-{$case}-" . getmypid();
+    wf_t_rmtree($dir);
+    mkdir($dir, 0755);
+    return $dir;
+}
+
+/** Remove a scratch tree; a symbolic link is removed itself, never followed. */
+function wf_t_rmtree(string $path): void
+{
+    clearstatcache(true, $path);
+    $st = @lstat($path);
+    if ($st === false) {
+        return;
+    }
+    if (($st['mode'] & 0170000) === 0040000) {
+        foreach (scandir($path) ?: [] as $name) {
+            if ($name !== '.' && $name !== '..') {
+                wf_t_rmtree("{$path}/{$name}");
+            }
+        }
+        rmdir($path);
+    } else {
+        unlink($path);
+    }
+}
+
+function wf_t_mode(string $path): int
+{
+    clearstatcache(true, $path);
+    $st = @lstat($path);
+    return $st === false ? -1 : $st['mode'] & 07777;
+}
 
 wf_register_suite('state', function (): int {
     $t = ['fail' => 0, 'total' => 0];
@@ -71,5 +109,147 @@ wf_register_suite('state', function (): int {
         !is_file("{$tdir}/trace-20260901.jsonl") && is_file("{$tdir}/trace-20260930.jsonl"));
     unlink("{$tdir}/trace-20260930.jsonl");
     rmdir($tdir);
+
+    $fresh = fn (array $l): bool => $l['state']['boot_id'] === 'b500' && $l['state']['judgements'] === [];
+    $d = wf_t_scratch('s1');
+    file_put_contents("{$d}/real.json", json_encode(wf_state_new('b100')));
+    symlink("{$d}/real.json", "{$d}/state.json");
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s1) a symbolic link to a valid state file loads fresh, corrupt, as a symbolic link',
+        $fresh($l) && $l['corrupt'] && $l['problem'] === 'a symbolic link');
+    wf_t_rmtree($d);
+    $d = wf_t_scratch('s2');
+    mkdir("{$d}/state.json");
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s2) a directory at the path loads fresh, corrupt, as not a regular file',
+        $fresh($l) && $l['corrupt'] && $l['problem'] === 'not a regular file');
+    wf_t_rmtree($d);
+    $d = wf_t_scratch('s3');
+    $json = json_encode(wf_state_new('b100'));
+    file_put_contents("{$d}/state.json", $json . str_repeat(' ', 1048577 - strlen($json)));
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s3) a state file of 1 MiB + 1 byte (valid JSON) loads fresh, corrupt, as larger than 1 MiB',
+        filesize("{$d}/state.json") === 1048577 && $fresh($l) && $l['corrupt'] && $l['problem'] === 'larger than 1 MiB');
+    $l = wf_state_load("{$d}/missing.json", 'b500');
+    wf_check($t, '(s3) a missing path loads fresh, not corrupt, with no problem', $fresh($l) && !$l['corrupt'] && $l['problem'] === null);
+    file_put_contents("{$d}/state.json", '{"version":3,"judgements":');
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s3) a truncated file is named as not JSON', $l['corrupt'] && $l['problem'] === 'not JSON');
+    wf_t_rmtree($d);
+
+    $d = wf_t_scratch('s4');
+    file_put_contents("{$d}/state.json", '{"version":3,"boot_id":"b500","gateway_ips":{"WAN_A":"not-an-ip","WAN_B":"198.51.100.1"}}');
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s4) a gateway_ips entry that is no IPv4 address is dropped, the others kept, not corrupt',
+        !$l['corrupt'] && $l['problem'] === null && $l['state']['gateway_ips'] === ['WAN_B' => '198.51.100.1']);
+    file_put_contents("{$d}/state.json", '{"version":3,"boot_id":"b100","installed_at":null,"boot_note":"boot: released WAN_B"}');
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s4) a nullable field may be null or its type; a field the file lacks takes its default',
+        !$l['corrupt'] && $l['state']['boot_id'] === 'b100' && $l['state']['installed_at'] === null
+        && $l['state']['boot_note'] === 'boot: released WAN_B' && $l['state']['last_held'] === []);
+    foreach (['"judgements":"x"' => 'judgements a string', '"last_held":"WAN_A"' => 'last_held a string',
+              '"installed_at":"400"' => 'installed_at a string'] as $field => $what) {
+        file_put_contents("{$d}/state.json", '{"version":3,' . $field . '}');
+        $l = wf_state_load("{$d}/state.json", 'b500');
+        wf_check($t, "(s5) {$what} loads fresh, corrupt, as not this version's shape",
+            $fresh($l) && $l['corrupt'] && $l['problem'] === "not this version's shape");
+    }
+    foreach (['{"version":"3"}' => 'a string version', '{"judgements":[]}' => 'no version', '"x"' => 'a JSON string'] as $text => $what) {
+        file_put_contents("{$d}/state.json", $text);
+        $l = wf_state_load("{$d}/state.json", 'b500');
+        wf_check($t, "(s5) {$what} loads fresh, corrupt, as not this version's shape",
+            $fresh($l) && $l['corrupt'] && $l['problem'] === "not this version's shape");
+    }
+    wf_t_rmtree($d);
+
+    $d = wf_t_scratch('s6');
+    wf_state_save("{$d}/db/state.json", $s);
+    wf_check($t, '(s6) a save makes the directory 0700 and the file 0600',
+        wf_t_mode("{$d}/db") === 0700 && wf_t_mode("{$d}/db/state.json") === 0600
+        && glob("{$d}/db/state.json.*") === [] && !wf_state_load("{$d}/db/state.json", 'b500')['corrupt']);
+    mkdir("{$d}/old", 0750);
+    chmod("{$d}/old", 0750);
+    file_put_contents("{$d}/old/state.json", '{}');
+    chmod("{$d}/old/state.json", 0644);
+    wf_state_save("{$d}/old/state.json", $s);
+    wf_check($t, "(s6) 1.3_1's 0750 directory becomes 0700 and its 0644 file 0600 at the next save",
+        wf_t_mode("{$d}/old") === 0700 && wf_t_mode("{$d}/old/state.json") === 0600);
+    wf_t_rmtree($d);
+
+    $d = wf_t_scratch('s7');
+    mkdir("{$d}/real", 0700);
+    symlink("{$d}/real", "{$d}/link");
+    touch("{$d}/file");
+    $throws = function (string $dir): bool {
+        try {
+            wf_private_dir($dir);
+            return false;
+        } catch (RuntimeException) {
+            return true;
+        }
+    };
+    wf_check($t, '(s7) wf_private_dir() throws on a symbolic link to a directory, and on a file',
+        $throws("{$d}/link") && $throws("{$d}/file") && !$throws("{$d}/real"));
+    wf_t_rmtree($d);
+
+    $d = wf_t_scratch('s8');
+    wf_event("{$d}/run/event", ['time' => 'now', 'dry' => false, 'hold' => ['WAN_B']]);
+    wf_check($t, "(s8) wf_event()'s file is 0600 in a 0700 directory, with its fields",
+        wf_t_mode("{$d}/run/event") === 0600 && wf_t_mode("{$d}/run") === 0700
+        && file_get_contents("{$d}/run/event") === "time=now\ndry=no\nhold=WAN_B\n");
+    $day = 'trace-' . date('Ymd') . '.jsonl';
+    wf_trace("{$d}/trace", ['n' => 1]);
+    wf_trace("{$d}/trace", ['n' => 2]);
+    wf_check($t, "(s8) wf_trace()'s file is 0600 in a 0700 directory, one line per record",
+        wf_t_mode("{$d}/trace/{$day}") === 0600 && wf_t_mode("{$d}/trace") === 0700
+        && file_get_contents("{$d}/trace/{$day}") === "{\"n\":1}\n{\"n\":2}\n");
+    mkdir("{$d}/old", 0750);
+    file_put_contents("{$d}/old/{$day}", "{\"n\":0}\n");
+    chmod("{$d}/old/{$day}", 0644);
+    wf_trace("{$d}/old", ['n' => 1]);
+    wf_check($t, "(s8) 1.3_1's 0644 trace file becomes 0600 and keeps its lines",
+        wf_t_mode("{$d}/old/{$day}") === 0600 && wf_t_mode("{$d}/old") === 0700
+        && file_get_contents("{$d}/old/{$day}") === "{\"n\":0}\n{\"n\":1}\n");
+    mkdir("{$d}/linked", 0700);
+    file_put_contents("{$d}/target", "kept\n");
+    chmod("{$d}/target", 0644);
+    symlink("{$d}/target", "{$d}/linked/{$day}");
+    wf_trace("{$d}/linked", ['n' => 1]);
+    wf_check($t, '(s8) a symbolic link at the trace file is refused: its target unchanged, the link kept',
+        file_get_contents("{$d}/target") === "kept\n" && wf_t_mode("{$d}/target") === 0644 && is_link("{$d}/linked/{$day}"));
+    mkdir("{$d}/dangling", 0700);
+    symlink("{$d}/absent", "{$d}/dangling/{$day}");
+    wf_trace("{$d}/dangling", ['n' => 1]);
+    wf_check($t, '(s8) a symbolic link at the trace file to a missing file is refused: nothing is created there',
+        !file_exists("{$d}/absent") && is_link("{$d}/dangling/{$day}"));
+    wf_t_rmtree($d);
+
+    $d = wf_t_scratch('s9');
+    file_put_contents("{$d}/crash_at", "after-save\n");
+    $other = wf_crash_due("{$d}/crash_at", 'after-pending');
+    $kept = is_file("{$d}/crash_at");
+    $due = wf_crash_due("{$d}/crash_at", 'after-save');
+    wf_check($t, '(s9) a crash flag naming another point is not due and is kept; at its own point it is due and consumed',
+        !$other && $kept && $due && !file_exists("{$d}/crash_at"));
+    wf_check($t, '(s9) a missing crash flag is not due', !wf_crash_due("{$d}/crash_at", 'after-save'));
+    file_put_contents("{$d}/target", "after-save\n");
+    symlink("{$d}/target", "{$d}/crash_at");
+    wf_check($t, '(s9) a symbolic link as the crash flag is not due, and nothing is removed',
+        !wf_crash_due("{$d}/crash_at", 'after-save') && is_link("{$d}/crash_at") && is_file("{$d}/target"));
+    wf_t_rmtree($d);
+
+    $src = dirname(__DIR__) . '/src';
+    $calls = [];
+    $php = 0;
+    foreach (new RecursiveIteratorIterator(new RecursiveDirectoryIterator($src, FilesystemIterator::SKIP_DOTS)) as $info) {
+        if ($info instanceof SplFileInfo && $info->isFile() && $info->getExtension() === 'php') {
+            $php++;
+            if (str_contains((string)file_get_contents($info->getPathname()), 'getenv(')) {
+                $calls[] = substr($info->getPathname(), strlen($src) + 1);
+            }
+        }
+    }
+    wf_check($t, '(s10) no PHP file under src reads the environment (getenv): ' . ($calls === [] ? "none of {$php}" : implode(', ', $calls)),
+        $php > 0 && $calls === []);
     return wf_tally_report('state', $t);
 });

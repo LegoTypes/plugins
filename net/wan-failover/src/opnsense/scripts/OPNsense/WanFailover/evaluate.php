@@ -24,10 +24,6 @@ declare(strict_types=1);
  * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core.
  */
 
-const WF_STATE = '/var/db/wanfailover/state.json';
-const WF_LOCK_DIR = '/var/run/wanfailover';
-const WF_EVENT = '/var/run/wanfailover/event';
-const WF_TRACE = '/var/log/wanfailover/trace';
 const WF_RELEASE_WAIT_SECONDS = 60;
 
 require_once __DIR__ . '/lib/planner.php';
@@ -70,9 +66,14 @@ function wf_main(string $mode, array $args): int
         $mode = $stopping ? 'release' : 'evaluate';
     }
     if ($mode === '--snapshot') {
+        /* no default path: a fixed name in /tmp is one any local user can plant a link at */
+        if (($args[1] ?? '') === '') {
+            fwrite(STDERR, "usage: evaluate.php --snapshot FILE\n");
+            return 1;
+        }
         $snap = wf_snapshot();
         $snap['pf'] = wf_snapshot_pf(array_map(fn (array $w): string => $w['route_target'], $snap['wans']));
-        file_put_contents($args[1] ?? '/tmp/wanfailover.snapshot.json', json_encode($snap, JSON_PRETTY_PRINT) . "\n");
+        file_put_contents($args[1], json_encode($snap, JSON_PRETTY_PRINT) . "\n");
         return 0;
     }
     if ($mode === '--dry') {
@@ -102,10 +103,8 @@ function wf_main(string $mode, array $args): int
         return 0;
     }
 
-    if (!is_dir(WF_LOCK_DIR)) {
-        mkdir(WF_LOCK_DIR, 0750, true);
-    }
-    $lock = fopen(WF_LOCK_DIR . '/evaluate.lock', 'ce');
+    wf_private_dir(WF_RUN_DIR);
+    $lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');
     $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
     /* a release (the page's button, or stop on disable) and fail back now wait for an evaluation in
      * flight instead of silently doing nothing; a routine evaluation just leaves it to the one running */
@@ -129,7 +128,7 @@ function wf_main(string $mode, array $args): int
     $snap = wf_snapshot();
     $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
     if ($loaded['corrupt']) {
-        wf_log('state file unreadable; starting from a fresh state', LOG_WARNING);
+        wf_log("state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
         $loaded['state']['boot_id'] = 'corrupt';
     }
     $state = $loaded['state'];
