@@ -10,6 +10,15 @@ or "configctl macaliascache flush").
 Plugin Changelog
 ================
 
+1.1
+
+* State and lock files move out of /tmp into a root-owned directory; files are
+  checked for type, owner and shape when read back
+* Flush refuses read-only users and runs one at a time
+* Host rows are validated (MAC and IP shape) before they reach the alias cache;
+  the core files the plugin relies on are checked, and a flush refuses to run
+  when they no longer match
+
 1.0
 
 * Initial release
