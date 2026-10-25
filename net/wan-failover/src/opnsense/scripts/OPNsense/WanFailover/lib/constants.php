@@ -20,6 +20,11 @@ const WF_TRACE = '/var/log/wanfailover/trace';
 const WF_CRASH_FLAG = WF_RUN_DIR . '/crash_at';      /* a test names a crash point here; the point consumes it */
 const WF_FILE_MAX_BYTES = 1048576;
 
+/* core's own mask for a gateway name (Gateways.xml), with the D flag so a trailing newline fails; names and
+ * interfaces from a restored configuration are checked against these where they build paths and arguments */
+const WF_GATEWAY_NAME_MASK = '/^[a-zA-Z0-9_\-]{1,32}$/D';
+const WF_IF_MASK = '/^[a-z][a-z0-9_.]*\z/';
+
 const WF_FRESH_SECONDS = 120;        /* an alternative must have read settled-up this recently to back a hold */
 const WF_UNKNOWN_MAX_SECONDS = 180;  /* unreadable this long counts as bad (three dpinger time_periods) */
 const WF_DEAD_MIN_SECONDS = 10;      /* 100% loss for this long is hard down, settled or not */

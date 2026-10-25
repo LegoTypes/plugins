@@ -13,6 +13,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/constants.php';
 
 /**
  * One run of a tree script under the VM's php, stdout and stderr together.
@@ -62,6 +63,15 @@ wf_register_suite('wiring', function (): int {
     if (!$ok) {
         printf("    exit %d, output: %s\n    %s before: %s, after: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']),
             $old, json_encode($before), json_encode($after));
+    }
+    /* the plugin's name mask is core's own, so a name core accepts is never refused here (the D flag aside) */
+    $xml = @simplexml_load_file('/usr/local/opnsense/mvc/app/models/OPNsense/Routing/Gateways.xml');
+    $core = $xml === false ? '' : (string)($xml->items->gateway_item->name->Mask ?? '');
+    $ours = substr(WF_GATEWAY_NAME_MASK, 0, -1);
+    $ok = $core !== '' && $core === $ours;
+    wf_check($t, "(w2) WF_GATEWAY_NAME_MASK equals the Mask of the name field in core's Gateways.xml", $ok);
+    if (!$ok) {
+        printf("    core: %s\n    ours: %s\n", $core === '' ? '(not read)' : $core, WF_GATEWAY_NAME_MASK);
     }
     return wf_tally_report('wiring', $t);
 });

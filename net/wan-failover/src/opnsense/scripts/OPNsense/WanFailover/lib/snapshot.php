@@ -71,6 +71,17 @@ function wf_snapshot(): array
         $forceDown[(string)$name] = !empty($g['force_down']);
     }
     $wansRes = wf_resolve_uuids(wf_model_list($mdl->wans), $nameByUuid);
+    /* a name or interface that is not a plain token never reaches a path or a command: the WAN is unresolved */
+    $usable = [];
+    foreach ($wansRes['names'] as $name) {
+        $g = $all[$name];
+        if (wf_name_ok($name) && wf_if_ok((string)($g['if'] ?? ''))) {
+            $usable[] = $name;
+        } else {
+            $wansRes['unresolved'][] = (string)($g['uuid'] ?? $name);
+        }
+    }
+    $wansRes['names'] = $usable;
     $heldRes = wf_resolve_uuids(wf_model_list($mdl->held), $nameByUuid);
     $status = dpinger_status();
     $instances = dpinger_instances(true);
@@ -109,6 +120,7 @@ function wf_snapshot(): array
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
             'gateway_ip' => (string)($g['gateway'] ?? ''),
+            'if' => (string)($g['if'] ?? ''),
             'route_target' => wf_route_target((string)($g['gateway'] ?? ''), (string)($g['if'] ?? '')),
             'rank' => 0,
             'disabled' => !empty($g['disabled']),

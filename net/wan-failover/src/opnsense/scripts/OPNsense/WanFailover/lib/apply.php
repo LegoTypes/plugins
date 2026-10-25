@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/failback.php';
+require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/tailscale.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/log.php';
@@ -45,6 +46,16 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         $changes[$n] = false;
     }
     $replay = array_values(array_unique(array_merge($plan['redo_apply'], $plan['redo_replay'])));
+    /* the names go into one command argument: only plain gateway names may, and a dropped one is said once */
+    $skipped = false;
+    $plain = function (array $names) use ($log, &$skipped): array {
+        $ok = array_values(array_filter($names, fn (string $n): bool => wf_name_ok($n)));
+        if (count($ok) !== count($names) && !$skipped) {
+            $skipped = true;
+            $log('replay skipped for an invalid gateway name');
+        }
+        return $ok;
+    };
 
     if ($plan['write'] || $plan['foreign'] !== []) {
         foreach ($changes as $n => $down) {
@@ -86,6 +97,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
     }
 
     $replayOk = true;
+    $replay = $plain($replay);
     if ($replay !== []) {
         sort($replay);
         $want = [];
@@ -131,7 +143,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         if (!$g['ready']) {
             $extra = array_keys(array_diff_assoc(($io['status'])(), $before));
-            ($io['configd'])('wanfailover replay_alarm', [implode(',', array_values(array_unique(array_merge([$n], $extra))))]);
+            ($io['configd'])('wanfailover replay_alarm', [implode(',', $plain(array_values(array_unique(array_merge([$n], $extra)))))]);
             $pf = ($io['pf'])();
             $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         }

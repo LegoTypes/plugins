@@ -10,7 +10,28 @@ declare(strict_types=1);
  * Pure parsers for the live snapshot: ifconfig, route get, kern.boot_id, UUID resolution.
  */
 
+require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/pfstate.php';
+
+/** A gateway name as core's model accepts it: safe in a pid or socket path and in a command argument. */
+function wf_name_ok(string $name): bool
+{
+    return preg_match(WF_GATEWAY_NAME_MASK, $name) === 1;
+}
+
+function wf_if_ok(string $if): bool
+{
+    return preg_match(WF_IF_MASK, $if) === 1;
+}
+
+/** A state-kill target, gateway-address@interface, with an IPv4 address and an interface name. */
+function wf_kill_target_ok(string $target): bool
+{
+    if (preg_match('/^(\d{1,3}\.){3}\d{1,3}@[a-z][a-z0-9_.]*\z/', $target) !== 1) {
+        return false;
+    }
+    return filter_var(explode('@', $target)[0], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false;
+}
 
 /**
  * Only an explicit "status: no carrier" is carrier loss: wg, pppoe and similar interfaces print no
