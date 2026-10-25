@@ -520,24 +520,29 @@ _LOG_LIMIT = 400
 
 
 def log_refusal(code, detail):
-    """ one warning line in the system log; a failure to log never changes the reply """
+    """ one warning line in the system log """
+    syslog.openlog("macaliascache")
+    syslog.syslog(syslog.LOG_WARNING, ("%s: %s" % (code, detail))[:_LOG_LIMIT])
+
+
+def _log_reply(reply):
+    """ log the reply if it is a refusal that is a security event or a flush that dropped host rows;
+    building the line is guarded with the writing, so logging never changes the reply
+    """
     try:
-        syslog.openlog("macaliascache")
-        syslog.syslog(syslog.LOG_WARNING, ("%s: %s" % (code, detail))[:_LOG_LIMIT])
+        if reply.get("error") in _LOGGED_REFUSALS:
+            log_refusal(reply["error"], reply.get("detail", ""))
+        elif reply.get("rows_rejected"):
+            log_refusal("rows_rejected", "%d host rows dropped, e.g. %s" % (reply["rows_rejected"],
+                                                                             "; ".join(reply["rejected"])))
     except Exception:
         pass
 
 
 def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
-    """ the flush reply; every refusal that is a security event, and every flush that dropped host
-    rows, leaves one line in the system log, written here so no path logs twice or not at all
-    """
+    """ the flush reply; it is logged here so no refusal path logs twice or not at all """
     reply = _flush(cfg, clock, sleep)
-    if reply.get("error") in _LOGGED_REFUSALS:
-        log_refusal(reply["error"], reply.get("detail", ""))
-    elif reply.get("rows_rejected"):
-        log_refusal("rows_rejected", "%d host rows dropped, e.g. %s" % (reply["rows_rejected"],
-                                                                         "; ".join(reply["rejected"])))
+    _log_reply(reply)
     return reply
 
 

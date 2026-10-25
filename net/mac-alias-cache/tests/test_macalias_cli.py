@@ -1656,3 +1656,31 @@ def test_syslog_failure_never_changes_the_reply(env, monkeypatch, failing):
     monkeypatch.setattr(macalias.syslog, failing, broken)
     assert _flush(cfg) == expected
     assert expected["error"] == "core_changed"
+
+
+def test_a_line_that_cannot_be_built_never_changes_the_reply(env, logged, monkeypatch):
+    cfg, tmp = env
+
+    class Unprintable:
+        def __str__(self):
+            raise RuntimeError("no text")
+
+    reply = {"summary": [], "rows_rejected": 1, "rejected": [Unprintable()]}
+    monkeypatch.setattr(macalias, "_flush", lambda cfg_, clock, sleep: reply)
+    assert _flush(cfg) is reply
+    assert logged[0] == []
+
+
+def test_status_never_logs_even_with_blocking_problems(env, logged):
+    cfg, tmp = env
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    os.mkfifo(cfg["lock_file"])
+    (tmp / "arp.cache").rename(tmp / "real.cache")
+    os.symlink(tmp / "real.cache", tmp / "arp.cache")
+    (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
+    arpcache = _core(cfg, "arpcache")
+    arpcache.write_text(arpcache.read_text().replace("/tmp/alias_filter_arp.cache", "/var/cache/alias_filter_arp.cache"))
+    with _within(5):
+        out = macalias.cmd_status(cfg, now=0.0)
+    assert any(p["blocks_flush"] for p in out["problems"])
+    assert logged == ([], [])
