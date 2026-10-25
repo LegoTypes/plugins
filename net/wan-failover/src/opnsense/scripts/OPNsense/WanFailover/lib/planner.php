@@ -129,7 +129,9 @@ function wf_plan(array $snap, array $state): array
     } else {
         $state['contract_judging_since'] = null;
     }
-    if (!$snap['enabled']) {
+    if ($snap['release'] === 'removal') {
+        $releaseAll = 'package removal';
+    } elseif (!$snap['enabled']) {
         $releaseAll = 'plugin disabled';
     } elseif ($snap['release'] === 'requested') {
         $releaseAll = 'release requested';

@@ -13,9 +13,11 @@ declare(strict_types=1);
  * saves force_down and exactly the plan's hold records together without a config backup (the owner's decision), and
  * writes nothing when a changed gateway's force_down moved since the snapshot the plan decided on. The one other
  * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()); the migration
- * shares its import (wf_holds_import_into()). wf_live_io()'s closures and wf_write_holds() call snapshot.php
- * functions; evaluate.php loads snapshot.php first. They are not required here so the pure tests can load this file
- * without OPNsense's includes.
+ * shares its import (wf_holds_import_into()). While the package removal's marker exists, neither writes, except the
+ * removal's own write. wf_deinstall_io() is the removal's I/O: wf_live_io()'s, re-syncing routing through core's
+ * commands only (wf_core_command()), since the plugin's own configd actions go with the package. wf_live_io()'s
+ * closures and wf_write_holds() call snapshot.php functions; evaluate.php loads snapshot.php first. They are not
+ * required here so the pure tests can load this file without OPNsense's includes.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -197,6 +199,13 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
     return ['state' => $state, 'ok' => true];
 }
 
+/** Whether the package removal's marker exists (+PRE_DEINSTALL.pre writes it; +POST_INSTALL.pre deletes it). */
+function wf_removing(): bool
+{
+    clearstatcache(true, WF_REMOVING);
+    return is_file(WF_REMOVING);
+}
+
 /**
  * The one config writer: force_down on the changed gateways and the plugin's hold records, in one locked save without
  * a config backup. An evaluation calls it under core's gateway lock; Config::lock() comes next, and both models are
@@ -206,12 +215,14 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
  * after the write (wf_holds_rows()), every other row removed, so a record the plan proved is never left behind for one
  * it did not. It never throws: a failure is logged and the change waits for the next tick. A write that only releases
  * skips model validation, so a gateway field that fails validation (after a firmware update tightened a rule, say) can
- * never pin a hold; the plugin itself only touches force_down and its hold records.
+ * never pin a hold; the plugin itself only touches force_down and its hold records. While the package removal's marker
+ * exists, only the removal's own write lands: the marker is read once Config::lock() is held, and the removal writes it
+ * before anything else, so an evaluation that was waiting for the lock cannot re-take a hold the removal releases.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
  * @param array<string, array{boot: string, since: int}> $recordsAfter every hold record after the write, by gateway name
- * @param bool $removal true for the package removal's own write; it changes nothing yet
+ * @param bool $removal true for the package removal's own write, the one write the removal's marker lets through
  * @return array{ok: bool, skipped: list<string>} skipped: the changed gateways whose force_down moved, when ok is false
  */
 function wf_write_holds(array $changes, array $expected, array $recordsAfter, bool $removal = false): array
@@ -221,6 +232,10 @@ function wf_write_holds(array $changes, array $expected, array $recordsAfter, bo
         $cfg = \OPNsense\Core\Config::getInstance();
         $cfg->lock();
         try {
+            if (!$removal && wf_removing()) {
+                wf_log('config write: the package is being removed; nothing written');
+                return ['ok' => false, 'skipped' => []];
+            }
             $gateways = new \OPNsense\Routing\Gateways();
             $items = [];
             $current = [];
@@ -358,9 +373,9 @@ function wf_holds_drop_legacy(): void
  * An evaluation's import of 1.3_1's held list, when the upgrade's migration has not run yet or failed: the gateway
  * lock, then Config::lock() (which reloads the config), the models built after it, the records added, the raw list
  * removed, one save without a backup, then the unlocks. It never throws: a failure is logged and the list stays for
- * the next evaluation.
+ * the next evaluation. A package removal under way imports nothing: the marker is read once Config::lock() is held.
  *
- * @return string imported, none (no list once locked) or failed
+ * @return string imported, none (no list once locked), removing (the removal's marker exists) or failed
  */
 function wf_holds_import_legacy(string $bootId): string
 {
@@ -373,6 +388,10 @@ function wf_holds_import_legacy(string $bootId): string
         $cfg = \OPNsense\Core\Config::getInstance();
         $cfg->lock();
         try {
+            if (wf_removing()) {
+                wf_log('held list import: the package is being removed; nothing imported');
+                return 'removing';
+            }
             $holds = new \OPNsense\WanFailover\Holds();
             $lines = wf_holds_import_into($holds, $bootId, time());
             if ($lines === null) {
@@ -438,4 +457,81 @@ function wf_live_io(string $statePath, array $wanTargets): array
             }
         },
     ];
+}
+
+/**
+ * One of core's configd actions, or core's own command for it when configd does not answer, so a configd that is down,
+ * hung or failing never leaves routing out of step with the config. configd has run a script action only when it
+ * replies OK: configctl also exits 0 on no reply and on an error reply ("Execute error", "Action not found"), so the
+ * configctl line exits 0 only on that reply. That line is bounded by WF_CONFIGD_TIMEOUT_SECONDS; core's own command is
+ * not, and its output is discarded, so a daemon it starts cannot hold the runner's pipe open.
+ *
+ * @param string $action the configd action, words as configctl takes them ("interface routes configure")
+ * @param string $direct the command core's action runs (a WF_CORE_* constant)
+ * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
+ * @return string configd, direct, or failed when core's command exited non-zero too
+ */
+function wf_core_command(string $action, string $direct, callable $run): string
+{
+    $ctl = '/usr/bin/timeout ' . WF_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl ' . $action
+        . ' 2> /dev/null | /usr/bin/grep -qx OK';
+    if ($run($ctl) === 0) {
+        return 'configd';
+    }
+    return $run($direct . ' > /dev/null 2>&1') === 0 ? 'direct' : 'failed';
+}
+
+/** The production runner: the command line through sh, as written (its redirections and pipes included); its exit status. */
+function wf_core_shell(string $cmdline): int
+{
+    $out = [];
+    $rc = 0;
+    exec($cmdline, $out, $rc);
+    return $rc;
+}
+
+/**
+ * The package removal's I/O: $io (wf_live_io()'s) with its write made the removal's own, which the removal's marker
+ * lets through, its crash points inert, and its configd replaced, since the plugin's own configd actions go with the
+ * package. Core's routing reconfigure runs through core's configd action, else core's own command (wf_core_command());
+ * the alarm replay runs the command the plugin's [replay_alarm] action wraps (WF_REPLAY_ALARM_CMD), directly, with
+ * the names as its one argument; any other action is refused with one line and never run. Every line apply logs
+ * through it starts "deinstall: ".
+ *
+ * @param array $io the shape returned by wf_live_io()
+ * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
+ * @return array the same shape, as wf_apply() takes it
+ */
+function wf_deinstall_io(array $io, callable $run): array
+{
+    $base = $io;
+    $log = function (string $m, int $prio = LOG_NOTICE) use ($base): void {
+        ($base['log'])("deinstall: {$m}", $prio);
+    };
+    $io['log'] = $log;
+    /* a removal always runs to its end: nothing would resume one a test crash stopped */
+    $io['crash_point'] = function (string $p): void {
+    };
+    $io['write'] = fn (array $c, array $expected, array $recordsAfter): array => ($base['write'])($c, $expected, $recordsAfter, true);
+    $io['configd'] = function (string $action, array $params) use ($run, $log): string {
+        if ($action === 'interface routes configure' && $params === []) {
+            $path = wf_core_command($action, WF_CORE_ROUTES_CONFIGURE, $run);
+            if ($path === 'configd') {
+                $log('routing reconfigured through configd');
+            } elseif ($path === 'direct') {
+                $log('configd did not answer OK, so core\'s ' . WF_CORE_ROUTES_CONFIGURE . ' ran directly', LOG_WARNING);
+            } else {
+                $log('routing reconfigure failed: configd did not answer OK, and core\'s ' . WF_CORE_ROUTES_CONFIGURE
+                    . ' exited non-zero', LOG_ERR);
+            }
+            return $path === 'failed' ? 'failed' : 'OK';
+        }
+        if ($action === 'wanfailover replay_alarm' && count($params) === 1) {
+            $rc = $run(WF_REPLAY_ALARM_CMD . ' ' . escapeshellarg($params[0]) . ' > /dev/null 2>&1');
+            return $rc === 0 ? 'OK' : "exit {$rc}";
+        }
+        $log("configd {$action} refused: the plugin's own actions go with the package", LOG_WARNING);
+        return 'refused';
+    };
+    return $io;
 }

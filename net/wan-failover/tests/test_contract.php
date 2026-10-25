@@ -40,6 +40,19 @@ wf_register_suite('contract', function (): int {
     $swapped = "/usr/local/etc/rc.bootup\n/usr/local/etc/rc.syshook early\n";
     wf_check($t, 'early hooks after rc.bootup is reported', count(wf_contract_commands(WF_T_IFACE, WF_T_FILTER, $swapped)) === 1);
     wf_check($t, 'unreadable files are reported', count(wf_contract_commands(null, null, null)) === 3);
+    $moved = str_replace("command:/usr/local/etc/rc.routing_configure\n", "command:/usr/local/etc/rc.routing_configure_v2\n", WF_T_IFACE);
+    $noConfigure = (string)preg_replace('/\A\[routes\.configure\].*?(?=^\[)/ms', '', WF_T_IFACE);
+    wf_check($t, '(d4) a [routes.configure] whose command differs, or none, is a command drift: the package removal runs it',
+        $moved !== WF_T_IFACE && wf_contract_commands($moved, WF_T_FILTER, WF_T_RC) === ['[routes.configure] changed']
+        && !str_contains($noConfigure, 'routes.configure') && wf_contract_commands($noConfigure, WF_T_FILTER, WF_T_RC) === ['[routes.configure] changed']);
+    $tree = @file_get_contents(dirname(__DIR__) . '/src/opnsense/service/conf/actions.d/actions_wanfailover.conf');
+    $replay = $tree === false ? null : wf_ini_section($tree, 'replay_alarm');
+    $cmd = $replay === null ? null : wf_ini_command($replay);
+    wf_check($t, '(d5) the tree\'s [replay_alarm] command is WF_REPLAY_ALARM_CMD, which the package removal runs directly',
+        $cmd === WF_REPLAY_ALARM_CMD);
+    if ($cmd !== WF_REPLAY_ALARM_CMD) {
+        printf("    tree: %s\n    ours: %s\n", $cmd ?? '(not read)', WF_REPLAY_ALARM_CMD);
+    }
 
     $row = ['current_losslow' => '10', 'current_losshigh' => '20', 'current_time_period' => '60',
             'current_interval' => '1', 'current_loss_interval' => '4'];

@@ -22,6 +22,12 @@ function wf_ini_section(string $text, string $name): ?string
     return preg_match('/^\[' . preg_quote($name, '/') . '\]\s*$(.*?)(?=^\[|\z)/ms', $text, $m) === 1 ? $m[1] : null;
 }
 
+/** A configd action section's command: line, trimmed; null when it has none. */
+function wf_ini_command(string $section): ?string
+{
+    return preg_match('/^command:(.*)$/m', $section, $m) === 1 ? trim($m[1]) : null;
+}
+
 /**
  * @return list<string>
  */
@@ -33,6 +39,13 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
         $p[] = 'actions_interface.conf [routes.alarm] missing or unreadable';
     } elseif (!str_contains($alarm, WF_GATEWAY_LOCK) || !str_contains($alarm, 'rc.routing_configure alarm')) {
         $p[] = '[routes.alarm] no longer takes ' . WF_GATEWAY_LOCK . ' and runs rc.routing_configure alarm';
+    }
+    /* the package removal runs this command itself when configd does not answer */
+    if ($interfaceActions !== null) {
+        $configure = wf_ini_section($interfaceActions, 'routes.configure');
+        if ($configure === null || wf_ini_command($configure) !== WF_CORE_ROUTES_CONFIGURE) {
+            $p[] = '[routes.configure] changed';
+        }
     }
     if ($filterActions === null) {
         $p[] = 'actions_filter.conf unreadable';

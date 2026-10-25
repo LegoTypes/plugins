@@ -1,0 +1,10 @@
+#!/bin/sh
+# A real removal releases the gateways the plugin holds and re-syncs routing through core; an upgrade keeps the holds.
+if [ -z "${PKG_UPGRADE:-}" ] && [ -f /usr/local/opnsense/scripts/OPNsense/WanFailover/evaluate.php ]; then
+    # The removal marker comes first: the release's re-sync raises gateway alarms, and the evaluations they queue
+    # would re-hold a lossy WAN before pkg removes the files. While it exists every evaluation is skipped and no
+    # config write but the removal's own lands. +POST_DEINSTALL.post removes it, +POST_INSTALL.pre too.
+    mkdir -p -m 700 /var/run/wanfailover
+    touch /var/run/wanfailover/removing || true
+    /usr/local/bin/php -d log_errors=0 /usr/local/opnsense/scripts/OPNsense/WanFailover/evaluate.php deinstall > /dev/null 2>&1 || true
+fi

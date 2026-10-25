@@ -23,6 +23,10 @@ declare(strict_types=1);
  *   evaluate.php start|stop            regenerate cron (the minute job exists only while enabled), then evaluate | release
  *   evaluate.php kill-states TARGET    kill the states routed via TARGET (gateway@interface) by state id; a hold's
  *                                      evaluation calls it through configd while it holds the lock, so it takes none
+ *   evaluate.php deinstall             the package removal's release (+PRE_DEINSTALL.pre, not on an upgrade): every
+ *                                      hold the plugin took released, routing re-synced through core; always exits 0
+ * While the package removal's marker exists, every mode but --plan-from, kill-states, status, holds and deinstall logs
+ * that it was skipped and exits 0.
  * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core.
  */
 
@@ -78,28 +82,6 @@ function wf_main(string $mode, array $args): int
         echo str_contains($cron, 'configctl wanfailover evaluate') ? "wanfailover is running\n" : "wanfailover is not running\n";
         return 0;
     }
-    $stopping = $mode === 'stop';
-    if ($mode === 'start' || $mode === 'stop') {
-        (new \OPNsense\Core\Backend())->configdRun('cron restart');
-        $mode = $stopping ? 'release' : 'evaluate';
-    }
-    if ($mode === '--snapshot') {
-        /* no default path: a fixed name in /tmp is one any local user can plant a link at */
-        if (($args[1] ?? '') === '') {
-            fwrite(STDERR, "usage: evaluate.php --snapshot FILE\n");
-            return 1;
-        }
-        $snap = wf_snapshot();
-        $snap['pf'] = wf_snapshot_pf(array_map(fn (array $w): string => $w['route_target'], $snap['wans']));
-        file_put_contents($args[1], json_encode($snap, JSON_PRETTY_PRINT) . "\n");
-        return 0;
-    }
-    if ($mode === '--dry') {
-        $snap = wf_snapshot();
-        $state = wf_state_load(WF_STATE, $snap['boot_id'])['state'];
-        echo json_encode(['snapshot' => $snap, 'plan' => wf_plan($snap, $state)['plan']], JSON_PRETTY_PRINT), "\n";
-        return 0;
-    }
     if ($mode === 'holds') {
         $snap = wf_snapshot();
         $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
@@ -120,6 +102,38 @@ function wf_main(string $mode, array $args): int
                           'unresolved' => $snap['unresolved'], 'contract' => $snap['contract'],
                           'tailscale' => ['default_gw' => $s['ts']['default_gw'], 'restarted_at' => $s['ts']['restarted_at']],
                           'state_corrupt' => $loaded['corrupt'], 'foreign' => count($s['foreign_pruned'])]), "\n";
+        return 0;
+    }
+    if ($mode === 'deinstall') {
+        return wf_deinstall();
+    }
+    /* the package is being removed: its own release ran or runs (deinstall), and the alarms its routing re-sync raises
+     * queue evaluations that must not re-hold a WAN before pkg removes the files; the modes above read only, or are
+     * the removal itself, or (kill-states) are called by an evaluation that holds the lock */
+    if (wf_removing()) {
+        wf_log("the package is being removed; {$mode} skipped");
+        return 0;
+    }
+    $stopping = $mode === 'stop';
+    if ($mode === 'start' || $mode === 'stop') {
+        (new \OPNsense\Core\Backend())->configdRun('cron restart');
+        $mode = $stopping ? 'release' : 'evaluate';
+    }
+    if ($mode === '--snapshot') {
+        /* no default path: a fixed name in /tmp is one any local user can plant a link at */
+        if (($args[1] ?? '') === '') {
+            fwrite(STDERR, "usage: evaluate.php --snapshot FILE\n");
+            return 1;
+        }
+        $snap = wf_snapshot();
+        $snap['pf'] = wf_snapshot_pf(array_map(fn (array $w): string => $w['route_target'], $snap['wans']));
+        file_put_contents($args[1], json_encode($snap, JSON_PRETTY_PRINT) . "\n");
+        return 0;
+    }
+    if ($mode === '--dry') {
+        $snap = wf_snapshot();
+        $state = wf_state_load(WF_STATE, $snap['boot_id'])['state'];
+        echo json_encode(['snapshot' => $snap, 'plan' => wf_plan($snap, $state)['plan']], JSON_PRETTY_PRINT), "\n";
         return 0;
     }
 
@@ -218,6 +232,62 @@ function wf_main(string $mode, array $args): int
             $record['pf'] = ['raw_states' => $pf['raw_states'], 'raw_rules' => $pf['raw_rules'], 'default' => $pf['default']];
         }
         wf_trace(WF_TRACE, $record);
+    }
+    return 0;
+}
+
+/**
+ * The package removal's release. +PRE_DEINSTALL.pre runs it on a real removal only, after writing the removal's marker,
+ * which stops every other evaluation and its writes from then on: the dpinger alarms this re-sync raises queue
+ * evaluations that would otherwise re-hold a lossy WAN before pkg removes the files. It waits for an evaluation in
+ * flight for at most WF_DEINSTALL_WAIT_SECONDS, then goes on regardless: one already writing holds Config::lock(), and
+ * this write builds its models after taking it. It plans as with the plugin disabled, the cause "package removal":
+ * every hold the plugin proves it took is released, every other record pruned and its gateway left as it is. It
+ * applies through wf_deinstall_io(), so routing is re-synced through core only. It always returns 0, so pkg delete
+ * completes; every failure is logged.
+ */
+function wf_deinstall(): int
+{
+    $where = 'under System: Gateways: Configuration';
+    try {
+        wf_private_dir(WF_RUN_DIR);
+        $lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');
+        $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
+        for ($i = 0; !$locked && $lock !== false && $i < WF_DEINSTALL_WAIT_SECONDS; $i++) {
+            sleep(1);
+            $locked = flock($lock, LOCK_EX | LOCK_NB);
+        }
+        if ($lock === false) {
+            wf_log('deinstall: the evaluate lock could not be opened; releasing anyway', LOG_WARNING);
+        } elseif (!$locked) {
+            wf_log('deinstall: an evaluation kept the lock for ' . WF_DEINSTALL_WAIT_SECONDS . ' s; releasing anyway', LOG_WARNING);
+        }
+        $snap = wf_snapshot();
+        $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
+        if ($loaded['corrupt']) {
+            wf_log("deinstall: state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
+            $loaded['state']['boot_id'] = 'corrupt';
+        }
+        $snap['enabled'] = false;
+        $snap['tailscale_restart'] = false;
+        $snap['release'] = 'removal';
+        $r = wf_plan($snap, wf_dry_exit($loaded['state'], $snap));
+        $plan = $r['plan'];
+        foreach (array_merge($plan['log'], $plan['alerts']) as $line) {
+            wf_log("deinstall: {$line}");
+        }
+        $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
+        $applied = wf_apply($plan, $r['state'], $snap, wf_deinstall_io(wf_live_io(WF_STATE, $wanTargets), 'wf_core_shell'));
+        if ($plan['release'] === []) {
+            wf_log('deinstall: nothing held');
+        } elseif ($applied['ok']) {
+            wf_log('deinstall: released ' . implode(',', $plan['release']));
+        } else {
+            wf_log('deinstall: ' . implode(',', $plan['release']) . " not released and still forced down; clear Force down on each {$where}", LOG_ERR);
+        }
+    } catch (Throwable $e) {
+        wf_log('deinstall: failed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine()
+            . "); any gateway the plugin held stays forced down: clear its Force down {$where}", LOG_ERR);
     }
     return 0;
 }

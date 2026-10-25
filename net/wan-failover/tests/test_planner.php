@@ -366,6 +366,17 @@ wf_register_suite('planner', function (): int {
         $r['plan']['release'] === ['WAN_A'] && $r['plan']['stopped'] && $r['plan']['write'] && $r['plan']['records_after'] === []
         && $r['plan']['expected'] === ['WAN_A' => true] && in_array($foreignLine, $r['plan']['log'], true));
 
+    $s = wf_state_new('b500');
+    $s['last_held'] = ['WAN_A', 'WAN_B'];
+    $r = wf_plan(wf_t_ab(30550, ['loss' => 30.0] + $fdB, $fdB, ['enabled' => false, 'release' => 'removal',
+        'holds' => wf_t_rec('WAN_A', 'b500') + wf_t_rec('WAN_B', 'deadbeef')]), $s);
+    wf_check($t, '(d3) the package removal\'s stopped plan releases its own hold only, prunes the foreign record, kills '
+        . 'nothing, and says why',
+        $r['plan']['release'] === ['WAN_A'] && $r['plan']['hold'] === [] && $r['plan']['stopped'] && $r['plan']['write']
+        && $r['plan']['records_after'] === [] && $r['plan']['expected'] === ['WAN_A' => true] && $r['plan']['kill_targets'] === []
+        && $r['plan']['failback'] === [] && in_array($foreignLine, $r['plan']['log'], true)
+        && in_array('releasing every held gateway: package removal', $r['plan']['log'], true));
+
     $s = wf_state_new('b400');
     $s['last_held'] = ['WAN_A', 'WAN_B'];
     $r = wf_plan(wf_t_ab(30600, ['loss' => 30.0] + $fdB, $fdB, ['holds' => wf_t_rec('WAN_A', 'b400') + wf_t_rec('WAN_B', 'deadbeef')]), $s);

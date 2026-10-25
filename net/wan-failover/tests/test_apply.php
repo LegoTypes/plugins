@@ -250,6 +250,65 @@ wf_register_suite('apply', function (): int {
         . 'the raw list stays for the next evaluation',
         count($added) === 1 && !$a['imported'] && $a['lines'] === [] && str_contains((string)$a['error'], 'setNodes()'));
 
+    /* the removal's core commands: configd when its line exits 0, else core's own command */
+    $runs = new ArrayObject();
+    $stub = function (int $ctl, int $direct) use ($runs): callable {
+        return function (string $line) use ($runs, $ctl, $direct): int {
+            $runs[] = $line;
+            return str_contains($line, 'configctl') ? $ctl : $direct;
+        };
+    };
+    $path = wf_core_command('interface routes configure', WF_CORE_ROUTES_CONFIGURE, $stub(1, 0));
+    $lines = $runs->getArrayCopy();
+    wf_check($t, '(d1) configd not answering OK: core\'s own command runs after the configctl line, and the path is direct',
+        $path === 'direct' && count($lines) === 2
+        && str_starts_with($lines[0], '/usr/bin/timeout ' . WF_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl interface routes configure')
+        && str_starts_with($lines[1], WF_CORE_ROUTES_CONFIGURE . ' '));
+    $runs->exchangeArray([]);
+    $path = wf_core_command('interface routes configure', WF_CORE_ROUTES_CONFIGURE, $stub(0, 0));
+    wf_check($t, '(d1) configd answering OK: the path is configd and core\'s own command does not run',
+        $path === 'configd' && count($runs) === 1);
+    $runs->exchangeArray([]);
+    $path = wf_core_command('interface routes configure', WF_CORE_ROUTES_CONFIGURE, $stub(1, 1));
+    wf_check($t, '(d1) both failing: the path is failed', $path === 'failed' && count($runs) === 2);
+
+    /* the removal's apply: the base io's configd must never be reached, so every configd call it records is a defect */
+    $f = wf_t_io();
+    $f['io']['write'] = function (array $c, array $expected, array $recordsAfter, bool $removal = false) use ($f): array {
+        $f['calls'][] = 'write ' . json_encode($c) . ' held=' . implode(',', array_keys($recordsAfter)) . ($removal ? ' removal' : '');
+        return ['ok' => true, 'skipped' => []];
+    };
+    $run = function (string $line) use ($f): int {
+        $f['calls'][] = "run {$line}";
+        return 0;
+    };
+    $dio = wf_deinstall_io($f['io'], $run);
+    $r = wf_apply(wf_t_plan(['release' => ['WAN_A'], 'expected' => ['WAN_A' => true], 'write' => true, 'stopped' => true]),
+        $state, $snap, $dio);
+    $c = $f['calls']->getArrayCopy();
+    $at = function (callable $match) use ($c): int {
+        foreach ($c as $i => $x) {
+            if ($match($x)) {
+                return $i;
+            }
+        }
+        return -1;
+    };
+    $write = $at(fn (string $x): bool => $x === 'write {"WAN_A":false} held= removal');
+    $configure = $at(fn (string $x): bool => str_starts_with($x, 'run /usr/bin/timeout ' . WF_CONFIGD_TIMEOUT_SECONDS
+        . ' /usr/local/sbin/configctl interface routes configure'));
+    $replay = $at(fn (string $x): bool => $x === 'run ' . WF_REPLAY_ALARM_CMD . " 'WAN_A' > /dev/null 2>&1");
+    wf_check($t, '(d2) the removal writes as the removal, then reconfigures routing through core, then replays WAN_A\'s alarm '
+        . 'with core\'s command run directly',
+        $r['ok'] && $write >= 0 && $configure > $write && $replay > $configure && in_array('log deinstall: routing reconfigured through configd', $c, true));
+    wf_check($t, '(d2) no call of the removal reaches configd: none of the plugin\'s own actions, and none of core\'s',
+        array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd ')) === []);
+    $before = count($f['calls']);
+    $out = ($dio['configd'])('wanfailover kill_states', ['192.0.2.1@vtnet1']);
+    $after = array_slice($f['calls']->getArrayCopy(), $before);
+    wf_check($t, '(d2) any other action is refused with one line and never run',
+        $out === 'refused' && count($after) === 1 && str_starts_with($after[0], 'log(' . LOG_WARNING . ') deinstall: configd wanfailover kill_states refused'));
+
     $every = array_merge(...array_map(fn (ArrayObject $c): array => $c->getArrayCopy(), wf_t_io_made()));
     wf_check($t, '(a1) no apply case runs core\'s kill by gateway address (filter kill gateway_states)',
         $every !== [] && array_filter($every, fn (string $x): bool => str_contains($x, 'filter kill gateway_states')) === []);

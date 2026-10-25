@@ -14,7 +14,8 @@ declare(strict_types=1);
  * the state file names; every other record is pruned in the same save, its gateway's force_down left as it is. With
  * the state file missing or unreadable nothing is proven and nothing is written: the first evaluation prunes the
  * records as foreign. The runtime state is reset only after the save landed: if it did not, the state keeps the old
- * boot id and evaluate's own boot detector releases the holds instead.
+ * boot id and evaluate's own boot detector releases the holds instead. While the package removal's marker exists it
+ * does nothing and writes nothing.
  */
 
 require_once 'script/load_phalcon.php';
@@ -24,6 +25,9 @@ require_once __DIR__ . '/lib/log.php';
 require_once __DIR__ . '/lib/apply.php';
 
 try {
+    if (wf_removing()) {
+        exit(0);
+    }
     $bootId = wf_boot_id();
     /* read without the live boot id, so that a missing file names no boot before and proves no record */
     $loaded = wf_state_load(WF_STATE, '');

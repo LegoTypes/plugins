@@ -12,13 +12,21 @@ declare(strict_types=1);
  * reads back it reads as a regular file only, at most WF_FILE_MAX_BYTES.
  */
 
-const WF_RUN_DIR = '/var/run/wanfailover';           /* the evaluate lock, the Monit event and the crash-test flag */
+const WF_RUN_DIR = '/var/run/wanfailover';           /* the evaluate lock, Monit event, crash-test flag and removal marker */
 const WF_STATE = '/var/db/wanfailover/state.json';
 const WF_EVENT = WF_RUN_DIR . '/event';
 const WF_NOTIFIED = WF_RUN_DIR . '/notified';        /* the fingerprint of the event Monit last reported */
 const WF_TRACE = '/var/log/wanfailover/trace';
 const WF_CRASH_FLAG = WF_RUN_DIR . '/crash_at';      /* a test names a crash point here; the point consumes it */
+const WF_REMOVING = WF_RUN_DIR . '/removing';        /* the package removal's marker: +PRE_DEINSTALL.pre writes it */
 const WF_FILE_MAX_BYTES = 1048576;
+
+/* core's own commands, for the package removal, which cannot use the plugin's configd actions (they go with the
+ * package): core's [routes.configure] command, and the command the plugin's [replay_alarm] action wraps */
+const WF_CORE_ROUTES_CONFIGURE = '/usr/local/etc/rc.routing_configure';
+const WF_REPLAY_ALARM_CMD = '/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm';
+const WF_CONFIGD_TIMEOUT_SECONDS = 30; /* the removal's configctl call is bounded; core's own command, its fallback, is not */
+const WF_DEINSTALL_WAIT_SECONDS = 180; /* an evaluation's worst case: the gateway lock's 30 s, the replay's 120 s, the reconfigure */
 
 /* core's own mask for a gateway name (Gateways.xml), with the D flag so a trailing newline fails; names and
  * interfaces from a restored configuration are checked against these where they build paths and arguments */

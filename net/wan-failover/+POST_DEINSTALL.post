@@ -1,0 +1,6 @@
+
+# A real removal: the plugin's runtime state, with the removal marker, its saved state and its trace go with its
+# files. An upgrade keeps them, so the new version resumes with the holds, judgements and pending failbacks.
+if [ -z "${PKG_UPGRADE:-}" ]; then
+    rm -rf /var/run/wanfailover /var/db/wanfailover /var/log/wanfailover/trace
+fi

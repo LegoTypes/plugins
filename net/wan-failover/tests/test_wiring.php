@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The plugin's entry scripts as the box runs them. Needs the test VM: the suite runs from vm_selftest.sh, where
- * core's files exist (evaluate.php loads core's script/load_phalcon.php), and runs the tree's own scripts with the
- * VM's php. Changes nothing lasting.
+ * The plugin's entry scripts as the box runs them, and the package scripts as the package ships them. Needs the test
+ * VM: the suite runs from vm_selftest.sh, where core's files exist (evaluate.php loads core's script/load_phalcon.php),
+ * and runs the tree's own scripts with the VM's php. Changes nothing lasting.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
@@ -122,5 +122,59 @@ wf_register_suite('wiring', function (): int {
             trim($r['out']) === '' ? '(none)' : trim($r['out']), $mount === '' ? '(not read)' : $mount,
             $settings === false ? '(not read)' : (isset($settings->items->held) ? 'declares held' : 'no held'));
     }
+    /* the package scripts as the package ships them (vm_selftest.sh uploads them beside src/): pkg's payload check
+     * refuses anything but printable ASCII with a final newline */
+    $scripts = [];
+    foreach (['+PRE_DEINSTALL.pre', '+POST_DEINSTALL.post', '+POST_INSTALL.pre'] as $name) {
+        $text = @file_get_contents(dirname(__DIR__) . "/{$name}");
+        $scripts[$name] = $text === false ? '' : $text;
+        $ok = $text !== false && preg_match('/\A[\x20-\x7e\n]*\n\z/', $text) === 1;
+        wf_check($t, "(d6) {$name} is printable ASCII and ends with a newline", $ok);
+    }
+    $guard = 'if [ -z "${PKG_UPGRADE:-}" ]';
+    $pre = $scripts['+PRE_DEINSTALL.pre'];
+    $mk = strpos($pre, "\n    mkdir -p -m 700 " . WF_RUN_DIR . "\n");
+    $touch = strpos($pre, "\n    touch " . WF_REMOVING . " || true\n");
+    $php = strpos($pre, "\n    /usr/local/bin/php -d log_errors=0 /usr/local/opnsense/scripts/OPNsense/WanFailover/evaluate.php deinstall"
+        . " > /dev/null 2>&1 || true\n");
+    wf_check($t, '(d6) +PRE_DEINSTALL.pre runs on a real removal only: the guard, then the run directory, the marker and the deinstall, in that order',
+        str_starts_with($pre, "#!/bin/sh\n")
+        && str_contains($pre, $guard . ' && [ -f /usr/local/opnsense/scripts/OPNsense/WanFailover/evaluate.php ]; then')
+        && $mk !== false && $touch !== false && $php !== false && $mk < $touch && $touch < $php
+        && strpos($pre, $guard) < $mk);
+    wf_check($t, '(d6) +POST_DEINSTALL.post removes the plugin\'s directories on a real removal only',
+        str_contains($scripts['+POST_DEINSTALL.post'], $guard . "; then\n    rm -rf " . WF_RUN_DIR . ' /var/db/wanfailover ' . WF_TRACE . "\nfi\n")
+        && dirname(WF_STATE) === '/var/db/wanfailover');
+    wf_check($t, '(d6) +POST_INSTALL.pre removes the removal marker',
+        preg_match('/^rm -f ' . preg_quote(WF_REMOVING, '/') . '$/m', $scripts['+POST_INSTALL.pre']) === 1);
+    /* the marker's gate in evaluate.php: kill-states must stay above it, since a hold's evaluation calls it while it
+     * holds the lock; every mode that acts or writes, and the held list's import, below it */
+    $src = (string)@file_get_contents($evaluate);
+    $gate = strpos($src, "\n    if (wf_removing()) {\n");
+    $above = ["if (\$mode === '--plan-from')", "if (\$mode === 'kill-states')", "if (\$mode === 'status')",
+              "if (\$mode === 'holds')", "if (\$mode === 'deinstall')"];
+    $below = ["if (\$mode === 'start' || \$mode === 'stop')", "if (\$mode === '--snapshot')", "if (\$mode === '--dry')",
+              "\$lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');", 'wf_holds_import_legacy('];
+    $misplaced = [];
+    foreach ($above as $needle) {
+        $at = strpos($src, $needle);
+        if ($gate === false || $at === false || $at > $gate) {
+            $misplaced[] = $needle;
+        }
+    }
+    foreach ($below as $needle) {
+        $at = strpos($src, $needle);
+        if ($gate === false || $at === false || $at < $gate) {
+            $misplaced[] = $needle;
+        }
+    }
+    wf_check($t, '(d7) evaluate.php\'s removal gate comes after --plan-from, kill-states, status, holds and deinstall, and '
+        . 'before start, stop, --snapshot, --dry, the lock and the held list\'s import', $misplaced === []);
+    if ($misplaced !== []) {
+        printf("    gate at %s; misplaced: %s\n", $gate === false ? '(not found)' : (string)$gate, implode(' | ', $misplaced));
+    }
+    $boot = (string)@file_get_contents(dirname($evaluate) . '/boot.php');
+    wf_check($t, '(d7) boot.php checks the removal marker before it reads or writes anything',
+        str_contains($boot, "\ntry {\n    if (wf_removing()) {\n        exit(0);\n    }\n    \$bootId = wf_boot_id();\n"));
     return wf_tally_report('wiring', $t);
 });
