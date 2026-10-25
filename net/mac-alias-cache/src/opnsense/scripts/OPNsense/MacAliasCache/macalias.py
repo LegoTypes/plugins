@@ -35,6 +35,7 @@ import os
 import stat
 import subprocess
 import sys
+import syslog
 import tempfile
 import time
 
@@ -514,7 +515,33 @@ def _unlock(handle):
         handle.close()
 
 
+_LOGGED_REFUSALS = ("core_changed", "state_unusable", "lock_unusable", "hosts_malformed")
+_LOG_LIMIT = 400
+
+
+def log_refusal(code, detail):
+    """ one warning line in the system log; a failure to log never changes the reply """
+    try:
+        syslog.openlog("macaliascache")
+        syslog.syslog(syslog.LOG_WARNING, ("%s: %s" % (code, detail))[:_LOG_LIMIT])
+    except Exception:
+        pass
+
+
 def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
+    """ the flush reply; every refusal that is a security event, and every flush that dropped host
+    rows, leaves one line in the system log, written here so no path logs twice or not at all
+    """
+    reply = _flush(cfg, clock, sleep)
+    if reply.get("error") in _LOGGED_REFUSALS:
+        log_refusal(reply["error"], reply.get("detail", ""))
+    elif reply.get("rows_rejected"):
+        log_refusal("rows_rejected", "%d host rows dropped, e.g. %s" % (reply["rows_rejected"],
+                                                                         "; ".join(reply["rejected"])))
+    return reply
+
+
+def _flush(cfg, clock, sleep):
     # the plugin's own files live in the state directory, so it is made safe before any of
     # them is opened; every refusal below comes before any write
     problem = ensure_state_dir(cfg)

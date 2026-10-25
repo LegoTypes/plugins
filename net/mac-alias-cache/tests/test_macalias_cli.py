@@ -1554,3 +1554,105 @@ def test_every_problem_item_has_a_refusal_code(env):
         assert macalias.refusal([{"item": item, "problem": "p", "blocks_flush": True}])["error"] == code
     assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "core_changed"} == {
         "alias_name", "arpcache", "update_lock", "md5_marker", "targeted_mode", "emptied_table", "list_hosts"}
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    """ the (priority, message) pairs passed to syslog, and the idents passed to openlog """
+    lines, idents = [], []
+    monkeypatch.setattr(macalias.syslog, "openlog", lambda ident, *args, **kwargs: idents.append(ident))
+    monkeypatch.setattr(macalias.syslog, "syslog", lambda priority, message: lines.append((priority, message)))
+    return lines, idents
+
+
+def _refuse_state_unusable(cfg, tmp):
+    elsewhere = tmp / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    os.symlink(elsewhere, cfg["state_dir"])
+
+
+def _refuse_lock_unusable(cfg, tmp):
+    target = tmp / "lock-target"
+    target.write_text("")
+    os.symlink(target, cfg["lock_file"])
+
+
+def _refuse_core_changed(cfg, tmp):
+    _core(cfg, "targeted_mode").unlink()
+
+
+def _refuse_hosts_malformed(cfg, tmp):
+    _list_hosts(cfg, tmp, [["vlan0.10", "laptop.lan", "aa:bb:cc:00:00:01"]])
+
+
+def _quiet_busy(cfg, tmp):
+    held = open(cfg["lock_file"], "a")
+    fcntl.flock(held, fcntl.LOCK_EX)
+    return held
+
+
+def _quiet_too_soon(cfg, tmp):
+    _write_last(cfg, {"at": 4995.0, "summary": []})
+
+
+def _quiet_hosts_unavailable(cfg, tmp):
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+
+
+@pytest.mark.parametrize("setup, code", [
+    (_refuse_state_unusable, "state_unusable"), (_refuse_lock_unusable, "lock_unusable"),
+    (_refuse_core_changed, "core_changed"), (_refuse_hosts_malformed, "hosts_malformed")])
+def test_refusal_logs_one_warning(env, logged, setup, code):
+    cfg, tmp = env
+    lines, idents = logged
+    setup(cfg, tmp)
+    out = _flush(cfg)
+    assert out["error"] == code
+    assert lines == [(macalias.syslog.LOG_WARNING, "%s: %s" % (code, out["detail"]))]
+    assert idents == ["macaliascache"]
+
+
+def test_refusal_logs_one_warning_for_a_flush_that_dropped_rows(env, logged):
+    cfg, tmp = env
+    lines, idents = logged
+    short = ["vlan0.120", "aa:bb:cc:00:00:02"]
+    _list_hosts(cfg, tmp, [["vlan0.120", "aa:bb:cc:00:00:01", "192.0.2.50"], short])
+    out = _flush(cfg)
+    assert "error" not in out and out["rows_rejected"] == 1
+    assert [priority for priority, _ in lines] == [macalias.syslog.LOG_WARNING]
+    assert lines[0][1].startswith("rows_rejected: 1 ") and repr(short) in lines[0][1]
+    assert len(lines[0][1]) < 400
+    assert idents == ["macaliascache"]
+
+
+@pytest.mark.parametrize("setup", [_quiet_busy, _quiet_too_soon, _quiet_hosts_unavailable],
+                         ids=["busy", "too_soon", "hosts_unavailable"])
+def test_quiet_refusals_log_nothing(env, logged, setup):
+    cfg, tmp = env
+    held = setup(cfg, tmp)
+    out = _flush(cfg)
+    if held:
+        held.close()
+    assert out["error"] in ("busy", "too_soon", "hosts_unavailable")
+    assert logged[0] == []
+
+
+def test_clean_flush_logs_nothing(env, logged):
+    cfg, tmp = env
+    out = _flush(cfg)
+    assert "error" not in out and out["rows_rejected"] == 0
+    assert logged[0] == []
+
+
+@pytest.mark.parametrize("failing", ["openlog", "syslog"])
+def test_syslog_failure_never_changes_the_reply(env, monkeypatch, failing):
+    cfg, tmp = env
+    _refuse_core_changed(cfg, tmp)
+    expected = _flush(cfg)
+
+    def broken(*args, **kwargs):
+        raise OSError("no syslog socket")
+
+    monkeypatch.setattr(macalias.syslog, failing, broken)
+    assert _flush(cfg) == expected
+    assert expected["error"] == "core_changed"
