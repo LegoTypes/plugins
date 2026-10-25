@@ -1659,13 +1659,9 @@ def test_syslog_failure_never_changes_the_reply(env, monkeypatch, failing):
 
 
 def test_a_line_that_cannot_be_built_never_changes_the_reply(env, logged, monkeypatch):
+    # the samples are joined into the line, which raises on an item that is not text
     cfg, tmp = env
-
-    class Unprintable:
-        def __str__(self):
-            raise RuntimeError("no text")
-
-    reply = {"summary": [], "rows_rejected": 1, "rejected": [Unprintable()]}
+    reply = {"summary": [], "rows_rejected": 1, "rejected": [("vlan0.120", "aa:bb:cc:00:00:02")]}
     monkeypatch.setattr(macalias, "_flush", lambda cfg_, clock, sleep: reply)
     assert _flush(cfg) is reply
     assert logged[0] == []
