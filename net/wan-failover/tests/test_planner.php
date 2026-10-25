@@ -509,6 +509,15 @@ wf_register_suite('planner', function (): int {
     $s = $held(['WAN_B'], ['WAN_B']);
     $exit = wf_dry_exit($s, wf_t_ab(31500, [], $fdB, ['legacy_held' => ['WAN_B']]));
     $r = wf_plan(wf_t_ab(31560, [], $fdB), wf_t_applied($exit, ['held_after' => $exit['last_held']]));
+    /* a dry tick that simulates WAN_B's release while 1.3_1's list naming WAN_B waits: the saved state must not prove it */
+    $s = $held(['WAN_B'], ['WAN_B']);
+    $snap = wf_t_ab(31600, [], [], ['dry' => true, 'legacy_held' => ['WAN_B']]);
+    $r = wf_plan(wf_dry_view($snap, $s['dry_held']), $s);
+    $saved = wf_dry_after($r['state'], $r['plan']);
+    wf_check($t, '(u7) a dry tick that simulates a release while the list waits saves no proof of the simulated hold: dry_held '
+        . 'is read before it is overwritten',
+        $r['plan']['release'] === ['WAN_B'] && $saved['dry_held'] === []
+        && !in_array('WAN_B', wf_state_proof(['state' => $saved, 'corrupt' => false])['held'], true));
     wf_check($t, '(u6) leaving dry run while the list waits keeps no simulated hold in last_held, so once the import drops the '
         . 'entry as not proven, the next tick takes nothing for a change outside the engine',
         $exit['last_held'] === [] && $exit['dry_held'] === [] && $r['plan']['foreign'] === []
