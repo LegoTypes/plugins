@@ -350,6 +350,9 @@ def acquire_lock(cfg, sleep):
                 return None
             sleep(cfg["lock_retry"])
             waited += cfg["lock_retry"]
+        except BaseException:
+            handle.close()
+            raise
 
 
 def _flush_emptied_tables(cfg, names):
@@ -412,21 +415,27 @@ def acquire_plugin_lock(cfg):
     path = state_paths(cfg)["plugin_lock"]
     fd = _open_lock(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
     if fd is None:
-        return {"error": "state_unusable",
-                "detail": "the plugin's flush lock at %s is not a regular file with one link "
-                          "that the plugin can open safely" % path}
-    handle = os.fdopen(fd, "a")
+        return refusal([_problem(
+            "state_dir", "the plugin's flush lock at %s is not a regular file with one link "
+                         "that the plugin can open safely" % path, True)])
+    handle = os.fdopen(fd, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         handle.close()
         return None
+    except BaseException:
+        handle.close()
+        raise
     return handle
 
 
 def _unlock(handle):
-    fcntl.flock(handle, fcntl.LOCK_UN)
-    handle.close()
+    """ release a lock handle; closing it must happen even if the explicit unlock raises """
+    try:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
@@ -522,8 +531,10 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # of standing down.
         _write_json_atomic(last_file, {"at": now, "summary": []}, mode=0o600)
     finally:
-        _unlock(lock)
-        _unlock(plugin_lock)
+        try:
+            _unlock(lock)
+        finally:
+            _unlock(plugin_lock)
 
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)

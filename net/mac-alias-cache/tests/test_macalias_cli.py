@@ -1001,6 +1001,7 @@ def test_flush_refuses_when_plugin_lock_is_not_a_regular_file(env):
     out = _flush(cfg)
     assert out["error"] == "state_unusable"
     assert macalias.state_paths(cfg)["plugin_lock"] in out["detail"]
+    assert out["problems"] == [{"item": "state_dir", "problem": out["detail"], "blocks_flush": True}]
     assert not (tmp / "update_args").exists()
 
 
@@ -1047,3 +1048,49 @@ def test_flush_releases_plugin_lock_when_core_lock_times_out(env):
         out = _flush(cfg)
     assert out["error"] == "busy" and "alias update lock held" in out["detail"]
     _plugin_lock_free(cfg)
+
+
+def test_flush_frees_the_plugin_lock_when_core_lock_release_raises(env, monkeypatch):
+    cfg, tmp = env
+    real_flock = fcntl.flock
+    unlocks = []
+
+    def flock(handle, op):
+        # the first release is core's lock; the plugin lock's must still happen
+        if op == fcntl.LOCK_UN:
+            unlocks.append(handle)
+            if len(unlocks) == 1:
+                raise OSError(errno.EIO, "unlock failed")
+        return real_flock(handle, op)
+
+    monkeypatch.setattr(macalias.fcntl, "flock", flock)
+    with pytest.raises(OSError):
+        _flush(cfg)
+    monkeypatch.undo()
+    assert len(unlocks) == 2
+    _plugin_lock_free(cfg)
+
+
+@pytest.mark.parametrize("which", ["plugin_lock", "lock_file"])
+def test_lock_handle_is_closed_when_flock_fails_unexpectedly(env, monkeypatch, which):
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    opened = []
+    real_fdopen = os.fdopen
+
+    def fdopen(fd, mode):
+        handle = real_fdopen(fd, mode)
+        opened.append(handle)
+        return handle
+
+    def flock(handle, op):
+        raise OSError(errno.EIO, "flock failed")
+
+    monkeypatch.setattr(macalias.os, "fdopen", fdopen)
+    monkeypatch.setattr(macalias.fcntl, "flock", flock)
+    with pytest.raises(OSError):
+        if which == "plugin_lock":
+            macalias.acquire_plugin_lock(cfg)
+        else:
+            macalias.acquire_lock(cfg, lambda s: None)
+    assert len(opened) == 1 and opened[0].closed
