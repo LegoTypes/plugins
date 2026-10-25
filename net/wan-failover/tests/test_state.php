@@ -385,5 +385,26 @@ wf_register_suite('state', function (): int {
     wf_check($t, '(m5) with the boot id unreadable nothing is carried over, and one warning names what keeps its force_down',
         $p['import'] && $p['records'] === [] && $p['lines'] === [[LOG_WARNING,
             'kern.boot_id cannot be read, so no hold is carried over; each of WAN_A keeps its force_down until it is cleared by hand']]);
+
+    wf_check($t, '(g1) a changed gateway whose force_down moved since the snapshot is named',
+        wf_write_guard(['WAN_A' => true], ['WAN_A' => false], ['WAN_A' => true]) === ['WAN_A']);
+    wf_check($t, '(g2) force_down as the snapshot read it names nothing',
+        wf_write_guard(['WAN_A' => true, 'WAN_B' => false], ['WAN_A' => false, 'WAN_B' => true], ['WAN_A' => false, 'WAN_B' => true]) === []);
+    wf_check($t, '(g3) a changed gateway gone from the config is named',
+        wf_write_guard(['WAN_A' => true, 'WAN_B' => false], ['WAN_A' => false, 'WAN_B' => true], ['WAN_A' => false]) === ['WAN_B']);
+    wf_check($t, '(g4) a changed gateway with no snapshot value to compare is named; an unchanged one is not compared',
+        wf_write_guard(['WAN_A' => true], [], ['WAN_A' => false, 'WAN_B' => true]) === ['WAN_A']);
+
+    $uuidA = 'aaaaaaaa-0000-4000-8000-00000000000a';
+    $uuidB = 'aaaaaaaa-0000-4000-8000-00000000000b';
+    $w = wf_holds_rows(['WAN_B' => ['boot' => 'b500', 'since' => 200], 'WAN_A' => ['boot' => 'b400', 'since' => 100]],
+        ['WAN_A' => $uuidA, 'WAN_B' => $uuidB]);
+    wf_check($t, '(k1) the rows a write leaves are the records after it, one per gateway by its UUID, boot and since as given',
+        $w === ['rows' => [['gateway' => $uuidB, 'boot' => 'b500', 'since' => 200], ['gateway' => $uuidA, 'boot' => 'b400', 'since' => 100]],
+                'missing' => []]);
+    wf_check($t, '(k2) a record whose gateway has no UUID now is missing, so the writer writes nothing',
+        wf_holds_rows(['WAN_A' => ['boot' => 'b500', 'since' => 100], 'WAN_C' => ['boot' => 'b500', 'since' => 100]], ['WAN_A' => $uuidA])
+            === ['rows' => [['gateway' => $uuidA, 'boot' => 'b500', 'since' => 100]], 'missing' => ['WAN_C']]);
+    wf_check($t, '(k3) no record after the write leaves no row', wf_holds_rows([], ['WAN_A' => $uuidA]) === ['rows' => [], 'missing' => []]);
     return wf_tally_report('state', $t);
 });

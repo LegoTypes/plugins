@@ -204,7 +204,7 @@ function wf_main(string $mode, array $args): int
         }
         wf_state_save(WF_STATE, wf_dry_after($state, $plan));
     } else {
-        $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets, $snap['uuid_by_name']))['state'];
+        $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets))['state'];
     }
 
     if ($plan['hold'] !== [] || $plan['release'] !== [] || $plan['alerts'] !== [] || $cl['line'] !== null) {

@@ -30,10 +30,12 @@ try {
     $stateBoot = $loaded['corrupt'] ? 'corrupt' : $loaded['state']['boot_id'];
     $rows = (new \OPNsense\WanFailover\Holds())->records();
     $nameByUuid = [];
+    $forceDown = [];
     foreach ((new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true) as $name => $g) {
         if (!empty($g['uuid'])) {
             $nameByUuid[(string)$g['uuid']] = (string)$name;
         }
+        $forceDown[(string)$name] = !empty($g['force_down']);
     }
     $records = wf_resolve_records($rows, $nameByUuid);
     $outcome = wf_boot_outcome($records['holds'], count($records['stale']) + count($records['dupes']), $stateBoot);
@@ -44,14 +46,22 @@ try {
     } elseif ($stateBoot === '' || $stateBoot === 'corrupt') {
         $reset['boot_note'] = $outcome['note'];
         wf_state_save(WF_STATE, $reset);
-    } elseif (wf_write_holds(array_fill_keys($outcome['release'], false), [])) {
-        $reset['boot_note'] = $outcome['note'];
-        foreach ($outcome['pruned'] as $n) {
-            $reset['foreign_pruned'][$n] = time();
-        }
-        wf_state_save(WF_STATE, $reset);
     } else {
-        wf_log('boot: config write failed; the first evaluation releases the holds', LOG_WARNING);
+        /* every record goes: the boot before's released, the others pruned */
+        $release = array_fill_keys($outcome['release'], false);
+        $written = wf_write_holds($release, array_intersect_key($forceDown, $release), []);
+        if ($written['ok']) {
+            $reset['boot_note'] = $outcome['note'];
+            foreach ($outcome['pruned'] as $n) {
+                $reset['foreign_pruned'][$n] = time();
+            }
+            wf_state_save(WF_STATE, $reset);
+        } elseif ($written['skipped'] !== []) {
+            wf_log('boot: force_down on ' . implode(',', $written['skipped'])
+                . ' changed since it was read; write skipped; the first evaluation releases the holds', LOG_WARNING);
+        } else {
+            wf_log('boot: config write failed; the first evaluation releases the holds', LOG_WARNING);
+        }
     }
 } catch (Throwable $e) {
     wf_log('boot hook failed: ' . $e->getMessage(), LOG_ERR);

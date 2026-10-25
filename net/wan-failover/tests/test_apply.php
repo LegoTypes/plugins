@@ -53,9 +53,9 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
             $calls[] = trim("configd {$a} " . implode(' ', $p));
             return $configd[$a] ?? ($a === 'filter kill state' ? 'killed 1 states' : 'OK');
         },
-        'write' => function (array $c, array $heldAfter) use ($calls, $write): bool {
-            $calls[] = 'write ' . json_encode($c) . ' held=' . implode(',', $heldAfter);
-            return $write;
+        'write' => function (array $c, array $expected, array $recordsAfter) use ($calls, $write): array {
+            $calls[] = 'write ' . json_encode($c) . ' held=' . implode(',', array_keys($recordsAfter));
+            return ['ok' => $write, 'skipped' => []];
         },
         'gw_lock' => function () use ($calls, $lock): bool {
             $calls[] = 'lock';
@@ -79,10 +79,11 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
     return ['io' => $io, 'calls' => $calls];
 }
 
-/** @return array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool, redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>, failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>, acting: bool, stopped: bool} */
+/** @return array{hold: list<string>, release: list<string>, held_after: list<string>, records_after: array<string, array{boot: string, since: int}>, expected: array<string, bool>, held_now: list<string>, write: bool, redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>, failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>, acting: bool, stopped: bool} */
 function wf_t_plan(array $over = []): array
 {
-    return array_merge(['hold' => [], 'release' => [], 'held_after' => [], 'held_now' => [], 'write' => false, 'redo_apply' => [],
+    return array_merge(['hold' => [], 'release' => [], 'held_after' => [], 'records_after' => [], 'expected' => [], 'held_now' => [],
+                        'write' => false, 'redo_apply' => [],
                         'redo_replay' => [], 'foreign' => [], 'kill_targets' => [], 'failback' => [],
                         'expected_default' => null, 'alerts' => [], 'log' => [], 'acting' => true, 'stopped' => false], $over);
 }
@@ -93,7 +94,8 @@ wf_register_suite('apply', function (): int {
              'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@igc1'],
                        'WAN2' => ['gateway_ip' => '172.16.12.1', 'route_target' => '172.16.12.1@igc2']]];
     $state = wf_state_new('b1');
-    $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'write' => true, 'kill_targets' => ['172.16.12.1@igc2']]);
+    $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'records_after' => ['WAN2' => ['boot' => 'b1', 'since' => 1000]],
+                       'expected' => ['WAN2' => false], 'write' => true, 'kill_targets' => ['172.16.12.1@igc2']]);
 
     $f = wf_t_io();
     $r = wf_apply($plan, $state, $snap, $f['io']);
@@ -138,7 +140,7 @@ wf_register_suite('apply', function (): int {
     wf_check($t, 'write fails -> not ok, unlock still called', !$r['ok'] && in_array('unlock', $f['calls']->getArrayCopy(), true));
 
     $f = wf_t_io();
-    $r = wf_apply(wf_t_plan(['release' => ['WAN2'], 'write' => true]), $state, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['release' => ['WAN2'], 'expected' => ['WAN2' => true], 'write' => true]), $state, $snap, $f['io']);
     wf_check($t, 'release: write with empty held, then replay, pending cleared', in_array('write {"WAN2":false} held=', $f['calls']->getArrayCopy(), true)
         && $r['state']['apply_pending'] === []);
 
@@ -201,6 +203,36 @@ wf_register_suite('apply', function (): int {
     wf_apply(wf_t_plan(['acting' => false]), $r['state'], array_merge($snap, ['tailscale_restart' => true, 'now' => 1010]), $f2['io']);
     wf_check($t, 'a tailscale deferral is logged once, not every tick',
         count(array_filter($f2['calls']->getArrayCopy(), fn (string $x): bool => str_contains($x, 'tailscale defer'))) === 0);
+
+    $f = wf_t_io();
+    $f['io']['write'] = function (array $c, array $expected, array $recordsAfter) use ($f): array {
+        $f['calls'][] = 'write ' . json_encode($c);
+        return ['ok' => false, 'skipped' => ['WAN_A']];
+    };
+    $r = wf_apply(wf_t_plan(['hold' => ['WAN_A'], 'held_after' => ['WAN_A'], 'records_after' => ['WAN_A' => ['boot' => 'b1', 'since' => 1000]],
+                             'expected' => ['WAN_A' => false], 'write' => true, 'kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    $moved = 'log force_down on WAN_A changed since the snapshot; write skipped';
+    wf_check($t, '(w5) a write skipped because force_down moved since the snapshot says so once, keeps the pending hold, and runs '
+        . 'neither the routing reconfigure, the replay nor a kill',
+        !$r['ok'] && $r['state']['apply_pending'] === ['WAN_A' => 'hold'] && count(array_keys($c, $moved, true)) === 1
+        && !in_array('log config write failed; the change waits for the next tick', $c, true)
+        && !in_array('configd interface routes configure', $c, true)
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd wanfailover ')) === []
+        && in_array('unlock', $c, true));
+
+    $got = new ArrayObject();
+    $f = wf_t_io();
+    $f['io']['write'] = function (array $c, array $expected, array $recordsAfter) use ($got): array {
+        $got[] = [$c, $expected, $recordsAfter];
+        return ['ok' => true, 'skipped' => []];
+    };
+    $records = ['WAN_B' => ['boot' => 'b500', 'since' => 200], 'WAN_A' => ['boot' => 'b500', 'since' => 1000]];
+    $wPlan = wf_t_plan(['hold' => ['WAN_A'], 'release' => ['WAN_C'], 'held_after' => ['WAN_B', 'WAN_A'], 'records_after' => $records,
+                        'expected' => ['WAN_A' => false, 'WAN_C' => true], 'write' => true]);
+    $r = wf_apply($wPlan, $state, $snap, $f['io']);
+    wf_check($t, '(w6) the writer is handed the plan\'s changes, expected force_down and records after, as the plan has them',
+        $r['ok'] && $got->getArrayCopy() === [[['WAN_A' => true, 'WAN_C' => false], $wPlan['expected'], $wPlan['records_after']]]);
 
     $line = [LOG_NOTICE, 'hold of WAN_B carried over, taken in boot b500'];
     $a = wf_import_attempt(fn (): ?array => [$line]);

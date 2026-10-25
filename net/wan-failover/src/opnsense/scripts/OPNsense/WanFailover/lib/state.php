@@ -425,6 +425,51 @@ function wf_boot_outcome(array $records, int $dropped, string $stateBootId): arr
 }
 
 /**
+ * The changed gateways whose force_down moved since the snapshot the plan decided on (a settings save, a restored
+ * config): the writer compares under its lock, with the config as it is now, and writes nothing when one is named. A
+ * changed gateway gone from the config, or with no snapshot value to compare, is named too.
+ *
+ * @param array<string, bool> $changes gateway name => the force_down to write
+ * @param array<string, bool> $expected gateway name => the force_down the snapshot read
+ * @param array<string, bool> $current every configured gateway name => its force_down now
+ * @return list<string>
+ */
+function wf_write_guard(array $changes, array $expected, array $current): array
+{
+    $moved = [];
+    foreach (array_keys($changes) as $name) {
+        if (!isset($expected[$name], $current[$name]) || $current[$name] !== $expected[$name]) {
+            $moved[] = (string)$name;
+        }
+    }
+    return $moved;
+}
+
+/**
+ * The hold rows a write leaves: exactly the plan's records after it, one per gateway, each with the boot and since the
+ * plan gave it, and no other row. A gateway is named by its UUID in the config as it is under the writer's lock; a
+ * record whose gateway has none there (renamed or deleted since the snapshot) is missing, and the writer then writes
+ * nothing, as a row left out would leave that gateway's hold unowned.
+ *
+ * @param array<string, array{boot: string, since: int}> $recordsAfter the plan's, by gateway name
+ * @param array<string, string> $uuidByName every configured gateway's name => its UUID
+ * @return array{rows: list<array{gateway: string, boot: string, since: int}>, missing: list<string>}
+ */
+function wf_holds_rows(array $recordsAfter, array $uuidByName): array
+{
+    $rows = [];
+    $missing = [];
+    foreach ($recordsAfter as $name => $r) {
+        if (isset($uuidByName[$name])) {
+            $rows[] = ['gateway' => $uuidByName[$name], 'boot' => $r['boot'], 'since' => $r['since']];
+        } else {
+            $missing[] = (string)$name;
+        }
+    }
+    return ['rows' => $rows, 'missing' => $missing];
+}
+
+/**
  * The hold records an upgrade makes of 1.3_1's held list, a comma list of gateway UUIDs in the settings model: one
  * per UUID that names a gateway, each UUID once, stamped with this boot and the upgrade's time. A hold in place at
  * the upgrade was taken in this boot (the early hook releases every hold at boot), so the plugin goes on owning it.

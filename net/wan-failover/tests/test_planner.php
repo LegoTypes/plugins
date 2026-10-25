@@ -391,6 +391,55 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '(p6) a pruned foreign record is shown for 3599 s, not at 3600 s, and not once its gateway reads force_down 0',
         $s0['foreign_pruned'] === ['WAN_B' => 31000] && $kept === ['WAN_B' => 31000] && $gone === [] && $up === []);
 
+    /* the rows the writer leaves are the plan's records_after, so a third tick over them still owns the hold: rows as
+     * Holds::records() gives them (in config order), resolved, planned, written, resolved and planned again */
+    $byUuid = ['aaaaaaaa-0000-4000-8000-00000000000a' => 'WAN_A', 'aaaaaaaa-0000-4000-8000-00000000000b' => 'WAN_B'];
+    $uuidB = 'aaaaaaaa-0000-4000-8000-00000000000b';
+    $item = fn (int $i): string => sprintf('cccccccc-0000-4000-8000-%012d', $i);
+    $tick = function (int $now, array $wanB, array $rows, array $state) use ($byUuid): array {
+        $res = wf_resolve_records($rows, $byUuid);
+        return wf_plan(wf_t_ab($now, [], $wanB, ['holds' => $res['holds'], 'holds_stale' => $res['stale'],
+            'holds_dupes' => $res['dupes']]), $state);
+    };
+    $written = function (array $plan) use ($byUuid, $item): array {
+        $rows = [];
+        foreach (wf_holds_rows($plan['records_after'], array_flip($byUuid))['rows'] as $i => $row) {
+            $rows[$item(100 + $i)] = $row;
+        }
+        return $rows;
+    };
+    $owns = fn (array $rows): array => wf_reconcile(wf_resolve_records($rows, $byUuid)['holds'], ['WAN_A' => false, 'WAN_B' => true],
+        [], ['WAN_B'], 'b500');
+
+    $s = wf_state_new('b500');
+    $s['last_held'] = ['WAN_B'];
+    $planted = [$item(1) => ['gateway' => $uuidB, 'boot' => 'deadbeef', 'since' => 100],
+                $item(2) => ['gateway' => $uuidB, 'boot' => 'b500', 'since' => 200]];
+    $r = $tick(32000, ['loss' => 30.0] + $fdB, $planted, $s);
+    $rows = $written($r['plan']);
+    $r3 = $tick(32060, ['loss' => 30.0] + $fdB, $rows, wf_t_applied($r['state'], $r['plan']));
+    $own = $owns($rows);
+    wf_check($t, '(r1) two rows for one held gateway, the older foreign one first: the write leaves only the plan\'s own '
+        . 'record (boot and since), and a third tick still owns the hold, prunes nothing and logs no foreign record',
+        $r['plan']['write'] && $r['plan']['records_after'] === wf_t_rec('WAN_B', 'b500', 200)
+        && array_values($rows) === [['gateway' => $uuidB, 'boot' => 'b500', 'since' => 200]]
+        && $own['owned'] === ['WAN_B'] && $own['foreign_records'] === []
+        && !$r3['plan']['write'] && $r3['plan']['release'] === [] && $lines($r3['plan'], 'another boot') === 0);
+
+    $planted = [$item(3) => ['gateway' => $uuidB, 'boot' => 'deadbeef', 'since' => 100]];
+    $r = $tick(32100, ['loss' => 30.0], $planted, wf_state_new('b500'));
+    $rows = $written($r['plan']);
+    $r3 = $tick(32160, ['loss' => 30.0] + $fdB, $rows, wf_t_applied($r['state'], $r['plan']));
+    $own = $owns($rows);
+    wf_check($t, '(r2) a foreign record pruned and its lossy gateway held anew in one plan: the write leaves only the new '
+        . 'record (the live boot, now), and a third tick still owns the hold, prunes nothing and logs no foreign record',
+        $r['plan']['hold'] === ['WAN_B'] && $r['plan']['expected'] === ['WAN_B' => false]
+        && $r['plan']['records_after'] === wf_t_rec('WAN_B', 'b500', 32100) && in_array($foreignLine, $r['plan']['log'], true)
+        && wf_write_guard(['WAN_B' => true], $r['plan']['expected'], ['WAN_A' => false, 'WAN_B' => false]) === []
+        && array_values($rows) === [['gateway' => $uuidB, 'boot' => 'b500', 'since' => 32100]]
+        && $own['owned'] === ['WAN_B'] && $own['foreign_records'] === []
+        && !$r3['plan']['write'] && $r3['plan']['hold'] === [] && $r3['plan']['release'] === [] && $lines($r3['plan'], 'another boot') === 0);
+
     $view = wf_dry_view(wf_t_ab(31100, [], []), ['WAN_B']);
     $exit = wf_dry_exit(['dry_held' => ['WAN_B']] + wf_state_new('b500'), wf_t_ab(31100, [], [], ['holds' => wf_t_rec('WAN_A', 'deadbeef')]));
     wf_check($t, '(d1) a dry run simulates its holds as records of the live boot; leaving it takes the real records\' names',

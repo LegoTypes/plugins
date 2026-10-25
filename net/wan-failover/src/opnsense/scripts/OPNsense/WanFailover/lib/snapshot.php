@@ -55,7 +55,7 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               failback_delay: int, tailscale_restart: bool,
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
- *               force_down: array<string, bool>, uuid_by_name: array<string, string>,
+ *               force_down: array<string, bool>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile())
  */
@@ -163,7 +163,7 @@ function wf_snapshot(): array
         'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
-        'force_down' => $forceDown, 'uuid_by_name' => array_flip($nameByUuid),
+        'force_down' => $forceDown,
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale],
     ];
 }

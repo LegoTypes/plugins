@@ -10,7 +10,8 @@ declare(strict_types=1);
  * Apply a plan in the order of spec 2026-10-05 section 3.7, through injected I/O so order and failure
  * handling are testable. wf_live_io() binds the real I/O: configd for every reconfigure, kill and restart
  * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the evaluation's config writer, which
- * saves force_down and the hold records together without a config backup (the owner's decision). The one other
+ * saves force_down and exactly the plan's hold records together without a config backup (the owner's decision), and
+ * writes nothing when a changed gateway's force_down moved since the snapshot the plan decided on. The one other
  * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()); the migration
  * shares its import (wf_holds_import_into()). wf_live_io()'s closures and wf_write_holds() call snapshot.php
  * functions; evaluate.php loads snapshot.php first. They are not required here so the pure tests can load this file
@@ -25,13 +26,16 @@ require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/log.php';
 
 /**
- * @param array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool,
+ * @param array{hold: list<string>, release: list<string>, held_after: list<string>,
+ *               records_after: array<string, array{boot: string, since: int}>, expected: array<string, bool>,
+ *               held_now: list<string>, write: bool,
  *               redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>,
  *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
  *               acting: bool, stopped: bool} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
  * @param array{now: int, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
- * @param array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
+ * @param array{configd: callable(string, list<string>): string,
+ *             write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>},
  *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *             sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void} $io
@@ -70,20 +74,25 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             $log('gateway lock busy for 30 s; the change waits for the next tick');
             return ['state' => $state, 'ok' => false];
         }
-        $written = true;
+        $written = ['ok' => true, 'skipped' => []];
         try {
             if ($plan['write']) {
-                $written = ($io['write'])($changes, $plan['held_after']);
+                $written = ($io['write'])($changes, $plan['expected'], $plan['records_after']);
                 ($io['crash_point'])('after-save');
             }
             /* a write that only prunes the held list changes no gateway: no reconfigure, no dpinger restarts */
-            if ($written && ($changes !== [] || $plan['foreign'] !== [])) {
+            if ($written['ok'] && ($changes !== [] || $plan['foreign'] !== [])) {
                 ($io['configd'])('interface routes configure', []);
             }
         } finally {
             ($io['gw_unlock'])();
         }
-        if (!$written) {
+        /* the next tick plans again from the config as it now is */
+        if ($written['skipped'] !== []) {
+            $log('force_down on ' . implode(',', $written['skipped']) . ' changed since the snapshot; write skipped');
+            return ['state' => $state, 'ok' => false];
+        }
+        if (!$written['ok']) {
             $log('config write failed; the change waits for the next tick');
             return ['state' => $state, 'ok' => false];
         }
@@ -189,17 +198,23 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
 }
 
 /**
- * The one config writer: force_down on the changed gateways and the plugin's hold records, in one locked
- * save without a config backup. A gateway held after the write keeps its record; one held anew gets a record
- * stamped with this boot and now; every other record goes. It never throws: a failure is logged and the change
- * waits for the next tick. A write that only releases skips model validation, so a gateway field that fails
- * validation (after a firmware update tightened a rule, say) can never pin a hold; the plugin itself only
- * touches force_down and its hold records.
+ * The one config writer: force_down on the changed gateways and the plugin's hold records, in one locked save without
+ * a config backup. An evaluation calls it under core's gateway lock; Config::lock() comes next, and both models are
+ * built after it, so they read the config as it is now. Each changed gateway's force_down there is compared with the
+ * value the plan decided on (wf_write_guard()): when one moved under it (a settings save, a restored config), nothing
+ * is written and those gateways come back as skipped. Otherwise the hold records become exactly the plan's records
+ * after the write (wf_holds_rows()), every other row removed, so a record the plan proved is never left behind for one
+ * it did not. It never throws: a failure is logged and the change waits for the next tick. A write that only releases
+ * skips model validation, so a gateway field that fails validation (after a firmware update tightened a rule, say) can
+ * never pin a hold; the plugin itself only touches force_down and its hold records.
  *
  * @param array<string, bool> $changes gateway name => force_down
- * @param list<string> $heldAfterUuids gateway UUIDs the plugin holds after this write
+ * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
+ * @param array<string, array{boot: string, since: int}> $recordsAfter every hold record after the write, by gateway name
+ * @param bool $removal true for the package removal's own write; it changes nothing yet
+ * @return array{ok: bool, skipped: list<string>} skipped: the changed gateways whose force_down moved, when ok is false
  */
-function wf_write_holds(array $changes, array $heldAfterUuids): bool
+function wf_write_holds(array $changes, array $expected, array $recordsAfter, bool $removal = false): array
 {
     $releaseOnly = !in_array(true, $changes, true);
     try {
@@ -207,43 +222,45 @@ function wf_write_holds(array $changes, array $heldAfterUuids): bool
         $cfg->lock();
         try {
             $gateways = new \OPNsense\Routing\Gateways();
-            $found = 0;
-            foreach ($gateways->gateway_item->iterateItems() as $gw) {
+            $items = [];
+            $current = [];
+            $uuidByName = [];
+            foreach ($gateways->gateway_item->iterateItems() as $uuid => $gw) {
                 $name = $gw->name->getValue();
-                if (array_key_exists($name, $changes)) {
-                    $gw->force_down = $changes[$name] ? '1' : '0';
-                    $found++;
-                }
+                $items[$name] = $gw;
+                $current[$name] = $gw->force_down->isEqual('1');
+                $uuidByName[$name] = (string)$uuid;
             }
-            if ($found !== count($changes)) {
-                wf_log('config write: ' . (count($changes) - $found) . ' gateway(s) to change no longer exist', LOG_WARNING);
-                return false;
+            $skipped = wf_write_guard($changes, $expected, $current);
+            if ($skipped !== []) {
+                return ['ok' => false, 'skipped' => $skipped];
+            }
+            $rows = wf_holds_rows($recordsAfter, $uuidByName);
+            if ($rows['missing'] !== []) {
+                wf_log('config write: the hold record for ' . implode(',', $rows['missing'])
+                    . ' names a gateway the config no longer has; nothing written', LOG_WARNING);
+                return ['ok' => false, 'skipped' => []];
+            }
+            foreach ($changes as $name => $down) {
+                $items[$name]->force_down = $down ? '1' : '0';
             }
             $holds = new \OPNsense\WanFailover\Holds();
-            $kept = [];
-            foreach ($holds->records() as $item => $row) {
-                if (in_array($row['gateway'], $heldAfterUuids, true) && !isset($kept[$row['gateway']])) {
-                    $kept[$row['gateway']] = true;
-                } else {
-                    $holds->hold->del($item);
-                }
+            foreach (array_keys($holds->records()) as $item) {
+                $holds->hold->del($item);
             }
-            foreach ($heldAfterUuids as $uuid) {
-                if (!isset($kept[$uuid])) {
-                    $holds->hold->Add()->setNodes(['gateway' => $uuid, 'boot' => wf_boot_id(), 'since' => (string)time()]);
-                    $kept[$uuid] = true;
-                }
+            foreach ($rows['rows'] as $row) {
+                $holds->hold->Add()->setNodes(['gateway' => $row['gateway'], 'boot' => $row['boot'], 'since' => (string)$row['since']]);
             }
             $gateways->serializeToConfig(false, $releaseOnly);
             $holds->serializeToConfig(false, $releaseOnly);
             $cfg->save(null, false);
-            return true;
+            return ['ok' => true, 'skipped' => []];
         } finally {
             $cfg->unlock();
         }
     } catch (\Throwable $e) {
         wf_log('config write failed: ' . $e->getMessage(), LOG_ERR);
-        return false;
+        return ['ok' => false, 'skipped' => []];
     }
 }
 
@@ -382,19 +399,19 @@ function wf_holds_import_legacy(string $bootId): string
 
 /**
  * @param array<string, string> $wanTargets WAN name => route target
- * @param array<string, string> $uuidByName gateway name => UUID
- * @return array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
+ * @return array{configd: callable(string, list<string>): string,
+ *                 write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>},
  *                 gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *                 pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *                 sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void}
  */
-function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): array
+function wf_live_io(string $statePath, array $wanTargets): array
 {
     $lock = null;
     return [
         'configd' => fn (string $a, array $p): string => (string)(new \OPNsense\Core\Backend())->configdpRun($a, $p),
-        'write' => fn (array $c, array $heldAfter): bool => wf_write_holds($c,
-            array_values(array_filter(array_map(fn (string $n): string => $uuidByName[$n] ?? '', $heldAfter)))),
+        'write' => fn (array $c, array $expected, array $recordsAfter, bool $removal = false): array
+            => wf_write_holds($c, $expected, $recordsAfter, $removal),
         'gw_lock' => function () use (&$lock): bool {
             $lock = wf_gateway_lock();
             return $lock !== null;

@@ -422,7 +422,7 @@ function wf_plan_result(array $hold, array $release, array $recordsAfter, bool $
     foreach (array_merge($hold, $release) as $n) {
         $expectedDown[$n] = $snap['force_down'][$n] ?? false;
     }
-    /* held_after, the names, is what the writer keeps records for; records_after carries their boot and since */
+    /* records_after is what the writer leaves in the Holds model, exactly; held_after is its names, for last_held and dry run */
     $plan = ['hold' => $hold, 'release' => $release, 'held_after' => array_keys($recordsAfter), 'records_after' => $recordsAfter,
              'expected' => $expectedDown, 'held_now' => array_keys($snap['holds']), 'write' => $write,
              'redo_apply' => $rec['redo_apply'], 'redo_replay' => $rec['redo_replay'], 'foreign' => $rec['foreign'],
