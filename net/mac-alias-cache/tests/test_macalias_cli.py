@@ -422,6 +422,28 @@ def test_flush_sweeps_only_its_own_temp_files(env, monkeypatch):
     assert not ours.exists()
 
 
+def test_flush_sweep_skips_a_temp_file_it_cannot_remove(env, monkeypatch):
+    # the first orphan the sweep tries cannot be removed: it is skipped and the sweep goes on
+    cfg, tmp = env
+    orphans = [tmp / ".arp.cache.first.tmp", tmp / ".arp.cache.second.tmp"]
+    for path in orphans:
+        path.write_text("stale")
+        os.utime(path, (5000.0 - 120, 5000.0 - 120))
+    real_unlink = os.unlink
+    refused = []
+
+    def unlink(path, *args, **kwargs):
+        if not refused and os.fspath(path) in map(str, orphans):
+            refused.append(os.fspath(path))
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES), path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(macalias.os, "unlink", unlink)
+    out = _flush(cfg)
+    assert "error" not in out
+    assert [str(path) for path in orphans if path.exists()] == refused
+
+
 def test_flush_too_soon_changes_nothing(env):
     cfg, tmp = env
     _write_last(cfg, {"at": 4995.0, "summary": []})

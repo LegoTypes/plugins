@@ -116,7 +116,7 @@
                         var list = $('<ul class="list-unstyled"/>');
                         $.each(m.cache_items, function (k, ip) {
                             var li = $('<li/>').text(ip);
-                            if (!current[ip]) li.addClass('text-danger').append(' ' + "{{ lang._('(cached only — removed by a flush)') }}");
+                            if (!current[ip]) li.addClass('text-danger').append(document.createTextNode(' ' + "{{ lang._('(cached only — removed by a flush)') }}"));
                             list.append(li);
                         });
                         $.each(m.current_items, function (k, ip) {
@@ -200,7 +200,8 @@
                         if (flushing) return;
                         dialogRef.close();
                         flushing = true;
-                        btn.prop('disabled', true).html('<i class="fa fa-spinner fa-pulse fa-fw"></i> {{ lang._("Flushing…") }}');
+                        btn.prop('disabled', true).empty().append($('<i class="fa fa-spinner fa-pulse fa-fw"/>'),
+                            document.createTextNode(' ' + "{{ lang._('Flushing…') }}"));
                         ajaxCall('/api/macaliascache/service/flush', {}, function (data) {
                             flushing = false;
                             btn.prop('disabled', false).empty().append(label);
