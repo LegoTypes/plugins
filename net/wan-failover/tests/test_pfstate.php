@@ -19,10 +19,26 @@ function wf_t_gws(): array
     return ['203.0.113.1@igc1' => 'PRIMARY_WAN', '172.16.12.1@igc2' => 'WAN2'];
 }
 
+/**
+ * A pfctl that lists $listing for -vvss and fails the kill commands named in $fail.
+ *
+ * @param list<string> $fail
+ * @return array{run: callable(string): array{out: string, rc: int}, calls: ArrayObject}
+ */
+function wf_t_pfctl(string $listing, array $fail = []): array
+{
+    $calls = new ArrayObject();
+    $run = function (string $cmd) use ($calls, $listing, $fail): array {
+        $calls[] = $cmd;
+        return $cmd === '/sbin/pfctl -vvss' ? ['out' => $listing, 'rc' => 0] : ['out' => '', 'rc' => in_array($cmd, $fail, true) ? 1 : 0];
+    };
+    return ['run' => $run, 'calls' => $calls];
+}
+
 wf_register_suite('pfstate', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $states = wf_parse_states((string)file_get_contents(__DIR__ . '/fixtures/states.txt'));
-    wf_check($t, 'parses all 18 states', count($states) === 18);
+    wf_check($t, 'parses all 21 states', count($states) === 21);
     $u = $states[1];
     wf_check($t, 'NAT out-state: src, orig_src, dst', $u['dir'] === 'out' && $u['src'] === '172.16.12.148:63800'
         && $u['orig_src'] === '10.0.30.20:37460' && $u['dst'] === '198.51.100.57:51820');
@@ -87,5 +103,41 @@ wf_register_suite('pfstate', function (): int {
     $pins = wf_pinned_hosts([$local('198.51.100.7:53'), $local('198.51.100.8:53'), $local('198.51.100.9:53'), $local('198.51.100.7:853')], $lookup, 2);
     wf_check($t, 'pinned: looked-up hosts by route, hosts past the cap spared as pinned, each host looked up once',
         $pins === ['198.51.100.7' => true, '198.51.100.9' => true] && $looked === ['198.51.100.7', '198.51.100.8']);
+
+    wf_check($t, '(p2) rt is the token pf printed and rt_target its gateway@interface; route_to_gw and route_to_if are set for route-to only',
+        $states[18]['rt'] === 'route-to' && $states[18]['rt_target'] === '192.0.2.1@vtnet1'
+        && $states[18]['route_to_gw'] === '192.0.2.1' && $states[18]['route_to_if'] === 'vtnet1'
+        && $states[20]['rt'] === 'reply-to' && $states[20]['rt_target'] === '192.0.2.1@vtnet1'
+        && $states[20]['route_to_gw'] === null && $states[20]['route_to_if'] === null
+        && $states[17]['rt'] === null && $states[17]['rt_target'] === null);
+    $dupTo = wf_parse_states("all tcp 192.0.2.10:30040 -> 198.51.100.124:443       ESTABLISHED:ESTABLISHED\n"
+        . "   id: d0000000000000d4 creatorid: 4a28027f dup-to: 192.0.2.1@vtnet1\n");
+    wf_check($t, '(p2) any other "-to:" token pf prints parses into rt, never into route_to_gw',
+        $dupTo[0]['rt'] === 'dup-to' && $dupTo[0]['rt_target'] === '192.0.2.1@vtnet1' && $dupTo[0]['route_to_gw'] === null);
+    /* an interface-bound state prints its interface where a floating one prints "all" */
+    $unparsed = wf_parse_states("all tcp 192.0.2.10:30050 -> 198.51.100.125:443       ESTABLISHED:ESTABLISHED\n"
+        . "   id: d0000000000000d5 creatorid: 4a28027f route-to: 192.0.2.1@vtnet1\n"
+        . "vtnet2 tcp 192.0.2.20:30060 -> 198.51.100.125:443       ESTABLISHED:ESTABLISHED\n"
+        . "   id: d0000000000000d6 creatorid: 4a28027f\n");
+    wf_check($t, '(p4) the lines of a state whose header does not parse belong to no state: its id never pairs with the target before it',
+        count($unparsed) === 1 && $unparsed[0]['id'] === 'd0000000000000d5' && $unparsed[0]['rt_target'] === '192.0.2.1@vtnet1');
+    $replyRenamed = str_replace('reply-to: ', 'reply_to=', $raw);
+    wf_check($t, '(p5) self-check fails when one target token no longer parses while another still does',
+        !wf_pf_selfcheck($replyRenamed, wf_parse_states($replyRenamed)));
+
+    wf_check($t, '(p1) the states via 192.0.2.1@vtnet1 are its route-to and reply-to states, none of vtnet2\'s',
+        wf_states_via($states, '192.0.2.1@vtnet1') === [['id' => 'd0000000000000d1', 'creatorid' => '4a28027f'],
+                                                       ['id' => 'd0000000000000d3', 'creatorid' => '4a28027f']]);
+    $p = wf_t_pfctl($raw);
+    wf_check($t, '(p3) a kill via 192.0.2.1@vtnet1 lists the states once, then kills exactly its two states by id',
+        wf_kill_states_run('192.0.2.1@vtnet1', $p['run']) === ['line' => 'killed 2 states (0 failed)', 'rc' => 0]
+        && $p['calls']->getArrayCopy() === ['/sbin/pfctl -vvss', '/sbin/pfctl -k id -k d0000000000000d1/4a28027f',
+                                            '/sbin/pfctl -k id -k d0000000000000d3/4a28027f']);
+    $p = wf_t_pfctl($raw, ['/sbin/pfctl -k id -k d0000000000000d3/4a28027f']);
+    wf_check($t, '(p3) a kill pfctl fails is counted as failed, not killed',
+        wf_kill_states_run('192.0.2.1@vtnet1', $p['run']) === ['line' => 'killed 1 states (1 failed)', 'rc' => 0]);
+    $p = wf_t_pfctl($raw);
+    wf_check($t, '(p3) a target that is not gateway@interface is rejected before any pfctl call',
+        wf_kill_states_run('x;y', $p['run']) === ['line' => 'rejected target', 'rc' => 1] && $p['calls']->getArrayCopy() === []);
     return wf_tally_report('pfstate', $t);
 });

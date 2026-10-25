@@ -72,3 +72,15 @@ all udp 10.0.30.1:53 <- 10.0.30.20:42651       SINGLE:MULTIPLE
    age 00:00:05, expires in 00:00:25, 1:1 pkts, 70:120 bytes, rule 900
    id: b0000000000000b1 creatorid: 4a28027f
    origif: vlan0.30
+all tcp 192.0.2.10:30010 -> 198.51.100.120:443       ESTABLISHED:ESTABLISHED
+   age 00:04:00, expires in 23:59:59, 40:40 pkts, 4000:4000 bytes, rule 196, rlabel eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, allow-opts
+   id: d0000000000000d1 creatorid: 4a28027f route-to: 192.0.2.1@vtnet1
+   origif: vtnet1
+all tcp 192.0.2.20:30020 -> 198.51.100.120:443       ESTABLISHED:ESTABLISHED
+   age 00:04:00, expires in 23:59:59, 40:40 pkts, 4000:4000 bytes, rule 197, rlabel ffffffffffffffffffffffffffffffff, allow-opts
+   id: d0000000000000d2 creatorid: 4a28027f route-to: 192.0.2.1@vtnet2
+   origif: vtnet2
+all tcp 192.0.2.10:8443 <- 198.51.100.123:51000       ESTABLISHED:ESTABLISHED
+   age 00:06:00, expires in 23:59:59, 60:60 pkts, 6000:6000 bytes, rule 2600, rlabel 66666666-6666-4666-8666-666666666666
+   id: d0000000000000d3 creatorid: 4a28027f reply-to: 192.0.2.1@vtnet1
+   origif: vtnet1

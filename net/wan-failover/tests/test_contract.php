@@ -28,6 +28,12 @@ wf_register_suite('contract', function (): int {
     wf_check($t, 'routes.alarm without the gateway lock is reported', count(wf_contract_commands($noLock, WF_T_FILTER, WF_T_RC)) === 1);
     $killState = str_replace('-k id -k %s/%s', '-k key -k %s', WF_T_FILTER);
     wf_check($t, 'a changed kill.state is reported', count(wf_contract_commands(WF_T_IFACE, $killState, WF_T_RC)) === 1);
+    $stateOnly = (string)preg_replace('/\n\[kill\.gateway_states\].*\z/s', "\n", WF_T_FILTER);
+    wf_check($t, '(c1) an actions_filter.conf without [kill.gateway_states] is no drift: holds no longer use it',
+        !str_contains($stateOnly, 'gateway_states') && wf_contract_commands(WF_T_IFACE, $stateOnly, WF_T_RC) === []);
+    $gatewayOnly = (string)preg_replace('/\A\[kill\.state\].*?(?=^\[)/ms', '', WF_T_FILTER);
+    wf_check($t, '(c1) one without [kill.state] is a drift, reported as [kill.state] changed',
+        !str_contains($gatewayOnly, '[kill.state]') && wf_contract_commands(WF_T_IFACE, $gatewayOnly, WF_T_RC) === ['[kill.state] changed']);
     wf_check($t, 'Tailscale not installed (no actions file) is not a drift', wf_contract_tailscale(null) === []);
     wf_check($t, 'Tailscale actions without [restart] are reported in their own class', count(wf_contract_tailscale("[start]\n")) === 1);
     wf_check($t, 'Tailscale actions with [restart] match', wf_contract_tailscale(WF_T_TS) === []);

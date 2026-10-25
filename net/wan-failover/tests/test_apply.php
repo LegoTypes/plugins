@@ -15,6 +15,20 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/apply.
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/pfstate.php';
 
 /**
+ * Every fake I/O's call list made so far, for checks across all of the suite's cases.
+ *
+ * @return list<ArrayObject>
+ */
+function wf_t_io_made(?ArrayObject $calls = null): array
+{
+    static $made = [];
+    if ($calls !== null) {
+        $made[] = $calls;
+    }
+    return $made;
+}
+
+/**
  * @param array<string, string> $configd action => result
  * @param list<array<string, string>> $statusSeq successive status() results; the last repeats
  * @return array{io: array, calls: ArrayObject}
@@ -22,6 +36,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/pfstat
 function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, array $pfs = [], ?string $default = '203.0.113.1@igc1', array $statusSeq = []): array
 {
     $calls = new ArrayObject();
+    wf_t_io_made($calls);
     $pfQueue = new ArrayObject($pfs);
     $stQueue = new ArrayObject($statusSeq !== [] ? $statusSeq : [['WAN2' => 'force_down', 'PRIMARY_WAN' => 'none']]);
     $next = function (ArrayObject $q): array {
@@ -64,11 +79,11 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
     return ['io' => $io, 'calls' => $calls];
 }
 
-/** @return array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool, redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_gateways: list<string>, failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>, acting: bool, stopped: bool} */
+/** @return array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool, redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>, failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>, acting: bool, stopped: bool} */
 function wf_t_plan(array $over = []): array
 {
     return array_merge(['hold' => [], 'release' => [], 'held_after' => [], 'held_now' => [], 'write' => false, 'redo_apply' => [],
-                        'redo_replay' => [], 'foreign' => [], 'kill_gateways' => [], 'failback' => [],
+                        'redo_replay' => [], 'foreign' => [], 'kill_targets' => [], 'failback' => [],
                         'expected_default' => null, 'alerts' => [], 'log' => [], 'acting' => true, 'stopped' => false], $over);
 }
 
@@ -78,14 +93,14 @@ wf_register_suite('apply', function (): int {
              'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@igc1'],
                        'WAN2' => ['gateway_ip' => '172.16.12.1', 'route_target' => '172.16.12.1@igc2']]];
     $state = wf_state_new('b1');
-    $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'write' => true, 'kill_gateways' => ['172.16.12.1']]);
+    $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'write' => true, 'kill_targets' => ['172.16.12.1@igc2']]);
 
     $f = wf_t_io();
     $r = wf_apply($plan, $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
     wf_check($t, 'hold: save pending, lock, one write with held, routes configure, unlock, replay, kill', array_slice($c, 0, 7) === [
         'save', 'lock', 'write {"WAN2":true} held=WAN2', 'configd interface routes configure', 'unlock',
-        'configd wanfailover replay_alarm WAN2', 'configd filter kill gateway_states 172.16.12.1']);
+        'configd wanfailover replay_alarm WAN2', 'configd wanfailover kill_states 172.16.12.1@igc2']);
     wf_check($t, 'hold: apply_pending cleared, last_held set', $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN2']);
 
     $f = wf_t_io([], true, true, [], '203.0.113.1', [['WAN2' => 'none', 'PRIMARY_WAN' => 'none'], ['WAN2' => 'force_down', 'PRIMARY_WAN' => 'down']]);
@@ -96,7 +111,16 @@ wf_register_suite('apply', function (): int {
     $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
     $r = wf_apply($plan, $state, $snap, $f['io']);
     wf_check($t, 'RF4: replay fails -> apply_pending kept, no kill', $r['state']['apply_pending'] === ['WAN2' => 'hold']
-        && !in_array('configd filter kill gateway_states 172.16.12.1', $f['calls']->getArrayCopy(), true));
+        && !in_array('configd wanfailover kill_states 172.16.12.1@igc2', $f['calls']->getArrayCopy(), true));
+
+    $f = wf_t_io(['wanfailover kill_states' => "killed 2 states (0 failed)\n"]);
+    wf_apply(array_merge($plan, ['kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    $replayAt = array_search('configd wanfailover replay_alarm WAN2', $c, true);
+    $killAt = array_search('configd wanfailover kill_states 192.0.2.1@vtnet1', $c, true);
+    wf_check($t, '(a1) after the replay, the hold kills through the plugin\'s own action by gateway@interface, and logs its answer',
+        $replayAt !== false && $killAt !== false && $killAt > $replayAt
+        && in_array('log kill states via 192.0.2.1@vtnet1: killed 2 states (0 failed)', $c, true));
 
     $f = wf_t_io([], false);
     $r = wf_apply($plan, $state, $snap, $f['io']);
@@ -172,5 +196,9 @@ wf_register_suite('apply', function (): int {
     wf_apply(wf_t_plan(['acting' => false]), $r['state'], array_merge($snap, ['tailscale_restart' => true, 'now' => 1010]), $f2['io']);
     wf_check($t, 'a tailscale deferral is logged once, not every tick',
         count(array_filter($f2['calls']->getArrayCopy(), fn (string $x): bool => str_contains($x, 'tailscale defer'))) === 0);
+
+    $every = array_merge(...array_map(fn (ArrayObject $c): array => $c->getArrayCopy(), wf_t_io_made()));
+    wf_check($t, '(a1) no apply case runs core\'s kill by gateway address (filter kill gateway_states)',
+        $every !== [] && array_filter($every, fn (string $x): bool => str_contains($x, 'filter kill gateway_states')) === []);
     return wf_tally_report('apply', $t);
 });

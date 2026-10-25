@@ -16,6 +16,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/judge.php';
 require_once __DIR__ . '/holds.php';
+require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/state.php';
 
 /**
@@ -335,24 +336,35 @@ function wf_dry_exit(array $state, array $snap): array
 function wf_plan_result(array $hold, array $release, array $heldAfter, bool $prune, array $rec, array $failback,
                         ?string $expected, array $alerts, array $log, bool $stopped, array $state, array $snap): array
 {
-    $killGateways = [];
+    /* a hold kills the states routed via the WAN's gateway@interface: another WAN may share the address */
+    $killTargets = [];
     foreach (array_values(array_unique(array_merge($hold, $rec['redo_apply']))) as $n) {
         if (!isset($snap['wans'][$n])) {
             continue;
         }
-        /* a DHCP WAN that lost its link has no address now; its states still route to the last one */
-        $gw = filter_var($snap['wans'][$n]['gateway_ip'], FILTER_VALIDATE_IP) !== false
-            ? $snap['wans'][$n]['gateway_ip'] : ($state['gateway_ips'][$n] ?? '');
-        if ($gw === '') {
-            $log[] = "kill states for {$n} skipped: no gateway address known";
+        $w = $snap['wans'][$n];
+        $if = (string)($w['if'] ?? '');
+        if (filter_var($w['gateway_ip'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false && wf_if_ok($if)) {
+            $target = $w['route_target'];
+        } else {
+            /* a DHCP WAN that lost its link has no address now; its states still route to the last one */
+            $gw = $state['gateway_ips'][$n] ?? '';
+            if ($gw === '') {
+                $log[] = "kill states for {$n} skipped: no gateway address known";
+                continue;
+            }
+            $target = wf_route_target($gw, $if);
+        }
+        if (!wf_kill_target_ok($target)) {
+            $log[] = "kill states for {$n} skipped: no valid IPv4 gateway@interface target";
             continue;
         }
-        $killGateways[] = $gw;
+        $killTargets[] = $target;
     }
     $write = $hold !== [] || $release !== [] || $prune;
     $plan = ['hold' => $hold, 'release' => $release, 'held_after' => $heldAfter, 'held_now' => $snap['held'], 'write' => $write,
              'redo_apply' => $rec['redo_apply'], 'redo_replay' => $rec['redo_replay'], 'foreign' => $rec['foreign'],
-             'kill_gateways' => $killGateways, 'failback' => $failback, 'expected_default' => $expected,
+             'kill_targets' => $killTargets, 'failback' => $failback, 'expected_default' => $expected,
              'alerts' => $alerts, 'log' => $log, 'stopped' => $stopped];
     $plan['acting'] = $write || $rec['redo_apply'] !== [] || $rec['redo_replay'] !== [] || $rec['foreign'] !== [] || $failback !== [];
     return ['plan' => $plan, 'state' => $state];

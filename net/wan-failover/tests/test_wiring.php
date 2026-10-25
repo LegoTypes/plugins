@@ -16,21 +16,31 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selfte
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/constants.php';
 
 /**
- * One run of a tree script under the VM's php, stdout and stderr together.
+ * One run of a command, stdout and stderr together.
+ *
+ * @param list<string> $argv
+ * @return array{rc: int, out: string}
+ */
+function wf_t_run(array $argv): array
+{
+    $proc = proc_open($argv, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
+    if ($proc === false) {
+        return ['rc' => -1, 'out' => "cannot start {$argv[0]}"];
+    }
+    $out = (string)stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    return ['rc' => proc_close($proc), 'out' => $out];
+}
+
+/**
+ * One run of a tree script under the VM's php.
  *
  * @param list<string> $args
  * @return array{rc: int, out: string}
  */
 function wf_t_run_script(string $script, array $args): array
 {
-    $proc = proc_open(array_merge(['/usr/local/bin/php', '-d', 'log_errors=0', $script], $args),
-        [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['redirect', 1]], $pipes);
-    if ($proc === false) {
-        return ['rc' => -1, 'out' => "cannot start {$script}"];
-    }
-    $out = (string)stream_get_contents($pipes[1]);
-    fclose($pipes[1]);
-    return ['rc' => proc_close($proc), 'out' => $out];
+    return wf_t_run(array_merge(['/usr/local/bin/php', '-d', 'log_errors=0', $script], $args));
 }
 
 /**
@@ -72,6 +82,19 @@ wf_register_suite('wiring', function (): int {
     wf_check($t, "(w2) WF_GATEWAY_NAME_MASK equals the Mask of the name field in core's Gateways.xml", $ok);
     if (!$ok) {
         printf("    core: %s\n    ours: %s\n", $core === '' ? '(not read)' : $core, WF_GATEWAY_NAME_MASK);
+    }
+    /* the installed action, as a hold calls it through configd: no state routes via a documentation address on lo0 */
+    $r = wf_t_run(['/usr/local/sbin/configctl', 'wanfailover', 'kill_states', '192.0.2.250@lo0']);
+    $ok = trim($r['out']) === 'killed 0 states (0 failed)';
+    wf_check($t, '(w3) configctl wanfailover kill_states 192.0.2.250@lo0 answers "killed 0 states (0 failed)"', $ok);
+    if (!$ok) {
+        printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
+    }
+    $r = wf_t_run_script($evaluate, ['kill-states', 'x;y']);
+    $ok = $r['rc'] === 1 && trim($r['out']) === 'rejected target';
+    wf_check($t, "(w3) the tree's evaluate.php kill-states 'x;y' exits 1 with \"rejected target\"", $ok);
+    if (!$ok) {
+        printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
     }
     return wf_tally_report('wiring', $t);
 });

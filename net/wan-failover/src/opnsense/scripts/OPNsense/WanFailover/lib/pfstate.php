@@ -16,14 +16,25 @@ declare(strict_types=1);
  * states are never anchors, even when they carry route-to (route-to LAN rules
  * put it on the incoming state too). ICMP is skipped until its pairing has
  * been verified against a live capture (review N10).
+ *
+ * A hold kills the states whose route target is the WAN's gateway@interface, by state id. pf prints a
+ * state's target at the end of its id line as "<token>: <gateway>@<interface>", the token being route-to,
+ * reply-to or dup-to.
  */
+
+require_once __DIR__ . '/parsers.php';
 
 const WF_ICMP_PROTOS = ['icmp', 'icmp6', 'ipv6-icmp'];
 
 /**
+ * rt and rt_target are any target token and its gateway@interface; route_to_gw and route_to_if are filled for
+ * route-to only, which is what failback pairs flows by. A line that starts a state pf prints in another form
+ * (an interface-bound state names its interface where a floating one prints "all") ends the state before
+ * it, so that state's id is never paired with another state's target.
+ *
  * @return list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, rule: ?int,
- *                    rlabel: ?string, id: ?string, creatorid: ?string, route_to_gw: ?string,
- *                    route_to_if: ?string, origif: ?string}>
+ *                    rlabel: ?string, id: ?string, creatorid: ?string, rt: ?string, rt_target: ?string,
+ *                    route_to_gw: ?string, route_to_if: ?string, origif: ?string}>
  */
 function wf_parse_states(string $text): array
 {
@@ -42,9 +53,13 @@ function wf_parse_states(string $text): array
             } else {
                 $cur = ['proto' => $m[1], 'dir' => 'in', 'src' => $b, 'orig_src' => $b, 'dst' => $a];
             }
-            $cur += ['rule' => null, 'rlabel' => null, 'id' => null, 'creatorid' => null,
+            $cur += ['rule' => null, 'rlabel' => null, 'id' => null, 'creatorid' => null, 'rt' => null, 'rt_target' => null,
                      'route_to_gw' => null, 'route_to_if' => null, 'origif' => null];
             continue;
+        }
+        if ($cur !== null && preg_match('/^\S/', $line) === 1) {
+            $states[] = $cur;
+            $cur = null;
         }
         if ($cur === null) {
             continue;
@@ -59,9 +74,13 @@ function wf_parse_states(string $text): array
             $cur['id'] = $m[1];
             $cur['creatorid'] = $m[2];
         }
-        if (preg_match('/\broute-to: (\S+)@(\S+)/', $line, $m) === 1) {
-            $cur['route_to_gw'] = $m[1];
-            $cur['route_to_if'] = $m[2];
+        if (preg_match('/\s([a-z-]+-to): (\S+)@(\S+)/', $line, $m) === 1) {
+            $cur['rt'] = $m[1];
+            $cur['rt_target'] = wf_route_target($m[2], $m[3]);
+            if ($m[1] === 'route-to') {
+                $cur['route_to_gw'] = $m[2];
+                $cur['route_to_if'] = $m[3];
+            }
         }
         if (preg_match('/^\s+origif: (\S+)/', $line, $m) === 1) {
             $cur['origif'] = $m[1];
@@ -157,9 +176,11 @@ function wf_flows(array $states, array $wanTargets): array
 /**
  * pf output format drift check (spec 3.12). A live firewall always has states (dpinger's own probes at
  * least), every rule-created state carries an rlabel and every state an id, so any of these coming back
- * empty means pfctl failed or its format moved, not that there is nothing to do.
+ * empty means pfctl failed or its format moved, not that there is nothing to do. Every route target pf
+ * printed must parse: one token form that moved while another still parses would leave a hold's kill, or
+ * failback, silently missing states.
  *
- * @param list<array{rlabel: ?string, id: ?string, route_to_gw: ?string}> $states wf_parse_states($raw)
+ * @param list<array{rlabel: ?string, id: ?string, rt_target: ?string}> $states wf_parse_states($raw)
  */
 function wf_pf_selfcheck(string $raw, array $states): bool
 {
@@ -169,12 +190,55 @@ function wf_pf_selfcheck(string $raw, array $states): bool
     /* a route target prints as "<gateway>@<interface>" at the end of a state's detail line, whatever
      * the token before it is called */
     $gwTokens = preg_match_all('/\s\S+@[a-z][a-z0-9_.]*\s*$/m', $raw);
-    $parsed = count(array_filter($states, fn (array $s): bool => $s['route_to_gw'] !== null));
-    if ($gwTokens > 0 && $parsed === 0) {
+    $parsed = count(array_filter($states, fn (array $s): bool => $s['rt_target'] !== null));
+    if ($parsed < $gwTokens) {
         return false;
     }
     return array_filter($states, fn (array $s): bool => $s['rlabel'] !== null) !== []
         && array_filter($states, fn (array $s): bool => $s['id'] !== null) !== [];
+}
+
+/**
+ * The states pf routes via $target (gateway@interface), whatever the target's token, that carry an id.
+ *
+ * @param list<array{id: ?string, creatorid: ?string, rt_target: ?string}> $states wf_parse_states()
+ * @return list<array{id: string, creatorid: string}>
+ */
+function wf_states_via(array $states, string $target): array
+{
+    $out = [];
+    foreach ($states as $s) {
+        if ($s['rt_target'] === $target && $s['id'] !== null && $s['creatorid'] !== null) {
+            $out[] = ['id' => $s['id'], 'creatorid' => $s['creatorid']];
+        }
+    }
+    return $out;
+}
+
+/**
+ * Kill every state routed via $target, one state id at a time, as core's kill.state does. Unlike core's
+ * kill by gateway address, it leaves the states of another WAN that shares the address alone. A kill counts
+ * as done when pfctl exits 0. The parser reads ids and creator ids as hex only, so the kill's command line
+ * needs no quoting.
+ *
+ * @param callable(string): array{out: string, rc: int} $run runs one command line
+ * @return array{line: string, rc: int}
+ */
+function wf_kill_states_run(string $target, callable $run): array
+{
+    if (!wf_kill_target_ok($target)) {
+        return ['line' => 'rejected target', 'rc' => 1];
+    }
+    $killed = 0;
+    $failed = 0;
+    foreach (wf_states_via(wf_parse_states($run('/sbin/pfctl -vvss')['out']), $target) as $s) {
+        if ($run("/sbin/pfctl -k id -k {$s['id']}/{$s['creatorid']}")['rc'] === 0) {
+            $killed++;
+        } else {
+            $failed++;
+        }
+    }
+    return ['line' => "killed {$killed} states ({$failed} failed)", 'rc' => 0];
 }
 
 /**

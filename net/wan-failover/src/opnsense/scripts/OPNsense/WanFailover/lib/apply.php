@@ -24,7 +24,7 @@ require_once __DIR__ . '/log.php';
 
 /**
  * @param array{hold: list<string>, release: list<string>, held_after: list<string>, held_now: list<string>, write: bool,
- *               redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_gateways: list<string>,
+ *               redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, kill_targets: list<string>,
  *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
  *               acting: bool, stopped: bool} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
@@ -121,8 +121,8 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
     }
     if ($replayOk) {
-        foreach ($plan['kill_gateways'] as $gw) {
-            $log("kill states via {$gw}: " . trim(($io['configd'])('filter kill gateway_states', [$gw])));
+        foreach ($plan['kill_targets'] as $target) {
+            $log("kill states via {$target}: " . trim(($io['configd'])('wanfailover kill_states', [$target])));
         }
         $state['apply_pending'] = [];
     }

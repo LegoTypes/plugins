@@ -21,6 +21,8 @@ declare(strict_types=1);
  *   evaluate.php failback-now          end the failback delay for every pending failback, then evaluate; waits for
  *                                      a running evaluation like release
  *   evaluate.php start|stop            regenerate cron (the minute job exists only while enabled), then evaluate | release
+ *   evaluate.php kill-states TARGET    kill the states routed via TARGET (gateway@interface) by state id; a hold's
+ *                                      evaluation calls it through configd while it holds the lock, so it takes none
  * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core.
  */
 
@@ -53,6 +55,20 @@ function wf_main(string $mode, array $args): int
         $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
         echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
         return 0;
+    }
+
+    if ($mode === 'kill-states') {
+        $r = wf_kill_states_run($args[1] ?? '', function (string $cmd): array {
+            $lines = [];
+            $rc = 0;
+            exec($cmd . ' 2>/dev/null', $lines, $rc);
+            return ['out' => implode("\n", $lines), 'rc' => $rc];
+        });
+        if ($r['rc'] !== 0) {
+            wf_log('kill-states: the target is not gateway@interface; nothing killed', LOG_WARNING);
+        }
+        echo $r['line'], "\n";
+        return $r['rc'];
     }
 
     if ($mode === 'status') {

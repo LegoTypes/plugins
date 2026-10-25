@@ -27,8 +27,8 @@ function wf_t_wan(string $uuid, string $gw, int $rank, array $over = []): array
 /** @return array{now: int, boot_id: string, release: ?string, enabled: bool, dry: bool, failback: bool, default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>, held_stale: list<string>, force_down: array<string, bool>, contract: array{judging: list<string>, command: list<string>}} */
 function wf_t_snap(int $now, array $primary, array $wan2, array $extra = []): array
 {
-    $wans = ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary + ['route_target' => '203.0.113.1@igc1']),
-             'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '172.16.12.1', 2, $wan2 + ['route_target' => '172.16.12.1@igc2'])];
+    $wans = ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary + ['if' => 'igc1', 'route_target' => '203.0.113.1@igc1']),
+             'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '172.16.12.1', 2, $wan2 + ['if' => 'igc2', 'route_target' => '172.16.12.1@igc2'])];
     return array_merge(['now' => $now, 'boot_id' => 'b1', 'enabled' => true, 'failback' => true,
         'default_gw' => '203.0.113.1@igc1', 'wans' => $wans, 'unresolved' => [], 'held' => [], 'held_stale' => [],
         'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
@@ -48,8 +48,8 @@ wf_register_suite('planner', function (): int {
     $t = ['fail' => 0, 'total' => 0];
 
     $r = wf_plan(wf_t_snap(1000, [], ['loss' => 30.0]), wf_state_new('b1'));
-    wf_check($t, '1: hold WAN2, kill its gateway, default expected on PRIMARY', $r['plan']['hold'] === ['WAN2']
-        && $r['plan']['held_after'] === ['WAN2'] && $r['plan']['write'] && $r['plan']['kill_gateways'] === ['172.16.12.1']
+    wf_check($t, '1: hold WAN2, kill the states via its gateway and interface, default expected on PRIMARY', $r['plan']['hold'] === ['WAN2']
+        && $r['plan']['held_after'] === ['WAN2'] && $r['plan']['write'] && $r['plan']['kill_targets'] === ['172.16.12.1@igc2']
         && $r['plan']['expected_default'] === '203.0.113.1@igc1');
     $s = wf_t_applied($r['state'], $r['plan']);
 
@@ -261,15 +261,35 @@ wf_register_suite('planner', function (): int {
     $lost = ['carrier' => false, 'has_ipv4' => false, 'present' => false, 'loss' => null, 'sock_age' => null, 'gateway_ip' => ''];
     $r = wf_plan(wf_t_snap(14000, [], []), wf_state_new('b1'));
     $r = wf_plan(wf_t_snap(14060, $lost, []), $r['state']);
-    wf_check($t, 'a WAN that lost its gateway address is held and its states killed by the last address it had',
-        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_gateways'] === ['203.0.113.1']);
+    wf_check($t, 'a WAN that lost its gateway address is held and its states killed by the last address it had, on its interface',
+        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_targets'] === ['203.0.113.1@igc1']);
     $r = wf_plan(wf_t_snap(14000, $lost, []), wf_state_new('b1'));
     wf_check($t, 'with no address ever seen, the kill is skipped and logged, never run without an address',
-        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_gateways'] === []
+        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_targets'] === []
         && in_array('kill states for PRIMARY_WAN skipped: no gateway address known', $r['plan']['log'], true));
     $r = wf_plan(wf_t_snap(14000, ['gateway_ip' => 'dynamic'] + $lost, []), wf_state_new('b1'));
     wf_check($t, 'a gateway value that is no address (an unresolved dynamic gateway) is neither learned nor used for a kill',
-        $r['plan']['kill_gateways'] === [] && !isset($r['state']['gateway_ips']['PRIMARY_WAN']));
+        $r['plan']['kill_targets'] === [] && !isset($r['state']['gateway_ips']['PRIMARY_WAN']));
+
+    $s = wf_state_new('b1');
+    $s['gateway_ips']['WAN2'] = '198.51.100.1';
+    $r = wf_plan(wf_t_snap(14100, [], ['if' => 'vtnet2', 'route_target' => '@vtnet2'] + $lost), $s);
+    wf_check($t, '(q1) a held WAN with no gateway address now is killed by its last address on its interface',
+        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === ['198.51.100.1@vtnet2']);
+    $shared = fn (string $uuid, int $rank, string $if): array => wf_t_wan($uuid, '192.0.2.1', $rank,
+        ['if' => $if, 'route_target' => "192.0.2.1@{$if}", 'loss' => 30.0]);
+    $three = ['WAN_A' => $shared('aaaaaaaa-0000-4000-8000-00000000000a', 1, 'vtnet1'),
+              'WAN_B' => $shared('aaaaaaaa-0000-4000-8000-00000000000b', 2, 'vtnet2'),
+              'WAN_C' => wf_t_wan('aaaaaaaa-0000-4000-8000-00000000000c', '198.51.100.1', 3,
+                  ['if' => 'vtnet3', 'route_target' => '198.51.100.1@vtnet3'])];
+    $r = wf_plan(wf_t_snap(14200, [], [], ['wans' => $three, 'default_gw' => '192.0.2.1@vtnet1',
+        'force_down' => ['WAN_A' => false, 'WAN_B' => false, 'WAN_C' => false]]), wf_state_new('b1'));
+    wf_check($t, '(q2) two held WANs that share a gateway address get one kill target each, told apart by interface',
+        $r['plan']['hold'] === ['WAN_A', 'WAN_B'] && $r['plan']['kill_targets'] === ['192.0.2.1@vtnet1', '192.0.2.1@vtnet2']);
+    $r = wf_plan(wf_t_snap(14300, [], ['loss' => 30.0, 'if' => 'vt;1', 'route_target' => '172.16.12.1@vt;1']), wf_state_new('b1'));
+    $skips = array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'kill states for WAN2'));
+    wf_check($t, '(q3) a kill target whose interface is not a plain name is skipped with one line',
+        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === [] && count($skips) === 1);
 
     /* every state the planner and apply write loads back as saved: a state wrongly found corrupt releases every hold */
     $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@igc2'];

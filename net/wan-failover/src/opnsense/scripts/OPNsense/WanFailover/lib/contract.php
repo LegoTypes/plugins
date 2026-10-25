@@ -37,10 +37,10 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
     if ($filterActions === null) {
         $p[] = 'actions_filter.conf unreadable';
     } else {
+        /* failback kills through kill.state; a hold's kill runs the same pfctl form itself */
         $state = wf_ini_section($filterActions, 'kill.state');
-        $gw = wf_ini_section($filterActions, 'kill.gateway_states');
-        if ($state === null || !str_contains($state, '-k id -k %s/%s') || $gw === null || !str_contains($gw, '-k gateway -k %s')) {
-            $p[] = '[kill.state] or [kill.gateway_states] changed';
+        if ($state === null || !str_contains($state, '-k id -k %s/%s')) {
+            $p[] = '[kill.state] changed';
         }
     }
     $early = $rc === null ? false : strpos($rc, 'rc.syshook early');
