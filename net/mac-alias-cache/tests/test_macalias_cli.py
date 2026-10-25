@@ -954,3 +954,96 @@ def test_refusal_takes_the_first_class_and_carries_every_problem(env):
     assert [p["item"] for p in out["problems"]] == ["lock_file", "cache_file"]
     assert out["detail"] == "%s; %s" % (LOCK_NOT_REGULAR % cfg["lock_file"], CACHE_DIRECTORY % cfg["cache_file"])
     assert not (tmp / "update_args").exists()
+
+
+def _plugin_lock_free(cfg):
+    with open(macalias.state_paths(cfg)["plugin_lock"], "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises BlockingIOError while held
+
+
+def test_flush_busy_at_once_when_plugin_lock_held(env):
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    slept = []
+    before = _snapshot(tmp)
+    with open(macalias.state_paths(cfg)["plugin_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=slept.append)
+    assert out == {"error": "busy", "detail": "another flush is running"}
+    assert slept == []
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+
+
+def test_concurrent_flush_runs_one_rebuild(env, monkeypatch):
+    # the second request arrives while the first is rebuilding; update_tables is a shell
+    # script and cannot call back, so the nested flush starts from the first pf_set read
+    cfg, tmp = env
+    real_pf_set = macalias.pf_set
+    nested = []
+
+    def fake_pf_set(cfg_, name):
+        if not nested:
+            nested.append(macalias.cmd_flush(cfg_, clock=lambda: 5000.0, sleep=lambda s: pytest.fail("waited")))
+        return real_pf_set(cfg_, name)
+
+    monkeypatch.setattr(macalias, "pf_set", fake_pf_set)
+    out = _flush(cfg)
+    assert "error" not in out
+    assert nested == [{"error": "busy", "detail": "another flush is running"}]
+    assert (tmp / "update_args").read_text().strip().splitlines() == ["--aliases DevMacs,Parent"]
+
+
+def test_flush_refuses_when_plugin_lock_is_not_a_regular_file(env):
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
+    out = _flush(cfg)
+    assert out["error"] == "state_unusable"
+    assert macalias.state_paths(cfg)["plugin_lock"] in out["detail"]
+    assert not (tmp / "update_args").exists()
+
+
+@pytest.mark.parametrize("case", ["success", "too_soon", "hosts_unavailable", "state_unusable", "update_oserror"])
+def test_flush_releases_plugin_lock_after_every_exit(env, case):
+    cfg, tmp = env
+    if case == "too_soon":
+        _write_last(cfg, {"at": 4995.0, "summary": []})
+    elif case == "hosts_unavailable":
+        cfg["list_hosts"] = [_exe(tmp / "broken_hosts", "exit 1\n"), "-n"]
+    elif case == "state_unusable":
+        os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+        os.mkdir(macalias.state_paths(cfg)["last_file"])
+    elif case == "update_oserror":
+        cfg["update_tables"] = str(tmp / "missing_update_tables")   # exec raises OSError
+    out = _flush(cfg)
+    if case == "success":
+        assert "error" not in out
+    elif case == "update_oserror":
+        assert out["update_tables"]["rc"] is None
+    else:
+        assert out["error"] == case
+    _plugin_lock_free(cfg)
+    with open(cfg["lock_file"], "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_flush_releases_plugin_lock_when_a_read_raises(env, monkeypatch):
+    cfg, tmp = env
+
+    def broken_pf_set(cfg_, name):
+        raise OSError("pfctl cannot start")
+
+    monkeypatch.setattr(macalias, "pf_set", broken_pf_set)
+    with pytest.raises(OSError):
+        _flush(cfg)
+    _plugin_lock_free(cfg)
+
+
+def test_flush_releases_plugin_lock_when_core_lock_times_out(env):
+    cfg, tmp = env
+    with open(cfg["lock_file"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = _flush(cfg)
+    assert out["error"] == "busy" and "alias update lock held" in out["detail"]
+    _plugin_lock_free(cfg)

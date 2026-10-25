@@ -53,6 +53,7 @@ class ServiceController extends ApiControllerBase
         if (!$this->request->isPost()) {
             return ['status' => 'failed'];
         }
+        $this->throwReadOnly();
         return $this->decode((new Backend())->configdRun('macaliascache flush'));
     }
 }

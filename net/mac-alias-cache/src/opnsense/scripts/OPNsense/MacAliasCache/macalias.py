@@ -405,21 +405,57 @@ def cmd_status(cfg, now):
     }
 
 
+def acquire_plugin_lock(cfg):
+    """ the plugin's own flush lock in the state directory: the handle, None when another flush
+    holds it (no waiting), or a state_unusable reply when the path cannot be opened safely
+    """
+    path = state_paths(cfg)["plugin_lock"]
+    fd = _open_lock(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
+    if fd is None:
+        return {"error": "state_unusable",
+                "detail": "the plugin's flush lock at %s is not a regular file with one link "
+                          "that the plugin can open safely" % path}
+    handle = os.fdopen(fd, "a")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def _unlock(handle):
+    fcntl.flock(handle, fcntl.LOCK_UN)
+    handle.close()
+
+
 def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
     # the plugin's own files live in the state directory, so it is made safe before any of
     # them is opened; every refusal below comes before any write
     problem = ensure_state_dir(cfg)
     if problem:
         return refusal([problem])
-    refused = refusal(problems(cfg))
-    if refused:
-        return refused
-    last_file = state_paths(cfg)["last_file"]
-    lock = acquire_lock(cfg, sleep)
-    if isinstance(lock, dict):
-        return lock
-    if lock is None:
-        return {"error": "busy", "detail": "alias update lock held for %ss" % cfg["lock_timeout"]}
+    # one flush at a time: a second request answers at once instead of queueing a root
+    # process behind core's lock
+    plugin_lock = acquire_plugin_lock(cfg)
+    if isinstance(plugin_lock, dict):
+        return plugin_lock
+    if plugin_lock is None:
+        return {"error": "busy", "detail": "another flush is running"}
+    lock = None
+    try:
+        refused = refusal(problems(cfg))
+        if refused:
+            return refused
+        last_file = state_paths(cfg)["last_file"]
+        lock = acquire_lock(cfg, sleep)
+        if isinstance(lock, dict):
+            return lock
+        if lock is None:
+            return {"error": "busy", "detail": "alias update lock held for %ss" % cfg["lock_timeout"]}
+    finally:
+        if lock is None or isinstance(lock, dict):
+            _unlock(plugin_lock)
     try:
         # rate limit checked under the lock, so a flush that finished while we waited wins
         last = _read_json(last_file, lib.last_schema)
@@ -486,8 +522,8 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # of standing down.
         _write_json_atomic(last_file, {"at": now, "summary": []}, mode=0o600)
     finally:
-        fcntl.flock(lock, fcntl.LOCK_UN)
-        lock.close()
+        _unlock(lock)
+        _unlock(plugin_lock)
 
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)
