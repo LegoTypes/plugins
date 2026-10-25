@@ -43,6 +43,7 @@
                 $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds; all holds released if it lasts 3 minutes):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
                 $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });
+                $.each((data.contract || {}).removal || [], function (i, p) { notes.push("{{ lang._('Core changed (a package removal re-syncs routing through configd only):') }} " + plain(p)); });
                 var box = $('#wanfailover-notes').empty();
                 $.each(notes, function (i, n) { box.append($('<div/>').text(n)); });
                 box.toggle(notes.length > 0);

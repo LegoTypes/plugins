@@ -223,9 +223,9 @@ function wf_main(string $mode, array $args): int
     } else {
         $applied = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets));
         $state = $applied['state'];
-        /* the next tick plans again from the config as it then is */
+        /* the next tick plans again from the config as it then is; a removal under way leaves no next tick */
         if ($applied['problem'] !== null) {
-            wf_log("{$applied['problem']}; the change waits for the next tick");
+            wf_log($applied['problem'] . (wf_removing() ? '' : '; the change waits for the next tick'), $applied['prio']);
         }
     }
 
@@ -274,7 +274,7 @@ function wf_deinstall(): int
             return ['snap' => $snap, 'loaded' => wf_state_load(WF_STATE, $snap['boot_id'])];
         };
         $ioFor = fn (array $snap): array => wf_deinstall_io(wf_live_io(WF_STATE,
-            array_map(fn (array $w): string => $w['route_target'], $snap['wans'])), 'wf_core_shell');
+            array_map(fn (array $w): string => $w['route_target'], $snap['wans'])), 'wf_core_shell', $snap['contract']['removal'] === []);
         wf_deinstall_run($startedAt, $read, $ioFor, 'time', function (int $s): void {
             sleep($s);
         }, 'wf_log');

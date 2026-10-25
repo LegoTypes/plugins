@@ -516,6 +516,27 @@ function wf_write_guard(array $changes, array $expected, array $current): array
 }
 
 /**
+ * Why a write the guard stopped did not land, for the log: the gateways whose force_down moved since the snapshot,
+ * and apart from them those that no longer exist, so neither points the owner at a cause that did not happen.
+ *
+ * @param list<string> $skipped wf_write_guard()'s names
+ * @param array<string, bool> $current every configured gateway name => its force_down now
+ */
+function wf_write_guard_problem(array $skipped, array $current): string
+{
+    $gone = array_values(array_filter($skipped, fn (string $n): bool => !array_key_exists($n, $current)));
+    $moved = array_values(array_diff($skipped, $gone));
+    $parts = [];
+    if ($moved !== []) {
+        $parts[] = 'force_down on ' . implode(',', $moved) . ' changed since the snapshot';
+    }
+    if ($gone !== []) {
+        $parts[] = implode(',', $gone) . ' no longer ' . (count($gone) === 1 ? 'exists' : 'exist');
+    }
+    return implode('; ', $parts);
+}
+
+/**
  * The hold rows a write leaves: exactly the plan's records after it, one per gateway, each with the boot and since the
  * plan gave it, and no other row. A gateway is named by its UUID in the config as it is under the writer's lock; a
  * record whose gateway has none there (renamed or deleted since the snapshot) is missing, and the writer then writes

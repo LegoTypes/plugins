@@ -39,18 +39,23 @@ require_once __DIR__ . '/planner.php';
  *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
  *               acting: bool, stopped: bool, legacy_held: list<string>} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
- * @param array{now: int, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
+ * @param array{now: int, release: ?string, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
  * @param array{configd: callable(string, list<string>): string,
- *             write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>},
+ *             write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>, problem: ?string, prio: int},
  *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *             sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void} $io
- * @return array{state: array, ok: bool, problem: ?string} problem: why the config change did not land (the gateway lock
- *     busy, a force_down moved since the snapshot, the write failed), for the caller to log as it goes on; null otherwise
+ * @return array{state: array, ok: bool, problem: ?string, prio: int, resynced: bool} problem: why the config change did
+ *     not land (the gateway lock busy, a force_down moved since the snapshot, the write refused or failed), and the
+ *     priority to log it at, for the caller to log as it goes on; null otherwise. resynced: false when the routing
+ *     reconfigure answered "failed" (the removal's core command, wf_deinstall_io()) or the alarm replay failed
  */
 function wf_apply(array $plan, array $state, array $snap, array $io): array
 {
     $log = $io['log'];
+    /* the package removal has no next tick to resume a replay in */
+    $removal = $snap['release'] === 'removal';
+    $resynced = true;
     $changes = [];
     foreach ($plan['hold'] as $n) {
         $changes[$n] = true;
@@ -78,9 +83,10 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         ($io['crash_point'])('after-pending');
         $before = ($io['status'])();
         if (!($io['gw_lock'])()) {
-            return ['state' => $state, 'ok' => false, 'problem' => 'gateway lock busy for 30 s'];
+            return ['state' => $state, 'ok' => false, 'problem' => 'gateway lock busy for 30 s', 'prio' => LOG_NOTICE,
+                    'resynced' => false];
         }
-        $written = ['ok' => true, 'skipped' => []];
+        $written = ['ok' => true, 'skipped' => [], 'problem' => null, 'prio' => LOG_NOTICE];
         try {
             if ($plan['write']) {
                 $written = ($io['write'])($changes, $plan['expected'], $plan['records_after']);
@@ -88,18 +94,15 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             }
             /* a write that only prunes the held list changes no gateway: no reconfigure, no dpinger restarts */
             if ($written['ok'] && ($changes !== [] || $plan['foreign'] !== [])) {
-                ($io['configd'])('interface routes configure', []);
+                $resynced = trim(($io['configd'])('interface routes configure', [])) !== 'failed';
             }
         } finally {
             ($io['gw_unlock'])();
         }
         /* the caller plans again from the config as it then is */
-        if ($written['skipped'] !== []) {
-            return ['state' => $state, 'ok' => false,
-                    'problem' => 'force_down on ' . implode(',', $written['skipped']) . ' changed since the snapshot'];
-        }
         if (!$written['ok']) {
-            return ['state' => $state, 'ok' => false, 'problem' => 'config write failed'];
+            return ['state' => $state, 'ok' => false, 'problem' => $written['problem'], 'prio' => $written['prio'],
+                    'resynced' => false];
         }
         $after = ($io['status'])();
         $changedDuringHold = [];
@@ -134,7 +137,8 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
         $replayOk = trim(($io['configd'])('wanfailover replay_alarm', [implode(',', $replay)])) === 'OK';
         if (!$replayOk) {
-            $log('alarm replay failed for ' . implode(',', $replay) . '; resuming next tick');
+            $resynced = false;
+            $log('alarm replay failed for ' . implode(',', $replay) . ($removal ? '' : '; resuming next tick'));
         }
     }
     if ($replayOk) {
@@ -200,7 +204,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
     }
     ($io['save_state'])($state);
-    return ['state' => $state, 'ok' => true, 'problem' => null];
+    return ['state' => $state, 'ok' => true, 'problem' => null, 'prio' => LOG_NOTICE, 'resynced' => $resynced];
 }
 
 /** Whether the package removal's marker exists (+PRE_DEINSTALL.pre writes it; +POST_INSTALL.pre deletes it). */
@@ -217,30 +221,34 @@ function wf_removing(): bool
  * value the plan decided on (wf_write_guard()): when one moved under it (a settings save, a restored config), nothing
  * is written and those gateways come back as skipped. Otherwise the hold records become exactly the plan's records
  * after the write (wf_holds_rows()), every other row removed, so a record the plan proved is never left behind for one
- * it did not. It never throws: a failure is logged and the change waits for the next tick. A write that only releases
- * skips model validation, so a gateway field that fails validation (after a firmware update tightened a rule, say) can
- * never pin a hold; the plugin itself only touches force_down and its hold records. While the package removal's marker
- * exists, only the removal's own write lands: the marker is read once Config::lock() is held, and the removal writes it
- * before anything else, so an evaluation that was waiting for the lock cannot re-take a hold the removal releases.
- * The early hook also removes 1.3_1's held list in the same save ($dropLegacy), once it has dealt with its entries.
+ * it did not. It never throws and logs nothing itself: a write that did not land says why (problem, and the priority
+ * to log it at) for its caller to log, with the caller's own prefix, as the change waits for the next tick or try. A
+ * write that only releases skips model validation, so a gateway field that fails validation (after a firmware update
+ * tightened a rule, say) can never pin a hold; the plugin itself only touches force_down and its hold records. While
+ * the package removal's marker exists, only the removal's own write lands: the marker is read once Config::lock() is
+ * held, and the removal writes it before anything else, so an evaluation that was waiting for the lock cannot re-take
+ * a hold the removal releases. The early hook also removes 1.3_1's held list in the same save ($dropLegacy), once it
+ * has dealt with its entries.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
  * @param array<string, array{boot: string, since: int}> $recordsAfter every hold record after the write, by gateway name
  * @param bool $removal true for the package removal's own write, the one write the removal's marker lets through
  * @param bool $dropLegacy true to remove 1.3_1's held list from the raw config in the same save
- * @return array{ok: bool, skipped: list<string>} skipped: the changed gateways whose force_down moved, when ok is false
+ * @return array{ok: bool, skipped: list<string>, problem: ?string, prio: int} skipped: the changed gateways whose
+ *     force_down moved or that no longer exist (wf_write_guard()); problem: why nothing was written, when ok is false
  */
 function wf_write_holds(array $changes, array $expected, array $recordsAfter, bool $removal = false, bool $dropLegacy = false): array
 {
     $releaseOnly = !in_array(true, $changes, true);
+    $failed = fn (string $problem, int $prio, array $skipped = []): array
+        => ['ok' => false, 'skipped' => $skipped, 'problem' => $problem, 'prio' => $prio];
     try {
         $cfg = \OPNsense\Core\Config::getInstance();
         $cfg->lock();
         try {
             if (!$removal && wf_removing()) {
-                wf_log('config write: the package is being removed; nothing written');
-                return ['ok' => false, 'skipped' => []];
+                return $failed('config write skipped: the package is being removed', LOG_NOTICE);
             }
             $gateways = new \OPNsense\Routing\Gateways();
             $items = [];
@@ -254,13 +262,12 @@ function wf_write_holds(array $changes, array $expected, array $recordsAfter, bo
             }
             $skipped = wf_write_guard($changes, $expected, $current);
             if ($skipped !== []) {
-                return ['ok' => false, 'skipped' => $skipped];
+                return $failed(wf_write_guard_problem($skipped, $current), LOG_NOTICE, $skipped);
             }
             $rows = wf_holds_rows($recordsAfter, $uuidByName);
             if ($rows['missing'] !== []) {
-                wf_log('config write: the hold record for ' . implode(',', $rows['missing'])
-                    . ' names a gateway the config no longer has; nothing written', LOG_WARNING);
-                return ['ok' => false, 'skipped' => []];
+                return $failed('config write skipped: the hold record for ' . implode(',', $rows['missing'])
+                    . ' names a gateway the config no longer has', LOG_WARNING);
             }
             foreach ($changes as $name => $down) {
                 $items[$name]->force_down = $down ? '1' : '0';
@@ -278,13 +285,12 @@ function wf_write_holds(array $changes, array $expected, array $recordsAfter, bo
                 wf_holds_drop_legacy();
             }
             $cfg->save(null, false);
-            return ['ok' => true, 'skipped' => []];
+            return ['ok' => true, 'skipped' => [], 'problem' => null, 'prio' => LOG_NOTICE];
         } finally {
             $cfg->unlock();
         }
     } catch (\Throwable $e) {
-        wf_log('config write failed: ' . $e->getMessage(), LOG_ERR);
-        return ['ok' => false, 'skipped' => []];
+        return $failed('config write failed: ' . $e->getMessage(), LOG_ERR);
     }
 }
 
@@ -426,7 +432,7 @@ function wf_holds_import_legacy(string $bootId, array $proof): void
 /**
  * @param array<string, string> $wanTargets WAN name => route target
  * @return array{configd: callable(string, list<string>): string,
- *                 write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>},
+ *                 write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>, problem: ?string, prio: int},
  *                 gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *                 pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *                 sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void}
@@ -476,14 +482,20 @@ function wf_live_io(string $statePath, array $wanTargets): array
  * @param string $action the configd action, words as configctl takes them ("interface routes configure")
  * @param string $direct the command core's action runs (a WF_CORE_* constant)
  * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
- * @return string configd, direct, or failed when core's command exited non-zero too
+ * @param bool $fallback false when the core contract reports that core's action no longer runs $direct: then $direct
+ *     is never run, as it may be a command core no longer uses
+ * @return string configd, direct, failed when core's command exited non-zero too, or skipped when configd did not
+ *     answer OK and $direct was not run
  */
-function wf_core_command(string $action, string $direct, callable $run): string
+function wf_core_command(string $action, string $direct, callable $run, bool $fallback = true): string
 {
     $ctl = '/usr/bin/timeout ' . WF_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl ' . $action
         . ' 2> /dev/null | /usr/bin/grep -qx OK';
     if ($run($ctl) === 0) {
         return 'configd';
+    }
+    if (!$fallback) {
+        return 'skipped';
     }
     return $run($direct . ' > /dev/null 2>&1') === 0 ? 'direct' : 'failed';
 }
@@ -500,16 +512,19 @@ function wf_core_shell(string $cmdline): int
 /**
  * The package removal's I/O: $io (wf_live_io()'s) with its write made the removal's own, which the removal's marker
  * lets through, its crash points inert, and its configd replaced, since the plugin's own configd actions go with the
- * package. Core's routing reconfigure runs through core's configd action, else core's own command (wf_core_command());
- * the alarm replay runs the command the plugin's [replay_alarm] action wraps (WF_REPLAY_ALARM_CMD), directly, with
- * the names as its one argument; any other action is refused with one line and never run. Every line apply logs
- * through it starts "deinstall: ".
+ * package. Core's routing reconfigure runs through core's configd action, else core's own command (wf_core_command()),
+ * which is not run when the core contract reports that core's action no longer runs it ($fallback false: one error
+ * then names the fix); the alarm replay runs the command the plugin's [replay_alarm] action wraps
+ * (WF_REPLAY_ALARM_CMD), directly, with the names as its one argument; any other action is refused with one line and
+ * never run. Every line apply logs through it starts "deinstall: ".
  *
  * @param array $io the shape returned by wf_live_io()
  * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
+ * @param bool $fallback whether core's own routing command may run when configd does not answer (the snapshot's
+ *     contract reports no removal drift)
  * @return array the same shape, as wf_apply() takes it
  */
-function wf_deinstall_io(array $io, callable $run): array
+function wf_deinstall_io(array $io, callable $run, bool $fallback): array
 {
     $base = $io;
     $log = function (string $m, int $prio = LOG_NOTICE) use ($base): void {
@@ -520,18 +535,22 @@ function wf_deinstall_io(array $io, callable $run): array
     $io['crash_point'] = function (string $p): void {
     };
     $io['write'] = fn (array $c, array $expected, array $recordsAfter): array => ($base['write'])($c, $expected, $recordsAfter, true);
-    $io['configd'] = function (string $action, array $params) use ($run, $log): string {
+    $io['configd'] = function (string $action, array $params) use ($run, $log, $fallback): string {
         if ($action === 'interface routes configure' && $params === []) {
-            $path = wf_core_command($action, WF_CORE_ROUTES_CONFIGURE, $run);
+            $path = wf_core_command($action, WF_CORE_ROUTES_CONFIGURE, $run, $fallback);
             if ($path === 'configd') {
                 $log('routing reconfigured through configd');
             } elseif ($path === 'direct') {
                 $log('configd did not answer OK, so core\'s ' . WF_CORE_ROUTES_CONFIGURE . ' ran directly', LOG_WARNING);
+            } elseif ($path === 'skipped') {
+                $log('routing reconfigure failed: configd did not answer OK, and core\'s [routes.configure] no longer runs '
+                    . WF_CORE_ROUTES_CONFIGURE . ', so that was not run either: apply System: Gateways: Configuration to '
+                    . 're-sync routing', LOG_ERR);
             } else {
                 $log('routing reconfigure failed: configd did not answer OK, and core\'s ' . WF_CORE_ROUTES_CONFIGURE
                     . ' exited non-zero', LOG_ERR);
             }
-            return $path === 'failed' ? 'failed' : 'OK';
+            return $path === 'failed' || $path === 'skipped' ? 'failed' : 'OK';
         }
         if ($action === 'wanfailover replay_alarm' && count($params) === 1) {
             $rc = $run(WF_REPLAY_ALARM_CMD . ' ' . escapeshellarg($params[0]) . ' > /dev/null 2>&1');
@@ -563,8 +582,11 @@ function wf_deinstall_retry(int $startedAt, int $now, bool $ok): string
  * snapshot and the state, plans it as with the plugin disabled and the cause "package removal" (every hold the plugin
  * proves it took released, every other record pruned and its gateway left as it is), and applies it through the
  * removal's I/O. A try that did not land (the gateway lock busy, a force_down moved since its snapshot, the write
- * failed) is said once, with why; the plan's own lines only when they changed since the try before. Giving up leaves
- * one error naming the gateways the plugin still holds and the fix.
+ * failed) says why, once for each new reason; the plan's own lines only when they changed since the try before. The
+ * last line says what the release left undone, since no plugin is left afterwards to say it: a routing re-sync that
+ * did not complete, and any gateway left forced down that the plugin may have held but cannot prove (kern.boot_id
+ * unreadable, or 1.3_1's held list not yet carried over), each with the fix. Giving up leaves one error naming the
+ * gateways the plugin still holds and the fix.
  *
  * @param callable(): array{snap: array, loaded: array{state: array, corrupt: bool, problem: ?string}} $read a fresh
  *     snapshot (wf_snapshot()) and the state loaded for its boot id (wf_state_load())
@@ -577,6 +599,7 @@ function wf_deinstall_retry(int $startedAt, int $now, bool $ok): string
 function wf_deinstall_run(int $startedAt, callable $read, callable $ioFor, callable $clock, callable $sleep, callable $log): bool
 {
     $said = null;
+    $retrySaid = null;
     $corruptSaid = false;
     while (true) {
         $r = $read();
@@ -604,7 +627,23 @@ function wf_deinstall_run(int $startedAt, callable $read, callable $ioFor, calla
         $applied = wf_apply($plan, $p['state'], $snap, $ioFor($snap));
         $next = wf_deinstall_retry($startedAt, $clock(), $applied['ok']);
         if ($next === 'done') {
-            $log($plan['release'] === [] ? 'deinstall: nothing held' : 'deinstall: released ' . implode(',', $plan['release']));
+            if ($plan['release'] === []) {
+                $log('deinstall: nothing held');
+            } elseif ($applied['resynced']) {
+                $log('deinstall: released ' . implode(',', $plan['release']));
+            } else {
+                $log('deinstall: released ' . implode(',', $plan['release']) . ', but the routing re-sync did not complete '
+                    . '(see above): apply System: Gateways: Configuration to re-sync routing', LOG_WARNING);
+            }
+            $left = array_values(array_filter(array_unique(array_merge($plan['unproven'], $plan['legacy_held'])),
+                fn (string $n): bool => $snap['force_down'][$n] ?? false));
+            if ($left !== []) {
+                $one = count($left) === 1;
+                $log('deinstall: ' . implode(',', $left) . ($one ? ' stays' : ' stay') . ' forced down: the plugin cannot prove '
+                    . 'whether it took ' . ($one ? 'that hold' : 'those holds') . " (kern.boot_id unreadable, or 1.3_1's held "
+                    . 'list not yet carried over): untick Force down on each under System: Gateways: Configuration if it should '
+                    . 'carry traffic', LOG_ERR);
+            }
             return true;
         }
         if ($next === 'give_up') {
@@ -617,7 +656,11 @@ function wf_deinstall_run(int $startedAt, callable $read, callable $ioFor, calla
             }
             return false;
         }
-        $log("deinstall: the release did not land ({$applied['problem']}); retrying");
+        if ($applied['problem'] !== $retrySaid) {
+            $log("deinstall: the release did not land ({$applied['problem']}); retrying every " . WF_DEINSTALL_RETRY_SECONDS
+                . ' s for up to ' . WF_DEINSTALL_WAIT_SECONDS . ' s', $applied['prio']);
+            $retrySaid = $applied['problem'];
+        }
         $sleep(WF_DEINSTALL_RETRY_SECONDS);
     }
 }

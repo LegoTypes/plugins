@@ -9,7 +9,9 @@ declare(strict_types=1);
  *
  * Core contract (spec 2026-10-05 section 3.12). Judging dependencies: without them no WAN can be read,
  * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
- * internals; a drift blocks new holds only. Pure: callers pass the file contents.
+ * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
+ * fallback for core's routing reconfigure; a drift there blocks nothing, and the removal no longer runs the copy.
+ * Pure: callers pass the file contents.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -40,13 +42,6 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
     } elseif (!str_contains($alarm, WF_GATEWAY_LOCK) || !str_contains($alarm, 'rc.routing_configure alarm')) {
         $p[] = '[routes.alarm] no longer takes ' . WF_GATEWAY_LOCK . ' and runs rc.routing_configure alarm';
     }
-    /* the package removal runs this command itself when configd does not answer */
-    if ($interfaceActions !== null) {
-        $configure = wf_ini_section($interfaceActions, 'routes.configure');
-        if ($configure === null || wf_ini_command($configure) !== WF_CORE_ROUTES_CONFIGURE) {
-            $p[] = '[routes.configure] changed';
-        }
-    }
     if ($filterActions === null) {
         $p[] = 'actions_filter.conf unreadable';
     } else {
@@ -62,6 +57,22 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
         $p[] = '/usr/local/etc/rc no longer runs rc.syshook early before rc.bootup';
     }
     return $p;
+}
+
+/**
+ * The package removal runs core's [routes.configure] command itself when configd does not answer
+ * (WF_CORE_ROUTES_CONFIGURE): a drift of that command is reported here, and the removal then leaves it unrun. Every
+ * evaluation reconfigures routing through core's action by name, so the drift blocks no hold.
+ *
+ * @return list<string>
+ */
+function wf_contract_removal(?string $interfaceActions): array
+{
+    if ($interfaceActions === null) {
+        return [];
+    }
+    $configure = wf_ini_section($interfaceActions, 'routes.configure');
+    return $configure === null || wf_ini_command($configure) !== WF_CORE_ROUTES_CONFIGURE ? ['[routes.configure] changed'] : [];
 }
 
 /**
@@ -124,12 +135,12 @@ function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $ro
 /**
  * Log a drift once when it appears or changes, and once when it clears.
  *
- * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>} $contract
+ * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>, removal?: list<string>} $contract
  * @return array{line: ?string, prio: int, last: string}
  */
 function wf_contract_log(array $contract, string $last): array
 {
-    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? []);
+    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? [], $contract['removal'] ?? []);
     $now = implode("\n", $all);
     if ($now === $last) {
         return ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
@@ -138,7 +149,8 @@ function wf_contract_log(array $contract, string $last): array
         return ['line' => 'core-contract: core matches again', 'prio' => LOG_NOTICE, 'last' => $now];
     }
     $effect = $contract['judging'] !== [] ? 'releasing every hold if it persists for ' . WF_UNKNOWN_MAX_SECONDS . ' s'
-        : ($contract['command'] !== [] ? 'no new holds' : 'Tailscale restarts off');
+        : ($contract['command'] !== [] ? 'no new holds'
+        : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off' : 'a package removal re-syncs routing through configd only'));
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }

@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/planner.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contract.php';
 
 /** @return array<string, string|int|float|bool|null> */
 function wf_t_wan(string $uuid, string $gw, int $rank, array $over = []): array
@@ -152,6 +153,14 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '12e: a fresh judging drift blocks new holds', $r2['plan']['hold'] === []);
     $r = wf_plan(wf_t_snap(9200, [], ['loss' => 30.0], ['contract' => ['judging' => [], 'command' => ['[kill.state] changed']]]), wf_state_new('b1'));
     wf_check($t, '12e: command drift -> no new hold', $r['plan']['hold'] === [] && !$r['plan']['stopped']);
+    /* core's [routes.configure] running another command: the contract as the snapshot builds it */
+    $iface = "[routes.configure]\ncommand:/usr/local/etc/rc.routing_configure_v2\n\n[routes.alarm]\n"
+        . "command:/usr/local/bin/flock -n -E 0 -o /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm\n";
+    $contract = ['judging' => [], 'command' => wf_contract_commands($iface, "[kill.state]\ncommand:/sbin/pfctl\n"
+        . "parameters: -k id -k %s/%s 2>&1\n", "/usr/local/etc/rc.syshook early\n/usr/local/etc/rc.bootup\n"), 'tailscale' => []];
+    $r = wf_plan(wf_t_snap(9200, [], ['loss' => 30.0], ['contract' => $contract]), wf_state_new('b1'));
+    wf_check($t, '(d13) a change of core\'s [routes.configure], which only the package removal\'s re-sync copies, blocks no hold',
+        $r['plan']['hold'] === ['WAN2'] && !$r['plan']['stopped']);
 
     $r = wf_plan(wf_t_snap(9300, [], ['force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2')]), wf_state_new('b1'));
     wf_check($t, '12f: held appeared outside the engine -> foreign re-sync', $r['plan']['foreign'] === ['WAN2']);

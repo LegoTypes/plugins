@@ -66,10 +66,7 @@ try {
         } else {
             /* the state keeps the boot before's id, so the first evaluation's boot detector releases the holds */
             $state = $loaded['state'];
-            $state['boot_note'] = $written['skipped'] !== []
-                ? 'boot: force_down on ' . implode(',', $written['skipped'])
-                    . ' changed since it was read; write skipped; the first evaluation releases the holds'
-                : 'boot: config write failed; the first evaluation releases the holds';
+            $state['boot_note'] = "boot: {$written['problem']}; nothing written, and the first evaluation releases the holds";
             wf_state_save(WF_STATE, $state);
         }
     }

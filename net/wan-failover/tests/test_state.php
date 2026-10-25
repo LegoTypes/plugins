@@ -462,5 +462,10 @@ wf_register_suite('state', function (): int {
     wf_check($t, '(l5) an empty list at boot is removed with a note, and nothing is released',
         $b['release'] === [] && $b['drop_legacy'] && $b['note'] === "boot: 1.3_1's empty held list removed"
         && wf_boot_legacy(null, $map, $before) === ['present' => false, 'release' => [], 'left' => [], 'unknown' => 0]);
+    wf_check($t, '(g5) the guard\'s problem says which force_down moved, and apart from it which gateway no longer exists',
+        wf_write_guard_problem(['WAN_A', 'WAN_B'], ['WAN_A' => true]) === 'force_down on WAN_A changed since the snapshot; WAN_B no '
+            . 'longer exists'
+        && wf_write_guard_problem(['WAN_B'], ['WAN_A' => true]) === 'WAN_B no longer exists'
+        && wf_write_guard_problem(['WAN_A'], ['WAN_A' => true]) === 'force_down on WAN_A changed since the snapshot');
     return wf_tally_report('state', $t);
 });

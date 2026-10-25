@@ -9,7 +9,7 @@ declare(strict_types=1);
  *
  * Reads the status page's template as text and holds three properties of its script: plain() is the exact inverse
  * of core's escaping with no HTML parser, the notice banner sets one text line per note, and the page reads the
- * count of hold records that were not this plugin's.
+ * count of hold records that were not this plugin's and the core drift only the package removal depends on.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
@@ -36,6 +36,8 @@ wf_register_suite('view', function (): int {
     wf_check($t, '(v2) the notes are not run together', !str_contains($view, 'notes.join('));
 
     wf_check($t, '(v3) the page reads the count of foreign hold records', str_contains($view, 'data.foreign'));
+    wf_check($t, '(v4) the page notes a drift that only the package removal\'s re-sync depends on',
+        str_contains($view, '(data.contract || {}).removal'));
 
     return wf_tally_report('view', $t);
 });

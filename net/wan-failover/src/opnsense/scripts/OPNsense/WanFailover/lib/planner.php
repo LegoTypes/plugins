@@ -410,7 +410,8 @@ function wf_dry_exit(array $state, array $snap): array
  * @param list<string> $hold
  * @param list<string> $release
  * @param array<string, array{boot: string, since: int}> $recordsAfter wf_records_after()
- * @param array{redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, foreign_records: list<string>} $rec
+ * @param array{redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, foreign_records: list<string>,
+ *              unproven: list<string>} $rec
  * @param array<string, array{top: bool}> $failback
  * @param list<string> $alerts
  * @param list<string> $log
@@ -454,7 +455,7 @@ function wf_plan_result(array $hold, array $release, array $recordsAfter, bool $
     $plan = ['hold' => $hold, 'release' => $release, 'held_after' => array_keys($recordsAfter), 'records_after' => $recordsAfter,
              'expected' => $expectedDown, 'held_now' => array_keys($snap['holds']), 'write' => $write,
              'redo_apply' => $rec['redo_apply'], 'redo_replay' => $rec['redo_replay'], 'foreign' => $rec['foreign'],
-             'foreign_records' => $rec['foreign_records'], 'legacy_held' => $snap['legacy_held'],
+             'foreign_records' => $rec['foreign_records'], 'legacy_held' => $snap['legacy_held'], 'unproven' => $rec['unproven'],
              'kill_targets' => $killTargets, 'failback' => $failback, 'expected_default' => $expected,
              'alerts' => $alerts, 'log' => $log, 'stopped' => $stopped];
     $plan['acting'] = $write || $rec['redo_apply'] !== [] || $rec['redo_replay'] !== [] || $rec['foreign'] !== [] || $failback !== [];

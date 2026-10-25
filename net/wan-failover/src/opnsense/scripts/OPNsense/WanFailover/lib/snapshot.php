@@ -67,7 +67,7 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
  *               legacy_held: list<string>, force_down: array<string, bool>,
- *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
+ *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>, removal: list<string>}}
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
  *     legacy_held: the gateways 1.3_1's held list names while it is still in the config
  */
@@ -160,8 +160,8 @@ function wf_snapshot(): array
     }
     $read = fn (string $f): ?string => is_readable($f) ? (string)file_get_contents($f) : null;
     $a = '/usr/local/opnsense/service/conf/actions.d/';
-    $command = wf_contract_commands($read($a . 'actions_interface.conf'), $read($a . 'actions_filter.conf'),
-        $read('/usr/local/etc/rc'));
+    $interfaceActions = $read($a . 'actions_interface.conf');
+    $command = wf_contract_commands($interfaceActions, $read($a . 'actions_filter.conf'), $read('/usr/local/etc/rc'));
     $bootId = wf_boot_id();
     if ($bootId === '') {
         $command[] = 'kern.boot_id unreadable (a reboot the early hook missed would go unnoticed)';
@@ -178,7 +178,8 @@ function wf_snapshot(): array
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
         'legacy_held' => $legacy, 'force_down' => $forceDown,
-        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale],
+        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale,
+                       'removal' => wf_contract_removal($interfaceActions)],
     ];
 }
 
