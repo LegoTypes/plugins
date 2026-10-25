@@ -8,7 +8,7 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Runtime state (spec 2026-10-05 section 3.8): what does not belong in config. Ownership itself -- the
- * held list -- is in the plugin model, saved with force_down; this file only resumes an apply a crash
+ * hold records -- is in the plugin's Holds model, saved with force_down; this file only resumes an apply a crash
  * interrupted and notices held changes the engine did not make. The file is root's alone and read as a regular file
  * only, and a field of the wrong type discards it: wrong-typed state would throw a TypeError every minute, which
  * stops failover. The file helpers below touch the paths they are given; the rest is pure.
@@ -353,6 +353,29 @@ function wf_reconcile(array $held, array $forceDown, array $applyPending, array 
         $out['log'][] = "held changed outside the engine for {$name} (a config revert or restore); re-syncing routing";
     }
     return $out;
+}
+
+/**
+ * The hold records an upgrade makes of 1.3_1's held list, a comma list of gateway UUIDs in the settings model: one
+ * per UUID that names a gateway, each UUID once, stamped with this boot and the upgrade's time. A hold in place at
+ * the upgrade was taken in this boot (the early hook releases every hold at boot), so the plugin goes on owning it.
+ * With the boot id unreadable none is made: a record has to say which boot took it.
+ *
+ * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @return list<array{gateway: string, boot: string, since: int}>
+ */
+function wf_import_legacy_held(string $csv, array $nameByUuid, string $bootId, int $now): array
+{
+    if ($bootId === '') {
+        return [];
+    }
+    $records = [];
+    foreach (array_unique(explode(',', $csv)) as $uuid) {
+        if (isset($nameByUuid[$uuid])) {
+            $records[] = ['gateway' => $uuid, 'boot' => $bootId, 'since' => $now];
+        }
+    }
+    return $records;
 }
 
 /**

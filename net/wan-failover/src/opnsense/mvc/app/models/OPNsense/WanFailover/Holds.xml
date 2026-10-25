@@ -1,0 +1,36 @@
+<!--
+ Copyright (C) 2026 cayossarian
+ All rights reserved.
+ BSD 2-Clause License
+-->
+<model>
+    <mount>//OPNsense/WanFailoverHolds</mount>
+    <version>1.0.0</version>
+    <description>Gateways wan-failover holds down (engine state; no API)</description>
+    <!-- a sibling of the settings mount, never a child: a settings save rewrites its whole node from the settings
+         model's own fields. Its migrations are HLD*: an M* migration here would run for the settings model too -->
+    <migration_prefix>HLD</migration_prefix>
+    <items>
+        <hold type="ArrayField">
+            <gateway type="ModelRelationField">
+                <Model>
+                    <gateways>
+                        <source>OPNsense.Routing.Gateways</source>
+                        <items>gateway_item</items>
+                        <display>name</display>
+                    </gateways>
+                </Model>
+                <Required>Y</Required>
+            </gateway>
+            <!-- the kern.boot_id of the boot that took the hold -->
+            <boot type="TextField">
+                <Mask>/^[0-9a-f]{1,64}$/D</Mask>
+                <Required>Y</Required>
+            </boot>
+            <!-- when the hold was written, unix time -->
+            <since type="IntegerField">
+                <Required>Y</Required>
+            </since>
+        </hold>
+    </items>
+</model>

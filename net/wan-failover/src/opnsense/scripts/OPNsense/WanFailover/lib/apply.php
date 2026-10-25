@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Apply a plan in the order of spec 2026-10-05 section 3.7, through injected I/O so order and failure
  * handling are testable. wf_live_io() binds the real I/O: configd for every reconfigure, kill and restart
  * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the one config writer, which
- * saves force_down and the held list together without a config backup (user decision, R3-11).
+ * saves force_down and the hold records together without a config backup (user decision, R3-11).
  * wf_live_io()'s closures call snapshot.php functions; evaluate.php loads snapshot.php first. They are not
  * required here so the pure tests can load this file without OPNsense's includes.
  */
@@ -187,11 +187,12 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
 }
 
 /**
- * The one config writer: force_down on the changed gateways and the plugin's held list, in one locked
- * save without a config backup. It never throws: a failure is logged and the change waits for the next
- * tick. A write that only releases skips model validation, so a gateway field that fails validation
- * (after a firmware update tightened a rule, say) can never pin a hold; the plugin itself only touches
- * force_down and its held list.
+ * The one config writer: force_down on the changed gateways and the plugin's hold records, in one locked
+ * save without a config backup. A gateway held after the write keeps its record; one held anew gets a record
+ * stamped with this boot and now; every other record goes. It never throws: a failure is logged and the change
+ * waits for the next tick. A write that only releases skips model validation, so a gateway field that fails
+ * validation (after a firmware update tightened a rule, say) can never pin a hold; the plugin itself only
+ * touches force_down and its hold records.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param list<string> $heldAfterUuids gateway UUIDs the plugin holds after this write
@@ -216,10 +217,23 @@ function wf_write_holds(array $changes, array $heldAfterUuids): bool
                 wf_log('config write: ' . (count($changes) - $found) . ' gateway(s) to change no longer exist', LOG_WARNING);
                 return false;
             }
-            $mdl = new \OPNsense\WanFailover\WanFailover();
-            $mdl->held = implode(',', $heldAfterUuids);
+            $holds = new \OPNsense\WanFailover\Holds();
+            $kept = [];
+            foreach ($holds->records() as $item => $row) {
+                if (in_array($row['gateway'], $heldAfterUuids, true) && !isset($kept[$row['gateway']])) {
+                    $kept[$row['gateway']] = true;
+                } else {
+                    $holds->hold->del($item);
+                }
+            }
+            foreach ($heldAfterUuids as $uuid) {
+                if (!isset($kept[$uuid])) {
+                    $holds->hold->Add()->setNodes(['gateway' => $uuid, 'boot' => wf_boot_id(), 'since' => (string)time()]);
+                    $kept[$uuid] = true;
+                }
+            }
             $gateways->serializeToConfig(false, $releaseOnly);
-            $mdl->serializeToConfig(false, $releaseOnly);
+            $holds->serializeToConfig(false, $releaseOnly);
             $cfg->save(null, false);
             return true;
         } finally {

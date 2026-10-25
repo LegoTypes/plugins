@@ -23,7 +23,7 @@ require_once __DIR__ . '/lib/apply.php';
 try {
     $bootId = wf_boot_id();
     $state = wf_state_load(WF_STATE, $bootId)['state'];
-    $heldUuids = wf_model_list((new \OPNsense\WanFailover\WanFailover())->held);
+    $heldUuids = array_column((new \OPNsense\WanFailover\Holds())->records(), 'gateway');
     $nameByUuid = [];
     foreach ((new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true) as $name => $g) {
         if (!empty($g['uuid'])) {

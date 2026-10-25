@@ -104,5 +104,23 @@ wf_register_suite('wiring', function (): int {
     if (!$ok) {
         printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
     }
+    /* the tree's own Holds model, not the installed one: core reads a model's XML beside its class file. A settings
+     * save rewrites the whole settings node from the settings model's fields, so the hold records live beside that
+     * node, and the settings model declares no held list the API could post */
+    $models = dirname(__DIR__) . '/src/opnsense/mvc/app/models/OPNsense/WanFailover';
+    $r = wf_t_run(['/usr/local/bin/php', '-d', 'log_errors=0', '-r', 'require_once "script/load_phalcon.php"; require_once '
+        . var_export("{$models}/Holds.php", true)
+        . '; echo is_array((new \OPNsense\WanFailover\Holds())->records()) ? "loaded" : "no records";']);
+    $holds = @simplexml_load_file("{$models}/Holds.xml");
+    $mount = $holds === false ? '' : (string)$holds->mount;
+    $settings = @simplexml_load_file("{$models}/WanFailover.xml");
+    $ok = trim($r['out']) === 'loaded' && $mount !== '' && !str_starts_with("{$mount}/", '//OPNsense/WanFailover/')
+        && $settings !== false && !isset($settings->items->held);
+    wf_check($t, "(w5) the tree's Holds model loads, its mount is not under //OPNsense/WanFailover, and the settings model has no held", $ok);
+    if (!$ok) {
+        printf("    load: exit %d, output: %s\n    mount: %s\n    settings model: %s\n", $r['rc'],
+            trim($r['out']) === '' ? '(none)' : trim($r['out']), $mount === '' ? '(not read)' : $mount,
+            $settings === false ? '(not read)' : (isset($settings->items->held) ? 'declares held' : 'no held'));
+    }
     return wf_tally_report('wiring', $t);
 });

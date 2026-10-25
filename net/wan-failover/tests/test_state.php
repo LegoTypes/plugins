@@ -309,5 +309,13 @@ wf_register_suite('state', function (): int {
     $bad = array_keys(array_filter($spec, fn (array|string $f, string $k): bool => !wf_shape_ok($new[$k], $f), ARRAY_FILTER_USE_BOTH));
     wf_check($t, "(s12) every default of wf_state_new() fits the shape check" . ($bad === [] ? '' : ': not ' . implode(', ', $bad)),
         $bad === [] && wf_shape_ok(wf_judgement_new(0), $spec['judgements']['*']));
+
+    $r = wf_import_legacy_held('u1,u2,u1', ['u1' => 'WAN_A'], 'b500', 1000);
+    wf_check($t, '(m1) the legacy held list gives one record per UUID that names a gateway, each once, stamped with this boot and now',
+        $r === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]);
+    wf_check($t, '(m2) with the boot id unreadable no hold record is made',
+        wf_import_legacy_held('u1', ['u1' => 'WAN_A'], '', 1000) === []);
+    wf_check($t, '(m3) an empty legacy held list gives no hold record',
+        wf_import_legacy_held('', ['u1' => 'WAN_A'], 'b500', 1000) === []);
     return wf_tally_report('state', $t);
 });

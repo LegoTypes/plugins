@@ -7,8 +7,8 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Live collectors. Read-only: the plugin model, gateway config and status, dpinger socket ages, link
- * state, routes, pf, and the core files the contract checks. Only short-lived readers are exec'd.
+ * Live collectors. Read-only: the plugin's settings and hold records, gateway config and status, dpinger socket
+ * ages, link state, routes, pf, and the core files the contract checks. Only short-lived readers are exec'd.
  */
 
 require_once 'config.inc';
@@ -82,7 +82,7 @@ function wf_snapshot(): array
         }
     }
     $wansRes['names'] = $usable;
-    $heldRes = wf_resolve_uuids(wf_model_list($mdl->held), $nameByUuid);
+    $heldRes = wf_resolve_uuids(array_column((new \OPNsense\WanFailover\Holds())->records(), 'gateway'), $nameByUuid);
     $status = dpinger_status();
     $instances = dpinger_instances(true);
     $defaultOut = (string)shell_exec('/sbin/route -n get -inet default 2>/dev/null');

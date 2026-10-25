@@ -40,17 +40,5 @@
             <Default>1</Default>
             <Required>Y</Required>
         </tailscale_restart>
-        <!-- gateways this plugin holds down (force_down); written only by the engine, in the same
-             config save as the force_down it explains -->
-        <held type="ModelRelationField">
-            <Model>
-                <gateways>
-                    <source>OPNsense.Routing.Gateways</source>
-                    <items>gateway_item</items>
-                    <display>name</display>
-                </gateways>
-            </Model>
-            <Multiple>Y</Multiple>
-        </held>
     </items>
 </model>
