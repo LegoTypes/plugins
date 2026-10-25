@@ -126,7 +126,7 @@ wf_register_suite('wiring', function (): int {
     /* the package scripts as the package ships them (vm_selftest.sh uploads them beside src/): pkg's payload check
      * refuses anything but printable ASCII with a final newline */
     $scripts = [];
-    foreach (['+PRE_DEINSTALL.pre', '+POST_DEINSTALL.post', '+POST_INSTALL.pre'] as $name) {
+    foreach (['+PRE_DEINSTALL.pre', '+POST_DEINSTALL.post', '+POST_INSTALL.pre', '+POST_INSTALL.post'] as $name) {
         $text = @file_get_contents(dirname(__DIR__) . "/{$name}");
         $scripts[$name] = $text === false ? '' : $text;
         $ok = $text !== false && preg_match('/\A[\x20-\x7e\n]*\n\z/', $text) === 1;
@@ -158,6 +158,9 @@ wf_register_suite('wiring', function (): int {
     if ($restart === false) {
         printf("    wanted the line: %s", ltrim($cron, "\n"));
     }
+    wf_check($t, '(d13) +POST_INSTALL.post ends with the same cron restart: core\'s install step leaves a reinstall that comes '
+        . 'back enabled without its minute job otherwise',
+        str_ends_with($scripts['+POST_INSTALL.post'], $cron));
     /* the box's own core, as the removal finds it */
     $actions = @file_get_contents('/usr/local/opnsense/service/conf/actions.d/actions_cron.conf');
     $section = $actions === false ? null : wf_ini_section($actions, 'restart');

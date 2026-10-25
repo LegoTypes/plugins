@@ -1,0 +1,6 @@
+
+# Core's install step does not regenerate cron, so a reinstall after a removal, which comes back enabled from the kept
+# settings, would have no minute job: cron is restarted after the configure steps, through configd when it answers OK
+# within 30 s (configctl exits 0 on an error reply too), else core's own command for it. On any other install or
+# upgrade it regenerates the jobs cron already has, so it is harmless there.
+/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart | grep -qx OK || /usr/local/sbin/pluginctl -s cron restart || true

@@ -19,6 +19,10 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.4_2
+
+* Reinstalling the package after a removal brings its minute job back
+
 1.4_1
 
 * Removing the package also removes its minute job
