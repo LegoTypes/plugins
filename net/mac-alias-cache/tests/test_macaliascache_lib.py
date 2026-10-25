@@ -1,4 +1,3 @@
-import ipaddress
 import os
 
 import pytest
@@ -234,11 +233,7 @@ def test_valid_ip_refuses_non_strings_zones_and_names(value):
     assert not lib.valid_ip(value)
 
 
-def test_valid_ip_guards_what_ip_address_accepts():
-    # (r9) the reason valid_ip checks the type and the % itself
-    assert str(ipaddress.ip_address(1)) == "0.0.0.1"
-    assert str(ipaddress.ip_address(True)) == "0.0.0.1"
-    assert str(ipaddress.ip_address("fe80::1%vlan0.10")) == "fe80::1%vlan0.10"
+def test_valid_ip_accepts_both_families_and_unzoned_link_local():
     for value in ("192.0.2.5", "2001:db8::50", "fe80::5", "::ffff:192.0.2.5"):
         assert lib.valid_ip(value), value
 
@@ -301,7 +296,7 @@ def test_core_contract_is_the_table_of_cores_files():
          ("/tmp/alias_filter_arp.cache", "items", "last_seen"), None),
         ("update_lock", CORE_ROOT + "service/conf/actions.d/actions_filter.conf",
          ("/tmp/filter_update_tables.lock",), None),
-        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py", (".md5.txt",), None),
+        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py", ("/var/db/aliastables/%s.md5.txt",), None),
         ("targeted_mode", CORE_ROOT + "scripts/filter/update_tables.py", ("--aliases",), None),
         ("emptied_table", CORE_ROOT + "scripts/filter/update_tables.py", ("else cnt_alias_content",), EMPTIED_NOTE),
         ("list_hosts", CORE_ROOT + "scripts/interfaces/list_hosts.py", None, None),
@@ -320,7 +315,7 @@ def test_core_contract_matches_fixture_copies():
     ("arpcache", "items"),
     ("arpcache", "last_seen"),
     ("update_lock", "/tmp/filter_update_tables.lock"),
-    ("md5_marker", ".md5.txt"),
+    ("md5_marker", "/var/db/aliastables/%s.md5.txt"),
     ("targeted_mode", "--aliases"),
     ("list_hosts", None),
 ])
@@ -342,6 +337,16 @@ def test_core_contract_names_every_missing_text():
     texts["arpcache"] = "_cache_filename = None"
     assert lib.core_contract(texts)[0]["problem"].endswith(
         "no longer contains '/tmp/alias_filter_arp.cache', 'items', 'last_seen'; the flush imitates it, so it refuses")
+
+
+def test_core_contract_blocks_when_the_md5_marker_moves_directory():
+    # the flush forces expiry through <aliastables dir>/<name>.md5.txt, so the suffix alone is not enough
+    texts = fixture_texts()
+    texts["md5_marker"] = texts["md5_marker"].replace("/var/db/aliastables/", "/var/db/aliases/")
+    assert ".md5.txt" in texts["md5_marker"]
+    found = lib.core_contract(texts)
+    assert [(p["item"], p["blocks_flush"]) for p in found] == [("md5_marker", True)]
+    assert "'/var/db/aliastables/%s.md5.txt'" in found[0]["problem"]
 
 
 @pytest.mark.parametrize("item", ["arpcache", "update_lock", "md5_marker", "targeted_mode", "list_hosts"])

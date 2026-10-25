@@ -46,10 +46,10 @@ _CORE_FILES = {item: path for item, path, _expected, _note in lib.CORE_CONTRACT}
 
 DEFAULTS = {
     "tables_conf": "/usr/local/etc/filter_tables.conf",
-    "cache_file": "/tmp/alias_filter_arp.cache",
-    "lock_file": "/tmp/filter_update_tables.lock",
+    "cache_file": lib.CACHE_FILE,
+    "lock_file": lib.UPDATE_LOCK,
     "state_dir": "/var/run/macaliascache",
-    "aliastables_dir": "/var/db/aliastables",
+    "aliastables_dir": lib.ALIASTABLES_DIR,
     "list_hosts": [_CORE_FILES["list_hosts"], "-n"],
     "update_tables": _CORE_FILES["targeted_mode"],
     "core_files": _CORE_FILES,

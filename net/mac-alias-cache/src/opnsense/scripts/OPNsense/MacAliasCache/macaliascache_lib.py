@@ -41,15 +41,20 @@ _ALIAS_NAME = re.compile(r"([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9]
 _SAMPLES = 5
 _SAMPLE_LENGTH = 60
 
+# the paths of core's that the flush writes, locks and marks, as core 26.7.7 names them; the
+# plugin's defaults and the contract below both take them from here
+CACHE_FILE = "/tmp/alias_filter_arp.cache"
+UPDATE_LOCK = "/tmp/filter_update_tables.lock"
+ALIASTABLES_DIR = "/var/db/aliastables"
+
 _CORE = "/usr/local/opnsense/"
 # What the flush imitates in core: the item, core's file, the texts that file must still hold
 # (None: it only has to be an executable file) and, for an item whose absence does not block a
 # flush, the note shown instead
 CORE_CONTRACT = (
-    ("arpcache", _CORE + "scripts/filter/lib/alias/arpcache.py",
-     ("/tmp/alias_filter_arp.cache", "items", "last_seen"), None),
-    ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", ("/tmp/filter_update_tables.lock",), None),
-    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (".md5.txt",), None),
+    ("arpcache", _CORE + "scripts/filter/lib/alias/arpcache.py", (CACHE_FILE, "items", "last_seen"), None),
+    ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", (UPDATE_LOCK,), None),
+    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (ALIASTABLES_DIR + "/%s.md5.txt",), None),
     ("targeted_mode", _CORE + "scripts/filter/update_tables.py", ("--aliases",), None),
     ("emptied_table", _CORE + "scripts/filter/update_tables.py", ("else cnt_alias_content",),
      "core may now flush emptied tables itself (core #10950); the plugin's own flush is redundant but harmless"),
@@ -124,9 +129,9 @@ def valid_mac(s):
 
 
 def valid_ip(s):
-    """ a plain IPv4 or IPv6 address. ipaddress also takes an int, a bool and a scoped address
-    such as fe80::1%vlan0.10, which core never writes; an unzoned link-local address is kept
-    """
+    """ a plain IPv4 or IPv6 address; an unzoned link-local address is kept """
+    # ipaddress.ip_address takes more than core writes: an int or a bool (1 and True are
+    # 0.0.0.1) and, since Python 3.9, a scoped address such as fe80::1%vlan0.10
     if type(s) is not str or "%" in s:
         return False
     try:

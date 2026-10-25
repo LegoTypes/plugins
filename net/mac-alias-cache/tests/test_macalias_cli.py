@@ -1306,10 +1306,14 @@ def test_core_files_are_the_files_the_flush_imitates_and_runs():
     # the contract checks the very programs the flush runs
     assert macalias.DEFAULTS["list_hosts"] == [core["list_hosts"], "-n"]
     assert macalias.DEFAULTS["update_tables"] == core["targeted_mode"]
-    # and core's texts it expects are the paths the plugin writes and locks
+    # and core's texts it expects are the paths the plugin writes, locks and marks
+    assert macalias.DEFAULTS["cache_file"] == "/tmp/alias_filter_arp.cache"
+    assert macalias.DEFAULTS["lock_file"] == "/tmp/filter_update_tables.lock"
+    assert macalias.DEFAULTS["aliastables_dir"] == "/var/db/aliastables"
     expected = {item: texts for item, _path, texts, _note in lib.CORE_CONTRACT}
     assert macalias.DEFAULTS["cache_file"] in expected["arpcache"]
     assert macalias.DEFAULTS["lock_file"] in expected["update_lock"]
+    assert os.path.join(macalias.DEFAULTS["aliastables_dir"], "%s.md5.txt") in expected["md5_marker"]
 
 
 def test_stock_core_files_give_no_problem(env):
@@ -1332,13 +1336,15 @@ def test_read_core_texts_replaces_undecodable_bytes(env):
     assert macalias.cmd_status(cfg, now=0.0)["problems"] == []
 
 
-@pytest.mark.parametrize("change", ["drift", "missing", "symlink", "not-executable", "directory"])
+@pytest.mark.parametrize("change", ["drift", "md5-directory-moved", "missing", "symlink", "not-executable", "directory"])
 def test_flush_refuses_on_blocking_contract_problem(env, change):
     cfg, tmp = env
-    item = "list_hosts" if change == "not-executable" else "arpcache"
+    item = {"not-executable": "list_hosts", "md5-directory-moved": "md5_marker"}.get(change, "arpcache")
     path = _core(cfg, item)
     if change == "drift":
         path.write_text(path.read_text().replace("/tmp/alias_filter_arp.cache", "/var/cache/alias_filter_arp.cache"))
+    elif change == "md5-directory-moved":
+        path.write_text(path.read_text().replace("/var/db/aliastables/", "/var/db/aliases/"))
     elif change == "missing":
         path.unlink()
     elif change == "symlink":
