@@ -6,8 +6,10 @@
 
 <script>
     $(document).ready(function () {
+        /* the exact inverse of core's htmlspecialchars(..., ENT_NOQUOTES): &lt; &gt; and &amp; back, nothing else
+           decoded */
         function plain(s) {
-            return $('<textarea/>').html(s === undefined || s === null ? '' : String(s)).val();
+            return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
         }
         function failbackText(f) {
             if (!f) { return ''; }
@@ -35,13 +37,15 @@
                 var notes = [];
                 if (data.dry) { notes.push("{{ lang._('Dry run: holds are simulated and logged; nothing is held, killed or restarted.') }}"); }
                 if (data.enabled && (data.wans || []).length < 2) { notes.push("{{ lang._('Fewer than two WAN gateways selected: nothing can be held.') }}"); }
+                if (data.foreign > 0) { notes.push("{{ lang._('A hold record that does not belong to this plugin was ignored; its gateway keeps force_down until it is cleared by hand.') }}"); }
                 if (data.state_corrupt) { notes.push("{{ lang._('The runtime state was unreadable and started fresh.') }}"); }
                 $.each(data.unresolved || [], function (i, u) { notes.push("{{ lang._('A selected gateway no longer exists:') }} " + plain(u)); });
                 $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds; all holds released if it lasts 3 minutes):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
                 $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });
-                $('#wanfailover-notes').text(notes.join(' '));
-                $('#wanfailover-notes').toggle(notes.length > 0);
+                var box = $('#wanfailover-notes').empty();
+                $.each(notes, function (i, n) { box.append($('<div/>').text(n)); });
+                box.toggle(notes.length > 0);
             });
         }
 
