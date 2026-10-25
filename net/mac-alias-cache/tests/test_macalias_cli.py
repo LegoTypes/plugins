@@ -1,7 +1,13 @@
+import contextlib
+import errno
 import fcntl
 import json
 import os
+import pathlib
+import signal
 import stat
+import subprocess
+import sys
 import textwrap
 
 import pytest
@@ -60,7 +66,7 @@ def env(tmp_path):
         tables_conf=str(tmp_path / "filter_tables.conf"),
         cache_file=str(tmp_path / "arp.cache"),
         lock_file=str(tmp_path / "update.lock"),
-        last_file=str(tmp_path / "last.json"),
+        state_dir=str(tmp_path / "state"),
         aliastables_dir=str(aliastables),
         list_hosts=[hosts, "-n"],
         update_tables=update,
@@ -71,9 +77,20 @@ def env(tmp_path):
     return cfg, tmp_path
 
 
+def _last(cfg):
+    return pathlib.Path(macalias.state_paths(cfg)["last_file"])
+
+
+def _write_last(cfg, obj):
+    """ last.json as a flush leaves it: in a 0700 state dir, mode 0600 """
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    _last(cfg).write_text(json.dumps(obj))
+    _last(cfg).chmod(0o600)
+
+
 def test_status_reports_source_rows_and_last_flush(env):
     cfg, tmp = env
-    (tmp / "last.json").write_text(json.dumps({"at": 1050.0, "summary": []}))
+    _write_last(cfg, {"at": 1050.0, "summary": []})
     out = macalias.cmd_status(cfg, now=1060.0)
     assert out["source"] == "discovery"
     row = out["aliases"][0]
@@ -119,7 +136,7 @@ def test_flush_seeds_cache_from_hosts_forces_expiry_runs_targeted_update(env):
     assert by_name["DevMacs"]["removed"] == ["192.0.2.99"]
     assert by_name["Parent"]["removed"] == ["192.0.2.99"]
     assert out["update_tables"]["rc"] == 0
-    assert json.loads((tmp / "last.json").read_text())["at"] == 5000.0
+    assert json.loads(_last(cfg).read_text())["at"] == 5000.0
 
 
 def test_flush_seeds_every_ip_per_mac_and_skips_short_rows(env):
@@ -233,17 +250,17 @@ def test_flush_refuses_when_hosts_unavailable(env, body):
     assert out == {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
     assert _snapshot(tmp) == before
     assert not (tmp / "update_args").exists()
-    assert not (tmp / "last.json").exists()   # rate limit not armed
+    assert not _last(cfg).exists()   # rate limit not armed
     assert sorted(p.name for p in tmp.iterdir() if p.name.startswith((".", "tmp"))) == []
 
 
 def test_flush_rate_limit_ignores_future_timestamp(env):
     # a backwards clock step must not lock flush out indefinitely
     cfg, tmp = env
-    (tmp / "last.json").write_text(json.dumps({"at": 5100.0, "summary": []}))
+    _write_last(cfg, {"at": 5100.0, "summary": []})
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert "error" not in out
-    assert json.loads((tmp / "last.json").read_text())["at"] == 5000.0
+    assert json.loads(_last(cfg).read_text())["at"] == 5000.0
 
 
 def test_write_json_atomic_replaces_and_leaves_no_temp(tmp_path):
@@ -325,7 +342,7 @@ def test_flush_sweeps_stale_temp_files_for_cache_file(env):
 
 def test_flush_too_soon_changes_nothing(env):
     cfg, tmp = env
-    (tmp / "last.json").write_text(json.dumps({"at": 4995.0, "summary": []}))
+    _write_last(cfg, {"at": 4995.0, "summary": []})
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert out["error"] == "too_soon"
     assert (tmp / "arp.cache").exists()
@@ -347,7 +364,7 @@ def test_flush_rate_limit_checked_after_lock(env):
 
     def sleep(_):
         calls["n"] += 1
-        (tmp / "last.json").write_text(json.dumps({"at": 5000.0, "summary": []}))
+        _write_last(cfg, {"at": 5000.0, "summary": []})
         fcntl.flock(holder, fcntl.LOCK_UN)
 
     with open(cfg["lock_file"], "a") as holder:
@@ -396,7 +413,7 @@ def test_flush_releases_lock_after_success(env):
 
 def test_flush_releases_lock_after_too_soon(env):
     cfg, tmp = env
-    (tmp / "last.json").write_text(json.dumps({"at": 4995.0, "summary": []}))
+    _write_last(cfg, {"at": 4995.0, "summary": []})
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
     assert out["error"] == "too_soon"
     with open(cfg["lock_file"], "a") as fh:
@@ -430,3 +447,423 @@ def test_flush_rate_limit_race_through_lock_handoff(env, monkeypatch):
 def test_main_always_prints_json_and_exits_zero(capsys):
     assert macalias.main(["bogus"]) == 0
     assert json.loads(capsys.readouterr().out)["error"] == "usage"
+
+
+def _flush(cfg):
+    return macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+
+
+def _with_uid(st, uid):
+    fields = list(st)
+    fields[4] = uid
+    return os.stat_result(fields)
+
+
+class _Hung(Exception):
+    """ raised by the alarm guard; not an OSError, so no except clause under test swallows it """
+
+
+def _hung(signum, frame):
+    raise _Hung()
+
+
+@contextlib.contextmanager
+def _within(seconds):
+    previous = signal.signal(signal.SIGALRM, _hung)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+CACHE_FORGED = ("core's MAC alias cache at %s is not a regular file owned by root; "
+                "core may be loading forged content")
+CACHE_DIRECTORY = "core's MAC alias cache at %s is a directory"
+LOCK_NOT_REGULAR = "core's alias update lock at %s is not a regular file"
+
+
+def _items(out, item):
+    return [p for p in out["problems"] if p["item"] == item]
+
+
+def test_flush_creates_state_dir_0700_and_writes_last_json_0600(env):
+    cfg, tmp = env
+    assert "last_file" not in macalias.DEFAULTS
+    assert macalias.DEFAULTS["state_dir"] == "/var/run/macaliascache"
+    assert macalias.state_paths(macalias.DEFAULTS) == {
+        "last_file": "/var/run/macaliascache/last.json",
+        "plugin_lock": "/var/run/macaliascache/flush.lock",
+    }
+    assert not os.path.exists(cfg["state_dir"])
+    out = _flush(cfg)
+    assert "error" not in out
+    assert stat.S_IMODE(os.lstat(cfg["state_dir"]).st_mode) == 0o700
+    assert _last(cfg).parent == pathlib.Path(cfg["state_dir"])
+    assert stat.S_IMODE(os.lstat(_last(cfg)).st_mode) == 0o600
+    assert json.loads(_last(cfg).read_text())["at"] == 5000.0
+    assert not (tmp / "last.json").exists()
+
+
+def test_flush_refuses_when_state_dir_is_a_symlink(env):
+    cfg, tmp = env
+    elsewhere = tmp / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    os.symlink(elsewhere, cfg["state_dir"])
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "state_unusable"
+    assert [p["item"] for p in out["problems"]] == ["state_dir"]
+    assert out["problems"][0]["blocks_flush"] is True
+    assert cfg["state_dir"] in out["detail"]
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_flush_refuses_when_state_dir_is_a_regular_file(env):
+    cfg, tmp = env
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "state_unusable"
+    assert [p["item"] for p in out["problems"]] == ["state_dir"]
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert pathlib.Path(cfg["state_dir"]).read_text() == "x"
+
+
+def test_flush_refuses_when_state_dir_is_not_ours(env, monkeypatch):
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    real_lstat = os.lstat
+
+    def foreign(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
+        return _with_uid(st, st.st_uid + 1) if os.fspath(path) == cfg["state_dir"] else st
+
+    monkeypatch.setattr(macalias.os, "lstat", foreign)
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "state_unusable"
+    assert [p["item"] for p in out["problems"]] == ["state_dir"]
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert os.listdir(cfg["state_dir"]) == []
+
+
+def test_flush_repairs_state_dir_mode(env):
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"])
+    os.chmod(cfg["state_dir"], 0o755)
+    out = _flush(cfg)
+    assert "error" not in out
+    assert stat.S_IMODE(os.lstat(cfg["state_dir"]).st_mode) == 0o700
+    assert (tmp / "update_args").exists()
+
+
+def test_read_json_ignores_symlink(env):
+    cfg, tmp = env
+    real = tmp / "elsewhere.json"
+    real.write_text(json.dumps({"at": 4995.0, "summary": []}))
+    real.chmod(0o600)
+    os.mkdir(cfg["state_dir"], 0o700)
+    os.symlink(real, _last(cfg))
+    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
+    out = _flush(cfg)
+    assert "error" not in out   # the rate limit did not fire
+    assert json.loads(real.read_text())["at"] == 4995.0   # the link's target is not written through
+
+
+def test_read_json_returns_at_once_on_fifo(env):
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    os.mkfifo(_last(cfg), 0o600)
+    with _within(5):
+        status = macalias.cmd_status(cfg, now=5000.0)
+        out = _flush(cfg)
+    assert status["last_flush"] is None
+    assert "error" not in out
+    assert stat.S_ISREG(os.lstat(_last(cfg)).st_mode)
+
+
+def test_read_json_ignores_foreign_owner(env, monkeypatch):
+    cfg, tmp = env
+    _write_last(cfg, {"at": 4995.0, "summary": []})
+    real_fstat = os.fstat
+    monkeypatch.setattr(macalias.os, "fstat", lambda fd: _with_uid(real_fstat(fd), os.geteuid() + 1))
+    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
+    out = _flush(cfg)
+    assert "error" not in out   # the rate limit did not fire
+
+
+@pytest.mark.parametrize("content", [
+    {"at": "4995", "summary": []},
+    {"at": 4995.0, "summary": {}},
+    {"at": 4995.0, "summary": [{"name": "DevMacs", "before": 1, "after": 1, "added": [], "removed": "x"}]},
+    [4995.0],
+], ids=["at-string", "summary-dict", "removed-string", "top-level-list"])
+def test_read_json_rejects_bad_schema(env, content):
+    cfg, tmp = env
+    _write_last(cfg, content)
+    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
+    out = _flush(cfg)
+    assert "error" not in out   # the rate limit did not fire
+
+
+@pytest.mark.parametrize("at", ["NaN", "Infinity", "-Infinity"])
+def test_last_json_with_non_finite_at_neither_arms_nor_blocks_the_rate_limit(env, at):
+    # (s7) Python's json reads these literals as floats
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    _last(cfg).write_text('{"at": %s, "summary": []}' % at)
+    _last(cfg).chmod(0o600)
+    assert macalias.cmd_status(cfg, now=5000.0)["last_flush"] is None
+    out = _flush(cfg)
+    assert "error" not in out
+    assert json.loads(_last(cfg).read_text())["at"] == 5000.0
+
+
+def test_status_cache_schema_drops_malformed_entries(env):
+    cfg, tmp = env
+    (tmp / "arp.cache").write_text(json.dumps({"aa:bb:cc:00:00:01": {"items": "192.0.2.5"}}))
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["aliases"][0]["macs"][0]["cache_items"] == []
+
+
+def test_status_reports_cache_file_problem_for_fifo_and_symlink(env):
+    cfg, tmp = env
+    cache = tmp / "arp.cache"
+    real = tmp / "real.cache"
+    cache.rename(real)
+    os.symlink(real, cache)
+    forged = [{"item": "cache_file", "problem": CACHE_FORGED % cache, "blocks_flush": False}]
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert _items(out, "cache_file") == forged
+    assert out["aliases"][0]["macs"][0]["cache_items"] == []   # not followed
+
+    cache.unlink()
+    os.mkfifo(cache)
+    with _within(5):
+        out = macalias.cmd_status(cfg, now=0.0)
+        flushed = _flush(cfg)
+    assert _items(out, "cache_file") == forged
+    assert "error" not in flushed   # a flush is the remedy, so it stays allowed
+    assert stat.S_ISREG(os.lstat(cache).st_mode)
+
+    cache.unlink()
+    cache.mkdir()
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert _items(out, "cache_file") == [
+        {"item": "cache_file", "problem": CACHE_DIRECTORY % cache, "blocks_flush": True}]
+    os.utime(tmp / "aliastables" / "DevMacs.md5.txt", (1.0, 1.0))
+    (tmp / "update_args").unlink()
+    refused = macalias.cmd_flush(cfg, clock=lambda: 6000.0, sleep=lambda s: None)
+    assert refused["error"] == "state_unusable"
+    assert refused["detail"] == CACHE_DIRECTORY % cache
+    assert os.stat(tmp / "aliastables" / "DevMacs.md5.txt").st_mtime == 1.0
+    assert not (tmp / "update_args").exists()
+
+
+def test_status_reports_cache_file_problem_for_foreign_owner(env, monkeypatch):
+    cfg, tmp = env
+    real_lstat = os.lstat
+
+    def foreign(path, *args, **kwargs):
+        st = real_lstat(path, *args, **kwargs)
+        return _with_uid(st, st.st_uid + 1) if os.fspath(path) == cfg["cache_file"] else st
+
+    monkeypatch.setattr(macalias.os, "lstat", foreign)
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert _items(out, "cache_file") == [
+        {"item": "cache_file", "problem": CACHE_FORGED % cfg["cache_file"], "blocks_flush": False}]
+
+
+def test_cache_file_problem_text_names_cores_path_by_default():
+    assert CACHE_FORGED % macalias.DEFAULTS["cache_file"] == (
+        "core's MAC alias cache at /tmp/alias_filter_arp.cache is not a regular file owned by root; "
+        "core may be loading forged content")
+
+
+def test_acquire_lock_refuses_symlink_lock_path(env):
+    cfg, tmp = env
+    target = tmp / "lock-target"
+    target.write_text("")
+    os.symlink(target, cfg["lock_file"])
+    before = _snapshot(tmp)
+    lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+    assert isinstance(lock, dict) and lock["error"] == "lock_unusable" and cfg["lock_file"] in lock["detail"]
+    out = _flush(cfg)
+    assert out["error"] == "lock_unusable"
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+    assert not _last(cfg).exists()
+    assert target.read_text() == ""
+
+
+def test_write_json_atomic_sets_mode_0600_under_state_dir(env):
+    cfg, tmp = env
+    out = _flush(cfg)
+    assert "error" not in out
+    modes = {p.name: stat.S_IMODE(os.lstat(p).st_mode) for p in pathlib.Path(cfg["state_dir"]).iterdir()}
+    assert "last.json" in modes and set(modes.values()) == {0o600}
+    # core's cache file keeps the 0644 core creates it with
+    assert stat.S_IMODE(os.lstat(tmp / "arp.cache").st_mode) == 0o644
+    target = pathlib.Path(cfg["state_dir"]) / "other.json"
+    macalias._write_json_atomic(str(target), {"a": 1}, mode=0o600)
+    assert stat.S_IMODE(os.lstat(target).st_mode) == 0o600
+    assert json.loads(target.read_text()) == {"a": 1}
+
+
+def test_status_lists_state_dir_problem_when_state_dir_is_a_regular_file(env):
+    # (s8) one JSON object with the problem, never an internal error
+    cfg, tmp = env
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert "error" not in out
+    assert [p["item"] for p in out["problems"]] == ["state_dir"]
+    assert out["problems"][0]["blocks_flush"] is True
+    assert cfg["state_dir"] in out["problems"][0]["problem"]
+    assert out["last_flush"] is None
+    assert out["aliases"][0]["name"] == "DevMacs"
+
+
+def test_status_creates_state_dir_0700(env):
+    # (s9) and writes nothing else there
+    cfg, tmp = env
+    assert not os.path.exists(cfg["state_dir"])
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["problems"] == []
+    st = os.lstat(cfg["state_dir"])
+    assert stat.S_ISDIR(st.st_mode) and stat.S_IMODE(st.st_mode) == 0o700
+    assert os.listdir(cfg["state_dir"]) == []
+
+
+@pytest.mark.parametrize("kind", ["absent", "regular", "fifo", "symlink"])
+def test_status_lock_file_problem(env, kind):
+    # (s10) core's flock(1) creates the lock on use, so absent is fine; only a regular file may be opened
+    cfg, tmp = env
+    path = cfg["lock_file"]
+    if kind == "regular":
+        pathlib.Path(path).write_text("")
+    elif kind == "fifo":
+        os.mkfifo(path)
+    elif kind == "symlink":
+        (tmp / "lock-target").write_text("")
+        os.symlink(tmp / "lock-target", path)
+    out = macalias.cmd_status(cfg, now=0.0)
+    if kind in ("absent", "regular"):
+        assert _items(out, "lock_file") == []
+        return
+    assert _items(out, "lock_file") == [{"item": "lock_file", "problem": LOCK_NOT_REGULAR % path, "blocks_flush": True}]
+    before = _snapshot(tmp)
+    with _within(5):
+        lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+        out = _flush(cfg)
+    assert isinstance(lock, dict) and lock["error"] == "lock_unusable"
+    assert out["error"] == "lock_unusable"
+    assert out["detail"] == LOCK_NOT_REGULAR % path
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+
+
+def test_emlink_from_open_reads_absent_and_refuses_cores_lock(env, monkeypatch):
+    # (s11) FreeBSD's open(2) answers O_NOFOLLOW on a symlink with EMLINK, not ELOOP, so
+    # any OSError from the open must read as absent, or refuse core's lock, never escape
+    cfg, tmp = env
+    _write_last(cfg, {"at": 4995.0, "summary": []})
+    pathlib.Path(cfg["lock_file"]).write_text("")
+    refused = {cfg["cache_file"], str(_last(cfg)), cfg["lock_file"]}
+    real_open = os.open
+
+    def emlink_open(path, flags, *args, **kwargs):
+        if os.fspath(path) in refused:
+            raise OSError(errno.EMLINK, os.strerror(errno.EMLINK), path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(macalias.os, "open", emlink_open)
+    status = macalias.cmd_status(cfg, now=5000.0)
+    assert "error" not in status
+    assert status["last_flush"] is None
+    assert status["aliases"][0]["macs"][0]["cache_items"] == []
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "lock_unusable"
+    assert _snapshot(tmp) == before
+    assert not (tmp / "update_args").exists()
+
+
+def test_status_without_cache_file_has_no_problem_and_flush_creates_it(env):
+    # (s12) core's cache is absent after a boot until something writes it
+    cfg, tmp = env
+    (tmp / "arp.cache").unlink()
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["problems"] == []
+    assert out["aliases"][0]["macs"][0]["cache_items"] == []
+    assert "error" not in _flush(cfg)
+    assert stat.S_ISREG(os.lstat(tmp / "arp.cache").st_mode)
+    assert json.loads((tmp / "arp.cache").read_text()) == {
+        "aa:bb:cc:00:00:01": {"items": ["192.0.2.50"], "last_seen": 5000.0}}
+
+
+@pytest.mark.parametrize("target", ["last", "cache"])
+def test_undecodable_bytes_read_as_absent(env, target):
+    # (s13)
+    cfg, tmp = env
+    if target == "last":
+        os.mkdir(cfg["state_dir"], 0o700)
+        _last(cfg).write_bytes(b'{"at": 4995.0, "summary": [{"name": "\xff"}]}')
+        _last(cfg).chmod(0o600)
+    else:
+        (tmp / "arp.cache").write_bytes(b'{"aa:bb:cc:00:00:01": {"items": ["\xff"], "last_seen": 1000.0}}')
+    out = macalias.cmd_status(cfg, now=5000.0)
+    if target == "last":
+        assert out["last_flush"] is None
+    else:
+        assert out["aliases"][0]["macs"][0]["cache_items"] == []
+    assert "error" not in _flush(cfg)   # the rate limit did not fire
+
+
+def test_reads_decode_utf8_whatever_the_locale(env):
+    # (s13) the files are UTF-8 JSON; run status under a Latin-1 locale, where a default open() would misread them
+    cfg, tmp = env
+    row = {"name": "Café", "before": 1, "after": 1, "added": [], "removed": []}
+    os.mkdir(cfg["state_dir"], 0o700)
+    _last(cfg).write_bytes(json.dumps({"at": 1050.0, "summary": [row]}, ensure_ascii=False).encode("utf-8"))
+    _last(cfg).chmod(0o600)
+    child_env = dict(os.environ, LC_ALL="en_US.ISO8859-1", LANG="en_US.ISO8859-1",
+                     PYTHONUTF8="0", PYTHONCOERCECLOCALE="0",
+                     PYTHONPATH=os.path.dirname(macalias.__file__))
+    code = ("import json, locale, sys, macalias; "
+            "print(json.dumps({'encoding': locale.getencoding(), "
+            "'status': macalias.cmd_status(json.loads(sys.argv[1]), 1060.0)}))")
+    proc = subprocess.run([sys.executable, "-c", code, json.dumps(cfg)],
+                          capture_output=True, text=True, env=child_env, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    reply = json.loads(proc.stdout)
+    if reply["encoding"].lower().replace("-", "") == "utf8":
+        pytest.skip("no Latin-1 locale on this host")
+    assert reply["status"]["last_flush"]["summary"] == [row]
+
+
+def test_refusal_takes_the_first_class_and_carries_every_problem(env):
+    note = {"item": "cache_file", "problem": "n", "blocks_flush": False}
+    lock = {"item": "lock_file", "problem": "a", "blocks_flush": True}
+    state = {"item": "state_dir", "problem": "b", "blocks_flush": True}
+    assert macalias.refusal([]) is None
+    assert macalias.refusal([note]) is None
+    assert macalias.refusal([lock, note]) == {"error": "lock_unusable", "detail": "a", "problems": [lock, note]}
+    assert macalias.refusal([lock, note, state]) == {
+        "error": "state_unusable", "detail": "a; b", "problems": [lock, note, state]}
+
+    cfg, tmp = env
+    (tmp / "lock-target").write_text("")
+    os.symlink(tmp / "lock-target", cfg["lock_file"])
+    (tmp / "arp.cache").unlink()
+    (tmp / "arp.cache").mkdir()
+    out = _flush(cfg)
+    assert out["error"] == "state_unusable"
+    assert [p["item"] for p in out["problems"]] == ["lock_file", "cache_file"]
+    assert out["detail"] == "%s; %s" % (LOCK_NOT_REGULAR % cfg["lock_file"], CACHE_DIRECTORY % cfg["cache_file"])
+    assert not (tmp / "update_args").exists()

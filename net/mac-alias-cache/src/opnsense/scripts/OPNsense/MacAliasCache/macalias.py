@@ -32,6 +32,7 @@ JSON rather than "Execute error".
 import fcntl
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,7 +45,7 @@ DEFAULTS = {
     "tables_conf": "/usr/local/etc/filter_tables.conf",
     "cache_file": "/tmp/alias_filter_arp.cache",
     "lock_file": "/tmp/filter_update_tables.lock",
-    "last_file": "/tmp/macaliascache.last.json",
+    "state_dir": "/var/run/macaliascache",
     "aliastables_dir": "/var/db/aliastables",
     "list_hosts": ["/usr/local/opnsense/scripts/interfaces/list_hosts.py", "-n"],
     "update_tables": "/usr/local/opnsense/scripts/filter/update_tables.py",
@@ -55,22 +56,154 @@ DEFAULTS = {
     "update_timeout": 60,
 }
 
+# the error code each blocking problem item refuses a flush with; when items of several
+# codes block at once, the earliest code in _REFUSAL_ORDER wins
+_REFUSAL_CODE = {
+    "state_dir": "state_unusable",
+    "cache_file": "state_unusable",
+    "lock_file": "lock_unusable",
+}
+_REFUSAL_ORDER = ("state_unusable", "lock_unusable", "core_changed")
 
-def _read_json(path):
+
+def state_paths(cfg):
+    """ the plugin's own files, all inside its root-only state directory """
+    return {
+        "last_file": os.path.join(cfg["state_dir"], "last.json"),
+        "plugin_lock": os.path.join(cfg["state_dir"], "flush.lock"),
+    }
+
+
+def _problem(item, text, blocks_flush):
+    return {"item": item, "problem": text, "blocks_flush": blocks_flush}
+
+
+def ensure_state_dir(cfg):
+    """ create the state directory 0700 when missing and narrow a wider mode back to 0700;
+    a blocking state_dir problem when it is not a directory owned by root, else None.
+    /var/run is root's alone, so this catches an operator's mistake more than an attacker
+    """
+    path = cfg["state_dir"]
     try:
-        with open(path) as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else None
-    except (OSError, ValueError):
+        os.makedirs(path, 0o700, exist_ok=True)
+    except FileExistsError:
+        pass  # something other than a directory holds the path; lstat names it below
+    except OSError as e:
+        return _problem("state_dir", "plugin state directory %s cannot be created (%s)" % (path, e.strerror), True)
+    try:
+        st = os.lstat(path)
+        if stat.S_ISLNK(st.st_mode):
+            return _problem("state_dir", "plugin state directory %s is a symbolic link" % path, True)
+        if not stat.S_ISDIR(st.st_mode):
+            return _problem("state_dir", "plugin state directory %s is not a directory" % path, True)
+        if st.st_uid != os.geteuid():
+            return _problem("state_dir", "plugin state directory %s is not owned by root" % path, True)
+        if st.st_mode & 0o077:
+            os.chmod(path, 0o700)
+    except OSError as e:
+        return _problem("state_dir", "plugin state directory %s cannot be checked (%s)" % (path, e.strerror), True)
+    return None
+
+
+def _lock_file_problem(cfg):
+    """ core's update-tables lock may be absent (core's flock(1) creates it on use) or a
+    regular file; anything else blocks, as the plugin will not open it
+    """
+    path = cfg["lock_file"]
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
         return None
+    except OSError as e:
+        return _problem("lock_file", "core's alias update lock at %s cannot be checked (%s)" % (path, e.strerror), True)
+    if stat.S_ISREG(st.st_mode):
+        return None
+    return _problem("lock_file", "core's alias update lock at %s is not a regular file" % path, True)
 
 
-def _write_json_atomic(path, obj):
-    """ write obj as JSON to a temp file beside path, then rename it over path """
+def _cache_file_problem(cfg):
+    """ core loads its MAC alias cache without checking it, so say when it is not a regular
+    file owned by root. A flush replaces it atomically and is the remedy, so only a directory,
+    which os.replace cannot replace, blocks one. Absent is normal after a boot.
+    """
+    path = cfg["cache_file"]
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        return _problem("cache_file", "core's MAC alias cache at %s cannot be checked (%s)" % (path, e.strerror), True)
+    if stat.S_ISDIR(st.st_mode):
+        return _problem("cache_file", "core's MAC alias cache at %s is a directory" % path, True)
+    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+        return _problem("cache_file", "core's MAC alias cache at %s is not a regular file owned by root; "
+                        "core may be loading forged content" % path, False)
+    return None
+
+
+def problems(cfg):
+    """ what makes the plugin's state or core's files unsafe to use, for status and for a
+    flush before it takes core's lock; ensure_state_dir puts the state directory in place
+    """
+    found = [ensure_state_dir(cfg), _lock_file_problem(cfg), _cache_file_problem(cfg)]
+    return [problem for problem in found if problem]
+
+
+def refusal(found):
+    """ the flush refusal for the blocking problems in found, or None when none blocks; the
+    blocking texts make its detail and it carries every problem
+    """
+    blocking = [problem for problem in found if problem["blocks_flush"]]
+    if not blocking:
+        return None
+    code = min((_REFUSAL_CODE[problem["item"]] for problem in blocking), key=_REFUSAL_ORDER.index)
+    return {"error": code, "detail": "; ".join(problem["problem"] for problem in blocking), "problems": found}
+
+
+def _open_regular(path):
+    """ path opened to read as UTF-8 text when it is a regular file owned by the running
+    user, else None. O_NOFOLLOW refuses a symlink and O_NONBLOCK keeps a FIFO from waiting
+    for a writer. Any OSError means absent: FreeBSD answers a symlink with EMLINK, not ELOOP.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+    except OSError:
+        st = None
+    if st is None or not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid():
+        os.close(fd)
+        return None
+    return os.fdopen(fd, encoding="utf-8")
+
+
+def _read_json(path, schema):
+    """ schema() of the JSON in path; None when path is not a regular file we own, holds no
+    UTF-8 JSON, or fails the schema
+    """
+    f = _open_regular(path)
+    if f is None:
+        return None
+    try:
+        with f:
+            data = json.load(f)
+    # ValueError includes UnicodeDecodeError; RecursionError is nesting deeper than the parser goes
+    except (OSError, ValueError, RecursionError):
+        return None
+    return schema(data)
+
+
+def _write_json_atomic(path, obj, mode=0o644):
+    """ write obj as JSON to a temp file beside path, then rename it over path; the default
+    mode is the one core gives its cache file, the plugin's own files pass 0600
+    """
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".%s." % os.path.basename(path), suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:  # closes fd on every path out of the with block, chmod failure included
-            os.fchmod(f.fileno(), 0o644)  # mkstemp creates 0600; match a plain open() under umask 022
+        # the with block closes fd on every path out of it, chmod failure included
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), mode)  # mkstemp creates 0600
             json.dump(obj, f)
         os.replace(tmp, path)
     except BaseException:
@@ -140,9 +273,36 @@ def pf_set(cfg, name):
     return sorted(line.strip() for line in proc.stdout.splitlines() if line.strip())
 
 
+def _open_lock(path, flags, mode):
+    """ fd of the lock file at path, opened with flags that follow no symlink and never wait
+    on a FIFO; None when it cannot be opened or is not a regular file. Any OSError counts:
+    FreeBSD answers a symlink with EMLINK, not ELOOP.
+    """
+    try:
+        fd = os.open(path, flags, mode)
+    except OSError:
+        return None
+    try:
+        regular = stat.S_ISREG(os.fstat(fd).st_mode)
+    except OSError:
+        regular = False
+    if not regular:
+        os.close(fd)
+        return None
+    return fd
+
+
 def acquire_lock(cfg, sleep):
-    """ core's update-tables lock (flock(2), same as util-linux flock(1)); None on timeout """
-    handle = open(cfg["lock_file"], "a")
+    """ core's update-tables lock (flock(2), same as util-linux flock(1)): the handle, None on
+    timeout, or a lock_unusable reply when the path is not a regular file the plugin can open
+    safely. Core's own flock(1) wrappers would follow a symlink there; the plugin does not.
+    """
+    path = cfg["lock_file"]
+    fd = _open_lock(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644)
+    if fd is None:
+        return {"error": "lock_unusable",
+                "detail": "core's alias update lock at %s is not a regular file the plugin can open safely" % path}
+    handle = os.fdopen(fd, "a")
     deadline = cfg["lock_timeout"]
     waited = 0.0
     while True:
@@ -190,38 +350,52 @@ def _flush_emptied_tables(cfg, names):
 
 
 def cmd_status(cfg, now):
+    found = problems(cfg)
     tables = read_tables(cfg)
     source, hosts = read_hosts(cfg)
-    cache = _read_json(cfg["cache_file"]) or {}
+    cache = _read_json(cfg["cache_file"], lib.cache_schema) or {}
     names = list(lib.mac_aliases(tables))
     pf_counts = {}
     for name in names:
         members = pf_set(cfg, name)
         pf_counts[name] = len(members) if members is not None else None
-    last = _read_json(cfg["last_file"])
+    # nothing inside a state directory that failed its check is read
+    state_ok = not any(problem["item"] == "state_dir" for problem in found)
+    last = _read_json(state_paths(cfg)["last_file"], lib.last_schema) if state_ok else None
     return {
         "source": source,
         "aliases": lib.alias_view(tables, cache, hosts, pf_counts, now),
-        "last_flush": last if last and "at" in last else None,
+        "last_flush": last,
+        "problems": found,
     }
 
 
 def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
+    # the plugin's own files live in the state directory, so it is made safe before any of
+    # them is opened; every refusal below comes before any write
+    problem = ensure_state_dir(cfg)
+    if problem:
+        return refusal([problem])
+    refused = refusal(problems(cfg))
+    if refused:
+        return refused
+    last_file = state_paths(cfg)["last_file"]
     lock = acquire_lock(cfg, sleep)
+    if isinstance(lock, dict):
+        return lock
     if lock is None:
         return {"error": "busy", "detail": "alias update lock held for %ss" % cfg["lock_timeout"]}
     try:
         # rate limit checked under the lock, so a flush that finished while we waited wins
-        last = _read_json(cfg["last_file"])
+        last = _read_json(last_file, lib.last_schema)
         now = clock()
         # lower bound: a backwards clock step must not lock flush out indefinitely
-        if (last and isinstance(last.get("at"), (int, float))
-                and 0 <= now - last["at"] < cfg["min_interval"]):
+        if last is not None and 0 <= now - last["at"] < cfg["min_interval"]:
             return {"error": "too_soon", "detail": "last flush %.0fs ago" % (now - last["at"])}
 
         # sweep orphans from a prior kill between mkstemp and os.replace before writing again
         _sweep_stale_temps(cfg["cache_file"], now)
-        _sweep_stale_temps(cfg["last_file"], now)
+        _sweep_stale_temps(last_file, now)
 
         tables = read_tables(cfg)
         names = lib.refresh_set(tables)
@@ -275,14 +449,14 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
         # still doing the post-release "after" pfctl reads), reads the last.json
         # from before this flush started, and runs a second full rebuild instead
         # of standing down.
-        _write_json_atomic(cfg["last_file"], {"at": now, "summary": []})
+        _write_json_atomic(last_file, {"at": now, "summary": []}, mode=0o600)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()
 
     after = {name: pf_set(cfg, name) for name in names}
     summary = lib.summarise(before, after)
-    _write_json_atomic(cfg["last_file"], {"at": now, "summary": summary})
+    _write_json_atomic(last_file, {"at": now, "summary": summary}, mode=0o600)
     return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied}
 
 

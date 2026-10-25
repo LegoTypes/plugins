@@ -27,6 +27,7 @@ Pure logic for the MAC alias cache plugin: no I/O, no subprocesses.
 Inputs mirror what core uses: /usr/local/etc/filter_tables.conf (applied
 alias definitions), list_hosts.py rows and the ArpCache JSON file.
 """
+import math
 import re
 import xml.etree.ElementTree as ET
 
@@ -139,3 +140,61 @@ def summarise(before, after):
             "removed": sorted(set(b) - set(a)) if both else [],
         })
     return result
+
+
+def _is_number(value):
+    """ an int or a float that is a finite float; a bool is an int in Python and is refused,
+    as is an int too large to convert, which would raise in later arithmetic
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _is_count(value):
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _is_strings(value):
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+_SUMMARY_KEYS = ("name", "before", "after", "added", "removed")
+
+
+def _summary_row(row):
+    """ one summarise() row with only its own keys, or None """
+    if not isinstance(row, dict) or not all(key in row for key in _SUMMARY_KEYS):
+        return None
+    if not (isinstance(row["name"], str) and _is_count(row["before"]) and _is_count(row["after"])
+            and _is_strings(row["added"]) and _is_strings(row["removed"])):
+        return None
+    return {key: row[key] for key in _SUMMARY_KEYS}
+
+
+def last_schema(obj):
+    """ last.json as cmd_flush writes it, {"at": time, "summary": [summarise() row]}, with only
+    those keys; None for anything else
+    """
+    if not isinstance(obj, dict) or not _is_number(obj.get("at")) or not isinstance(obj.get("summary"), list):
+        return None
+    summary = [_summary_row(row) for row in obj["summary"]]
+    if None in summary:
+        return None
+    return {"at": obj["at"], "summary": summary}
+
+
+def cache_schema(obj):
+    """ core's ArpCache file, {mac: {"items": [ip], "last_seen": time}}; entries of any other
+    shape are dropped, as the file is only displayed. None when it is not an object at all
+    """
+    if not isinstance(obj, dict):
+        return None
+    return {
+        mac: {"items": entry["items"], "last_seen": entry["last_seen"]}
+        for mac, entry in obj.items()
+        if isinstance(entry, dict) and _is_strings(entry.get("items")) and _is_number(entry.get("last_seen"))
+    }

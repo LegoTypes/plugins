@@ -1,3 +1,5 @@
+import pytest
+
 import macaliascache_lib as lib
 
 TABLES_XML = """<?xml version="1.0"?>
@@ -114,3 +116,53 @@ def test_summarise_counts_and_differences():
         {"name": "A", "before": 2, "after": 2, "added": ["192.0.2.3"], "removed": ["192.0.2.2"]},
         {"name": "B", "before": None, "after": 1, "added": [], "removed": []},
     ]
+
+
+GOOD_ROW = {"name": "DevMacs", "before": 2, "after": None, "added": ["192.0.2.1"], "removed": []}
+
+
+def test_last_schema_and_cache_schema():
+    assert lib.last_schema({"at": 5000.0, "summary": [GOOD_ROW]}) == {"at": 5000.0, "summary": [GOOD_ROW]}
+    assert lib.last_schema({"at": 5000, "summary": []}) == {"at": 5000, "summary": []}
+    for bad in (
+        [],
+        "x",
+        None,
+        {"summary": []},
+        {"at": "5000", "summary": []},
+        {"at": 5000.0},
+        {"at": 5000.0, "summary": {}},
+        {"at": 5000.0, "summary": ["x"]},
+        {"at": 5000.0, "summary": [dict(GOOD_ROW, name=1)]},
+        {"at": 5000.0, "summary": [dict(GOOD_ROW, before="2")]},
+        {"at": 5000.0, "summary": [dict(GOOD_ROW, after=1.5)]},
+        {"at": 5000.0, "summary": [dict(GOOD_ROW, added="192.0.2.1")]},
+        {"at": 5000.0, "summary": [dict(GOOD_ROW, removed=[1])]},
+        {"at": 5000.0, "summary": [{"name": "DevMacs"}]},
+    ):
+        assert lib.last_schema(bad) is None, bad
+
+    good = {"items": ["192.0.2.50", "2001:db8::50"], "last_seen": 1000.0}
+    assert lib.cache_schema({"aa:bb:cc:00:00:01": good}) == {"aa:bb:cc:00:00:01": good}
+    assert lib.cache_schema({}) == {}
+    assert lib.cache_schema({
+        "aa:bb:cc:00:00:01": good,
+        "aa:bb:cc:00:00:02": {"items": "192.0.2.5", "last_seen": 1000.0},
+        "aa:bb:cc:00:00:03": {"items": [5], "last_seen": 1000.0},
+        "aa:bb:cc:00:00:04": {"items": ["192.0.2.6"], "last_seen": "1000"},
+        "aa:bb:cc:00:00:05": {"items": ["192.0.2.7"]},
+        "aa:bb:cc:00:00:06": ["192.0.2.8"],
+        "aa:bb:cc:00:00:07": {"items": ["192.0.2.9"], "last_seen": True},
+        "aa:bb:cc:00:00:08": {"items": ["192.0.2.10"], "last_seen": float("nan")},
+    }) == {"aa:bb:cc:00:00:01": good}
+    for bad in ([], "x", None, 5):
+        assert lib.cache_schema(bad) is None, bad
+
+
+@pytest.mark.parametrize("at", [float("nan"), float("inf"), float("-inf"), True, False, 10 ** 400],
+                         ids=["nan", "infinity", "minus-infinity", "true", "false", "int-beyond-float"])
+def test_last_schema_refuses_non_finite_and_bool_at(at):
+    # (s7) Python's json reads NaN and Infinity, and a bool is an int in Python; none of
+    # them is a time, and an int beyond a float's range would raise in the rate limit's
+    # arithmetic
+    assert lib.last_schema({"at": at, "summary": []}) is None
