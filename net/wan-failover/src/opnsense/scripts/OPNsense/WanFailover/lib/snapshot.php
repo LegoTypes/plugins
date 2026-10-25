@@ -179,7 +179,7 @@ function wf_snapshot(): array
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
         'legacy_held' => $legacy, 'force_down' => $forceDown,
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale,
-                       'removal' => wf_contract_removal($interfaceActions)],
+                       'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf'))],
     ];
 }
 

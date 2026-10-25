@@ -19,6 +19,10 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.4_1
+
+* Removing the package also removes its minute job
+
 1.4
 
 * The list of gateways the plugin holds is no longer part of the settings,

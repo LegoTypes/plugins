@@ -22,8 +22,10 @@ const WF_REMOVING = WF_RUN_DIR . '/removing';        /* the package removal's ma
 const WF_FILE_MAX_BYTES = 1048576;
 
 /* core's own commands, for the package removal, which cannot use the plugin's configd actions (they go with the
- * package): core's [routes.configure] command, and the command the plugin's [replay_alarm] action wraps */
+ * package): core's [routes.configure] command, and the command the plugin's [replay_alarm] action wraps; and core's
+ * [restart] command of actions_cron.conf, which +POST_DEINSTALL.post runs when configd does not answer */
 const WF_CORE_ROUTES_CONFIGURE = '/usr/local/etc/rc.routing_configure';
+const WF_CORE_CRON_RESTART = '/usr/local/sbin/pluginctl -s cron restart';
 const WF_REPLAY_ALARM_CMD = '/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm';
 const WF_CONFIGD_TIMEOUT_SECONDS = 30; /* the removal's configctl call is bounded; core's own command, its fallback, is not */
 const WF_DEINSTALL_WAIT_SECONDS = 180; /* the removal's release, its wait for an evaluation's lock included: that evaluation's

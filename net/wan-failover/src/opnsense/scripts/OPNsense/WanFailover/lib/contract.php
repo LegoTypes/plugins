@@ -10,13 +10,16 @@ declare(strict_types=1);
  * Core contract (spec 2026-10-05 section 3.12). Judging dependencies: without them no WAN can be read,
  * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
  * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
- * fallback for core's routing reconfigure; a drift there blocks nothing, and the removal no longer runs the copy.
+ * fallbacks for core's routing reconfigure and cron restart when configd does not answer; a drift there blocks
+ * nothing, and the removal no longer runs the routing copy.
  * Pure: callers pass the file contents.
  */
 
 require_once __DIR__ . '/constants.php';
 
 const WF_GATEWAY_LOCK = '/tmp/filter_reload_gateway.lock';
+const WF_DRIFT_ROUTES_CONFIGURE = '[routes.configure] changed';
+const WF_DRIFT_CRON_RESTART = 'actions_cron.conf [restart] changed';
 const WF_INSTANCE_KEYS = ['current_losslow', 'current_losshigh', 'current_time_period', 'current_interval', 'current_loss_interval'];
 
 function wf_ini_section(string $text, string $name): ?string
@@ -60,19 +63,38 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
 }
 
 /**
- * The package removal runs core's [routes.configure] command itself when configd does not answer
- * (WF_CORE_ROUTES_CONFIGURE): a drift of that command is reported here, and the removal then leaves it unrun. Every
- * evaluation reconfigures routing through core's action by name, so the drift blocks no hold.
+ * The package removal runs two of core's commands itself when configd does not answer: [routes.configure]'s
+ * (WF_CORE_ROUTES_CONFIGURE), and actions_cron.conf's [restart] (WF_CORE_CRON_RESTART), which +POST_DEINSTALL.post
+ * runs once the plugin's files, its cron job's among them, are gone. A drift of either is reported here; the removal
+ * then leaves the routing command unrun (wf_contract_routes_fallback()). Evaluations run neither, so no drift here
+ * blocks a hold. An unreadable actions_interface.conf is the command contract's to report; an unreadable
+ * actions_cron.conf is reported here.
  *
  * @return list<string>
  */
-function wf_contract_removal(?string $interfaceActions): array
+function wf_contract_removal(?string $interfaceActions, ?string $cronActions): array
 {
-    if ($interfaceActions === null) {
-        return [];
+    $p = [];
+    $configure = $interfaceActions === null ? null : wf_ini_section($interfaceActions, 'routes.configure');
+    if ($interfaceActions !== null && ($configure === null || wf_ini_command($configure) !== WF_CORE_ROUTES_CONFIGURE)) {
+        $p[] = WF_DRIFT_ROUTES_CONFIGURE;
     }
-    $configure = wf_ini_section($interfaceActions, 'routes.configure');
-    return $configure === null || wf_ini_command($configure) !== WF_CORE_ROUTES_CONFIGURE ? ['[routes.configure] changed'] : [];
+    $restart = $cronActions === null ? null : wf_ini_section($cronActions, 'restart');
+    if ($restart === null || wf_ini_command($restart) !== WF_CORE_CRON_RESTART) {
+        $p[] = WF_DRIFT_CRON_RESTART;
+    }
+    return $p;
+}
+
+/**
+ * Whether the package removal may run core's routing command itself, from the removal drifts wf_contract_removal()
+ * reported: not once that command drifted; a drift of the cron command does not stop it.
+ *
+ * @param list<string> $removal
+ */
+function wf_contract_routes_fallback(array $removal): bool
+{
+    return !in_array(WF_DRIFT_ROUTES_CONFIGURE, $removal, true);
 }
 
 /**
@@ -150,7 +172,7 @@ function wf_contract_log(array $contract, string $last): array
     }
     $effect = $contract['judging'] !== [] ? 'releasing every hold if it persists for ' . WF_UNKNOWN_MAX_SECONDS . ' s'
         : ($contract['command'] !== [] ? 'no new holds'
-        : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off' : 'a package removal re-syncs routing through configd only'));
+        : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off' : 'only a package removal, when configd does not answer'));
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }

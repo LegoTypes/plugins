@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/constants.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contract.php';
 
 /**
  * One run of a command, stdout and stderr together.
@@ -145,6 +146,26 @@ wf_register_suite('wiring', function (): int {
     wf_check($t, '(d6) +POST_DEINSTALL.post removes the plugin\'s directories on a real removal only',
         str_contains($scripts['+POST_DEINSTALL.post'], $guard . "; then\n    rm -rf " . WF_RUN_DIR . ' /var/db/wanfailover ' . WF_TRACE . "\nfi\n")
         && dirname(WF_STATE) === '/var/db/wanfailover');
+    $cron = "\n/usr/bin/timeout " . WF_CONFIGD_TIMEOUT_SECONDS . ' /usr/local/sbin/configctl cron restart | grep -qx OK || '
+        . WF_CORE_CRON_RESTART . " || true\n";
+    $post = $scripts['+POST_DEINSTALL.post'];
+    $fi = strpos($post, "\nfi\n");
+    $restart = strpos($post, $cron);
+    wf_check($t, '(d11) +POST_DEINSTALL.post then restarts cron, outside the guard, through configd read for OK, else core\'s own '
+        . 'command: core\'s removal step leaves the minute job in crontab otherwise',
+        $fi !== false && $restart !== false && $restart > $fi && str_ends_with($post, $cron)
+        && WF_CORE_CRON_RESTART === '/usr/local/sbin/pluginctl -s cron restart');
+    if ($restart === false) {
+        printf("    wanted the line: %s", ltrim($cron, "\n"));
+    }
+    /* the box's own core, as the removal finds it */
+    $actions = @file_get_contents('/usr/local/opnsense/service/conf/actions.d/actions_cron.conf');
+    $section = $actions === false ? null : wf_ini_section($actions, 'restart');
+    $core = $section === null ? null : wf_ini_command($section);
+    wf_check($t, "(d11) WF_CORE_CRON_RESTART is the command of core's [restart] in actions_cron.conf", $core === WF_CORE_CRON_RESTART);
+    if ($core !== WF_CORE_CRON_RESTART) {
+        printf("    core: %s\n    ours: %s\n", $core ?? '(not read)', WF_CORE_CRON_RESTART);
+    }
     wf_check($t, '(d6) +POST_INSTALL.pre removes the removal marker',
         preg_match('/^rm -f ' . preg_quote(WF_REMOVING, '/') . '$/m', $scripts['+POST_INSTALL.pre']) === 1);
     /* the marker's gate in evaluate.php: kill-states must stay above it, since a hold's evaluation calls it while it

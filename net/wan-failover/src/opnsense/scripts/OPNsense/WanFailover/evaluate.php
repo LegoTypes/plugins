@@ -277,7 +277,7 @@ function wf_deinstall(): int
             return ['snap' => $snap, 'loaded' => wf_state_load(WF_STATE, $snap['boot_id'])];
         };
         $ioFor = fn (array $snap): array => wf_deinstall_io(wf_live_io(WF_STATE,
-            array_map(fn (array $w): string => $w['route_target'], $snap['wans'])), 'wf_core_shell', $snap['contract']['removal'] === []);
+            array_map(fn (array $w): string => $w['route_target'], $snap['wans'])), 'wf_core_shell', wf_contract_routes_fallback($snap['contract']['removal']));
         wf_deinstall_run($startedAt, $read, $ioFor, 'time', function (int $s): void {
             sleep($s);
         }, 'wf_log');

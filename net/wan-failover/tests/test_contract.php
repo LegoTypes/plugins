@@ -18,6 +18,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parser
 const WF_T_IFACE = "[routes.configure]\ncommand:/usr/local/etc/rc.routing_configure\n\n[routes.alarm]\ncommand:/usr/local/bin/flock -n -E 0 -o /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm\nparameters: %s\ntype:script\n";
 const WF_T_FILTER = "[kill.state]\ncommand:/sbin/pfctl\nparameters: -k id -k %s/%s 2>&1\n\n[kill.gateway_states]\ncommand:/sbin/pfctl\nparameters: -k gateway -k %s 2>&1\n";
 const WF_T_TS = "[restart]\ncommand:/usr/local/etc/rc.d/tailscaled restart\ntype: script\n";
+const WF_T_CRON = "[restart]\ncommand:/usr/local/sbin/pluginctl -s cron restart\nparameters:\ntype:script\nmessage:restarting cron\n";
 const WF_T_RC = "/usr/local/etc/rc.syshook early\n# PHP starts here\n/usr/local/bin/flock -n -o \${BOOTLOCK} /usr/local/etc/rc.bootup || exit 1\n";
 
 wf_register_suite('contract', function (): int {
@@ -44,10 +45,22 @@ wf_register_suite('contract', function (): int {
     $noConfigure = (string)preg_replace('/\A\[routes\.configure\].*?(?=^\[)/ms', '', WF_T_IFACE);
     wf_check($t, '(d4) a [routes.configure] whose command differs, or none, is a removal drift, not a command drift: only the '
         . 'package removal runs that command, and no hold is blocked by it',
-        $moved !== WF_T_IFACE && wf_contract_removal($moved) === ['[routes.configure] changed']
-        && !str_contains($noConfigure, 'routes.configure') && wf_contract_removal($noConfigure) === ['[routes.configure] changed']
-        && wf_contract_commands($moved, WF_T_FILTER, WF_T_RC) === [] && wf_contract_removal(WF_T_IFACE) === []
-        && wf_contract_removal(null) === []);
+        $moved !== WF_T_IFACE && wf_contract_removal($moved, WF_T_CRON) === ['[routes.configure] changed']
+        && !str_contains($noConfigure, 'routes.configure') && wf_contract_removal($noConfigure, WF_T_CRON) === ['[routes.configure] changed']
+        && wf_contract_commands($moved, WF_T_FILTER, WF_T_RC) === [] && wf_contract_removal(WF_T_IFACE, WF_T_CRON) === []
+        && wf_contract_removal(null, WF_T_CRON) === []);
+    $cronMoved = str_replace('pluginctl -s cron restart', 'pluginctl -s cron reload', WF_T_CRON);
+    wf_check($t, '(d10) actions_cron.conf whose [restart] command differs, has none, or cannot be read is a removal drift, '
+        . 'not a command drift: only the package removal runs that command, after its files are gone',
+        WF_T_CRON === "[restart]\ncommand:" . WF_CORE_CRON_RESTART . "\nparameters:\ntype:script\nmessage:restarting cron\n"
+        && $cronMoved !== WF_T_CRON && wf_contract_removal(WF_T_IFACE, $cronMoved) === ['actions_cron.conf [restart] changed']
+        && wf_contract_removal(WF_T_IFACE, "[start]\ncommand:/usr/sbin/service cron start\n") === ['actions_cron.conf [restart] changed']
+        && wf_contract_removal(WF_T_IFACE, null) === ['actions_cron.conf [restart] changed']
+        && wf_contract_removal($moved, $cronMoved) === ['[routes.configure] changed', 'actions_cron.conf [restart] changed']);
+    wf_check($t, '(d10) only a [routes.configure] drift stops the removal running core\'s routing command itself; a cron drift does not',
+        wf_contract_routes_fallback([]) && wf_contract_routes_fallback(['actions_cron.conf [restart] changed'])
+        && !wf_contract_routes_fallback(['[routes.configure] changed'])
+        && !wf_contract_routes_fallback(['[routes.configure] changed', 'actions_cron.conf [restart] changed']));
     $tree = @file_get_contents(dirname(__DIR__) . '/src/opnsense/service/conf/actions.d/actions_wanfailover.conf');
     $replay = $tree === false ? null : wf_ini_section($tree, 'replay_alarm');
     $cmd = $replay === null ? null : wf_ini_command($replay);
@@ -80,9 +93,13 @@ wf_register_suite('contract', function (): int {
     $r4 = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => ['no [restart]']], '');
     wf_check($t, 'log: a Tailscale-only drift says only Tailscale restarts are off', $r4['line'] !== null && str_contains($r4['line'], 'Tailscale restarts off'));
     $r5 = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => ['[routes.configure] changed']], '');
-    wf_check($t, '(d4) log: a removal-only drift is logged once, saying only a package removal\'s re-sync is affected',
-        $r5['line'] === 'core-contract: core changed what the plugin relies on (a package removal re-syncs routing through '
-            . 'configd only): [routes.configure] changed' && $r5['prio'] === LOG_WARNING);
+    wf_check($t, '(d4) log: a removal-only drift is logged once, saying only a package removal\'s fallback is affected',
+        $r5['line'] === 'core-contract: core changed what the plugin relies on (only a package removal, when configd '
+            . 'does not answer): [routes.configure] changed' && $r5['prio'] === LOG_WARNING);
+    $r6 = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => ['actions_cron.conf [restart] changed']], '');
+    wf_check($t, '(d10) log: a cron drift is logged in the same words as a routing one',
+        $r6['line'] === 'core-contract: core changed what the plugin relies on (only a package removal, when configd '
+            . 'does not answer): actions_cron.conf [restart] changed' && $r6['prio'] === LOG_WARNING);
     $r3 = wf_contract_log($ok, $r['last']);
     wf_check($t, 'log: the return to a match is logged', $r3['line'] !== null && str_contains($r3['line'], 'matches again'));
     wf_check($t, 'a disabled or unmonitored WAN has no dpinger rows or socket; not a drift',
