@@ -71,8 +71,8 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
             $calls[] = 'save';
         },
         'sleep' => fn (int $s): int => 0,
-        'log' => function (string $m) use ($calls): void {
-            $calls[] = "log {$m}";
+        'log' => function (string $m, int $prio = LOG_NOTICE) use ($calls): void {
+            $calls[] = $prio === LOG_NOTICE ? "log {$m}" : "log({$prio}) {$m}";
         },
         'crash_point' => fn (string $p): int => 0,
     ];
@@ -121,6 +121,11 @@ wf_register_suite('apply', function (): int {
     wf_check($t, '(a1) after the replay, the hold kills through the plugin\'s own action by gateway@interface, and logs its answer',
         $replayAt !== false && $killAt !== false && $killAt > $replayAt
         && in_array('log kill states via 192.0.2.1@vtnet1: killed 2 states (0 failed)', $c, true));
+    $f = wf_t_io(['wanfailover kill_states' => "listing failed: pfctl exited 1\n"]);
+    $r = wf_apply(array_merge($plan, ['kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
+    wf_check($t, '(a2) a kill whose listing failed is logged as the kill line at warning, and the hold stands',
+        in_array('log(' . LOG_WARNING . ') kill states via 192.0.2.1@vtnet1: listing failed: pfctl exited 1', $f['calls']->getArrayCopy(), true)
+        && $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN2']);
 
     $f = wf_t_io([], false);
     $r = wf_apply($plan, $state, $snap, $f['io']);

@@ -64,7 +64,8 @@ function wf_main(string $mode, array $args): int
             exec($cmd . ' 2>/dev/null', $lines, $rc);
             return ['out' => implode("\n", $lines), 'rc' => $rc];
         });
-        if ($r['rc'] !== 0) {
+        /* a hold logs the answer as its kill line; a rejected target, which no hold sends, is logged here */
+        if ($r['line'] === 'rejected target') {
             wf_log('kill-states: the target is not gateway@interface; nothing killed', LOG_WARNING);
         }
         echo $r['line'], "\n";

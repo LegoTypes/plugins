@@ -96,5 +96,13 @@ wf_register_suite('wiring', function (): int {
     if (!$ok) {
         printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
     }
+    /* configd answers "Execute error" for a script that exits non-zero unless its action sets errors:no; a hold
+     * logs what the action answered, so a failed kill's own line must come through */
+    $r = wf_t_run(['/usr/local/sbin/configctl', 'wanfailover', 'kill_states', 'x;y']);
+    $ok = trim($r['out']) === 'rejected target';
+    wf_check($t, '(w4) through configd, a kill that exits 1 still answers its own line ("rejected target")', $ok);
+    if (!$ok) {
+        printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
+    }
     return wf_tally_report('wiring', $t);
 });

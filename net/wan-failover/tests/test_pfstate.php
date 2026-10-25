@@ -20,17 +20,17 @@ function wf_t_gws(): array
 }
 
 /**
- * A pfctl that lists $listing for -vvss and fails the kill commands named in $fail.
+ * A pfctl that lists $listing for -vvss, exiting $listRc, and fails the kill commands named in $fail.
  *
  * @param list<string> $fail
  * @return array{run: callable(string): array{out: string, rc: int}, calls: ArrayObject}
  */
-function wf_t_pfctl(string $listing, array $fail = []): array
+function wf_t_pfctl(string $listing, array $fail = [], int $listRc = 0): array
 {
     $calls = new ArrayObject();
-    $run = function (string $cmd) use ($calls, $listing, $fail): array {
+    $run = function (string $cmd) use ($calls, $listing, $fail, $listRc): array {
         $calls[] = $cmd;
-        return $cmd === '/sbin/pfctl -vvss' ? ['out' => $listing, 'rc' => 0] : ['out' => '', 'rc' => in_array($cmd, $fail, true) ? 1 : 0];
+        return $cmd === '/sbin/pfctl -vvss' ? ['out' => $listing, 'rc' => $listRc] : ['out' => '', 'rc' => in_array($cmd, $fail, true) ? 1 : 0];
     };
     return ['run' => $run, 'calls' => $calls];
 }
@@ -139,5 +139,13 @@ wf_register_suite('pfstate', function (): int {
     $p = wf_t_pfctl($raw);
     wf_check($t, '(p3) a target that is not gateway@interface is rejected before any pfctl call',
         wf_kill_states_run('x;y', $p['run']) === ['line' => 'rejected target', 'rc' => 1] && $p['calls']->getArrayCopy() === []);
+    $p = wf_t_pfctl($raw, [], 1);
+    wf_check($t, '(p6) a listing pfctl fails is reported with its exit status, and nothing is killed',
+        wf_kill_states_run('192.0.2.1@vtnet1', $p['run']) === ['line' => 'listing failed: pfctl exited 1', 'rc' => 1]
+        && $p['calls']->getArrayCopy() === ['/sbin/pfctl -vvss']);
+    $p = wf_t_pfctl('');
+    wf_check($t, '(p7) a listing that fails the self-check (no states at all) is reported, and nothing is killed',
+        wf_kill_states_run('192.0.2.1@vtnet1', $p['run']) === ['line' => 'listing failed: the state listing did not parse', 'rc' => 1]
+        && $p['calls']->getArrayCopy() === ['/sbin/pfctl -vvss']);
     return wf_tally_report('pfstate', $t);
 });

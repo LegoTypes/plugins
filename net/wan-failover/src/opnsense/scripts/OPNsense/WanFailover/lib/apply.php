@@ -32,7 +32,7 @@ require_once __DIR__ . '/log.php';
  * @param array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
  *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
- *             sleep: callable(int): int, log: callable(string): void, crash_point: callable(string): void} $io
+ *             sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void} $io
  * @return array{state: array, ok: bool}
  */
 function wf_apply(array $plan, array $state, array $snap, array $io): array
@@ -121,8 +121,10 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
     }
     if ($replayOk) {
+        /* a kill that did not run in full is a warning; the hold stands either way */
         foreach ($plan['kill_targets'] as $target) {
-            $log("kill states via {$target}: " . trim(($io['configd'])('wanfailover kill_states', [$target])));
+            $out = trim(($io['configd'])('wanfailover kill_states', [$target]));
+            $log("kill states via {$target}: {$out}", preg_match('/^killed \d+ states \(0 failed\)\z/', $out) === 1 ? LOG_NOTICE : LOG_WARNING);
         }
         $state['apply_pending'] = [];
     }
@@ -235,7 +237,7 @@ function wf_write_holds(array $changes, array $heldAfterUuids): bool
  * @return array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
  *                 gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *                 pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
- *                 sleep: callable(int): int, log: callable(string): void, crash_point: callable(string): void}
+ *                 sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void}
  */
 function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): array
 {
@@ -273,8 +275,8 @@ function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): ar
             wf_state_save($statePath, $s);
         },
         'sleep' => fn (int $s): int => sleep($s),
-        'log' => function (string $m): void {
-            wf_log($m);
+        'log' => function (string $m, int $prio = LOG_NOTICE): void {
+            wf_log($m, $prio);
         },
         /* the VM's crash tests name the point in a root-only flag file; the point consumes it */
         'crash_point' => function (string $p): void {

@@ -218,7 +218,8 @@ function wf_states_via(array $states, string $target): array
 /**
  * Kill every state routed via $target, one state id at a time, as core's kill.state does. Unlike core's
  * kill by gateway address, it leaves the states of another WAN that shares the address alone. A kill counts
- * as done when pfctl exits 0. The parser reads ids and creator ids as hex only, so the kill's command line
+ * as done when pfctl exits 0. A listing that fails or does not parse kills nothing and says so, rather than
+ * reading as no states to kill. The parser reads ids and creator ids as hex only, so the kill's command line
  * needs no quoting.
  *
  * @param callable(string): array{out: string, rc: int} $run runs one command line
@@ -229,9 +230,17 @@ function wf_kill_states_run(string $target, callable $run): array
     if (!wf_kill_target_ok($target)) {
         return ['line' => 'rejected target', 'rc' => 1];
     }
+    $listing = $run('/sbin/pfctl -vvss');
+    if ($listing['rc'] !== 0) {
+        return ['line' => "listing failed: pfctl exited {$listing['rc']}", 'rc' => 1];
+    }
+    $states = wf_parse_states($listing['out']);
+    if (!wf_pf_selfcheck($listing['out'], $states)) {
+        return ['line' => 'listing failed: the state listing did not parse', 'rc' => 1];
+    }
     $killed = 0;
     $failed = 0;
-    foreach (wf_states_via(wf_parse_states($run('/sbin/pfctl -vvss')['out']), $target) as $s) {
+    foreach (wf_states_via($states, $target) as $s) {
         if ($run("/sbin/pfctl -k id -k {$s['id']}/{$s['creatorid']}")['rc'] === 0) {
             $killed++;
         } else {
