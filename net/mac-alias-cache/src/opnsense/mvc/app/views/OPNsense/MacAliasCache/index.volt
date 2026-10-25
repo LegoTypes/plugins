@@ -20,6 +20,10 @@
                 busy: "{{ lang._('The alias update lock is busy (a refresh is running). Try again in a moment.') }}",
                 too_soon: "{{ lang._('A flush ran less than 10 seconds ago.') }}",
                 hosts_unavailable: "{{ lang._('The host list could not be read (host discovery unavailable); nothing was changed.') }}",
+                hosts_malformed: "{{ lang._('The host list has no usable rows (no MAC and address in the expected columns); nothing was changed.') }}",
+                state_unusable: "{{ lang._('The plugin state or the core MAC alias cache cannot be trusted; nothing was changed.') }}",
+                lock_unusable: "{{ lang._('The alias update lock file cannot be used safely; nothing was changed.') }}",
+                core_changed: "{{ lang._('This core version no longer matches what the plugin expects; nothing was changed.') }}",
                 backend: "{{ lang._('The backend returned an unexpected response:') }} ",
             };
             return (map[data.error] || (data.error + ': ')) + (data.detail || '');
@@ -93,6 +97,9 @@
                 } else if (data.source === 'arp-ndp') {
                     banners.push(banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}"));
                 }
+                $.each(data.problems || [], function (i, p) {
+                    banners.push(banner(p.blocks_flush ? 'danger' : 'warning', p.problem));
+                });
                 if (!data.aliases.length) {
                     tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
                 }
@@ -146,16 +153,21 @@
         function renderResult(data) {
             var built = [];
             // ajaxCall hands over the jqXHR (no JSON) when the request itself failed
-            if (!data || (!data.error && !data.summary && !data.note)) {
+            if (!data || (!data.error && !data.errorMessage && !data.summary && !data.note)) {
                 built.push($('<div class="alert alert-danger"/>').text(requestFailed));
             } else if (data.error) {
                 built.push($('<div class="alert alert-danger"/>').text(errorText(data)));
+            } else if (data.errorMessage) {
+                built.push($('<div class="alert alert-danger"/>').text(data.errorMessage));
             } else if (data.note) {
                 built.push($('<div class="alert alert-info"/>').text(data.note));
             } else {
                 var totals = summaryTotals(data.summary);
                 built.push(summaryHeading(resultHeadingText(totals)));
                 built.push(summaryTable(data.summary));
+                if (data.rows_rejected > 0) {
+                    built.push($('<div class="alert alert-warning"/>').text(data.rows_rejected + " {{ lang._('host rows were ignored (no MAC and address in the expected columns)') }}"));
+                }
                 if (data.update_tables && data.update_tables.rc !== 0) {
                     built.push($('<div class="alert alert-warning"/>').text("{{ lang._('update_tables.py reported a problem:') }} " + data.update_tables.output));
                 }
