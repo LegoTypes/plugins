@@ -464,8 +464,10 @@ function wf_boot_unread(string $stateBootId): bool
 /**
  * The gateways a state shows the engine really holding: its last_held without the holds dry run only simulates
  * (dry_held). In dry run last_held names the simulated holds too (wf_dry_after()), and a simulated hold never forced a
- * gateway down, so it proves nothing about a held list in the config; a real hold is released before dry run
- * simulates one, by 1.3_1 as by 1.4, so no real hold is ever left out.
+ * gateway down, so it proves nothing about a held list in the config. A real hold is released before dry run
+ * simulates one, by 1.3_1 as by 1.4, so no hold 1.3_1 left in place is ever left out; only a 1.3_1 hold already
+ * released by hand, whose import waits while 1.4's dry run simulates the same gateway, loses its proof, and that
+ * gateway is free already.
  *
  * @param array{last_held: list<string>, dry_held: list<string>} $state the shape returned by wf_state_new()
  * @return list<string>
