@@ -4,13 +4,13 @@ import subprocess
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 PLUGIN = "net/mac-alias-cache"
-SELF = PLUGIN + "/tests/test_headers.py"
 MVC = PLUGIN + "/src/opnsense/mvc/app/controllers/OPNsense/MacAliasCache/"
 SCRIPTS = PLUGIN + "/src/opnsense/scripts/OPNsense/MacAliasCache/"
-HANDLE = "Copyright (C) 2026 cayossarian"
+# Built from parts so that this file never holds the fixed marker the release grep looks for.
+MARKER = "Copyright" + " (C)"
+HANDLE = MARKER + " 2026 cayossarian"
 
-# Path -> the comment prefix in front of the header line. This check quotes the marker itself,
-# so it is the one tracked file it skips.
+# Path -> the comment prefix in front of the header line.
 EXPECTED = {
     MVC + "Api/ServiceController.php": " * ",
     MVC + "IndexController.php": " * ",
@@ -30,16 +30,14 @@ def tracked():
 
 
 def lines_of(path):
-    with open(os.path.join(ROOT, path), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, path), encoding="utf-8", errors="replace") as f:
         return f.read().splitlines()
 
 
 def test_only_four_files_carry_a_header_and_each_is_the_handle_only():
     found = {}
     for path in tracked():
-        if path == SELF:
-            continue
-        hits = [line for line in lines_of(path) if re.search(r"Copyright \(C\)", line)]
+        hits = [line for line in lines_of(path) if re.search(re.escape(MARKER), line)]
         if hits:
             found[path] = hits
     assert set(found) == set(EXPECTED)
@@ -49,8 +47,9 @@ def test_only_four_files_carry_a_header_and_each_is_the_handle_only():
 
 def test_no_header_line_continues_after_the_handle():
     pattern = re.compile(r"Copyright \(C\) 2026 cayossarian.")
+    offenders = []
     for path in tracked():
-        if path == SELF:
-            continue
         for number, line in enumerate(lines_of(path), 1):
-            assert not pattern.search(line), f"{path}:{number}"
+            if pattern.search(line):
+                offenders.append(f"{path}:{number}")
+    assert offenders == []
