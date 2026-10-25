@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Planner scenarios: spec section 6, round-3 fixes and the Review Focus list.
+ * Planner scenarios: spec 2026-10-05 section 6, then the cases each later fix added.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
@@ -126,13 +126,13 @@ wf_register_suite('planner', function (): int {
     wf_check($t, '3: the 10-05 pattern -- hold starts while PRIMARY is unsettled but fresh', $r['plan']['hold'] === ['WAN2']);
 
     $r = wf_plan(wf_t_snap(7000, [], [], ['unresolved' => ['bbbbbbbb-0000-4000-8000-00000000000f'], 'holds_stale' => ['cccccccc-0000-4000-8000-00000000000e']]), wf_state_new('b1'));
-    wf_check($t, 'RF1: unresolvable wans entry and stale held UUID -> prune write, logged', $r['plan']['write']
+    wf_check($t, 'an unresolvable wans entry and a stale hold record -> prune write, logged', $r['plan']['write']
         && count(array_filter($r['plan']['log'], fn (string $l): bool => str_contains($l, 'bbbbbbbb'))) === 1);
 
     $r = wf_plan(wf_t_snap(8000, [], []), wf_state_new('b1'));
     $r = wf_plan(wf_t_snap(8100, [], ['loss' => null, 'sock_age' => 3]), $r['state']);
     $r = wf_plan(wf_t_snap(4500, [], ['loss' => null, 'sock_age' => 3]), $r['state']);
-    wf_check($t, 'RF5: clock back an hour keeps WAN2 clean and logs it', $r['state']['judgements']['WAN2']['value'] === WF_CLEAN
+    wf_check($t, 'clock back an hour keeps WAN2 clean and logs it', $r['state']['judgements']['WAN2']['value'] === WF_CLEAN
         && count(array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'clock moved back'))) === 1);
 
     $s = wf_state_new('b1');

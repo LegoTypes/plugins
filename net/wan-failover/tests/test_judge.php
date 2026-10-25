@@ -45,7 +45,7 @@ wf_register_suite('judge', function (): int {
     wf_check($t, 'young 40 s at 33.3% (12 of 36 lost, as dpinger rounds it) is bad', wf_reading(wf_t_w(['loss' => 33.3, 'sock_age' => 40]), $d) === WF_BAD);
     wf_check($t, 'young 40 s at 30.6% (11 of 36 lost) is unknown', wf_reading(wf_t_w(['loss' => 30.6, 'sock_age' => 40]), $d) === WF_UNKNOWN);
     wf_check($t, 'young 0% is unknown, never clean', wf_reading(wf_t_w(['loss' => 0.0, 'sock_age' => 30]), $d) === WF_UNKNOWN);
-    wf_check($t, '~ on a settled dpinger (stddev and loss exactly 0) is clean (R3-10)', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 300]), $d) === WF_CLEAN);
+    wf_check($t, '~ on a settled dpinger (stddev and loss exactly 0) is clean while core does not call it down', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 300]), $d) === WF_CLEAN);
     wf_check($t, '~ on a young dpinger is unknown', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 30]), $d) === WF_UNKNOWN);
 
     $j = wf_judgement_new(1000);

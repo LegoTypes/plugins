@@ -9,11 +9,12 @@ the default route actually changed.
   held it returns only when a settled window shows no loss at all
 - Never both: a hold needs a usable alternative and is released at once
   on positive evidence that the alternative failed
-- A reboot releases every hold before routing starts
+- A reboot releases the holds the plugin took before routing starts
 - A new hold kills that WAN's states; when a WAN recovers, flows that
   prefer it move back once their rule and the default route point there
-- Ownership (which gateways it holds) is saved with force_down in one
-  config write, so a config backup carries both
+- Ownership is a record of the boot that took each hold, saved with
+  force_down in one config write; only a hold its record proves is ever
+  released
 
 Plugin Changelog
 ================
@@ -23,9 +24,12 @@ Plugin Changelog
 * The list of gateways the plugin holds is no longer part of the settings,
   so the settings API cannot change it. A hold is released only when the
   plugin can prove it took it in this boot (or, at boot, the one before);
-  any other record, such as one from a restored backup, is pruned and
+  any other record, such as a backup's from another boot, is pruned and
   logged, and its gateway stays forced down until a person unticks Force
-  down. On upgrade, the holds of 1.3_1 are carried over
+  down. On upgrade, the holds 1.3_1 took in this boot are carried over,
+  as the plugin's own state file proves them; an entry of 1.3_1's list
+  it does not prove, such as one a restored backup brings back, is
+  dropped and its gateway stays forced down
 * A hold's state kill selects the states routed via that WAN's gateway and
   interface, by state id; two gateways sharing an address no longer lose
   each other's connections, and the log reports each kill per gateway and

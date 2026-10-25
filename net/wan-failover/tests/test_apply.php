@@ -119,12 +119,12 @@ wf_register_suite('apply', function (): int {
 
     $f = wf_t_io([], true, true, [], '203.0.113.1', [['WAN2' => 'none', 'PRIMARY_WAN' => 'none'], ['WAN2' => 'force_down', 'PRIMARY_WAN' => 'down']]);
     wf_apply($plan, $state, $snap, $f['io']);
-    wf_check($t, 'R3-2: a gateway whose status changed during our hold is replayed with ours',
+    wf_check($t, 'a gateway whose status changed during our hold is replayed with ours, so core settles it after our reconfigure too',
         in_array('configd wanfailover replay_alarm PRIMARY_WAN,WAN2', $f['calls']->getArrayCopy(), true));
 
     $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
     $r = wf_apply($plan, $state, $snap, $f['io']);
-    wf_check($t, 'RF4: replay fails -> apply_pending kept, no kill', $r['state']['apply_pending'] === ['WAN2' => 'hold']
+    wf_check($t, 'replay fails -> apply_pending kept for the next tick, no kill', $r['state']['apply_pending'] === ['WAN2' => 'hold']
         && !in_array('configd wanfailover kill_states 172.16.12.1@igc2', $f['calls']->getArrayCopy(), true));
 
     $f = wf_t_io(['wanfailover kill_states' => "killed 2 states (0 failed)\n"]);
@@ -160,7 +160,7 @@ wf_register_suite('apply', function (): int {
     $f = wf_t_io();
     $r = wf_apply(wf_t_plan(['foreign' => ['WAN2'], 'held_now' => ['WAN2']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    wf_check($t, 'R3-8: foreign change -> routes configure under the lock, then replay; no write; last_held follows config',
+    wf_check($t, 'a change outside the engine -> routes configure under the lock, then replay; no write; last_held follows config',
         in_array('configd interface routes configure', $c, true) && in_array('configd wanfailover replay_alarm WAN2', $c, true)
         && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'write'))) === 0 && $r['state']['last_held'] === ['WAN2']);
 

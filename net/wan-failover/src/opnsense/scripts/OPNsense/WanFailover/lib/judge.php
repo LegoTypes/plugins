@@ -24,7 +24,8 @@ const WF_UNKNOWN = 'unknown';
 /**
  * dpinger_status() prints "~" when average, deviation and loss are all 0: a perfect link, or no data at
  * all (sends failing). Core then reports the gateway down in the second case, so "~" on a dpinger that
- * has run a whole time_period counts as 0% loss only while core does not call it down (review R3-10).
+ * has run a whole time_period counts as 0% loss only while core does not call it down: a dead link would
+ * otherwise read as a perfect one.
  *
  * @param array{loss: ?float, tilde: bool, status: string, sock_age: ?int, time_period: int} $w
  */

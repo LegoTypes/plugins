@@ -51,7 +51,7 @@ wf_register_suite('holds', function (): int {
     wf_check($t, 'alternative last settled 210 s ago (> fresh 120): no hold', $p['hold'] === []);
 
     $p = wf_plan_holds(['PRIMARY_WAN' => wf_t_h(WF_UNKNOWN, WF_CLEAN, ['raw_loss' => 40.0]), 'WAN2' => wf_t_h(WF_BAD, WF_BAD, ['rank' => 2])], $now, 120);
-    wf_check($t, 'alternative young with raw loss 40% > losslow: no hold (N3)', $p['hold'] === []);
+    wf_check($t, 'alternative young with raw loss 40% > losslow: no hold, as a lossy alternative backs none', $p['hold'] === []);
 
     $p = wf_plan_holds(['PRIMARY_WAN' => wf_t_h(WF_CLEAN, WF_CLEAN), 'WAN2' => wf_t_h(WF_MARGINAL, WF_MARGINAL, ['rank' => 2, 'held' => true, 'raw_loss' => 5.0])], $now, 120);
     wf_check($t, 'held WAN2 at 5% (marginal) stays held', $p['release'] === [] && $p['hold'] === []);

@@ -65,7 +65,7 @@ wf_register_suite('state', function (): int {
     $r = wf_reconcile($rec('b500', 'WAN2'), ['WAN2' => false], [], ['WAN2'], 'b500');
     wf_check($t, 'held with force_down=0 was released by hand', $r['owned'] === [] && $r['manual_released'] === ['WAN2']);
     $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'hold'], [], 'b500');
-    wf_check($t, 'pending hold that landed: redo replay and kill (N5a), not foreign', $r['redo_apply'] === ['WAN2']
+    wf_check($t, 'pending hold that landed (a crash between the save and the replay): redo replay and kill, not foreign', $r['redo_apply'] === ['WAN2']
         && $r['apply_pending'] === ['WAN2' => 'hold'] && $r['foreign'] === []);
     $r = wf_reconcile([], $fd, ['WAN2' => 'hold'], [], 'b500');
     wf_check($t, 'pending hold that never saved: dropped', $r['redo_apply'] === [] && $r['apply_pending'] === []);
@@ -74,7 +74,7 @@ wf_register_suite('state', function (): int {
     $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'release'], ['WAN2'], 'b500');
     wf_check($t, 'pending release that never saved: dropped', $r['redo_replay'] === [] && $r['apply_pending'] === []);
     $r = wf_reconcile($rec('b500', 'WAN2'), $fd, [], [], 'b500');
-    wf_check($t, 'held gained outside the engine (a revert): foreign (R3-8)', $r['foreign'] === ['WAN2']);
+    wf_check($t, 'held gained outside the engine (a revert): foreign, so routing is re-synced', $r['foreign'] === ['WAN2']);
     $r = wf_reconcile([], $fd, [], ['WAN2'], 'b500');
     wf_check($t, 'held lost outside the engine: foreign', $r['foreign'] === ['WAN2']);
     $r = wf_reconcile($rec('b500', 'GONE'), $fd, [], ['GONE'], 'b500');
@@ -151,7 +151,7 @@ wf_register_suite('state', function (): int {
     wf_check($t, 'save creates the directory and round-trips', !$l['corrupt'] && $l['state']['apply_pending'] === ['WAN2' => 'hold']);
     file_put_contents($path, '{"version":3,"judgements":');
     $l = wf_state_load($path, 'b500');
-    wf_check($t, 'RF2: truncated file loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['judgements'] === []);
+    wf_check($t, 'a truncated file loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['judgements'] === []);
     file_put_contents($path, '{"version":2,"boot_time":1791270672}');
     $l = wf_state_load($path, 'b500');
     wf_check($t, 'another state version loads fresh with the live boot id, not flagged corrupt (no release on upgrade)',

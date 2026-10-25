@@ -35,7 +35,7 @@ wf_register_suite('tailscale', function (): int {
     $planned = $ts;
     $planned['expected_default'] = $B;
     $r = wf_tailscale_decide($planned, $B, 1030, 90, 300);
-    wf_check($t, 'planner-caused change matching expected: immediate restart (N11)', $r['restart']);
+    wf_check($t, 'planner-caused change matching expected: immediate restart', $r['restart']);
 
     $cool = $r['ts'];
     $cool['expected_default'] = $A;

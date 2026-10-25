@@ -92,7 +92,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
                 $written = ($io['write'])($changes, $plan['expected'], $plan['records_after']);
                 ($io['crash_point'])('after-save');
             }
-            /* a write that only prunes the held list changes no gateway: no reconfigure, no dpinger restarts */
+            /* a write that only prunes hold records changes no gateway: no reconfigure, no dpinger restarts */
             if ($written['ok'] && ($changes !== [] || $plan['foreign'] !== [])) {
                 $resynced = trim(($io['configd'])('interface routes configure', [])) !== 'failed';
             }

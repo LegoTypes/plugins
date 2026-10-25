@@ -15,12 +15,11 @@ declare(strict_types=1);
  * with the same protocol and src/dst as the anchor's pre-NAT source. Incoming
  * states are never anchors, even when they carry route-to (route-to LAN rules
  * put it on the incoming state too). ICMP is skipped until its pairing has
- * been verified against a live capture (review N10).
+ * been verified against a live capture.
  *
  * A hold kills the states whose route target is the WAN's gateway@interface, floating or interface-bound,
- * by state id. pf prints a
- * state's target at the end of its id line as "<token>: <gateway>@<interface>", the token being route-to,
- * reply-to or dup-to.
+ * by state id. pf prints a state's target at the end of its id line as "<token>: <gateway>@<interface>",
+ * the token being route-to, reply-to or dup-to.
  */
 
 require_once __DIR__ . '/parsers.php';
