@@ -55,35 +55,88 @@ function wf_t_mode(string $path): int
 wf_register_suite('state', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $fd = ['PRIMARY_WAN' => false, 'WAN2' => true];
+    /* hold records as the snapshot resolves them, each stamped with a boot id: b500 is the live boot */
+    $rec = function (string $boot, string ...$names): array {
+        return array_fill_keys($names, ['boot' => $boot, 'since' => 100]);
+    };
 
-    $r = wf_reconcile(['WAN2'], $fd, [], ['WAN2']);
+    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, [], ['WAN2'], 'b500');
     wf_check($t, 'held with force_down=1 is owned', $r['owned'] === ['WAN2'] && $r['foreign'] === []);
-    $r = wf_reconcile(['WAN2'], ['WAN2' => false], [], ['WAN2']);
+    $r = wf_reconcile($rec('b500', 'WAN2'), ['WAN2' => false], [], ['WAN2'], 'b500');
     wf_check($t, 'held with force_down=0 was released by hand', $r['owned'] === [] && $r['manual_released'] === ['WAN2']);
-    $r = wf_reconcile(['WAN2'], $fd, ['WAN2' => 'hold'], []);
+    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'hold'], [], 'b500');
     wf_check($t, 'pending hold that landed: redo replay and kill (N5a), not foreign', $r['redo_apply'] === ['WAN2']
         && $r['apply_pending'] === ['WAN2' => 'hold'] && $r['foreign'] === []);
-    $r = wf_reconcile([], $fd, ['WAN2' => 'hold'], []);
+    $r = wf_reconcile([], $fd, ['WAN2' => 'hold'], [], 'b500');
     wf_check($t, 'pending hold that never saved: dropped', $r['redo_apply'] === [] && $r['apply_pending'] === []);
-    $r = wf_reconcile([], ['WAN2' => false], ['WAN2' => 'release'], ['WAN2']);
+    $r = wf_reconcile([], ['WAN2' => false], ['WAN2' => 'release'], ['WAN2'], 'b500');
     wf_check($t, 'pending release that landed: redo replay, not foreign', $r['redo_replay'] === ['WAN2'] && $r['foreign'] === []);
-    $r = wf_reconcile(['WAN2'], $fd, ['WAN2' => 'release'], ['WAN2']);
+    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'release'], ['WAN2'], 'b500');
     wf_check($t, 'pending release that never saved: dropped', $r['redo_replay'] === [] && $r['apply_pending'] === []);
-    $r = wf_reconcile(['WAN2'], $fd, [], []);
+    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, [], [], 'b500');
     wf_check($t, 'held gained outside the engine (a revert): foreign (R3-8)', $r['foreign'] === ['WAN2']);
-    $r = wf_reconcile([], $fd, [], ['WAN2']);
+    $r = wf_reconcile([], $fd, [], ['WAN2'], 'b500');
     wf_check($t, 'held lost outside the engine: foreign', $r['foreign'] === ['WAN2']);
-    $r = wf_reconcile(['GONE'], $fd, [], ['GONE']);
+    $r = wf_reconcile($rec('b500', 'GONE'), $fd, [], ['GONE'], 'b500');
     wf_check($t, 'a held name with no gateway in config is neither owned nor manual', $r['owned'] === [] && $r['manual_released'] === []);
+
+    $fdB = ['WAN_A' => false, 'WAN_B' => true];
+    $foreignLine = 'hold record for WAN_B from another boot or box; not ours, left alone';
+    $r = wf_reconcile($rec('b500', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500');
+    wf_check($t, '(o1) a record of the live boot whose gateway reads force_down 1 is owned',
+        $r['owned'] === ['WAN_B'] && $r['foreign_records'] === [] && $r['unproven'] === [] && $r['manual_released'] === []);
+    $r = wf_reconcile($rec('deadbeef', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500');
+    wf_check($t, '(o2) a record of another boot is foreign: not owned, not released by hand, logged with the spec\'s line',
+        $r['foreign_records'] === ['WAN_B'] && $r['owned'] === [] && $r['manual_released'] === []
+        && $r['log'] === [$foreignLine]);
+    $r = wf_reconcile($rec('b400', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500');
+    wf_check($t, '(o3) at runtime a record of the previous boot proves nothing: foreign',
+        $r['foreign_records'] === ['WAN_B'] && $r['owned'] === []);
+    $r = wf_reconcile($rec('b400', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500', 'b400');
+    wf_check($t, '(o3) the previous boot passed by the boot detector proves it: owned',
+        $r['owned'] === ['WAN_B'] && $r['foreign_records'] === []);
+    $r = wf_reconcile($rec('b500', 'WAN_B'), ['WAN_A' => false, 'WAN_B' => false], [], ['WAN_B'], 'b500');
+    wf_check($t, '(o4) a record of the live boot whose gateway reads force_down 0 was released by hand',
+        $r['manual_released'] === ['WAN_B'] && $r['owned'] === [] && $r['foreign_records'] === []);
+    $r = wf_reconcile($rec('deadbeef', 'WAN_B'), $fdB, [], [], 'b500');
+    $r2 = wf_reconcile([], $fdB, [], ['WAN_B'], 'b500');
+    wf_check($t, '(o5) a record that appeared outside the engine, and one that vanished, each re-sync routing once',
+        $r['foreign'] === ['WAN_B'] && $r2['foreign'] === ['WAN_B']
+        && count(array_filter($r['log'], fn (string $l): bool => str_contains($l, 'outside the engine'))) === 1);
+    $three = $rec('b400', 'WAN_A') + $rec('b500', 'WAN_B') + $rec('deadbeef', 'WAN_C');
+    wf_check($t, '(o6) the boot release set is the records stamped with the state\'s boot id, and none for an unread one',
+        wf_boot_release_set($three, 'b400') === ['WAN_A'] && wf_boot_release_set($three, '') === []
+        && wf_boot_release_set($three, 'corrupt') === []);
+    $r = wf_reconcile($three, ['WAN_A' => true, 'WAN_B' => true, 'WAN_C' => false], [], ['WAN_A', 'WAN_B', 'WAN_C'], '');
+    wf_check($t, '(o7) with the live boot id unreadable every record is unproven: kept, neither owned, released by hand nor foreign '
+        . '(the planner says so once)',
+        $r['unproven'] === ['WAN_A', 'WAN_B', 'WAN_C'] && $r['owned'] === [] && $r['manual_released'] === []
+        && $r['foreign_records'] === [] && $r['log'] === []);
+
+    $b = wf_boot_outcome($three, 0, 'b400');
+    wf_check($t, '(b1) at boot the previous boot\'s records are released and the others pruned, in one note',
+        $b['release'] === ['WAN_A'] && $b['pruned'] === ['WAN_B', 'WAN_C']
+        && $b['note'] === "boot: released WAN_A; pruned WAN_B,WAN_C (not this plugin's)");
+    $b = wf_boot_outcome($rec('b400', 'WAN_A'), 2, 'b400');
+    wf_check($t, '(b1) stale or duplicate rows are dropped and counted in the note',
+        $b['release'] === ['WAN_A'] && $b['pruned'] === []
+        && $b['note'] === 'boot: released WAN_A; dropped 2 records that name no gateway or repeat one');
+    $b = wf_boot_outcome($three, 0, 'corrupt');
+    $b2 = wf_boot_outcome($three, 0, '');
+    wf_check($t, '(b2) at boot with the state unreadable nothing is released or pruned, and the note says so',
+        $b['release'] === [] && $b['pruned'] === [] && $b['note'] === 'boot: state unreadable; no hold released' && $b2 === $b);
 
     $s = wf_state_new('b500');
     $s['installed_at'] = 400;
     $s['judgements']['WAN2'] = ['value' => 'bad'] + wf_judgement_new(400);
     $s['apply_pending'] = ['WAN2' => 'hold'];
     $s['last_held'] = ['WAN2'];
+    $s['foreign_pruned'] = ['WAN_B' => 390];
     $b = wf_boot_reset($s, 'b900');
     wf_check($t, 'boot reset clears judgements, apply_pending, last_held; keeps installed_at', $b['judgements'] === []
         && $b['apply_pending'] === [] && $b['last_held'] === [] && $b['installed_at'] === 400 && $b['boot_id'] === 'b900');
+    wf_check($t, '(b3) boot reset keeps the foreign records pruned within the hour, for the page', $b['foreign_pruned'] === ['WAN_B' => 390]);
+    unset($s['foreign_pruned']);
 
     $dir = sys_get_temp_dir() . '/wf-test-' . getmypid();
     $path = "{$dir}/state.json";
@@ -184,6 +237,7 @@ wf_register_suite('state', function (): int {
         'a dry_held of [1]' => ['dry_held' => [1]],
         'a dry_held that is no list' => ['dry_held' => ['x' => 'WAN_A']],
         'a said value 1' => ['said' => ['unresolved' => 1]],
+        'a foreign_pruned value "x"' => ['foreign_pruned' => ['WAN_B' => 'x']],
     ];
     foreach ($nested as $what => $fields) {
         file_put_contents("{$d}/state.json", json_encode(['version' => 3] + $fields));
@@ -317,5 +371,19 @@ wf_register_suite('state', function (): int {
         wf_import_legacy_held('u1', ['u1' => 'WAN_A'], '', 1000) === []);
     wf_check($t, '(m3) an empty legacy held list gives no hold record',
         wf_import_legacy_held('', ['u1' => 'WAN_A'], 'b500', 1000) === []);
+    $p = wf_legacy_import_plan(null, ['u1' => 'WAN_A'], 'b500', 1000);
+    wf_check($t, '(m4) with no legacy held node there is nothing to import', !$p['import'] && $p['records'] === [] && $p['lines'] === []);
+    $p = wf_legacy_import_plan('', ['u1' => 'WAN_A'], 'b500', 1000);
+    wf_check($t, '(m4) an empty legacy held node (1.3_1 holding nothing) is imported: no record, the node removed',
+        $p['import'] && $p['records'] === [] && $p['lines'] === []);
+    $p = wf_legacy_import_plan('u1,u9', ['u1' => 'WAN_A'], 'b500', 1000);
+    wf_check($t, '(m5) a legacy list is imported with one line per carried hold and per dropped entry',
+        $p['import'] && $p['records'] === [['gateway' => 'u1', 'boot' => 'b500', 'since' => 1000]]
+        && $p['lines'] === [[LOG_NOTICE, 'hold of WAN_A carried over, taken in boot b500'],
+                            [LOG_NOTICE, 'held entry u9 names no gateway; dropped']]);
+    $p = wf_legacy_import_plan('u1', ['u1' => 'WAN_A'], '', 1000);
+    wf_check($t, '(m5) with the boot id unreadable nothing is carried over, and one warning names what keeps its force_down',
+        $p['import'] && $p['records'] === [] && $p['lines'] === [[LOG_WARNING,
+            'kern.boot_id cannot be read, so no hold is carried over; each of WAN_A keeps its force_down until it is cleared by hand']]);
     return wf_tally_report('state', $t);
 });

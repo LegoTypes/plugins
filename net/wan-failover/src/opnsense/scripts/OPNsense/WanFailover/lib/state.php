@@ -8,8 +8,9 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Runtime state (spec 2026-10-05 section 3.8): what does not belong in config. Ownership itself -- the
- * hold records -- is in the plugin's Holds model, saved with force_down; this file only resumes an apply a crash
- * interrupted and notices held changes the engine did not make. The file is root's alone and read as a regular file
+ * hold records -- is in the plugin's Holds model, saved with force_down, and a record proves a hold by the boot id it
+ * carries (wf_reconcile()); this file only resumes an apply a crash interrupted, notices held changes the engine did
+ * not make and knows the boot before, which the early hook releases. The file is root's alone and read as a regular file
  * only, and a field of the wrong type discards it: wrong-typed state would throw a TypeError every minute, which
  * stops failover. The file helpers below touch the paths they are given; the rest is pure.
  */
@@ -24,18 +25,20 @@ const WF_STATE_VERSION = 3;
  *               no_rehold: array<string, true>, pending_failbacks: array<string, array{since: int, clean_since: ?int, due: ?int}>, ts: array,
  *               unowned_alerted_at: array<string, int>, apply_pending: array<string, string>, last_held: list<string>,
  *               contract_last: string, contract_judging_since: ?int, boot_note: ?string, dry_held: list<string>,
- *               said: array<string, string>, gateway_ips: array<string, string>}
+ *               said: array<string, string>, gateway_ips: array<string, string>, foreign_pruned: array<string, int>}
  *
  * gateway_ips holds each WAN's last known gateway address: a DHCP WAN loses its address with its link, while
- * the states it carried still route to the old one. A field added later merges in from these defaults, so it
- * needs no version change.
+ * the states it carried still route to the old one. foreign_pruned holds when a hold record the plugin did not take
+ * was pruned, by gateway, for the page while that gateway stays forced down. A field added later merges in from these
+ * defaults, so it needs no version change.
  */
 function wf_state_new(string $bootId): array
 {
     return ['version' => WF_STATE_VERSION, 'boot_id' => $bootId, 'installed_at' => null, 'last_now' => null,
             'judgements' => [], 'no_rehold' => [], 'pending_failbacks' => [], 'ts' => wf_ts_new(),
             'unowned_alerted_at' => [], 'apply_pending' => [], 'last_held' => [], 'contract_last' => '',
-            'contract_judging_since' => null, 'boot_note' => null, 'dry_held' => [], 'said' => [], 'gateway_ips' => []];
+            'contract_judging_since' => null, 'boot_note' => null, 'dry_held' => [], 'said' => [], 'gateway_ips' => [],
+            'foreign_pruned' => []];
 }
 
 /**
@@ -200,6 +203,7 @@ function wf_state_spec(): array
         'dry_held' => ['#' => 'string'],
         'said' => ['*' => 'string'],
         'gateway_ips' => 'array',
+        'foreign_pruned' => ['*' => 'int'],
     ];
 }
 
@@ -311,30 +315,49 @@ function wf_state_save(string $path, array $state): void
 }
 
 /**
- * @param list<string> $held names in the plugin's held list that resolve to a gateway
+ * Which hold records are the plugin's. A record proves a hold only by the boot that took it: this boot, or, passed
+ * by the planner's boot detector alone, the boot before. A proven record is owned while its gateway reads force_down
+ * 1, and was released by hand once it reads 0. Any other record (a restored backup, a hand-edited config) is foreign:
+ * pruned, and its gateway's force_down left as it is. With the live boot id unreadable nothing can be proven, so
+ * every record is kept as it is, neither released nor pruned (unproven; the planner says so). Names with no
+ * configured gateway are skipped.
+ *
+ * @param array<string, array{boot: string, since: int}> $records the hold records by gateway name (wf_resolve_records())
  * @param array<string, bool> $forceDown every configured gateway name => force_down
  * @param array<string, string> $applyPending name => hold|release, written before an engine save
- * @param list<string> $lastHeld the held list the engine last wrote (or last saw after a foreign change)
+ * @param list<string> $lastHeld the record names the engine last wrote (or last saw after a foreign change)
  * @return array{owned: list<string>, manual_released: list<string>, redo_apply: list<string>, redo_replay: list<string>,
- *               foreign: list<string>, apply_pending: array<string, string>, log: list<string>}
+ *               foreign: list<string>, apply_pending: array<string, string>, log: list<string>,
+ *               foreign_records: list<string>, unproven: list<string>}
  */
-function wf_reconcile(array $held, array $forceDown, array $applyPending, array $lastHeld): array
+function wf_reconcile(array $records, array $forceDown, array $applyPending, array $lastHeld, string $liveBoot,
+                      string $prevBoot = ''): array
 {
     $out = ['owned' => [], 'manual_released' => [], 'redo_apply' => [], 'redo_replay' => [], 'foreign' => [],
-            'apply_pending' => [], 'log' => []];
-    foreach ($held as $name) {
+            'apply_pending' => [], 'log' => [], 'foreign_records' => [], 'unproven' => []];
+    $proven = [];
+    foreach ($records as $name => $r) {
         if (!array_key_exists($name, $forceDown)) {
             continue;
         }
-        if ($forceDown[$name]) {
-            $out['owned'][] = $name;
+        if ($liveBoot === '') {
+            $out['unproven'][] = $name;
+        } elseif ($r['boot'] !== $liveBoot && ($prevBoot === '' || $r['boot'] !== $prevBoot)) {
+            $out['foreign_records'][] = $name;
+            $out['log'][] = "hold record for {$name} from another boot or box; not ours, left alone";
         } else {
-            $out['manual_released'][] = $name;
-            $out['log'][] = "{$name} released by hand; it leaves held and is not re-held until it reads up and then over threshold";
+            $proven[$name] = true;
+            if ($forceDown[$name]) {
+                $out['owned'][] = $name;
+            } else {
+                $out['manual_released'][] = $name;
+                $out['log'][] = "{$name} released by hand; it leaves held and is not re-held until it reads up and then over threshold";
+            }
         }
     }
     foreach ($applyPending as $name => $what) {
-        $inHeld = in_array($name, $held, true);
+        /* a hold is finished (replay, state kill) only on a record this plugin wrote; a release, once no record is left */
+        $inHeld = $what === 'hold' ? isset($proven[$name]) : isset($records[$name]);
         if ($what === 'hold' && $inHeld) {
             $out['redo_apply'][] = $name;
             $out['apply_pending'][$name] = 'hold';
@@ -347,12 +370,58 @@ function wf_reconcile(array $held, array $forceDown, array $applyPending, array 
             $out['log'][] = "apply-resumed {$name}: the {$what} was never saved; dropped";
         }
     }
-    $changed = array_merge(array_diff($held, $lastHeld), array_diff($lastHeld, $held));
+    $names = array_keys($records);
+    $changed = array_merge(array_diff($names, $lastHeld), array_diff($lastHeld, $names));
     $out['foreign'] = array_values(array_diff(array_unique($changed), array_keys($applyPending)));
     foreach ($out['foreign'] as $name) {
         $out['log'][] = "held changed outside the engine for {$name} (a config revert or restore); re-syncing routing";
     }
     return $out;
+}
+
+/**
+ * The records the early hook releases: those the boot before took, by the state's boot id. A state with no boot id,
+ * or one that could not be read, proves none.
+ *
+ * @param array<string, array{boot: string, since: int}> $records by gateway name
+ * @return list<string>
+ */
+function wf_boot_release_set(array $records, string $stateBootId): array
+{
+    if ($stateBootId === '' || $stateBootId === 'corrupt') {
+        return [];
+    }
+    return array_keys(array_filter($records, fn (array $r): bool => $r['boot'] === $stateBootId));
+}
+
+/**
+ * What the early hook does with the hold records, and the note the first evaluation logs for it: the boot before's
+ * records released, every other one pruned with its gateway left as it is, all in one write. With the state unreadable
+ * nothing is proven and nothing is written; the first evaluation then prunes the records as foreign.
+ *
+ * @param array<string, array{boot: string, since: int}> $records by gateway name
+ * @param int $dropped rows that name no gateway or repeat one (wf_resolve_records()'s stale and dupes)
+ * @return array{release: list<string>, pruned: list<string>, note: string}
+ */
+function wf_boot_outcome(array $records, int $dropped, string $stateBootId): array
+{
+    if ($stateBootId === '' || $stateBootId === 'corrupt') {
+        return ['release' => [], 'pruned' => [], 'note' => 'boot: state unreadable; no hold released'];
+    }
+    $release = wf_boot_release_set($records, $stateBootId);
+    $pruned = array_values(array_diff(array_keys($records), $release));
+    $parts = [];
+    if ($release !== []) {
+        $parts[] = 'released ' . implode(',', $release);
+    }
+    if ($pruned !== []) {
+        $parts[] = 'pruned ' . implode(',', $pruned) . " (not this plugin's)";
+    }
+    if ($dropped > 0) {
+        $parts[] = "dropped {$dropped} " . ($dropped === 1 ? 'record that names no gateway or repeats one'
+            : 'records that name no gateway or repeat one');
+    }
+    return ['release' => $release, 'pruned' => $pruned, 'note' => 'boot: ' . implode('; ', $parts)];
 }
 
 /**
@@ -379,8 +448,44 @@ function wf_import_legacy_held(string $csv, array $nameByUuid, string $bootId, i
 }
 
 /**
+ * The import of 1.3_1's held list, decided: whether there is one (its raw config node; null when absent), the records
+ * it makes (wf_import_legacy_held()) and the lines to log. A node that is there is imported even when empty, as
+ * 1.3_1 left it with nothing held, so that the node is removed. Both the migration and an evaluation that finds the
+ * node still there apply this one decision.
+ *
+ * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @return array{import: bool, records: list<array{gateway: string, boot: string, since: int}>,
+ *               lines: list<array{0: int, 1: string}>} lines: priority and text
+ */
+function wf_legacy_import_plan(?string $csv, array $nameByUuid, string $bootId, int $now): array
+{
+    if ($csv === null) {
+        return ['import' => false, 'records' => [], 'lines' => []];
+    }
+    $records = wf_import_legacy_held($csv, $nameByUuid, $bootId, $now);
+    $lines = [];
+    foreach ($records as $r) {
+        $lines[] = [LOG_NOTICE, 'hold of ' . $nameByUuid[$r['gateway']] . " carried over, taken in boot {$bootId}"];
+    }
+    $named = [];
+    foreach (array_unique(explode(',', $csv)) as $uuid) {
+        if (isset($nameByUuid[$uuid])) {
+            $named[] = $nameByUuid[$uuid];
+        } elseif ($uuid !== '') {
+            $lines[] = [LOG_NOTICE, "held entry {$uuid} names no gateway; dropped"];
+        }
+    }
+    if ($bootId === '' && $named !== []) {
+        $lines[] = [LOG_WARNING, 'kern.boot_id cannot be read, so no hold is carried over; each of ' . implode(', ', $named)
+            . ' keeps its force_down until it is cleared by hand'];
+    }
+    return ['import' => true, 'records' => $records, 'lines' => $lines];
+}
+
+/**
  * Discard everything measured before a reboot (spec 3.11). Ownership in config is released by the
- * caller (boot.php, or evaluate's own boot detector); this resets the runtime side only.
+ * caller (boot.php, or evaluate's own boot detector); this resets the runtime side only. The foreign records pruned
+ * within the hour stay, for the page, while their gateways stay forced down.
  *
  * @param array $state the shape returned by wf_state_new()
  * @return array the shape returned by wf_state_new()
@@ -391,5 +496,6 @@ function wf_boot_reset(array $state, string $bootId): array
     $new['installed_at'] = $state['installed_at'] ?? null;
     $new['unowned_alerted_at'] = $state['unowned_alerted_at'] ?? [];
     $new['contract_last'] = $state['contract_last'] ?? '';
+    $new['foreign_pruned'] = $state['foreign_pruned'] ?? [];
     return $new;
 }

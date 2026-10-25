@@ -9,10 +9,12 @@ declare(strict_types=1);
  *
  * Apply a plan in the order of spec 2026-10-05 section 3.7, through injected I/O so order and failure
  * handling are testable. wf_live_io() binds the real I/O: configd for every reconfigure, kill and restart
- * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the one config writer, which
- * saves force_down and the hold records together without a config backup (user decision, R3-11).
- * wf_live_io()'s closures call snapshot.php functions; evaluate.php loads snapshot.php first. They are not
- * required here so the pure tests can load this file without OPNsense's includes.
+ * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the evaluation's config writer, which
+ * saves force_down and the hold records together without a config backup (the owner's decision). The one other
+ * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()); the migration
+ * shares its import (wf_holds_import_into()). wf_live_io()'s closures and wf_write_holds() call snapshot.php
+ * functions; evaluate.php loads snapshot.php first. They are not required here so the pure tests can load this file
+ * without OPNsense's includes.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -246,6 +248,121 @@ function wf_write_holds(array $changes, array $heldAfterUuids): bool
 }
 
 /**
+ * Core's gateway lock, the one its routing reconfigure takes, tried each second for 30 s; opened close-on-exec.
+ *
+ * @return resource|null the lock held, or null when it stayed busy or could not be opened
+ */
+function wf_gateway_lock(): mixed
+{
+    $lock = fopen('/tmp/filter_reload_gateway.lock', 'ce');
+    if ($lock === false) {
+        return null;
+    }
+    for ($i = 0; $i < 30; $i++) {
+        if (flock($lock, LOCK_EX | LOCK_NB)) {
+            return $lock;
+        }
+        sleep(1);
+    }
+    fclose($lock);
+    return null;
+}
+
+/**
+ * @param resource|null $lock wf_gateway_lock()'s
+ */
+function wf_gateway_unlock(mixed $lock): void
+{
+    if (is_resource($lock)) {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
+}
+
+/** Whether 1.3_1's held list is still in the config, read from the raw config: the settings model no longer has it. */
+function wf_holds_legacy_present(): bool
+{
+    return isset(\OPNsense\Core\Config::getInstance()->object()->OPNsense->WanFailover->held);
+}
+
+/**
+ * 1.3_1's held list added to $holds as hold records, as wf_legacy_import_plan() decides, against the gateways in the
+ * config as it now is. It changes the model only. The caller saves it, and only then removes the raw list
+ * (wf_holds_drop_legacy()), so a save that fails leaves the list for the next try. The migration runs this on the model
+ * core hands it, which core then saves; an evaluation runs it under its own locks (wf_holds_import_legacy()).
+ *
+ * @return ?list<array{0: int, 1: string}> the lines to log once saved (priority, text), or null when there is no list
+ */
+function wf_holds_import_into(\OPNsense\WanFailover\Holds $holds, string $bootId, int $now): ?array
+{
+    $root = \OPNsense\Core\Config::getInstance()->object();
+    $csv = isset($root->OPNsense->WanFailover->held) ? (string)$root->OPNsense->WanFailover->held : null;
+    $nameByUuid = [];
+    if ($csv !== null) {
+        foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $uuid => $gw) {
+            $nameByUuid[(string)$uuid] = $gw->name->getValue();
+        }
+    }
+    $plan = wf_legacy_import_plan($csv, $nameByUuid, $bootId, $now);
+    if (!$plan['import']) {
+        return null;
+    }
+    foreach ($plan['records'] as $r) {
+        $holds->hold->Add()->setNodes(['gateway' => $r['gateway'], 'boot' => $r['boot'], 'since' => (string)$r['since']]);
+    }
+    return $plan['lines'];
+}
+
+/** 1.3_1's held list removed from the raw config, so the settings model's next save cannot bring it back; the caller saves. */
+function wf_holds_drop_legacy(): void
+{
+    unset(\OPNsense\Core\Config::getInstance()->object()->OPNsense->WanFailover->held);
+}
+
+/**
+ * An evaluation's import of 1.3_1's held list, when the upgrade's migration has not run yet or failed: the gateway
+ * lock, then Config::lock() (which reloads the config), the models built after it, the records added, the raw list
+ * removed, one save without a backup, then the unlocks. It never throws: a failure is logged and the list stays for
+ * the next evaluation.
+ *
+ * @return string imported, none (no list once locked) or failed
+ */
+function wf_holds_import_legacy(string $bootId): string
+{
+    $gw = wf_gateway_lock();
+    if ($gw === null) {
+        wf_log('held list import: gateway lock busy for 30 s; the list waits for the next evaluation', LOG_WARNING);
+        return 'failed';
+    }
+    try {
+        $cfg = \OPNsense\Core\Config::getInstance();
+        $cfg->lock();
+        try {
+            $holds = new \OPNsense\WanFailover\Holds();
+            $lines = wf_holds_import_into($holds, $bootId, time());
+            if ($lines === null) {
+                return 'none';
+            }
+            $holds->serializeToConfig();
+            wf_holds_drop_legacy();
+            $cfg->save(null, false);
+        } finally {
+            $cfg->unlock();
+        }
+    } catch (\Throwable $e) {
+        wf_log('held list import failed: ' . $e->getMessage() . '; the list waits for the next evaluation', LOG_ERR);
+        return 'failed';
+    } finally {
+        wf_gateway_unlock($gw);
+    }
+    wf_log("held list import: 1.3_1's held list was still in the config, as the upgrade's migration had not run; imported");
+    foreach ($lines as [$priority, $line]) {
+        wf_log("held list import: {$line}", $priority);
+    }
+    return 'imported';
+}
+
+/**
  * @param array<string, string> $wanTargets WAN name => route target
  * @param array<string, string> $uuidByName gateway name => UUID
  * @return array{configd: callable(string, list<string>): string, write: callable(array<string, bool>, list<string>): bool,
@@ -261,25 +378,11 @@ function wf_live_io(string $statePath, array $wanTargets, array $uuidByName): ar
         'write' => fn (array $c, array $heldAfter): bool => wf_write_holds($c,
             array_values(array_filter(array_map(fn (string $n): string => $uuidByName[$n] ?? '', $heldAfter)))),
         'gw_lock' => function () use (&$lock): bool {
-            $lock = fopen('/tmp/filter_reload_gateway.lock', 'ce');
-            if ($lock === false) {
-                return false;
-            }
-            for ($i = 0; $i < 30; $i++) {
-                if (flock($lock, LOCK_EX | LOCK_NB)) {
-                    return true;
-                }
-                sleep(1);
-            }
-            fclose($lock);
-            $lock = null;
-            return false;
+            $lock = wf_gateway_lock();
+            return $lock !== null;
         },
         'gw_unlock' => function () use (&$lock): void {
-            if (is_resource($lock)) {
-                flock($lock, LOCK_UN);
-                fclose($lock);
-            }
+            wf_gateway_unlock($lock);
             $lock = null;
         },
         'status' => fn (): array => array_map(fn (array $s): string => (string)$s['status'], dpinger_status()),

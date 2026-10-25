@@ -53,9 +53,11 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
 /**
  * @return array{now: int, boot_id: string, release: ?string, failback_now: bool, enabled: bool, dry: bool, failback: bool,
  *               failback_delay: int, tailscale_restart: bool,
- *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>, held: list<string>,
- *               held_stale: list<string>, force_down: array<string, bool>, uuid_by_name: array<string, string>,
+ *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>,
+ *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
+ *               force_down: array<string, bool>, uuid_by_name: array<string, string>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>}}
+ *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile())
  */
 function wf_snapshot(): array
 {
@@ -82,7 +84,7 @@ function wf_snapshot(): array
         }
     }
     $wansRes['names'] = $usable;
-    $heldRes = wf_resolve_uuids(array_column((new \OPNsense\WanFailover\Holds())->records(), 'gateway'), $nameByUuid);
+    $holds = wf_resolve_records((new \OPNsense\WanFailover\Holds())->records(), $nameByUuid);
     $status = dpinger_status();
     $instances = dpinger_instances(true);
     $defaultOut = (string)shell_exec('/sbin/route -n get -inet default 2>/dev/null');
@@ -160,7 +162,7 @@ function wf_snapshot(): array
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
         'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
-        'held' => $heldRes['names'], 'held_stale' => $heldRes['unresolved'],
+        'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
         'force_down' => $forceDown, 'uuid_by_name' => array_flip($nameByUuid),
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale],
     ];

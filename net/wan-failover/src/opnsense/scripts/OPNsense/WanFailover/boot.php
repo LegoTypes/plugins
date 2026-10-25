@@ -9,9 +9,12 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Early-boot release (spec 2026-10-05 section 3.11). Nobody knows how long the firewall was down or
- * whether the modems rebooted too, so every held gateway is released before routing starts, in one
- * config save without a backup. The runtime state is reset only after that save landed: if it did not,
- * the state keeps the old boot id and evaluate's own boot detector releases the holds instead.
+ * whether the modems rebooted too, so every hold the plugin took is released before routing starts, in one
+ * config save without a backup. A record proves the plugin took it only by carrying the boot before's id, the one
+ * the state file names; every other record is pruned in the same save, its gateway's force_down left as it is. With
+ * the state file missing or unreadable nothing is proven and nothing is written: the first evaluation prunes the
+ * records as foreign. The runtime state is reset only after the save landed: if it did not, the state keeps the old
+ * boot id and evaluate's own boot detector releases the holds instead.
  */
 
 require_once 'script/load_phalcon.php';
@@ -22,21 +25,30 @@ require_once __DIR__ . '/lib/apply.php';
 
 try {
     $bootId = wf_boot_id();
-    $state = wf_state_load(WF_STATE, $bootId)['state'];
-    $heldUuids = array_column((new \OPNsense\WanFailover\Holds())->records(), 'gateway');
+    /* read without the live boot id, so that a missing file names no boot before and proves no record */
+    $loaded = wf_state_load(WF_STATE, '');
+    $stateBoot = $loaded['corrupt'] ? 'corrupt' : $loaded['state']['boot_id'];
+    $rows = (new \OPNsense\WanFailover\Holds())->records();
     $nameByUuid = [];
     foreach ((new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true) as $name => $g) {
         if (!empty($g['uuid'])) {
             $nameByUuid[(string)$g['uuid']] = (string)$name;
         }
     }
-    $names = wf_resolve_uuids($heldUuids, $nameByUuid)['names'];
-    if ($heldUuids === []) {
-        wf_state_save(WF_STATE, wf_boot_reset($state, $bootId));
-    } elseif (wf_write_holds(array_fill_keys($names, false), [])) {
-        /* syslog is not running yet: the first evaluation logs this note */
-        $reset = wf_boot_reset($state, $bootId);
-        $reset['boot_note'] = 'boot: released ' . (implode(',', $names) ?: 'stale held entries');
+    $records = wf_resolve_records($rows, $nameByUuid);
+    $outcome = wf_boot_outcome($records['holds'], count($records['stale']) + count($records['dupes']), $stateBoot);
+    $reset = wf_boot_reset($loaded['state'], $bootId);
+    /* syslog is not running yet: the first evaluation logs the note */
+    if ($rows === []) {
+        wf_state_save(WF_STATE, $reset);
+    } elseif ($stateBoot === '' || $stateBoot === 'corrupt') {
+        $reset['boot_note'] = $outcome['note'];
+        wf_state_save(WF_STATE, $reset);
+    } elseif (wf_write_holds(array_fill_keys($outcome['release'], false), [])) {
+        $reset['boot_note'] = $outcome['note'];
+        foreach ($outcome['pruned'] as $n) {
+            $reset['foreign_pruned'][$n] = time();
+        }
         wf_state_save(WF_STATE, $reset);
     } else {
         wf_log('boot: config write failed; the first evaluation releases the holds', LOG_WARNING);

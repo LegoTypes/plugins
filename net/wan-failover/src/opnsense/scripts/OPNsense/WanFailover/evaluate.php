@@ -51,7 +51,8 @@ function wf_main(string $mode, array $args): int
 {
     if ($mode === '--plan-from') {
         $snap = json_decode((string)file_get_contents($args[1] ?? ''), true, 64, JSON_THROW_ON_ERROR);
-        $snap += ['release' => null, 'failback_now' => false, 'failback_delay' => 0];
+        $snap += ['release' => null, 'failback_now' => false, 'failback_delay' => 0, 'holds' => [], 'holds_stale' => [],
+                  'holds_dupes' => []];
         $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
         echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
         return 0;
@@ -103,10 +104,12 @@ function wf_main(string $mode, array $args): int
         $snap = wf_snapshot();
         $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
         $s = $loaded['state'];
+        /* held only where a record of this boot proves it; foreign counts the records pruned as not the plugin's */
+        $owned = wf_reconcile($snap['holds'], $snap['force_down'], [], [], $snap['boot_id'])['owned'];
         $rows = [];
         foreach ($snap['wans'] as $n => $w) {
             $j = $s['judgements'][$n] ?? null;
-            $rows[] = ['name' => $n, 'held' => in_array($n, $snap['held'], true), 'simulated' => in_array($n, $s['dry_held'], true),
+            $rows[] = ['name' => $n, 'held' => in_array($n, $owned, true), 'simulated' => in_array($n, $s['dry_held'], true),
                        'force_down' => $w['force_down'],
                        'status' => $w['status'], 'loss' => $w['loss'], 'judgement' => $j['value'] ?? null,
                        'since' => $j['since'] ?? null, 'failback_pending' => isset($s['pending_failbacks'][$n]),
@@ -116,7 +119,7 @@ function wf_main(string $mode, array $args): int
         echo json_encode(['enabled' => $snap['enabled'], 'dry' => $snap['dry'], 'wans' => $rows,
                           'unresolved' => $snap['unresolved'], 'contract' => $snap['contract'],
                           'tailscale' => ['default_gw' => $s['ts']['default_gw'], 'restarted_at' => $s['ts']['restarted_at']],
-                          'state_corrupt' => $loaded['corrupt']]), "\n";
+                          'state_corrupt' => $loaded['corrupt'], 'foreign' => count($s['foreign_pruned'])]), "\n";
         return 0;
     }
 
@@ -142,6 +145,11 @@ function wf_main(string $mode, array $args): int
     }
     wf_trace_prune(WF_TRACE, time(), WF_TRACE_KEEP_DAYS);
 
+    /* 1.3_1's held list still in the config: an upgrade whose migration has not run yet (or failed) is imported here,
+     * before the snapshot, so a hold taken before the upgrade reads as this plugin's and not as a foreign force_down */
+    if (wf_holds_legacy_present()) {
+        wf_holds_import_legacy(wf_boot_id());
+    }
     $snap = wf_snapshot();
     $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
     if ($loaded['corrupt']) {
@@ -168,7 +176,7 @@ function wf_main(string $mode, array $args): int
     }
     /* dry run never keeps a real hold: one it finds (dry was just turned on) is released for real first */
     $dry = $snap['dry'] && $snap['enabled'] && $snap['release'] === null;
-    if ($dry && $snap['held'] !== []) {
+    if ($dry && $snap['holds'] !== []) {
         $snap['release'] = 'dry';
         $dry = false;
     }

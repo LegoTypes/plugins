@@ -30,6 +30,21 @@ wf_register_suite('snapshot', function (): int {
     wf_check($t, 'kern.boot_id unreadable is empty', wf_parse_boot_id('') === '' && wf_parse_boot_id("sysctl: unknown oid 'kern.boot_id'\n") === '');
     $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'PRIMARY_WAN', 'u2' => 'WAN2']);
     wf_check($t, 'UUIDs resolve to names; unknown ones are reported; empty ignored', $r['names'] === ['PRIMARY_WAN'] && $r['unresolved'] === ['u9']);
+    $rows = ['i1' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 100], 'i2' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 200],
+             'i3' => ['gateway' => 'ga', 'boot' => 'b400', 'since' => 150]];
+    $r = wf_resolve_records($rows, ['ga' => 'WAN_A', 'gb' => 'WAN_B']);
+    wf_check($t, '(o9) two records for one gateway keep the newer one; the other is a duplicate',
+        $r['holds'] === ['WAN_B' => ['boot' => 'b500', 'since' => 200], 'WAN_A' => ['boot' => 'b400', 'since' => 150]]
+        && $r['dupes'] === ['WAN_B'] && $r['stale'] === []);
+    $r = wf_resolve_records(['i2' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 100],
+                             'i1' => ['gateway' => 'gb', 'boot' => 'deadbeef', 'since' => 100]], ['gb' => 'WAN_B']);
+    wf_check($t, '(o9) records of one gateway with the same since keep the one with the greater item UUID',
+        $r['holds'] === ['WAN_B' => ['boot' => 'b500', 'since' => 100]] && $r['dupes'] === ['WAN_B']);
+    $r = wf_resolve_records(['i1' => ['gateway' => 'gone', 'boot' => 'b500', 'since' => 100],
+                             'i2' => ['gateway' => 'gx', 'boot' => 'b500', 'since' => 100],
+                             'i3' => ['gateway' => 'ga', 'boot' => 'b500', 'since' => 100]], ['gx' => "WAN;B\n", 'ga' => 'WAN_A']);
+    wf_check($t, 'a record naming no gateway, or a gateway whose name is not a plain token, is stale',
+        $r['holds'] === ['WAN_A' => ['boot' => 'b500', 'since' => 100]] && $r['stale'] === ['i1', 'i2'] && $r['dupes'] === []);
     wf_check($t, 'ps pid/etimes output', wf_parse_ps_etimes("  77297    56\n 81140 3600\n") === [77297 => 56, 81140 => 3600]
         && wf_parse_ps_etimes('') === []);
     wf_check($t, 'core rank: position of each managed WAN in core\'s gateway order', wf_core_rank(['Null4', 'WAN2', 'X', 'PRIMARY_WAN'], ['PRIMARY_WAN', 'WAN2'])

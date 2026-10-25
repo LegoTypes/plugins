@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Pure parsers for the live snapshot: ifconfig, route get, kern.boot_id, UUID resolution.
+ * Pure parsers for the live snapshot: ifconfig, route get, kern.boot_id, UUID and hold record resolution.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -128,4 +128,38 @@ function wf_resolve_uuids(array $uuids, array $nameByUuid): array
         }
     }
     return ['names' => $names, 'unresolved' => $unresolved];
+}
+
+/**
+ * The hold records by gateway name. A row whose gateway UUID names no gateway, or a gateway whose name is not a plain
+ * token, is stale; of two rows for one gateway the newer by since is kept (then the greater item UUID) and the other
+ * is a duplicate. The next write prunes both kinds.
+ *
+ * @param array<string, array{gateway: string, boot: string, since: int}> $rows Holds::records(), by item UUID
+ * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
+ * @return array{holds: array<string, array{boot: string, since: int}>, stale: list<string>, dupes: list<string>}
+ *     stale: the rows' item UUIDs; dupes: a gateway name for each row dropped as a duplicate
+ */
+function wf_resolve_records(array $rows, array $nameByUuid): array
+{
+    $best = [];
+    $stale = [];
+    $dupes = [];
+    foreach ($rows as $item => $row) {
+        $item = (string)$item;
+        $name = $nameByUuid[$row['gateway']] ?? null;
+        if ($name === null || !wf_name_ok($name)) {
+            $stale[] = $item;
+            continue;
+        }
+        if (isset($best[$name])) {
+            $dupes[] = $name;
+            [$since, $kept] = $best[$name];
+            if ($row['since'] < $since || ($row['since'] === $since && strcmp($item, $kept) < 0)) {
+                continue;
+            }
+        }
+        $best[$name] = [$row['since'], $item, ['boot' => $row['boot'], 'since' => $row['since']]];
+    }
+    return ['holds' => array_map(fn (array $b): array => $b[2], $best), 'stale' => $stale, 'dupes' => $dupes];
 }

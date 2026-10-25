@@ -8,9 +8,11 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * The planner (spec 2026-10-05). Pure: (snapshot, runtime state) -> plan and new state. Ownership comes
- * from the snapshot's held list (the model); the plan's held_after is what apply writes back, with
- * force_down, in one config save. Failback kills and the Tailscale restart are decided in apply against
- * live data, from the plan's failback and expected_default entries.
+ * from the snapshot's hold records (the Holds model), each proved by the boot id it carries (wf_reconcile()): a
+ * record the plugin did not take is pruned and its gateway left as it is, never released. The plan's records_after
+ * is what apply writes back, with force_down, in one config save; expected is the force_down the snapshot read for
+ * each gateway the save changes. Failback kills and the Tailscale restart are decided in apply against live data,
+ * from the plan's failback and expected_default entries.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -44,6 +46,7 @@ function wf_plan(array $snap, array $state): array
         $state['ts']['cur_since'] = $state['ts']['cur_since'] === null ? null : $now;
         $state['ts']['restarted_at'] = null;
         $state['unowned_alerted_at'] = [];
+        $state['foreign_pruned'] = array_map(fn (int $at): int => $now, $state['foreign_pruned']);
     }
     $state['last_now'] = $now;
     $state['installed_at'] = $state['installed_at'] ?? $now;
@@ -60,20 +63,45 @@ function wf_plan(array $snap, array $state): array
 
     /* an unreadable boot id (reported as a command drift) proves nothing either way */
     $releaseAll = null;
+    $prevBoot = '';
     if ($snap['boot_id'] !== '' && $state['boot_id'] === '') {
         $state['boot_id'] = $snap['boot_id'];
     } elseif ($snap['boot_id'] !== '' && $state['boot_id'] !== $snap['boot_id']) {
+        /* the boot before proves the records it took; a state that could not be read names no boot before */
+        $unread = $state['boot_id'] === 'corrupt';
+        $prevBoot = $unread ? '' : $state['boot_id'];
         $state = wf_boot_reset($state, $snap['boot_id']);
         $state['last_now'] = $now;
-        $state['last_held'] = $snap['held'];
-        $releaseAll = 'boot the early hook did not handle';
+        $state['last_held'] = array_keys($snap['holds']);
+        $releaseAll = $unread ? 'the state file could not be read' : 'boot the early hook did not handle';
     }
 
-    $rec = wf_reconcile($snap['held'], $snap['force_down'], $state['apply_pending'], $state['last_held']);
+    $records = $snap['holds'];
+    $rec = wf_reconcile($records, $snap['force_down'], $state['apply_pending'], $state['last_held'], $snap['boot_id'], $prevBoot);
     $state['apply_pending'] = $rec['apply_pending'];
     $log = array_merge($log, $rec['log']);
     foreach ($rec['manual_released'] as $n) {
         $state['no_rehold'][$n] = true;
+    }
+    $line = wf_once($state['said'], 'unproven', $rec['unproven'] === [] ? null : 'kern.boot_id unreadable: the hold records for '
+        . implode(', ', $rec['unproven']) . ' are neither released nor pruned until it reads again');
+    if ($line !== null) {
+        $log[] = $line;
+    }
+    /* the page notes a pruned foreign record while its gateway stays forced down, for the unowned alert's hour */
+    foreach ($rec['foreign_records'] as $n) {
+        $state['foreign_pruned'][$n] = $now;
+    }
+    foreach ($state['foreign_pruned'] as $n => $at) {
+        if ($now - $at >= 3600 || !($snap['force_down'][$n] ?? false)) {
+            unset($state['foreign_pruned'][$n]);
+        }
+    }
+    foreach ($snap['holds_dupes'] as $n) {
+        $log[] = "a second hold record for {$n} pruned; the newer one is kept";
+    }
+    if ($snap['holds_stale'] !== []) {
+        $log[] = count($snap['holds_stale']) . ' hold record(s) naming no usable gateway pruned';
     }
     $line = wf_once($state['said'], 'unresolved', $snap['unresolved'] === [] ? null
         : 'wans entries ' . implode(', ', $snap['unresolved']) . ' reference no saved IPv4 gateway; ignored');
@@ -116,19 +144,23 @@ function wf_plan(array $snap, array $state): array
     }
 
     $owned = $rec['owned'];
-    $prune = $rec['manual_released'] !== [] || $snap['held_stale'] !== [];
+    $prune = $rec['manual_released'] !== [] || $rec['foreign_records'] !== [] || $snap['holds_stale'] !== []
+        || $snap['holds_dupes'] !== [];
     $notInWans = array_values(array_diff($owned, array_keys($snap['wans'])));
     if ($releaseAll !== null) {
         if ($owned !== []) {
             $log[] = "releasing every held gateway: {$releaseAll}";
         }
-        return wf_plan_result([], $owned, [], $prune, $rec, [], null, $alerts, $log, true, $state, $snap);
+        $after = wf_records_after($records, $rec['unproven'], [], $snap['boot_id'], $now);
+        return wf_plan_result([], $owned, $after, $prune, $rec, [], null, $alerts, $log, true, $state, $snap);
     }
 
     $wans = [];
     foreach ($snap['wans'] as $name => $w) {
         $held = in_array($name, $owned, true);
-        $manual = $w['force_down'] && !in_array($name, $snap['held'], true);
+        /* forced down and not ours: by hand, or by a record that proves nothing (pruned now, or unproven) */
+        $manual = $w['force_down'] && !$held;
+        $unproven = in_array($name, $rec['unproven'], true);
         $input = $w + ['manual_down' => $manual];
         $reading = wf_reading($input, WF_DEAD_MIN_SECONDS);
         $settled = wf_settled($input);
@@ -138,13 +170,14 @@ function wf_plan(array $snap, array $state): array
             $j['recovering'] = true;
         }
         $state['judgements'][$name] = $j;
-        if ($manual) {
+        /* an unproven record may well be ours: no alert until the boot id reads again */
+        if ($manual && !$unproven) {
             $last = $state['unowned_alerted_at'][$name] ?? null;
             if ($last === null || $now - $last >= 3600) {
                 $alerts[] = "unowned-force-down {$name}: force_down is set but not by wan-failover; left alone";
                 $state['unowned_alerted_at'][$name] = $now;
             }
-        } else {
+        } elseif (!$manual) {
             unset($state['unowned_alerted_at'][$name]);
         }
         if ($reading === WF_CLEAN || $reading === WF_MARGINAL) {
@@ -168,7 +201,8 @@ function wf_plan(array $snap, array $state): array
         $hold = [];
     }
     $release = array_values(array_unique(array_merge($h['release'], $notInWans)));
-    $heldAfter = array_values(array_unique(array_merge(array_diff($owned, $release), $hold)));
+    $after = wf_records_after($records, array_merge(array_diff($owned, $release), $rec['unproven']), $hold, $snap['boot_id'], $now);
+    $heldAfter = array_keys($after);
 
     if (!$snap['failback'] && $state['pending_failbacks'] !== []) {
         $log[] = 'move connections back is off: pending failbacks dropped (' . implode(',', array_keys($state['pending_failbacks'])) . ')';
@@ -254,7 +288,28 @@ function wf_plan(array $snap, array $state): array
         }
         $expected = $best === null ? null : $snap['wans'][$best]['route_target'];
     }
-    return wf_plan_result($hold, $release, $heldAfter, $prune, $rec, $failback, $expected, $alerts, $log, false, $state, $snap);
+    return wf_plan_result($hold, $release, $after, $prune, $rec, $failback, $expected, $alerts, $log, false, $state, $snap);
+}
+
+/**
+ * The hold records after the plan's write: those kept keep their boot and since, and a new hold is stamped with the
+ * snapshot's boot and now.
+ *
+ * @param array<string, array{boot: string, since: int}> $records the snapshot's, by gateway name
+ * @param list<string> $keep the names whose records stay
+ * @param list<string> $hold the names held anew
+ * @return array<string, array{boot: string, since: int}>
+ */
+function wf_records_after(array $records, array $keep, array $hold, string $bootId, int $now): array
+{
+    $after = [];
+    foreach ($keep as $n) {
+        $after[$n] = $records[$n];
+    }
+    foreach ($hold as $n) {
+        $after[$n] = ['boot' => $bootId, 'since' => $now];
+    }
+    return $after;
 }
 
 /**
@@ -277,16 +332,17 @@ function wf_failback_wait(array $p, int $now, int $delay): array
 }
 
 /**
- * Dry run simulates ownership: the planner sees the simulated holds as held and force_down, exactly as
- * a live hold would look, so a dry run decides each change once and rehearses hysteresis and failback.
+ * Dry run simulates ownership: the planner sees the simulated holds as records of the live boot and force_down,
+ * exactly as a live hold would look, so a dry run decides each change once and rehearses hysteresis and failback.
  *
  * @param list<string> $dryHeld the state's simulated holds
  */
 function wf_dry_view(array $snap, array $dryHeld): array
 {
     $held = array_values(array_filter($dryHeld, fn (string $n): bool => isset($snap['wans'][$n])));
-    $snap['held'] = $held;
-    $snap['held_stale'] = [];
+    $snap['holds'] = array_fill_keys($held, ['boot' => $snap['boot_id'], 'since' => $snap['now']]);
+    $snap['holds_stale'] = [];
+    $snap['holds_dupes'] = [];
     foreach ($held as $n) {
         $snap['force_down'][$n] = true;
         $snap['wans'][$n]['force_down'] = true;
@@ -309,15 +365,15 @@ function wf_dry_after(array $state, array $plan): array
 }
 
 /**
- * Leave dry run: drop the simulated holds and take the real held list as the last one written, so the
+ * Leave dry run: drop the simulated holds and take the real records' names as the last ones written, so the
  * first live plan does not read the difference as a foreign config change.
  *
- * @param array{held: list<string>} $snap the live snapshot
+ * @param array{holds: array<string, array{boot: string, since: int}>} $snap the live snapshot
  */
 function wf_dry_exit(array $state, array $snap): array
 {
     if ($state['dry_held'] !== []) {
-        $state['last_held'] = $snap['held'];
+        $state['last_held'] = array_keys($snap['holds']);
         $state['dry_held'] = [];
     }
     return $state;
@@ -326,14 +382,14 @@ function wf_dry_exit(array $state, array $snap): array
 /**
  * @param list<string> $hold
  * @param list<string> $release
- * @param list<string> $heldAfter
- * @param array{redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>} $rec
+ * @param array<string, array{boot: string, since: int}> $recordsAfter wf_records_after()
+ * @param array{redo_apply: list<string>, redo_replay: list<string>, foreign: list<string>, foreign_records: list<string>} $rec
  * @param array<string, array{top: bool}> $failback
  * @param list<string> $alerts
  * @param list<string> $log
  * @return array{plan: array, state: array}
  */
-function wf_plan_result(array $hold, array $release, array $heldAfter, bool $prune, array $rec, array $failback,
+function wf_plan_result(array $hold, array $release, array $recordsAfter, bool $prune, array $rec, array $failback,
                         ?string $expected, array $alerts, array $log, bool $stopped, array $state, array $snap): array
 {
     /* a hold kills the states routed via the WAN's gateway@interface: another WAN may share the address */
@@ -362,8 +418,15 @@ function wf_plan_result(array $hold, array $release, array $heldAfter, bool $pru
         $killTargets[] = $target;
     }
     $write = $hold !== [] || $release !== [] || $prune;
-    $plan = ['hold' => $hold, 'release' => $release, 'held_after' => $heldAfter, 'held_now' => $snap['held'], 'write' => $write,
+    $expectedDown = [];
+    foreach (array_merge($hold, $release) as $n) {
+        $expectedDown[$n] = $snap['force_down'][$n] ?? false;
+    }
+    /* held_after, the names, is what the writer keeps records for; records_after carries their boot and since */
+    $plan = ['hold' => $hold, 'release' => $release, 'held_after' => array_keys($recordsAfter), 'records_after' => $recordsAfter,
+             'expected' => $expectedDown, 'held_now' => array_keys($snap['holds']), 'write' => $write,
              'redo_apply' => $rec['redo_apply'], 'redo_replay' => $rec['redo_replay'], 'foreign' => $rec['foreign'],
+             'foreign_records' => $rec['foreign_records'],
              'kill_targets' => $killTargets, 'failback' => $failback, 'expected_default' => $expected,
              'alerts' => $alerts, 'log' => $log, 'stopped' => $stopped];
     $plan['acting'] = $write || $rec['redo_apply'] !== [] || $rec['redo_replay'] !== [] || $rec['foreign'] !== [] || $failback !== [];
