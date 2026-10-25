@@ -218,7 +218,12 @@ function wf_main(string $mode, array $args): int
         }
         wf_state_save(WF_STATE, wf_dry_after($state, $plan));
     } else {
-        $state = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets))['state'];
+        $applied = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets));
+        $state = $applied['state'];
+        /* the next tick plans again from the config as it then is */
+        if ($applied['problem'] !== null) {
+            wf_log("{$applied['problem']}; the change waits for the next tick");
+        }
     }
 
     if ($plan['hold'] !== [] || $plan['release'] !== [] || $plan['alerts'] !== [] || $cl['line'] !== null) {
@@ -240,20 +245,19 @@ function wf_main(string $mode, array $args): int
  * The package removal's release. +PRE_DEINSTALL.pre runs it on a real removal only, after writing the removal's marker,
  * which stops every other evaluation and its writes from then on: the dpinger alarms this re-sync raises queue
  * evaluations that would otherwise re-hold a lossy WAN before pkg removes the files. It waits for an evaluation in
- * flight for at most WF_DEINSTALL_WAIT_SECONDS, then goes on regardless: one already writing holds Config::lock(), and
- * this write builds its models after taking it. It plans as with the plugin disabled, the cause "package removal":
- * every hold the plugin proves it took is released, every other record pruned and its gateway left as it is. It
- * applies through wf_deinstall_io(), so routing is re-synced through core only. It always returns 0, so pkg delete
- * completes; every failure is logged.
+ * flight, then goes on regardless: one already writing holds Config::lock(), and this write builds its models after
+ * taking it. The release is tried until it lands, each try from a fresh snapshot (wf_deinstall_run()); the wait and
+ * the tries share WF_DEINSTALL_WAIT_SECONDS from the start of this mode. It always returns 0, so pkg delete completes;
+ * every failure is logged.
  */
 function wf_deinstall(): int
 {
-    $where = 'under System: Gateways: Configuration';
+    $startedAt = time();
     try {
         wf_private_dir(WF_RUN_DIR);
         $lock = fopen(WF_RUN_DIR . '/evaluate.lock', 'ce');
         $locked = $lock !== false && flock($lock, LOCK_EX | LOCK_NB);
-        for ($i = 0; !$locked && $lock !== false && $i < WF_DEINSTALL_WAIT_SECONDS; $i++) {
+        while (!$locked && $lock !== false && time() - $startedAt < WF_DEINSTALL_WAIT_SECONDS) {
             sleep(1);
             $locked = flock($lock, LOCK_EX | LOCK_NB);
         }
@@ -262,32 +266,19 @@ function wf_deinstall(): int
         } elseif (!$locked) {
             wf_log('deinstall: an evaluation kept the lock for ' . WF_DEINSTALL_WAIT_SECONDS . ' s; releasing anyway', LOG_WARNING);
         }
-        $snap = wf_snapshot();
-        $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
-        if ($loaded['corrupt']) {
-            wf_log("deinstall: state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
-            $loaded['state']['boot_id'] = 'corrupt';
-        }
-        $snap['enabled'] = false;
-        $snap['tailscale_restart'] = false;
-        $snap['release'] = 'removal';
-        $r = wf_plan($snap, wf_dry_exit($loaded['state'], $snap));
-        $plan = $r['plan'];
-        foreach (array_merge($plan['log'], $plan['alerts']) as $line) {
-            wf_log("deinstall: {$line}");
-        }
-        $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
-        $applied = wf_apply($plan, $r['state'], $snap, wf_deinstall_io(wf_live_io(WF_STATE, $wanTargets), 'wf_core_shell'));
-        if ($plan['release'] === []) {
-            wf_log('deinstall: nothing held');
-        } elseif ($applied['ok']) {
-            wf_log('deinstall: released ' . implode(',', $plan['release']));
-        } else {
-            wf_log('deinstall: ' . implode(',', $plan['release']) . " not released and still forced down; clear Force down on each {$where}", LOG_ERR);
-        }
+        $read = function (): array {
+            $snap = wf_snapshot();
+            return ['snap' => $snap, 'loaded' => wf_state_load(WF_STATE, $snap['boot_id'])];
+        };
+        $ioFor = fn (array $snap): array => wf_deinstall_io(wf_live_io(WF_STATE,
+            array_map(fn (array $w): string => $w['route_target'], $snap['wans'])), 'wf_core_shell');
+        wf_deinstall_run($startedAt, $read, $ioFor, 'time', function (int $s): void {
+            sleep($s);
+        }, 'wf_log');
     } catch (Throwable $e) {
         wf_log('deinstall: failed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine()
-            . "); any gateway the plugin held stays forced down: clear its Force down {$where}", LOG_ERR);
+            . '); any gateway the plugin held stays forced down: untick its Force down under System: Gateways: Configuration',
+            LOG_ERR);
     }
     return 0;
 }

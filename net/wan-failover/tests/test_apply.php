@@ -133,11 +133,12 @@ wf_register_suite('apply', function (): int {
     $r = wf_apply($plan, $state, $snap, $f['io']);
     wf_check($t, 'gateway lock busy -> not ok, nothing written, pending kept for next tick', !$r['ok']
         && count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'write'))) === 0
-        && $r['state']['apply_pending'] === ['WAN2' => 'hold']);
+        && $r['state']['apply_pending'] === ['WAN2' => 'hold'] && $r['problem'] === 'gateway lock busy for 30 s');
 
     $f = wf_t_io([], true, false);
     $r = wf_apply($plan, $state, $snap, $f['io']);
-    wf_check($t, 'write fails -> not ok, unlock still called', !$r['ok'] && in_array('unlock', $f['calls']->getArrayCopy(), true));
+    wf_check($t, 'write fails -> not ok, unlock still called', !$r['ok'] && in_array('unlock', $f['calls']->getArrayCopy(), true)
+        && $r['problem'] === 'config write failed');
 
     $f = wf_t_io();
     $r = wf_apply(wf_t_plan(['release' => ['WAN2'], 'expected' => ['WAN2' => true], 'write' => true]), $state, $snap, $f['io']);
@@ -212,11 +213,11 @@ wf_register_suite('apply', function (): int {
     $r = wf_apply(wf_t_plan(['hold' => ['WAN_A'], 'held_after' => ['WAN_A'], 'records_after' => ['WAN_A' => ['boot' => 'b1', 'since' => 1000]],
                              'expected' => ['WAN_A' => false], 'write' => true, 'kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    $moved = 'log force_down on WAN_A changed since the snapshot; write skipped';
-    wf_check($t, '(w5) a write skipped because force_down moved since the snapshot says so once, keeps the pending hold, and runs '
-        . 'neither the routing reconfigure, the replay nor a kill',
-        !$r['ok'] && $r['state']['apply_pending'] === ['WAN_A' => 'hold'] && count(array_keys($c, $moved, true)) === 1
-        && !in_array('log config write failed; the change waits for the next tick', $c, true)
+    wf_check($t, '(w5) a write skipped because force_down moved since the snapshot says so as its problem, keeps the pending '
+        . 'hold, and runs neither the routing reconfigure, the replay nor a kill; the caller logs the problem, not apply',
+        !$r['ok'] && $r['state']['apply_pending'] === ['WAN_A' => 'hold']
+        && $r['problem'] === 'force_down on WAN_A changed since the snapshot'
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'log')) === []
         && !in_array('configd interface routes configure', $c, true)
         && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd wanfailover ')) === []
         && in_array('unlock', $c, true));
@@ -308,6 +309,83 @@ wf_register_suite('apply', function (): int {
     $after = array_slice($f['calls']->getArrayCopy(), $before);
     wf_check($t, '(d2) any other action is refused with one line and never run',
         $out === 'refused' && count($after) === 1 && str_starts_with($after[0], 'log(' . LOG_WARNING . ') deinstall: configd wanfailover kill_states refused'));
+
+    wf_check($t, '(d8) the removal\'s retry: done once the release landed; another try 5 s on while it still starts within 180 s '
+        . 'of the removal\'s start; then it gives up',
+        wf_deinstall_retry(1000, 1000, true) === 'done' && wf_deinstall_retry(1000, 1181, true) === 'done'
+        && wf_deinstall_retry(1000, 1000, false) === 'retry' && wf_deinstall_retry(1000, 1175, false) === 'retry'
+        && wf_deinstall_retry(1000, 1176, false) === 'give_up' && wf_deinstall_retry(1000, 1181, false) === 'give_up');
+
+    /* a removal whose first write finds WAN_B's force_down moved: the second try plans from a new snapshot */
+    $wan = fn (string $gw, string $if, bool $down): array => ['uuid' => '', 'gateway_ip' => $gw, 'if' => $if,
+        'route_target' => "{$gw}@{$if}", 'rank' => 1, 'disabled' => false, 'force_down' => $down,
+        'status' => $down ? 'force_down' : 'none', 'present' => true, 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
+        'loss' => 0.0, 'sock_age' => 300, 'losslow' => 10.0, 'losshigh' => 20.0, 'time_period' => 60, 'interval' => 1,
+        'loss_interval' => 4];
+    $dsnap = fn (int $now, bool $bDown): array => ['now' => $now, 'boot_id' => 'b500', 'release' => null, 'failback_now' => false,
+        'enabled' => true, 'dry' => false, 'failback' => true, 'failback_delay' => 0, 'tailscale_restart' => true,
+        'default_gw' => '192.0.2.1@vtnet1', 'unresolved' => [], 'holds_stale' => [], 'holds_dupes' => [],
+        'wans' => ['WAN_A' => $wan('192.0.2.1', 'vtnet1', true), 'WAN_B' => $wan('198.51.100.1', 'vtnet2', $bDown)],
+        'holds' => ['WAN_A' => ['boot' => 'b500', 'since' => 900], 'WAN_B' => ['boot' => 'b500', 'since' => 900]],
+        'force_down' => ['WAN_A' => true, 'WAN_B' => $bDown], 'contract' => ['judging' => [], 'command' => [], 'tailscale' => []]];
+    $snaps = new ArrayObject([$dsnap(2000, true), $dsnap(2005, false)]);
+    $reads = new ArrayObject();
+    $read = function () use ($snaps, $reads): array {
+        $s = $snaps[count($reads)];
+        $reads[] = $s['now'];
+        return ['snap' => $s, 'loaded' => ['state' => wf_state_new('b500'), 'corrupt' => false, 'problem' => null]];
+    };
+    $clock = new ArrayObject([2000]);
+    $slept = new ArrayObject();
+    $logged = new ArrayObject();
+    $sleep = function (int $s) use ($clock, $slept): void {
+        $slept[] = $s;
+        $clock[0] += $s;
+    };
+    $logTo = function (string $m, int $prio = LOG_NOTICE) use ($logged): void {
+        $logged[] = $prio === LOG_NOTICE ? $m : "({$prio}) {$m}";
+    };
+    $f = wf_t_io();
+    $writes = new ArrayObject();
+    $f['io']['write'] = function (array $c, array $expected, array $recordsAfter, bool $removal = false) use ($writes): array {
+        $writes[] = [$c, $expected, $removal];
+        return count($writes) === 1 ? ['ok' => false, 'skipped' => ['WAN_B']] : ['ok' => true, 'skipped' => []];
+    };
+    $dio = wf_deinstall_io($f['io'], fn (string $line): int => 0);
+    $ok = wf_deinstall_run(2000, $read, fn (array $snap): array => $dio, fn (): int => $clock[0], $sleep, $logTo);
+    $lg = $logged->getArrayCopy();
+    $retries = array_values(array_filter($lg, fn (string $x): bool => str_contains($x, 'retrying')));
+    $last = $lg === [] ? '' : $lg[count($lg) - 1];
+    wf_check($t, '(d9) a release whose write found force_down moved is tried again 5 s later from a fresh snapshot, as the '
+        . 'removal, says why once, and ends "deinstall: released"',
+        $ok && $reads->getArrayCopy() === [2000, 2005] && $slept->getArrayCopy() === [5]
+        && $writes->getArrayCopy() === [[['WAN_A' => false, 'WAN_B' => false], ['WAN_A' => true, 'WAN_B' => true], true],
+                                        [['WAN_A' => false], ['WAN_A' => true], true]]
+        && $retries === ['deinstall: the release did not land (force_down on WAN_B changed since the snapshot); retrying']
+        && $last === 'deinstall: released WAN_A');
+    if ($last !== 'deinstall: released WAN_A') {
+        printf("    reads: %s\n    log: %s\n", json_encode($reads->getArrayCopy()), json_encode($lg));
+    }
+
+    $snaps->exchangeArray(array_map(fn (int $n): array => $dsnap($n, true), range(3000, 3200, 5)));
+    $reads->exchangeArray([]);
+    $clock[0] = 3000;
+    $slept->exchangeArray([]);
+    $logged->exchangeArray([]);
+    $f['io']['write'] = fn (array $c, array $expected, array $recordsAfter, bool $removal = false): array => ['ok' => false, 'skipped' => []];
+    $dio = wf_deinstall_io($f['io'], fn (string $line): int => 0);
+    $ok = wf_deinstall_run(3000, $read, fn (array $snap): array => $dio, fn (): int => $clock[0], $sleep, $logTo);
+    $lg = $logged->getArrayCopy();
+    $last = $lg === [] ? '' : $lg[count($lg) - 1];
+    $giveUp = '(' . LOG_ERR . ') deinstall: WAN_A,WAN_B still forced down by the plugin after 180 s (config write failed): '
+        . 'untick Force down on each under System: Gateways: Configuration';
+    wf_check($t, '(d9) a release that never lands is tried every 5 s while a try still starts within 180 s, then one error '
+        . 'names the gateways still forced down by the plugin and the fix',
+        !$ok && count($reads) === 37 && array_sum($slept->getArrayCopy()) === 180
+        && count(array_filter($lg, fn (string $x): bool => str_contains($x, 'retrying'))) === 36 && $last === $giveUp);
+    if ($last !== $giveUp || count($reads) !== 37) {
+        printf("    reads: %d, slept: %d s, last line: %s\n", count($reads), array_sum($slept->getArrayCopy()), $last);
+    }
 
     $every = array_merge(...array_map(fn (ArrayObject $c): array => $c->getArrayCopy(), wf_t_io_made()));
     wf_check($t, '(a1) no apply case runs core\'s kill by gateway address (filter kill gateway_states)',

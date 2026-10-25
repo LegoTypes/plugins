@@ -15,9 +15,11 @@ declare(strict_types=1);
  * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()); the migration
  * shares its import (wf_holds_import_into()). While the package removal's marker exists, neither writes, except the
  * removal's own write. wf_deinstall_io() is the removal's I/O: wf_live_io()'s, re-syncing routing through core's
- * commands only (wf_core_command()), since the plugin's own configd actions go with the package. wf_live_io()'s
- * closures and wf_write_holds() call snapshot.php functions; evaluate.php loads snapshot.php first. They are not
- * required here so the pure tests can load this file without OPNsense's includes.
+ * commands only (wf_core_command()), since the plugin's own configd actions go with the package; wf_deinstall_run()
+ * tries the removal's release until it lands or its time is up. wf_apply() reports a change that did not land, and its
+ * caller logs it as it goes on (a next tick, or a next try). wf_live_io()'s closures and wf_write_holds() call
+ * snapshot.php functions; evaluate.php loads snapshot.php first. They are not required here so the pure tests can load
+ * this file without OPNsense's includes.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -26,6 +28,7 @@ require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/tailscale.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/log.php';
+require_once __DIR__ . '/planner.php';
 
 /**
  * @param array{hold: list<string>, release: list<string>, held_after: list<string>,
@@ -41,7 +44,8 @@ require_once __DIR__ . '/log.php';
  *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
  *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *             sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void} $io
- * @return array{state: array, ok: bool}
+ * @return array{state: array, ok: bool, problem: ?string} problem: why the config change did not land (the gateway lock
+ *     busy, a force_down moved since the snapshot, the write failed), for the caller to log as it goes on; null otherwise
  */
 function wf_apply(array $plan, array $state, array $snap, array $io): array
 {
@@ -73,8 +77,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         ($io['crash_point'])('after-pending');
         $before = ($io['status'])();
         if (!($io['gw_lock'])()) {
-            $log('gateway lock busy for 30 s; the change waits for the next tick');
-            return ['state' => $state, 'ok' => false];
+            return ['state' => $state, 'ok' => false, 'problem' => 'gateway lock busy for 30 s'];
         }
         $written = ['ok' => true, 'skipped' => []];
         try {
@@ -89,14 +92,13 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         } finally {
             ($io['gw_unlock'])();
         }
-        /* the next tick plans again from the config as it now is */
+        /* the caller plans again from the config as it then is */
         if ($written['skipped'] !== []) {
-            $log('force_down on ' . implode(',', $written['skipped']) . ' changed since the snapshot; write skipped');
-            return ['state' => $state, 'ok' => false];
+            return ['state' => $state, 'ok' => false,
+                    'problem' => 'force_down on ' . implode(',', $written['skipped']) . ' changed since the snapshot'];
         }
         if (!$written['ok']) {
-            $log('config write failed; the change waits for the next tick');
-            return ['state' => $state, 'ok' => false];
+            return ['state' => $state, 'ok' => false, 'problem' => 'config write failed'];
         }
         $after = ($io['status'])();
         $changedDuringHold = [];
@@ -196,7 +198,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
     }
     ($io['save_state'])($state);
-    return ['state' => $state, 'ok' => true];
+    return ['state' => $state, 'ok' => true, 'problem' => null];
 }
 
 /** Whether the package removal's marker exists (+PRE_DEINSTALL.pre writes it; +POST_INSTALL.pre deletes it). */
@@ -534,4 +536,83 @@ function wf_deinstall_io(array $io, callable $run): array
         return 'refused';
     };
     return $io;
+}
+
+/**
+ * Whether the package removal goes on after a try: done once the release landed; another try while one more,
+ * WF_DEINSTALL_RETRY_SECONDS on, still starts within WF_DEINSTALL_WAIT_SECONDS of the removal's start (the wait for
+ * an evaluation's lock counts too); else it gives up.
+ *
+ * @return string done, retry or give_up
+ */
+function wf_deinstall_retry(int $startedAt, int $now, bool $ok): string
+{
+    if ($ok) {
+        return 'done';
+    }
+    return $now + WF_DEINSTALL_RETRY_SECONDS - $startedAt <= WF_DEINSTALL_WAIT_SECONDS ? 'retry' : 'give_up';
+}
+
+/**
+ * The package removal's release, tried until it lands or its time is up (wf_deinstall_retry()). Each try reads a fresh
+ * snapshot and the state, plans it as with the plugin disabled and the cause "package removal" (every hold the plugin
+ * proves it took released, every other record pruned and its gateway left as it is), and applies it through the
+ * removal's I/O. A try that did not land (the gateway lock busy, a force_down moved since its snapshot, the write
+ * failed) is said once, with why; the plan's own lines only when they changed since the try before. Giving up leaves
+ * one error naming the gateways the plugin still holds and the fix.
+ *
+ * @param callable(): array{snap: array, loaded: array{state: array, corrupt: bool, problem: ?string}} $read a fresh
+ *     snapshot (wf_snapshot()) and the state loaded for its boot id (wf_state_load())
+ * @param callable(array): array $ioFor the removal's I/O for a snapshot (wf_deinstall_io())
+ * @param callable(): int $clock the time now
+ * @param callable(int): void $sleep waits that many seconds
+ * @param callable(string, int=): void $log
+ * @return bool whether the release landed
+ */
+function wf_deinstall_run(int $startedAt, callable $read, callable $ioFor, callable $clock, callable $sleep, callable $log): bool
+{
+    $said = null;
+    $corruptSaid = false;
+    while (true) {
+        $r = $read();
+        $snap = $r['snap'];
+        $loaded = $r['loaded'];
+        if ($loaded['corrupt']) {
+            if (!$corruptSaid) {
+                $log("deinstall: state file unreadable ({$loaded['problem']}); starting from a fresh state", LOG_WARNING);
+                $corruptSaid = true;
+            }
+            $loaded['state']['boot_id'] = 'corrupt';
+        }
+        $snap['enabled'] = false;
+        $snap['tailscale_restart'] = false;
+        $snap['release'] = 'removal';
+        $p = wf_plan($snap, wf_dry_exit($loaded['state'], $snap));
+        $plan = $p['plan'];
+        $lines = array_merge($plan['log'], $plan['alerts']);
+        if ($lines !== $said) {
+            foreach ($lines as $line) {
+                $log("deinstall: {$line}");
+            }
+            $said = $lines;
+        }
+        $applied = wf_apply($plan, $p['state'], $snap, $ioFor($snap));
+        $next = wf_deinstall_retry($startedAt, $clock(), $applied['ok']);
+        if ($next === 'done') {
+            $log($plan['release'] === [] ? 'deinstall: nothing held' : 'deinstall: released ' . implode(',', $plan['release']));
+            return true;
+        }
+        if ($next === 'give_up') {
+            $elapsed = $clock() - $startedAt;
+            if ($plan['release'] === []) {
+                $log("deinstall: nothing held; the hold records stay in the config after {$elapsed} s ({$applied['problem']})");
+            } else {
+                $log('deinstall: ' . implode(',', $plan['release']) . " still forced down by the plugin after {$elapsed} s "
+                    . "({$applied['problem']}): untick Force down on each under System: Gateways: Configuration", LOG_ERR);
+            }
+            return false;
+        }
+        $log("deinstall: the release did not land ({$applied['problem']}); retrying");
+        $sleep(WF_DEINSTALL_RETRY_SECONDS);
+    }
 }

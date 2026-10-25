@@ -26,7 +26,9 @@ const WF_FILE_MAX_BYTES = 1048576;
 const WF_CORE_ROUTES_CONFIGURE = '/usr/local/etc/rc.routing_configure';
 const WF_REPLAY_ALARM_CMD = '/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway.lock /usr/local/etc/rc.routing_configure alarm';
 const WF_CONFIGD_TIMEOUT_SECONDS = 30; /* the removal's configctl call is bounded; core's own command, its fallback, is not */
-const WF_DEINSTALL_WAIT_SECONDS = 180; /* an evaluation's worst case: the gateway lock's 30 s, the replay's 120 s, the reconfigure */
+const WF_DEINSTALL_WAIT_SECONDS = 180; /* the removal's release, its wait for an evaluation's lock included: that evaluation's
+                                         worst case is the gateway lock's 30 s, the replay's 120 s, the reconfigure */
+const WF_DEINSTALL_RETRY_SECONDS = 5;  /* between the removal's tries at a release that did not land */
 
 /* core's own mask for a gateway name (Gateways.xml), with the D flag so a trailing newline fails; names and
  * interfaces from a restored configuration are checked against these where they build paths and arguments */
