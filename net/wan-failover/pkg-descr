@@ -18,6 +18,31 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.4
+
+* The list of gateways the plugin holds is no longer part of the settings,
+  so the settings API cannot change it. A hold is released only when the
+  plugin can prove it took it in this boot (or, at boot, the one before);
+  any other record, such as one from a restored backup, is pruned and
+  logged, and its gateway stays forced down until a person unticks Force
+  down. On upgrade, the holds of 1.3_1 are carried over
+* A hold's state kill selects the states routed via that WAN's gateway and
+  interface, by state id; two gateways sharing an address no longer lose
+  each other's connections, and the log reports each kill per gateway and
+  interface
+* Removing the package releases its holds and re-syncs routing; upgrades
+  keep them
+* A settings save or a restored configuration that moves force_down under
+  the plugin's feet aborts the plugin's write instead of overwriting it;
+  the next evaluation plans again
+* Runtime, state and trace files are root-only; the state file's shape is
+  checked when it is read, and gateway and interface names from the
+  configuration are checked where they are used
+* Status page text is decoded without an HTML parser, and the status
+  notice shows each note on its own line
+* The crash-test hook is a root-only flag file, not an environment
+  variable
+
 1.3_1
 
 * A young gateway monitor's lost probes are counted as whole probes:
