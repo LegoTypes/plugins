@@ -202,6 +202,22 @@ wf_register_suite('apply', function (): int {
     wf_check($t, 'a tailscale deferral is logged once, not every tick',
         count(array_filter($f2['calls']->getArrayCopy(), fn (string $x): bool => str_contains($x, 'tailscale defer'))) === 0);
 
+    $line = [LOG_NOTICE, 'hold of WAN_B carried over, taken in boot b500'];
+    $a = wf_import_attempt(fn (): ?array => [$line]);
+    wf_check($t, '(m6) an import that returned its lines is imported: the migration may drop the raw list',
+        $a === ['imported' => true, 'lines' => [$line], 'error' => null]);
+    $a = wf_import_attempt(fn (): ?array => null);
+    wf_check($t, '(m6) an import that found no list is not imported: nothing to drop',
+        $a === ['imported' => false, 'lines' => [], 'error' => null]);
+    $added = new ArrayObject();
+    $a = wf_import_attempt(function () use ($added): ?array {
+        $added[] = 'WAN_A';
+        throw new TypeError('setNodes(): Argument #1 must be of type array');
+    });
+    wf_check($t, '(m6) an import that threw part way through (an Error, not only an Exception) is not imported and says why: '
+        . 'the raw list stays for the next evaluation',
+        count($added) === 1 && !$a['imported'] && $a['lines'] === [] && str_contains((string)$a['error'], 'setNodes()'));
+
     $every = array_merge(...array_map(fn (ArrayObject $c): array => $c->getArrayCopy(), wf_t_io_made()));
     wf_check($t, '(a1) no apply case runs core\'s kill by gateway address (filter kill gateway_states)',
         $every !== [] && array_filter($every, fn (string $x): bool => str_contains($x, 'filter kill gateway_states')) === []);

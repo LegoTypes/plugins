@@ -313,6 +313,24 @@ function wf_holds_import_into(\OPNsense\WanFailover\Holds $holds, string $bootId
     return $plan['lines'];
 }
 
+/**
+ * One run of an import (wf_holds_import_into() bound to its model), for the migration: imported only when the import
+ * returned its lines. One that found no list, or threw part way through, is not, and the caller then keeps the raw
+ * list for the next evaluation to import.
+ *
+ * @param callable(): ?list<array{0: int, 1: string}> $import
+ * @return array{imported: bool, lines: list<array{0: int, 1: string}>, error: ?string}
+ */
+function wf_import_attempt(callable $import): array
+{
+    try {
+        $lines = $import();
+    } catch (\Throwable $e) {
+        return ['imported' => false, 'lines' => [], 'error' => $e->getMessage()];
+    }
+    return ['imported' => $lines !== null, 'lines' => $lines ?? [], 'error' => null];
+}
+
 /** 1.3_1's held list removed from the raw config, so the settings model's next save cannot bring it back; the caller saves. */
 function wf_holds_drop_legacy(): void
 {
