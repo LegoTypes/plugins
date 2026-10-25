@@ -1094,3 +1094,53 @@ def test_lock_handle_is_closed_when_flock_fails_unexpectedly(env, monkeypatch, w
         else:
             macalias.acquire_lock(cfg, lambda s: None)
     assert len(opened) == 1 and opened[0].closed
+
+
+def test_core_lock_handle_is_closed_when_the_retry_sleep_raises(env, monkeypatch):
+    cfg, tmp = env
+    opened = []
+    real_fdopen = os.fdopen
+
+    def fdopen(fd, mode):
+        handle = real_fdopen(fd, mode)
+        opened.append(handle)
+        return handle
+
+    def sleep(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(macalias.os, "fdopen", fdopen)
+    with open(cfg["lock_file"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        with pytest.raises(KeyboardInterrupt):
+            macalias.acquire_lock(cfg, sleep)
+    assert len(opened) == 1 and opened[0].closed
+
+
+@pytest.mark.parametrize("which", ["plugin_lock", "lock_file", "read"])
+def test_descriptor_is_closed_when_fdopen_fails(env, monkeypatch, which):
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    fds = []
+    real_open = os.open
+
+    def tracking_open(*args, **kwargs):
+        fd = real_open(*args, **kwargs)
+        fds.append(fd)
+        return fd
+
+    def failing_fdopen(*args, **kwargs):
+        raise MemoryError
+
+    monkeypatch.setattr(macalias.os, "open", tracking_open)
+    monkeypatch.setattr(macalias.os, "fdopen", failing_fdopen)
+    with pytest.raises(MemoryError):
+        if which == "plugin_lock":
+            macalias.acquire_plugin_lock(cfg)
+        elif which == "lock_file":
+            macalias.acquire_lock(cfg, lambda s: None)
+        else:
+            macalias._open_regular(cfg["tables_conf"])
+    assert len(fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(fds[0])   # EBADF: closed

@@ -193,6 +193,15 @@ def refusal(found):
     return {"error": code, "detail": "; ".join(problem["problem"] for problem in blocking), "problems": found}
 
 
+def _fdopen(fd, *args, **kwargs):
+    """ os.fdopen that closes fd itself when wrapping it fails, so no descriptor is left over """
+    try:
+        return os.fdopen(fd, *args, **kwargs)
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _open_regular(path):
     """ path opened to read as UTF-8 text when it is a regular file with one link, owned by
     the running user, else None. O_NOFOLLOW refuses a symlink and O_NONBLOCK keeps a FIFO
@@ -210,7 +219,7 @@ def _open_regular(path):
     if st is None or not _single_regular(st) or st.st_uid != os.geteuid():
         os.close(fd)
         return None
-    return os.fdopen(fd, encoding="utf-8")
+    return _fdopen(fd, encoding="utf-8")
 
 
 def _read_json(path, schema):
@@ -236,7 +245,7 @@ def _write_json_atomic(path, obj, mode=0o644):
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".%s." % os.path.basename(path), suffix=".tmp")
     try:
         # the with block closes fd on every path out of it, chmod failure included
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with _fdopen(fd, "w", encoding="utf-8") as f:
             os.fchmod(f.fileno(), mode)  # mkstemp creates 0600
             json.dump(obj, f)
         os.replace(tmp, path)
@@ -337,22 +346,23 @@ def acquire_lock(cfg, sleep):
         return {"error": "lock_unusable",
                 "detail": "core's alias update lock at %s is not a regular file with one link "
                           "that the plugin can open safely" % path}
-    handle = os.fdopen(fd, "a")
+    handle = _fdopen(fd, "a")
     deadline = cfg["lock_timeout"]
     waited = 0.0
-    while True:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return handle
-        except BlockingIOError:
-            if waited >= deadline:
-                handle.close()
-                return None
+    try:
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return handle
+            except BlockingIOError:
+                if waited >= deadline:
+                    handle.close()
+                    return None
             sleep(cfg["lock_retry"])
             waited += cfg["lock_retry"]
-        except BaseException:
-            handle.close()
-            raise
+    except BaseException:
+        handle.close()
+        raise
 
 
 def _flush_emptied_tables(cfg, names):
@@ -418,7 +428,7 @@ def acquire_plugin_lock(cfg):
         return refusal([_problem(
             "state_dir", "the plugin's flush lock at %s is not a regular file with one link "
                          "that the plugin can open safely" % path, True)])
-    handle = os.fdopen(fd, "w")
+    handle = _fdopen(fd, "w")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
