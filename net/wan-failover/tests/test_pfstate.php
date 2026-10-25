@@ -88,7 +88,8 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, 'self-check passes on the real format', wf_pf_selfcheck($raw, $states));
     $renamed = str_replace('route-to: ', 'route_to=', $raw);
     wf_check($t, 'self-check fails when route-to tokens no longer parse', !wf_pf_selfcheck($renamed, wf_parse_states($renamed)));
-    $headers = preg_replace('/^all /m', 'any ', $raw);
+    /* the first token may be any interface name now, so the drift is in the direction token */
+    $headers = str_replace([' -> ', ' <- '], [' => ', ' <= '], $raw);
     wf_check($t, 'self-check fails when state headers no longer parse', !wf_pf_selfcheck($headers, wf_parse_states($headers)));
     wf_check($t, 'self-check fails on empty pfctl output (a live firewall always has states)', !wf_pf_selfcheck('', []));
     $noLabel = str_replace('rlabel ', 'xlabel ', $raw);
@@ -114,10 +115,10 @@ wf_register_suite('pfstate', function (): int {
         . "   id: d0000000000000d4 creatorid: 4a28027f dup-to: 192.0.2.1@vtnet1\n");
     wf_check($t, '(p2) any other "-to:" token pf prints parses into rt, never into route_to_gw',
         $dupTo[0]['rt'] === 'dup-to' && $dupTo[0]['rt_target'] === '192.0.2.1@vtnet1' && $dupTo[0]['route_to_gw'] === null);
-    /* an interface-bound state prints its interface where a floating one prints "all" */
+    /* a state header in a form the parser does not know (here a direction token it has never seen) */
     $unparsed = wf_parse_states("all tcp 192.0.2.10:30050 -> 198.51.100.125:443       ESTABLISHED:ESTABLISHED\n"
         . "   id: d0000000000000d5 creatorid: 4a28027f route-to: 192.0.2.1@vtnet1\n"
-        . "vtnet2 tcp 192.0.2.20:30060 -> 198.51.100.125:443       ESTABLISHED:ESTABLISHED\n"
+        . "all tcp 192.0.2.20:30060 => 198.51.100.125:443       ESTABLISHED:ESTABLISHED\n"
         . "   id: d0000000000000d6 creatorid: 4a28027f\n");
     wf_check($t, '(p4) the lines of a state whose header does not parse belong to no state: its id never pairs with the target before it',
         count($unparsed) === 1 && $unparsed[0]['id'] === 'd0000000000000d5' && $unparsed[0]['rt_target'] === '192.0.2.1@vtnet1');
@@ -147,5 +148,29 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, '(p7) a listing that fails the self-check (no states at all) is reported, and nothing is killed',
         wf_kill_states_run('192.0.2.1@vtnet1', $p['run']) === ['line' => 'listing failed: the state listing did not parse', 'rc' => 1]
         && $p['calls']->getArrayCopy() === ['/sbin/pfctl -vvss']);
+
+    /* "bind states to interface": an interface-bound state prints its interface where a floating one prints "all" */
+    $mixedRaw = "all tcp 192.0.2.10:30070 -> 198.51.100.126:443       ESTABLISHED:ESTABLISHED\n"
+        . "   age 00:01:00, expires in 23:59:59, 10:10 pkts, 900:900 bytes, rule 196, rlabel eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee, allow-opts\n"
+        . "   id: d0000000000000d7 creatorid: 4a28027f route-to: 192.0.2.1@vtnet1\n"
+        . "   origif: vtnet1\n"
+        . "vtnet1 tcp 192.0.2.10:30080 -> 198.51.100.127:443       ESTABLISHED:ESTABLISHED\n"
+        . "   age 00:01:00, expires in 23:59:59, 10:10 pkts, 900:900 bytes, rule 198, rlabel 88888888-8888-4888-8888-888888888888, allow-opts\n"
+        . "   id: d0000000000000d8 creatorid: 5b39138a route-to: 192.0.2.1@vtnet1\n"
+        . "   origif: vtnet1\n"
+        . "vtnet0 tcp 198.51.100.126:443 <- 192.0.2.10:30070       ESTABLISHED:ESTABLISHED\n"
+        . "   age 00:01:00, expires in 23:59:59, 10:10 pkts, 900:900 bytes, rule 2610, rlabel 99999999-9999-4999-8999-999999999999\n"
+        . "   id: d0000000000000d9 creatorid: 5b39138a\n"
+        . "   origif: vtnet0\n";
+    $mixed = wf_parse_states($mixedRaw);
+    wf_check($t, '(p8) a floating and an interface-bound state via one target are both killed by it, and the listing passes the self-check',
+        count($mixed) === 3 && $mixed[0]['bound'] === null && $mixed[1]['bound'] === 'vtnet1' && $mixed[2]['bound'] === 'vtnet0'
+        && wf_states_via($mixed, '192.0.2.1@vtnet1') === [['id' => 'd0000000000000d7', 'creatorid' => '4a28027f'],
+                                                         ['id' => 'd0000000000000d8', 'creatorid' => '5b39138a']]
+        && wf_pf_selfcheck($mixedRaw, $mixed));
+    $mixedFlows = wf_flows($mixed, ['192.0.2.1@vtnet1' => 'WAN_A']);
+    wf_check($t, '(p9) failback pairs floating states only: the bound anchor is skipped and the bound in-state is no partner',
+        count($mixed) === 3 && count($mixedFlows) === 1 && $mixedFlows[0]['anchor']['id'] === 'd0000000000000d7'
+        && $mixedFlows[0]['kind'] === 'local' && $mixedFlows[0]['partner'] === null);
     return wf_tally_report('pfstate', $t);
 });

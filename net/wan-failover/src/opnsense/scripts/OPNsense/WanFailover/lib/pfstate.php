@@ -10,14 +10,15 @@ declare(strict_types=1);
  * Parsers for `pfctl -vvss` and `pfctl -vvsr`, and flow pairing for
  * failback (spec 2026-10-05 section 3.5). Pure.
  *
- * States are floating ("all"). An outgoing state ("->") whose route-to is a
+ * Failback pairs floating states ("all") only. An outgoing state ("->") whose route-to is a
  * WAN gateway is a flow's anchor; its partner is the incoming state ("<-")
  * with the same protocol and src/dst as the anchor's pre-NAT source. Incoming
  * states are never anchors, even when they carry route-to (route-to LAN rules
  * put it on the incoming state too). ICMP is skipped until its pairing has
  * been verified against a live capture (review N10).
  *
- * A hold kills the states whose route target is the WAN's gateway@interface, by state id. pf prints a
+ * A hold kills the states whose route target is the WAN's gateway@interface, floating or interface-bound,
+ * by state id. pf prints a
  * state's target at the end of its id line as "<token>: <gateway>@<interface>", the token being route-to,
  * reply-to or dup-to.
  */
@@ -27,13 +28,13 @@ require_once __DIR__ . '/parsers.php';
 const WF_ICMP_PROTOS = ['icmp', 'icmp6', 'ipv6-icmp'];
 
 /**
- * rt and rt_target are any target token and its gateway@interface; route_to_gw and route_to_if are filled for
- * route-to only, which is what failback pairs flows by. A line that starts a state pf prints in another form
- * (an interface-bound state names its interface where a floating one prints "all") ends the state before
- * it, so that state's id is never paired with another state's target.
+ * A state is floating ("all") or bound to the interface pf prints in its place ("bind states to interface"):
+ * bound holds that interface, or null. rt and rt_target are any target token and its gateway@interface;
+ * route_to_gw and route_to_if are filled for route-to only, which is what failback pairs flows by. Any other
+ * unindented line ends the state before it, so that state's id is never paired with another state's target.
  *
  * @return list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, rule: ?int,
- *                    rlabel: ?string, id: ?string, creatorid: ?string, rt: ?string, rt_target: ?string,
+ *                    bound: ?string, rlabel: ?string, id: ?string, creatorid: ?string, rt: ?string, rt_target: ?string,
  *                    route_to_gw: ?string, route_to_if: ?string, origif: ?string}>
  */
 function wf_parse_states(string $text): array
@@ -41,19 +42,19 @@ function wf_parse_states(string $text): array
     $states = [];
     $cur = null;
     foreach (preg_split('/\R/', $text) ?: [] as $line) {
-        if (preg_match('/^all (\S+) (\S+)(?: \((\S+)\))? (<-|->) (\S+)(?: \((\S+)\))?\s+\S+$/', $line, $m) === 1) {
+        if (preg_match('/^([a-z][a-z0-9_.]*) (\S+) (\S+)(?: \((\S+)\))? (<-|->) (\S+)(?: \((\S+)\))?\s+\S+$/', $line, $m) === 1) {
             if ($cur !== null) {
                 $states[] = $cur;
             }
-            $a = $m[2];
-            $aParen = $m[3] ?? '';
-            $b = $m[5];
-            if ($m[4] === '->') {
-                $cur = ['proto' => $m[1], 'dir' => 'out', 'src' => $a, 'orig_src' => $aParen !== '' ? $aParen : $a, 'dst' => $b];
+            $a = $m[3];
+            $aParen = $m[4] ?? '';
+            $b = $m[6];
+            if ($m[5] === '->') {
+                $cur = ['proto' => $m[2], 'dir' => 'out', 'src' => $a, 'orig_src' => $aParen !== '' ? $aParen : $a, 'dst' => $b];
             } else {
-                $cur = ['proto' => $m[1], 'dir' => 'in', 'src' => $b, 'orig_src' => $b, 'dst' => $a];
+                $cur = ['proto' => $m[2], 'dir' => 'in', 'src' => $b, 'orig_src' => $b, 'dst' => $a];
             }
-            $cur += ['rule' => null, 'rlabel' => null, 'id' => null, 'creatorid' => null, 'rt' => null, 'rt_target' => null,
+            $cur += ['bound' => $m[1] === 'all' ? null : $m[1], 'rule' => null, 'rlabel' => null, 'id' => null, 'creatorid' => null, 'rt' => null, 'rt_target' => null,
                      'route_to_gw' => null, 'route_to_if' => null, 'origif' => null];
             continue;
         }
@@ -143,12 +144,16 @@ function wf_route_target(string $gateway, string $interface): string
 }
 
 /**
- * @param list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, route_to_gw: ?string, route_to_if: ?string}> $states
+ * Floating states only, as anchors and as partners: the pairing is defined on floating states. An
+ * interface-bound state is killed by a hold's target like any other, but failback never moves it back.
+ *
+ * @param list<array{proto: string, dir: string, src: string, orig_src: string, dst: string, bound: ?string, route_to_gw: ?string, route_to_if: ?string}> $states
  * @param array<string, string> $wanTargets route target => WAN name
  * @return list<array{anchor: array, partner: ?array, kind: string, current: string}>
  */
 function wf_flows(array $states, array $wanTargets): array
 {
+    $states = array_values(array_filter($states, fn (array $s): bool => $s['bound'] === null));
     $incoming = [];
     foreach ($states as $s) {
         if ($s['dir'] === 'in') {
