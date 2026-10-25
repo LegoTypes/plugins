@@ -28,7 +28,7 @@ wf_register_suite('parsers', function (): int {
     wf_check($t, '(i1) wf_if_ok accepts vtnet1, vtnet0, epair1a, vlan0.100 and wg9',
         array_filter(['vtnet1', 'vtnet0', 'epair1a', 'vlan0.100', 'wg9'], 'wf_if_ok') === ['vtnet1', 'vtnet0', 'epair1a', 'vlan0.100', 'wg9']);
     wf_check($t, '(i2) wf_if_ok rejects a semicolon, a capital, a trailing newline and an empty name',
-        array_filter(['vtnet1;x', 'Igc1', "vtnet1\n", ''], 'wf_if_ok') === []);
+        array_filter(['vtnet1;x', 'Vtnet1', "vtnet1\n", ''], 'wf_if_ok') === []);
 
     wf_check($t, '(k1) wf_kill_target_ok accepts 192.0.2.1@vtnet1', wf_kill_target_ok('192.0.2.1@vtnet1'));
     $badTargets = ['999.1.1.1@vtnet1', '192.0.2.1@', '@vtnet1', '192.0.2.1@vtnet1;x', '2001:db8::1@vtnet1', "192.0.2.1@vtnet1\n"];
