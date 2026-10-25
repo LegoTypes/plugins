@@ -270,5 +270,49 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(14000, ['gateway_ip' => 'dynamic'] + $lost, []), wf_state_new('b1'));
     wf_check($t, 'a gateway value that is no address (an unresolved dynamic gateway) is neither learned nor used for a kill',
         $r['plan']['kill_gateways'] === [] && !isset($r['state']['gateway_ips']['PRIMARY_WAN']));
+
+    /* every state the planner and apply write loads back as saved: a state wrongly found corrupt releases every hold */
+    $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@igc2'];
+    $at = fn (int $now, array $a, array $wanB, array $extra = []): array => wf_t_snap($now, $a, $wanB + $b, $extra);
+    $fd = ['force_down' => true, 'status' => 'force_down'];
+    $held = ['held' => ['WAN2']];
+    $produced = [];
+    $r = wf_plan($at(20000, [], ['loss' => 30.0], ['unresolved' => ['bbbbbbbb-0000-4000-8000-00000000000f']]), wf_state_new('b1'));
+    $produced['a hold, as apply saves it before its config write'] = array_merge($r['state'], ['apply_pending' => ['WAN2' => 'hold']]);
+    $s = wf_t_applied($r['state'], $r['plan']);
+    $s['ts'] = wf_tailscale_decide($s['ts'], '203.0.113.1@igc1', 20000, WF_TS_STABLE_SECONDS, WF_TS_COOLDOWN_SECONDS)['ts'];
+    $produced['held, with a Tailscale default'] = $s;
+    $r = wf_plan($at(20060, [], ['loss' => 5.0] + $fd, $held), $s);
+    $produced['held at a marginal loss'] = $r['state'];
+    $r = wf_plan($at(20120, [], ['loss' => 0.0] + $fd, $held + ['failback_delay' => 600]), $r['state']);
+    $produced['released, its failback counting down'] = $s = wf_t_applied($r['state'], $r['plan']);
+    $r = wf_plan($at(20180, [], [], ['failback_delay' => 600, 'failback_now' => true]), $s);
+    $produced['its failback due'] = $r['state'];
+    $produced['force_down set by hand'] = wf_plan($at(20300, ['loss' => 30.0], $fd), wf_state_new('b1'))['state'];
+    $s = wf_state_new('b1');
+    $s['last_held'] = ['WAN2'];
+    $r = wf_plan($at(20400, [], ['loss' => 30.0], $held), $s);
+    $produced['released by hand, not re-held'] = wf_t_applied($r['state'], $r['plan']);
+    $r = wf_plan(wf_dry_view($at(20500, [], ['loss' => 30.0], ['dry' => true]), []), wf_state_new('b1'));
+    $produced['a simulated hold'] = wf_dry_after($r['state'], $r['plan']);
+    $all = array_values($produced);
+    $any = fn (callable $f): bool => array_filter($all, $f) !== [];
+    wf_check($t, 'the round-trip states cover every nested field: apply_pending, ts, a failback counting and one due, '
+        . 'an unowned alert, no_rehold, dry_held, said, a fractional settled loss',
+        $any(fn (array $x): bool => $x['apply_pending'] !== []) && $any(fn (array $x): bool => $x['ts']['default_gw'] !== null)
+        && $any(fn (array $x): bool => isset($x['pending_failbacks']['WAN2']) && $x['pending_failbacks']['WAN2']['due'] === null)
+        && $any(fn (array $x): bool => is_int($x['pending_failbacks']['WAN2']['due'] ?? null))
+        && $any(fn (array $x): bool => $x['unowned_alerted_at'] !== []) && $any(fn (array $x): bool => $x['no_rehold'] !== [])
+        && $any(fn (array $x): bool => $x['dry_held'] !== []) && $any(fn (array $x): bool => $x['said'] !== [])
+        && $any(fn (array $x): bool => ($x['judgements']['WAN2']['last_settled_loss'] ?? null) === 5.0));
+    $dir = rtrim(sys_get_temp_dir(), '/') . '/wf-test-roundtrip-' . getmypid();
+    foreach ($produced as $what => $state) {
+        wf_state_save("{$dir}/state.json", $state);
+        $l = wf_state_load("{$dir}/state.json", 'b9');
+        wf_check($t, "a state the planner writes loads back as saved, not corrupt: {$what}",
+            !$l['corrupt'] && json_encode($l['state']) === json_encode($state));
+    }
+    @unlink("{$dir}/state.json");
+    @rmdir($dir);
     return wf_tally_report('planner', $t);
 });

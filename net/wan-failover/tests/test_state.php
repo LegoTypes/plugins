@@ -14,6 +14,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/log.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/judge.php';
 
 /** A fresh, empty scratch directory under the system's temporary directory. */
 function wf_t_scratch(string $case): string
@@ -77,7 +78,7 @@ wf_register_suite('state', function (): int {
 
     $s = wf_state_new('b500');
     $s['installed_at'] = 400;
-    $s['judgements']['WAN2'] = ['value' => 'bad'];
+    $s['judgements']['WAN2'] = ['value' => 'bad'] + wf_judgement_new(400);
     $s['apply_pending'] = ['WAN2' => 'hold'];
     $s['last_held'] = ['WAN2'];
     $b = wf_boot_reset($s, 'b900');
@@ -160,6 +161,53 @@ wf_register_suite('state', function (): int {
         wf_check($t, "(s5) {$what} loads fresh, corrupt, as not this version's shape",
             $fresh($l) && $l['corrupt'] && $l['problem'] === "not this version's shape");
     }
+
+    $jv = wf_judgement_new(100);
+    $tsv = wf_ts_new();
+    $without = function (array $a, string $key): array {
+        unset($a[$key]);
+        return $a;
+    };
+    $nested = [
+        'a judgement whose since is "x"' => ['judgements' => ['WAN_A' => ['since' => 'x'] + $jv]],
+        'a judgement without recovering' => ['judgements' => ['WAN_A' => $without($jv, 'recovering')]],
+        'a judgement that is a number' => ['judgements' => ['WAN_A' => 5]],
+        'a pending failback whose since is "x"' => ['pending_failbacks' => ['WAN_A' => ['since' => 'x']]],
+        'a pending failback whose due is "x"' => ['pending_failbacks' => ['WAN_A' => ['since' => 100, 'due' => 'x']]],
+        'a pending failback without since' => ['pending_failbacks' => ['WAN_A' => ['due' => 100]]],
+        'ts whose cur_since is "x"' => ['ts' => ['cur_since' => 'x'] + $tsv],
+        'ts without lost' => ['ts' => $without($tsv, 'lost')],
+        'a no_rehold value false' => ['no_rehold' => ['WAN_A' => false]],
+        'an unowned_alerted_at value "x"' => ['unowned_alerted_at' => ['WAN_A' => 'x']],
+        'an apply_pending value "maybe"' => ['apply_pending' => ['WAN_A' => 'maybe']],
+        'a last_held of [1]' => ['last_held' => [1]],
+        'a dry_held of [1]' => ['dry_held' => [1]],
+        'a dry_held that is no list' => ['dry_held' => ['x' => 'WAN_A']],
+        'a said value 1' => ['said' => ['unresolved' => 1]],
+    ];
+    foreach ($nested as $what => $fields) {
+        file_put_contents("{$d}/state.json", json_encode(['version' => 3] + $fields));
+        $l = wf_state_load("{$d}/state.json", 'b500');
+        wf_check($t, "(s11) {$what} loads fresh, corrupt, as not this version's shape",
+            $fresh($l) && $l['corrupt'] && $l['problem'] === "not this version's shape");
+    }
+    $kept = [
+        "1.1's pending failback, which records only since" => ['pending_failbacks' => ['WAN_A' => ['since' => 100]]],
+        'a settled loss JSON wrote without a fraction (0.0 as 0), and one with' =>
+            ['judgements' => ['WAN_A' => ['last_settled_loss' => 0] + $jv, 'WAN_B' => ['last_settled_loss' => 12.5] + $jv]],
+        'keys the plugin does not read, at every level' => ['judgements' => ['WAN_A' => $jv + ['note' => 1]],
+            'ts' => $tsv + ['note' => 1], 'note' => 1],
+    ];
+    foreach ($kept as $what => $fields) {
+        file_put_contents("{$d}/state.json", json_encode(['version' => 3] + $fields));
+        $l = wf_state_load("{$d}/state.json", 'b500');
+        wf_check($t, "(s11) {$what}: loads as written, not corrupt", !$l['corrupt'] && $l['problem'] === null
+            && array_intersect_key($l['state'], $fields) == $fields);
+    }
+    file_put_contents("{$d}/state.json", '{"version":3,"gateway_ips":{"WAN_A":5,"WAN_B":"198.51.100.1"}}');
+    $l = wf_state_load("{$d}/state.json", 'b500');
+    wf_check($t, '(s11) a gateway_ips value that is no string is dropped, not corrupt',
+        !$l['corrupt'] && $l['state']['gateway_ips'] === ['WAN_B' => '198.51.100.1']);
     wf_t_rmtree($d);
 
     $d = wf_t_scratch('s6');
@@ -251,5 +299,15 @@ wf_register_suite('state', function (): int {
     }
     wf_check($t, '(s10) no PHP file under src reads the environment (getenv): ' . ($calls === [] ? "none of {$php}" : implode(', ', $calls)),
         $php > 0 && $calls === []);
+
+    $keys = fn (array $spec): array => array_map(fn (string $k): string => ltrim($k, '?'), array_keys($spec));
+    $spec = wf_state_spec();
+    $new = wf_state_new('b500');
+    wf_check($t, "(s12) the shape check names exactly wf_state_new()'s fields, wf_judgement_new()'s and wf_ts_new()'s",
+        $keys($spec) === array_keys($new) && $keys($spec['judgements']['*']) === array_keys(wf_judgement_new(0))
+        && $keys($spec['ts']) === array_keys(wf_ts_new()));
+    $bad = array_keys(array_filter($spec, fn (array|string $f, string $k): bool => !wf_shape_ok($new[$k], $f), ARRAY_FILTER_USE_BOTH));
+    wf_check($t, "(s12) every default of wf_state_new() fits the shape check" . ($bad === [] ? '' : ': not ' . implode(', ', $bad)),
+        $bad === [] && wf_shape_ok(wf_judgement_new(0), $spec['judgements']['*']));
     return wf_tally_report('state', $t);
 });

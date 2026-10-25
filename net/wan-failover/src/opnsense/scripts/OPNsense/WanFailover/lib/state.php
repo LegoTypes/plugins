@@ -171,10 +171,78 @@ function wf_once(array &$said, string $key, ?string $line): ?string
 }
 
 /**
- * A decoded state file of this version in wf_state_new()'s shape: its version must be an int and every field it has
- * must have its default's type (installed_at, last_now and contract_judging_since an int or null, boot_note a string
- * or null), or the whole file is corrupt; a field it lacks takes its default. A gateway_ips entry that is not an
- * IPv4 address is dropped, which costs only a state kill's fallback address.
+ * The shape the plugin writes, for wf_shape_ok(): the fields of wf_state_new(), each judgement as wf_judgement_new()
+ * (judge.php), ts as wf_ts_new(). A field is a string of get_debug_type() names joined by |, or an array: ['*' => F]
+ * maps names to F, ['#' => F] is a list of F, ['=' => [...]] one of those values, and any other array a record of the
+ * fields named (a key starting with ? may be absent, as where the code reads it with ??). gateway_ips is only an array
+ * here: an entry that is no IPv4 address is dropped, not corrupt.
+ *
+ * @return array<string, string|array>
+ */
+function wf_state_spec(): array
+{
+    $at = 'int|null';
+    $name = 'string|null';
+    return [
+        'version' => 'int', 'boot_id' => 'string', 'installed_at' => $at, 'last_now' => $at,
+        /* JSON writes a float with no fraction as an integer: a settled 5.0 % loss comes back as 5 */
+        'judgements' => ['*' => ['value' => $name, 'since' => 'int', 'last_settled_at' => $at,
+                                 'last_settled_loss' => 'float|int|null', 'unknown_since' => $at, 'recovering' => 'bool']],
+        'no_rehold' => ['*' => ['=' => [true]]],
+        /* a failback queued by 1.1 records only since */
+        'pending_failbacks' => ['*' => ['since' => 'int', '?clean_since' => $at, '?due' => $at]],
+        'ts' => ['default_gw' => $name, 'restarted_at' => $at, 'cur_default' => $name, 'cur_since' => $at,
+                 'lost' => 'bool', 'expected_default' => $name],
+        'unowned_alerted_at' => ['*' => 'int'],
+        'apply_pending' => ['*' => ['=' => ['hold', 'release']]],
+        'last_held' => ['#' => 'string'],
+        'contract_last' => 'string', 'contract_judging_since' => $at, 'boot_note' => $name,
+        'dry_held' => ['#' => 'string'],
+        'said' => ['*' => 'string'],
+        'gateway_ips' => 'array',
+    ];
+}
+
+/**
+ * @param string|array $spec a field of wf_state_spec()
+ */
+function wf_shape_ok(mixed $value, string|array $spec): bool
+{
+    if (is_string($spec)) {
+        return in_array(get_debug_type($value), explode('|', $spec), true);
+    }
+    if (isset($spec['='])) {
+        return in_array($value, $spec['='], true);
+    }
+    if (!is_array($value) || (isset($spec['#']) && !array_is_list($value))) {
+        return false;
+    }
+    if (isset($spec['*']) || isset($spec['#'])) {
+        foreach ($value as $item) {
+            if (!wf_shape_ok($item, $spec['*'] ?? $spec['#'])) {
+                return false;
+            }
+        }
+        return true;
+    }
+    foreach ($spec as $key => $field) {
+        $name = ltrim($key, '?');
+        if (!array_key_exists($name, $value)) {
+            if ($name === $key) {
+                return false;
+            }
+        } elseif (!wf_shape_ok($value[$name], $field)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * A decoded state file of this version in the shape the plugin writes (wf_state_spec()): its version must be an int,
+ * and every field it has must have that shape to its depth, or the whole file is corrupt; a field it lacks takes its
+ * default, and keys the plugin does not read are kept. A gateway_ips entry that is not an IPv4 address is dropped,
+ * which costs only a state kill's fallback address.
  *
  * @param array<array-key, mixed> $data
  * @return array{state: array, corrupt: bool}
@@ -185,13 +253,8 @@ function wf_state_shape(array $data, string $bootId): array
     if (!is_int($data['version'] ?? null)) {
         return ['state' => $new, 'corrupt' => true];
     }
-    $nullable = ['installed_at' => 'int', 'last_now' => 'int', 'contract_judging_since' => 'int', 'boot_note' => 'string'];
-    foreach ($new as $key => $default) {
-        if (!array_key_exists($key, $data)) {
-            continue;
-        }
-        $type = get_debug_type($data[$key]);
-        if (isset($nullable[$key]) ? $type !== 'null' && $type !== $nullable[$key] : $type !== get_debug_type($default)) {
+    foreach (wf_state_spec() as $key => $spec) {
+        if (array_key_exists($key, $data) && !wf_shape_ok($data[$key], $spec)) {
             return ['state' => $new, 'corrupt' => true];
         }
     }
