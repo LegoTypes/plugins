@@ -33,12 +33,12 @@ function wf_t_io_made(?ArrayObject $calls = null): array
  * @param list<array<string, string>> $statusSeq successive status() results; the last repeats
  * @return array{io: array, calls: ArrayObject}
  */
-function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, array $pfs = [], ?string $default = '203.0.113.1@igc1', array $statusSeq = []): array
+function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, array $pfs = [], ?string $default = '203.0.113.1@vtnet1', array $statusSeq = []): array
 {
     $calls = new ArrayObject();
     wf_t_io_made($calls);
     $pfQueue = new ArrayObject($pfs);
-    $stQueue = new ArrayObject($statusSeq !== [] ? $statusSeq : [['WAN2' => 'force_down', 'PRIMARY_WAN' => 'none']]);
+    $stQueue = new ArrayObject($statusSeq !== [] ? $statusSeq : [['WAN_B' => 'force_down', 'WAN_A' => 'none']]);
     $next = function (ArrayObject $q): array {
         $a = $q->getArrayCopy();
         $v = $a[0];
@@ -103,34 +103,34 @@ function wf_t_plan(array $over = []): array
 wf_register_suite('apply', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $snap = ['now' => 1000, 'release' => null, 'tailscale_restart' => false,
-             'wans' => ['PRIMARY_WAN' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@igc1'],
-                       'WAN2' => ['gateway_ip' => '172.16.12.1', 'route_target' => '172.16.12.1@igc2']]];
+             'wans' => ['WAN_A' => ['gateway_ip' => '203.0.113.1', 'route_target' => '203.0.113.1@vtnet1'],
+                       'WAN_B' => ['gateway_ip' => '198.51.100.254', 'route_target' => '198.51.100.254@vtnet2']]];
     $state = wf_state_new('b1');
-    $plan = wf_t_plan(['hold' => ['WAN2'], 'held_after' => ['WAN2'], 'records_after' => ['WAN2' => ['boot' => 'b1', 'since' => 1000]],
-                       'expected' => ['WAN2' => false], 'write' => true, 'kill_targets' => ['172.16.12.1@igc2']]);
+    $plan = wf_t_plan(['hold' => ['WAN_B'], 'held_after' => ['WAN_B'], 'records_after' => ['WAN_B' => ['boot' => 'b1', 'since' => 1000]],
+                       'expected' => ['WAN_B' => false], 'write' => true, 'kill_targets' => ['198.51.100.254@vtnet2']]);
 
     $f = wf_t_io();
     $r = wf_apply($plan, $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
     wf_check($t, 'hold: save pending, lock, one write with held, routes configure, unlock, replay, kill', array_slice($c, 0, 7) === [
-        'save', 'lock', 'write {"WAN2":true} held=WAN2', 'configd interface routes configure', 'unlock',
-        'configd wanfailover replay_alarm WAN2', 'configd wanfailover kill_states 172.16.12.1@igc2']);
-    wf_check($t, 'hold: apply_pending cleared, last_held set', $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN2']);
+        'save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd interface routes configure', 'unlock',
+        'configd wanfailover replay_alarm WAN_B', 'configd wanfailover kill_states 198.51.100.254@vtnet2']);
+    wf_check($t, 'hold: apply_pending cleared, last_held set', $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN_B']);
 
-    $f = wf_t_io([], true, true, [], '203.0.113.1', [['WAN2' => 'none', 'PRIMARY_WAN' => 'none'], ['WAN2' => 'force_down', 'PRIMARY_WAN' => 'down']]);
+    $f = wf_t_io([], true, true, [], '203.0.113.1', [['WAN_B' => 'none', 'WAN_A' => 'none'], ['WAN_B' => 'force_down', 'WAN_A' => 'down']]);
     wf_apply($plan, $state, $snap, $f['io']);
     wf_check($t, 'a gateway whose status changed during our hold is replayed with ours, so core settles it after our reconfigure too',
-        in_array('configd wanfailover replay_alarm PRIMARY_WAN,WAN2', $f['calls']->getArrayCopy(), true));
+        in_array('configd wanfailover replay_alarm WAN_A,WAN_B', $f['calls']->getArrayCopy(), true));
 
     $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
     $r = wf_apply($plan, $state, $snap, $f['io']);
-    wf_check($t, 'replay fails -> apply_pending kept for the next tick, no kill', $r['state']['apply_pending'] === ['WAN2' => 'hold']
-        && !in_array('configd wanfailover kill_states 172.16.12.1@igc2', $f['calls']->getArrayCopy(), true));
+    wf_check($t, 'replay fails -> apply_pending kept for the next tick, no kill', $r['state']['apply_pending'] === ['WAN_B' => 'hold']
+        && !in_array('configd wanfailover kill_states 198.51.100.254@vtnet2', $f['calls']->getArrayCopy(), true));
 
     $f = wf_t_io(['wanfailover kill_states' => "killed 2 states (0 failed)\n"]);
     wf_apply(array_merge($plan, ['kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    $replayAt = array_search('configd wanfailover replay_alarm WAN2', $c, true);
+    $replayAt = array_search('configd wanfailover replay_alarm WAN_B', $c, true);
     $killAt = array_search('configd wanfailover kill_states 192.0.2.1@vtnet1', $c, true);
     wf_check($t, '(a1) after the replay, the hold kills through the plugin\'s own action by gateway@interface, and logs its answer',
         $replayAt !== false && $killAt !== false && $killAt > $replayAt
@@ -139,13 +139,13 @@ wf_register_suite('apply', function (): int {
     $r = wf_apply(array_merge($plan, ['kill_targets' => ['192.0.2.1@vtnet1']]), $state, $snap, $f['io']);
     wf_check($t, '(a2) a kill whose listing failed is logged as the kill line at warning, and the hold stands',
         in_array('log(' . LOG_WARNING . ') kill states via 192.0.2.1@vtnet1: listing failed: pfctl exited 1', $f['calls']->getArrayCopy(), true)
-        && $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN2']);
+        && $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN_B']);
 
     $f = wf_t_io([], false);
     $r = wf_apply($plan, $state, $snap, $f['io']);
     wf_check($t, 'gateway lock busy -> not ok, nothing written, pending kept for next tick', !$r['ok']
         && count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'write'))) === 0
-        && $r['state']['apply_pending'] === ['WAN2' => 'hold'] && $r['problem'] === 'gateway lock busy for 30 s');
+        && $r['state']['apply_pending'] === ['WAN_B' => 'hold'] && $r['problem'] === 'gateway lock busy for 30 s');
 
     $f = wf_t_io([], true, false);
     $r = wf_apply($plan, $state, $snap, $f['io']);
@@ -153,46 +153,46 @@ wf_register_suite('apply', function (): int {
         && $r['problem'] === 'config write failed: the fake write' && $r['prio'] === LOG_ERR);
 
     $f = wf_t_io();
-    $r = wf_apply(wf_t_plan(['release' => ['WAN2'], 'expected' => ['WAN2' => true], 'write' => true]), $state, $snap, $f['io']);
-    wf_check($t, 'release: write with empty held, then replay, pending cleared', in_array('write {"WAN2":false} held=', $f['calls']->getArrayCopy(), true)
+    $r = wf_apply(wf_t_plan(['release' => ['WAN_B'], 'expected' => ['WAN_B' => true], 'write' => true]), $state, $snap, $f['io']);
+    wf_check($t, 'release: write with empty held, then replay, pending cleared', in_array('write {"WAN_B":false} held=', $f['calls']->getArrayCopy(), true)
         && $r['state']['apply_pending'] === []);
 
     $f = wf_t_io();
-    $r = wf_apply(wf_t_plan(['foreign' => ['WAN2'], 'held_now' => ['WAN2']]), $state, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['foreign' => ['WAN_B'], 'held_now' => ['WAN_B']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
     wf_check($t, 'a change outside the engine -> routes configure under the lock, then replay; no write; last_held follows config',
-        in_array('configd interface routes configure', $c, true) && in_array('configd wanfailover replay_alarm WAN2', $c, true)
-        && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'write'))) === 0 && $r['state']['last_held'] === ['WAN2']);
+        in_array('configd interface routes configure', $c, true) && in_array('configd wanfailover replay_alarm WAN_B', $c, true)
+        && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'write'))) === 0 && $r['state']['last_held'] === ['WAN_B']);
 
     $states = wf_parse_states((string)file_get_contents(__DIR__ . '/fixtures/states.txt'));
     $rules = wf_parse_rules((string)file_get_contents(__DIR__ . '/fixtures/rules.txt'));
-    $flows = wf_flows($states, ['203.0.113.1@igc1' => 'PRIMARY_WAN', '172.16.12.1@igc2' => 'WAN2']);
-    $pref = ['22222222-2222-4222-8222-222222222222' => ['WAN2'], '33333333-3333-4333-8333-333333333333' => []];
+    $flows = wf_flows($states, ['203.0.113.1@vtnet1' => 'WAN_A', '198.51.100.254@vtnet2' => 'WAN_B']);
+    $pref = ['22222222-2222-4222-8222-222222222222' => ['WAN_B'], '33333333-3333-4333-8333-333333333333' => []];
     $pfStale = ['flows' => $flows, 'renderings' => $rules, 'pinned' => ['198.51.100.200' => true], 'rule_pref' => $pref,
-                'default' => 'WAN2', 'selfcheck' => true, 'raw_states' => '', 'raw_rules' => ''];
-    $pfMoved = array_merge($pfStale, ['default' => 'PRIMARY_WAN']);
+                'default' => 'WAN_B', 'selfcheck' => true, 'raw_states' => '', 'raw_rules' => ''];
+    $pfMoved = array_merge($pfStale, ['default' => 'WAN_A']);
     $fb = wf_state_new('b1');
-    $fb['pending_failbacks']['PRIMARY_WAN'] = ['since' => 990];
+    $fb['pending_failbacks']['WAN_A'] = ['since' => 990];
     $f = wf_t_io([], true, true, [$pfStale, $pfMoved]);
-    $r = wf_apply(wf_t_plan(['failback' => ['PRIMARY_WAN' => ['top' => true]]]), $fb, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
     wf_check($t, 'failback: stale default -> replay, recheck, kill once moved, pending cleared',
-        in_array('configd wanfailover replay_alarm PRIMARY_WAN', $c, true)
+        in_array('configd wanfailover replay_alarm WAN_A', $c, true)
         && in_array('configd filter kill state 33f6d16a00000000 4a28027f', $c, true)
-        && !isset($r['state']['pending_failbacks']['PRIMARY_WAN']));
+        && !isset($r['state']['pending_failbacks']['WAN_A']));
     $f = wf_t_io([], true, true, [array_merge($pfMoved, ['selfcheck' => false])]);
-    $r = wf_apply(wf_t_plan(['failback' => ['PRIMARY_WAN' => ['top' => true]]]), $fb, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
     wf_check($t, 'failback: pf self-check failed -> suspended, nothing killed, still pending',
         count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'configd filter kill state'))) === 0
-        && isset($r['state']['pending_failbacks']['PRIMARY_WAN']));
+        && isset($r['state']['pending_failbacks']['WAN_A']));
 
     $ts = wf_state_new('b1');
-    $ts['ts'] = ['default_gw' => '172.16.12.1@igc2', 'restarted_at' => null, 'cur_default' => '172.16.12.1@igc2', 'cur_since' => 1,
+    $ts['ts'] = ['default_gw' => '198.51.100.254@vtnet2', 'restarted_at' => null, 'cur_default' => '198.51.100.254@vtnet2', 'cur_since' => 1,
                  'lost' => false, 'expected_default' => null];
-    $f = wf_t_io([], true, true, [], '203.0.113.1@igc1');
-    $r = wf_apply(wf_t_plan(['expected_default' => '203.0.113.1@igc1', 'acting' => false]), $ts, array_merge($snap, ['tailscale_restart' => true]), $f['io']);
+    $f = wf_t_io([], true, true, [], '203.0.113.1@vtnet1');
+    $r = wf_apply(wf_t_plan(['expected_default' => '203.0.113.1@vtnet1', 'acting' => false]), $ts, array_merge($snap, ['tailscale_restart' => true]), $f['io']);
     wf_check($t, 'tailscale: planned default change restarts through configd', in_array('configd tailscale restart', $f['calls']->getArrayCopy(), true)
-        && $r['state']['ts']['default_gw'] === '203.0.113.1@igc1');
+        && $r['state']['ts']['default_gw'] === '203.0.113.1@vtnet1');
     $f = wf_t_io();
     wf_apply(wf_t_plan(['write' => true, 'held_after' => [], 'held_now' => ['GONE']]), wf_state_new('b1'), $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
@@ -201,18 +201,18 @@ wf_register_suite('apply', function (): int {
         && !in_array('configd interface routes configure', $c, true));
 
     $fb = wf_state_new('b1');
-    $fb['pending_failbacks']['PRIMARY_WAN'] = ['since' => 990];
+    $fb['pending_failbacks']['WAN_A'] = ['since' => 990];
     $f = wf_t_io(['filter kill state' => 'pfctl: DIOCKILLSTATES: Operation not permitted'], true, true, [$pfMoved]);
-    wf_apply(wf_t_plan(['failback' => ['PRIMARY_WAN' => ['top' => true]]]), $fb, $snap, $f['io']);
+    wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
     wf_check($t, 'failback kill results are read: failed kills are reported, not counted as killed',
         count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_contains($x, '0 states killed') && str_contains($x, 'failed'))) === 1);
 
     $ts = wf_state_new('b1');
-    $ts['ts'] = ['default_gw' => '172.16.12.1@igc2', 'restarted_at' => null, 'cur_default' => '172.16.12.1@igc2', 'cur_since' => 990,
+    $ts['ts'] = ['default_gw' => '198.51.100.254@vtnet2', 'restarted_at' => null, 'cur_default' => '198.51.100.254@vtnet2', 'cur_since' => 990,
                  'lost' => false, 'expected_default' => null];
-    $f = wf_t_io([], true, true, [], '203.0.113.1@igc1');
+    $f = wf_t_io([], true, true, [], '203.0.113.1@vtnet1');
     $r = wf_apply(wf_t_plan(['acting' => false]), $ts, array_merge($snap, ['tailscale_restart' => true]), $f['io']);
-    $f2 = wf_t_io([], true, true, [], '203.0.113.1@igc1');
+    $f2 = wf_t_io([], true, true, [], '203.0.113.1@vtnet1');
     wf_apply(wf_t_plan(['acting' => false]), $r['state'], array_merge($snap, ['tailscale_restart' => true, 'now' => 1010]), $f2['io']);
     wf_check($t, 'a tailscale deferral is logged once, not every tick',
         count(array_filter($f2['calls']->getArrayCopy(), fn (string $x): bool => str_contains($x, 'tailscale defer'))) === 0);
@@ -255,9 +255,9 @@ wf_register_suite('apply', function (): int {
         . 'the one it resumed is finished', $r['ok'] && $r['state']['apply_pending'] === ['WAN_B' => 'hold']);
 
     $f = wf_t_io([], true, true, [$pfStale]);
-    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN2', 'x;y'], 'failback' => ['x;y' => ['top' => true]]]), $state, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN_B', 'x;y'], 'failback' => ['x;y' => ['top' => true]]]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    $x4 = in_array('configd wanfailover replay_alarm WAN2', $c, true)
+    $x4 = in_array('configd wanfailover replay_alarm WAN_B', $c, true)
         && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd ') && str_contains($x, 'x;y')) === []
         && count(array_filter($c, fn (string $x): bool => $x === 'log replay skipped for an invalid gateway name')) === 1
         && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd wanfailover replay_alarm'))) === 2;
@@ -463,9 +463,9 @@ wf_register_suite('apply', function (): int {
     wf_check($t, '(d10) a removal whose routing reconfigure failed both ways ends the same way',
         str_starts_with((string)end($o['log']), '(' . LOG_WARNING . ') deinstall: released WAN_A, but the routing re-sync did not complete'));
     $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
-    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN2']]), $state, $snap, $f['io']);
+    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN_B']]), $state, $snap, $f['io']);
     wf_check($t, '(d10) an evaluation\'s failed replay still says the next tick resumes it, and is not resynced',
-        !$r['resynced'] && $r['ok'] && in_array('log alarm replay failed for WAN2; resuming next tick', $f['calls']->getArrayCopy(), true));
+        !$r['resynced'] && $r['ok'] && in_array('log alarm replay failed for WAN_B; resuming next tick', $f['calls']->getArrayCopy(), true));
 
     $runs = new ArrayObject();
     $o = $once($dsnap(4200, false), $landed, function (string $line) use ($runs): int {

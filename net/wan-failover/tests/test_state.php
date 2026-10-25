@@ -54,29 +54,29 @@ function wf_t_mode(string $path): int
 
 wf_register_suite('state', function (): int {
     $t = ['fail' => 0, 'total' => 0];
-    $fd = ['PRIMARY_WAN' => false, 'WAN2' => true];
+    $fd = ['WAN_A' => false, 'WAN_B' => true];
     /* hold records as the snapshot resolves them, each stamped with a boot id: b500 is the live boot */
     $rec = function (string $boot, string ...$names): array {
         return array_fill_keys($names, ['boot' => $boot, 'since' => 100]);
     };
 
-    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, [], ['WAN2'], 'b500');
-    wf_check($t, 'held with force_down=1 is owned', $r['owned'] === ['WAN2'] && $r['foreign'] === []);
-    $r = wf_reconcile($rec('b500', 'WAN2'), ['WAN2' => false], [], ['WAN2'], 'b500');
-    wf_check($t, 'held with force_down=0 was released by hand', $r['owned'] === [] && $r['manual_released'] === ['WAN2']);
-    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'hold'], [], 'b500');
-    wf_check($t, 'pending hold that landed (a crash between the save and the replay): redo replay and kill, not foreign', $r['redo_apply'] === ['WAN2']
-        && $r['apply_pending'] === ['WAN2' => 'hold'] && $r['foreign'] === []);
-    $r = wf_reconcile([], $fd, ['WAN2' => 'hold'], [], 'b500');
+    $r = wf_reconcile($rec('b500', 'WAN_B'), $fd, [], ['WAN_B'], 'b500');
+    wf_check($t, 'held with force_down=1 is owned', $r['owned'] === ['WAN_B'] && $r['foreign'] === []);
+    $r = wf_reconcile($rec('b500', 'WAN_B'), ['WAN_B' => false], [], ['WAN_B'], 'b500');
+    wf_check($t, 'held with force_down=0 was released by hand', $r['owned'] === [] && $r['manual_released'] === ['WAN_B']);
+    $r = wf_reconcile($rec('b500', 'WAN_B'), $fd, ['WAN_B' => 'hold'], [], 'b500');
+    wf_check($t, 'pending hold that landed (a crash between the save and the replay): redo replay and kill, not foreign', $r['redo_apply'] === ['WAN_B']
+        && $r['apply_pending'] === ['WAN_B' => 'hold'] && $r['foreign'] === []);
+    $r = wf_reconcile([], $fd, ['WAN_B' => 'hold'], [], 'b500');
     wf_check($t, 'pending hold that never saved: dropped', $r['redo_apply'] === [] && $r['apply_pending'] === []);
-    $r = wf_reconcile([], ['WAN2' => false], ['WAN2' => 'release'], ['WAN2'], 'b500');
-    wf_check($t, 'pending release that landed: redo replay, not foreign', $r['redo_replay'] === ['WAN2'] && $r['foreign'] === []);
-    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, ['WAN2' => 'release'], ['WAN2'], 'b500');
+    $r = wf_reconcile([], ['WAN_B' => false], ['WAN_B' => 'release'], ['WAN_B'], 'b500');
+    wf_check($t, 'pending release that landed: redo replay, not foreign', $r['redo_replay'] === ['WAN_B'] && $r['foreign'] === []);
+    $r = wf_reconcile($rec('b500', 'WAN_B'), $fd, ['WAN_B' => 'release'], ['WAN_B'], 'b500');
     wf_check($t, 'pending release that never saved: dropped', $r['redo_replay'] === [] && $r['apply_pending'] === []);
-    $r = wf_reconcile($rec('b500', 'WAN2'), $fd, [], [], 'b500');
-    wf_check($t, 'held gained outside the engine (a revert): foreign, so routing is re-synced', $r['foreign'] === ['WAN2']);
-    $r = wf_reconcile([], $fd, [], ['WAN2'], 'b500');
-    wf_check($t, 'held lost outside the engine: foreign', $r['foreign'] === ['WAN2']);
+    $r = wf_reconcile($rec('b500', 'WAN_B'), $fd, [], [], 'b500');
+    wf_check($t, 'held gained outside the engine (a revert): foreign, so routing is re-synced', $r['foreign'] === ['WAN_B']);
+    $r = wf_reconcile([], $fd, [], ['WAN_B'], 'b500');
+    wf_check($t, 'held lost outside the engine: foreign', $r['foreign'] === ['WAN_B']);
     $r = wf_reconcile($rec('b500', 'GONE'), $fd, [], ['GONE'], 'b500');
     wf_check($t, 'a held name with no gateway in config is neither owned nor manual', $r['owned'] === [] && $r['manual_released'] === []);
 
@@ -134,9 +134,9 @@ wf_register_suite('state', function (): int {
 
     $s = wf_state_new('b500');
     $s['installed_at'] = 400;
-    $s['judgements']['WAN2'] = ['value' => 'bad'] + wf_judgement_new(400);
-    $s['apply_pending'] = ['WAN2' => 'hold'];
-    $s['last_held'] = ['WAN2'];
+    $s['judgements']['WAN_B'] = ['value' => 'bad'] + wf_judgement_new(400);
+    $s['apply_pending'] = ['WAN_B' => 'hold'];
+    $s['last_held'] = ['WAN_B'];
     $s['foreign_pruned'] = ['WAN_B' => 390];
     $b = wf_boot_reset($s, 'b900');
     wf_check($t, 'boot reset clears judgements, apply_pending, last_held; keeps installed_at', $b['judgements'] === []
@@ -148,7 +148,7 @@ wf_register_suite('state', function (): int {
     $path = "{$dir}/state.json";
     wf_state_save($path, $s);
     $l = wf_state_load($path, 'b500');
-    wf_check($t, 'save creates the directory and round-trips', !$l['corrupt'] && $l['state']['apply_pending'] === ['WAN2' => 'hold']);
+    wf_check($t, 'save creates the directory and round-trips', !$l['corrupt'] && $l['state']['apply_pending'] === ['WAN_B' => 'hold']);
     file_put_contents($path, '{"version":3,"judgements":');
     $l = wf_state_load($path, 'b500');
     wf_check($t, 'a truncated file loads fresh, flagged corrupt', $l['corrupt'] && $l['state']['judgements'] === []);

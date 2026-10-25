@@ -92,7 +92,7 @@ function wf_contract_tailscale(?string $tailscaleActions): array
 /**
  * Does core run a dpinger for this WAN right now? Only for a monitored, enabled gateway whose interface
  * has carrier and an IPv4 address: dpinger binds the interface's address, and core stops it when the
- * link or the address goes (2026-10-07: a flapping igc1 lost both, and its missing socket was taken for
+ * link or the address goes (2026-10-07: a flapping WAN lost both, and its missing socket was taken for
  * core drift). The judge reads such a WAN as unavailable; the contract must not read it as drift.
  *
  * @param array{carrier: bool, has_ipv4: bool} $link wf_parse_ifconfig()

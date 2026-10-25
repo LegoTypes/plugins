@@ -25,10 +25,10 @@ wf_register_suite('parsers', function (): int {
     wf_check($t, '(n2) wf_name_ok rejects a path, a space, a semicolon, an empty name, a trailing newline and 33 characters',
         array_filter($bad, 'wf_name_ok') === []);
 
-    wf_check($t, '(i1) wf_if_ok accepts igc1, vtnet0, epair1a, vlan0.120 and wg1',
-        array_filter(['igc1', 'vtnet0', 'epair1a', 'vlan0.120', 'wg1'], 'wf_if_ok') === ['igc1', 'vtnet0', 'epair1a', 'vlan0.120', 'wg1']);
+    wf_check($t, '(i1) wf_if_ok accepts vtnet1, vtnet0, epair1a, vlan0.100 and wg9',
+        array_filter(['vtnet1', 'vtnet0', 'epair1a', 'vlan0.100', 'wg9'], 'wf_if_ok') === ['vtnet1', 'vtnet0', 'epair1a', 'vlan0.100', 'wg9']);
     wf_check($t, '(i2) wf_if_ok rejects a semicolon, a capital, a trailing newline and an empty name',
-        array_filter(['igc1;x', 'Igc1', "igc1\n", ''], 'wf_if_ok') === []);
+        array_filter(['vtnet1;x', 'Igc1', "vtnet1\n", ''], 'wf_if_ok') === []);
 
     wf_check($t, '(k1) wf_kill_target_ok accepts 192.0.2.1@vtnet1', wf_kill_target_ok('192.0.2.1@vtnet1'));
     $badTargets = ['999.1.1.1@vtnet1', '192.0.2.1@', '@vtnet1', '192.0.2.1@vtnet1;x', '2001:db8::1@vtnet1', "192.0.2.1@vtnet1\n"];

@@ -28,10 +28,10 @@ function wf_t_wan(string $uuid, string $gw, int $rank, array $over = []): array
 /** @return array{now: int, boot_id: string, release: ?string, enabled: bool, dry: bool, failback: bool, default_gw: ?string, wans: array<string, array>, unresolved: list<string>, holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>, force_down: array<string, bool>, contract: array{judging: list<string>, command: list<string>}} */
 function wf_t_snap(int $now, array $primary, array $wan2, array $extra = []): array
 {
-    $wans = ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary + ['if' => 'igc1', 'route_target' => '203.0.113.1@igc1']),
-             'WAN2' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '172.16.12.1', 2, $wan2 + ['if' => 'igc2', 'route_target' => '172.16.12.1@igc2'])];
+    $wans = ['WAN_A' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1, $primary + ['if' => 'vtnet1', 'route_target' => '203.0.113.1@vtnet1']),
+             'WAN_B' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000002', '198.51.100.254', 2, $wan2 + ['if' => 'vtnet2', 'route_target' => '198.51.100.254@vtnet2'])];
     return array_merge(['now' => $now, 'boot_id' => 'b1', 'enabled' => true, 'failback' => true,
-        'default_gw' => '203.0.113.1@igc1', 'wans' => $wans, 'unresolved' => [], 'holds' => [], 'holds_stale' => [], 'holds_dupes' => [],
+        'default_gw' => '203.0.113.1@vtnet1', 'wans' => $wans, 'unresolved' => [], 'holds' => [], 'holds_stale' => [], 'holds_dupes' => [],
         'legacy_held' => [], 'force_down' => array_map(fn (array $w): bool => $w['force_down'], $wans),
         'contract' => ['judging' => [], 'command' => []], 'dry' => false, 'release' => null,
         'failback_delay' => 0, 'failback_now' => false], $extra);
@@ -68,42 +68,42 @@ wf_register_suite('planner', function (): int {
     $t = ['fail' => 0, 'total' => 0];
 
     $r = wf_plan(wf_t_snap(1000, [], ['loss' => 30.0]), wf_state_new('b1'));
-    wf_check($t, '1: hold WAN2, kill the states via its gateway and interface, default expected on PRIMARY', $r['plan']['hold'] === ['WAN2']
-        && $r['plan']['held_after'] === ['WAN2'] && $r['plan']['write'] && $r['plan']['kill_targets'] === ['172.16.12.1@igc2']
-        && $r['plan']['expected_default'] === '203.0.113.1@igc1');
+    wf_check($t, '1: hold WAN_B, kill the states via its gateway and interface, default expected on WAN_A', $r['plan']['hold'] === ['WAN_B']
+        && $r['plan']['held_after'] === ['WAN_B'] && $r['plan']['write'] && $r['plan']['kill_targets'] === ['198.51.100.254@vtnet2']
+        && $r['plan']['expected_default'] === '203.0.113.1@vtnet1');
     $s = wf_t_applied($r['state'], $r['plan']);
 
-    $held = ['holds' => wf_t_rec('WAN2')];
+    $held = ['holds' => wf_t_rec('WAN_B')];
     $r = wf_plan(wf_t_snap(1015, ['loss' => null, 'sock_age' => 3], ['loss' => null, 'sock_age' => 3, 'force_down' => true, 'status' => 'force_down'], $held), $s);
-    wf_check($t, '2: restart after the hold changes nothing (B1)', $r['plan']['hold'] === [] && $r['plan']['release'] === [] && !$r['plan']['write']);
+    wf_check($t, '2: restart after the hold changes nothing: a dpinger restart is no new evidence', $r['plan']['hold'] === [] && $r['plan']['release'] === [] && !$r['plan']['write']);
     $s = $r['state'];
 
     $r = wf_plan(wf_t_snap(1080, [], ['loss' => 5.0, 'force_down' => true, 'status' => 'force_down'], $held), $s);
-    wf_check($t, '4: held WAN2 at 5% (marginal) stays held', $r['plan']['release'] === []);
+    wf_check($t, '4: held WAN_B at 5% (marginal) stays held', $r['plan']['release'] === []);
     $r = wf_plan(wf_t_snap(1140, [], ['loss' => 0.0, 'force_down' => true, 'status' => 'force_down'], $held), $r['state']);
-    wf_check($t, '4: loss-free -> released, held emptied, failback pending (not top)', $r['plan']['release'] === ['WAN2']
-        && $r['plan']['held_after'] === [] && $r['plan']['failback'] === ['WAN2' => ['top' => false]]);
+    wf_check($t, '4: loss-free -> released, held emptied, failback pending (not top)', $r['plan']['release'] === ['WAN_B']
+        && $r['plan']['held_after'] === [] && $r['plan']['failback'] === ['WAN_B' => ['top' => false]]);
 
     $down = ['carrier' => false, 'present' => false, 'loss' => null];
     $r = wf_plan(wf_t_snap(2000, $down, $down), wf_state_new('b1'));
     wf_check($t, '6a: both down -> nothing held', $r['plan']['hold'] === []);
     $r2 = wf_plan(wf_t_snap(2100, [], ['loss' => null, 'sock_age' => 5]), $r['state']);
-    wf_check($t, '6a: PRIMARY back, WAN2 unmeasured -> not held; PRIMARY failback pending as top',
-        $r2['plan']['hold'] === [] && $r2['plan']['failback'] === ['PRIMARY_WAN' => ['top' => true]]);
+    wf_check($t, '6a: WAN_A back, WAN_B unmeasured -> not held; WAN_A failback pending as top',
+        $r2['plan']['hold'] === [] && $r2['plan']['failback'] === ['WAN_A' => ['top' => true]]);
     $r3 = wf_plan(wf_t_snap(2100, [], $down), $r['state']);
-    wf_check($t, '6a variant: WAN2 still hard down -> held (decision 3)', $r3['plan']['hold'] === ['WAN2']);
+    wf_check($t, '6a variant: WAN_B still hard down -> held (decision 3)', $r3['plan']['hold'] === ['WAN_B']);
 
     $s = wf_state_new('b1');
     $r = wf_plan(wf_t_snap(3000, ['loss' => null, 'sock_age' => 2], ['loss' => null, 'sock_age' => 2, 'force_down' => true, 'status' => 'force_down'],
-        ['boot_id' => 'b2', 'holds' => wf_t_rec('WAN2')]), $s);
-    wf_check($t, '12c: boot the hook missed -> every held gateway released, judgements reset', $r['plan']['release'] === ['WAN2']
+        ['boot_id' => 'b2', 'holds' => wf_t_rec('WAN_B')]), $s);
+    wf_check($t, '12c: boot the hook missed -> every held gateway released, judgements reset', $r['plan']['release'] === ['WAN_B']
         && $r['plan']['held_after'] === [] && $r['state']['boot_id'] === 'b2' && $r['state']['judgements'] === []);
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
+    $s['last_held'] = ['WAN_B'];
     $r = wf_plan(wf_t_snap(3000, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'],
-        ['boot_time' => 1791270671, 'holds' => wf_t_rec('WAN2')]), $s);
+        ['boot_time' => 1791270671, 'holds' => wf_t_rec('WAN_B')]), $s);
     wf_check($t, 'same boot id, kern.boottime moved by a clock step: not a boot, the hold stays', $r['plan']['release'] === []
-        && $r['plan']['held_after'] === ['WAN2'] && $r['state']['boot_id'] === 'b1');
+        && $r['plan']['held_after'] === ['WAN_B'] && $r['state']['boot_id'] === 'b1');
 
     $r = wf_plan(wf_t_snap(4000, ['loss' => 30.0], ['force_down' => true, 'status' => 'force_down']), wf_state_new('b1'));
     wf_check($t, 'manual force_down: one alert, nothing released or held', count($r['plan']['alerts']) === 1
@@ -112,18 +112,18 @@ wf_register_suite('planner', function (): int {
     wf_check($t, 'manual force_down: no repeat alert within the hour', $r['plan']['alerts'] === []);
 
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(5000, [], ['loss' => 30.0], ['holds' => wf_t_rec('WAN2')]), $s);
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(5000, [], ['loss' => 30.0], ['holds' => wf_t_rec('WAN_B')]), $s);
     wf_check($t, '11: held but force_down=0 -> pruned from held, no re-hold yet', $r['plan']['hold'] === []
-        && $r['plan']['held_after'] === [] && $r['plan']['write'] && isset($r['state']['no_rehold']['WAN2']));
+        && $r['plan']['held_after'] === [] && $r['plan']['write'] && isset($r['state']['no_rehold']['WAN_B']));
     $s = wf_t_applied($r['state'], $r['plan']);
     $r = wf_plan(wf_t_snap(5060, [], ['loss' => 3.0]), $s);
     $r = wf_plan(wf_t_snap(5120, [], ['loss' => 30.0]), wf_t_applied($r['state'], $r['plan']));
-    wf_check($t, '11: after reading up then over threshold, held again', $r['plan']['hold'] === ['WAN2']);
+    wf_check($t, '11: after reading up then over threshold, held again', $r['plan']['hold'] === ['WAN_B']);
 
     $r = wf_plan(wf_t_snap(6000, [], ['loss' => 8.0]), wf_state_new('b1'));
     $r = wf_plan(wf_t_snap(6015, ['sock_age' => 12, 'loss' => 0.0], ['sock_age' => 40, 'loss' => 35.0]), $r['state']);
-    wf_check($t, '3: the 10-05 pattern -- hold starts while PRIMARY is unsettled but fresh', $r['plan']['hold'] === ['WAN2']);
+    wf_check($t, '3: the 10-05 pattern -- hold starts while WAN_A is unsettled but fresh', $r['plan']['hold'] === ['WAN_B']);
 
     $r = wf_plan(wf_t_snap(7000, [], [], ['unresolved' => ['bbbbbbbb-0000-4000-8000-00000000000f'], 'holds_stale' => ['cccccccc-0000-4000-8000-00000000000e']]), wf_state_new('b1'));
     wf_check($t, 'an unresolvable wans entry and a stale hold record -> prune write, logged', $r['plan']['write']
@@ -132,23 +132,23 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(8000, [], []), wf_state_new('b1'));
     $r = wf_plan(wf_t_snap(8100, [], ['loss' => null, 'sock_age' => 3]), $r['state']);
     $r = wf_plan(wf_t_snap(4500, [], ['loss' => null, 'sock_age' => 3]), $r['state']);
-    wf_check($t, 'clock back an hour keeps WAN2 clean and logs it', $r['state']['judgements']['WAN2']['value'] === WF_CLEAN
+    wf_check($t, 'clock back an hour keeps WAN_B clean and logs it', $r['state']['judgements']['WAN_B']['value'] === WF_CLEAN
         && count(array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'clock moved back'))) === 1);
 
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(9000, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2'), 'enabled' => false]), $s);
-    wf_check($t, '12b: disabled -> every held gateway released, nothing planned', $r['plan']['release'] === ['WAN2']
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(9000, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B'), 'enabled' => false]), $s);
+    wf_check($t, '12b: disabled -> every held gateway released, nothing planned', $r['plan']['release'] === ['WAN_B']
         && $r['plan']['hold'] === [] && $r['plan']['stopped']);
 
     $r = wf_plan(wf_t_snap(9050, [], [], ['enabled' => false]), wf_state_new('b1'));
     wf_check($t, 'disabled with nothing held logs nothing and plans nothing', $r['plan']['log'] === [] && !$r['plan']['acting']);
 
-    $drift = ['holds' => wf_t_rec('WAN2'), 'contract' => ['judging' => ['dpinger_instances() rows lack current_losslow'], 'command' => []]];
+    $drift = ['holds' => wf_t_rec('WAN_B'), 'contract' => ['judging' => ['dpinger_instances() rows lack current_losslow'], 'command' => []]];
     $r = wf_plan(wf_t_snap(9100, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], $drift), $s);
     wf_check($t, '12e: a judging drift that has not persisted (a reconfigure in flight) releases nothing', $r['plan']['release'] === [] && !$r['plan']['stopped']);
     $r = wf_plan(wf_t_snap(9281, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], $drift), $r['state']);
-    wf_check($t, '12e: a judging drift persisting past unknown_max_seconds -> release all and stop', $r['plan']['release'] === ['WAN2'] && $r['plan']['stopped']);
+    wf_check($t, '12e: a judging drift persisting past unknown_max_seconds -> release all and stop', $r['plan']['release'] === ['WAN_B'] && $r['plan']['stopped']);
     $r2 = wf_plan(wf_t_snap(9300, [], ['loss' => 30.0], ['contract' => ['judging' => ['x'], 'command' => []]]), wf_state_new('b1'));
     wf_check($t, '12e: a fresh judging drift blocks new holds', $r2['plan']['hold'] === []);
     $r = wf_plan(wf_t_snap(9200, [], ['loss' => 30.0], ['contract' => ['judging' => [], 'command' => ['[kill.state] changed']]]), wf_state_new('b1'));
@@ -160,41 +160,41 @@ wf_register_suite('planner', function (): int {
         . "parameters: -k id -k %s/%s 2>&1\n", "/usr/local/etc/rc.syshook early\n/usr/local/etc/rc.bootup\n"), 'tailscale' => []];
     $r = wf_plan(wf_t_snap(9200, [], ['loss' => 30.0], ['contract' => $contract]), wf_state_new('b1'));
     wf_check($t, '(d13) a change of core\'s [routes.configure], which only the package removal\'s re-sync copies, blocks no hold',
-        $r['plan']['hold'] === ['WAN2'] && !$r['plan']['stopped']);
+        $r['plan']['hold'] === ['WAN_B'] && !$r['plan']['stopped']);
 
-    $r = wf_plan(wf_t_snap(9300, [], ['force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2')]), wf_state_new('b1'));
-    wf_check($t, '12f: held appeared outside the engine -> foreign re-sync', $r['plan']['foreign'] === ['WAN2']);
+    $r = wf_plan(wf_t_snap(9300, [], ['force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B')]), wf_state_new('b1'));
+    wf_check($t, '12f: held appeared outside the engine -> foreign re-sync', $r['plan']['foreign'] === ['WAN_B']);
 
-    $r = wf_plan(['wans' => ['PRIMARY_WAN' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1)]]
-        + wf_t_snap(9400, [], ['force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2'), 'force_down' => ['PRIMARY_WAN' => false, 'WAN2' => true]]), $s);
-    wf_check($t, 'a held gateway removed from wans is released', $r['plan']['release'] === ['WAN2'] && $r['plan']['held_after'] === []);
+    $r = wf_plan(['wans' => ['WAN_A' => wf_t_wan('aaaaaaaa-0000-4000-8000-000000000001', '203.0.113.1', 1)]]
+        + wf_t_snap(9400, [], ['force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B'), 'force_down' => ['WAN_A' => false, 'WAN_B' => true]]), $s);
+    wf_check($t, 'a held gateway removed from wans is released', $r['plan']['release'] === ['WAN_B'] && $r['plan']['held_after'] === []);
     $s = wf_state_new('b1');
-    $s['boot_note'] = 'boot: released WAN2';
+    $s['boot_note'] = 'boot: released WAN_B';
     $r = wf_plan(wf_t_snap(9500, [], []), $s);
     wf_check($t, 'the early hook\'s note (syslog is not running yet at that point) is logged once by the first evaluation',
-        in_array('boot: released WAN2', $r['plan']['log'], true) && $r['state']['boot_note'] === null);
+        in_array('boot: released WAN_B', $r['plan']['log'], true) && $r['state']['boot_note'] === null);
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(9400, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2'), 'boot_id' => '']), $s);
-    wf_check($t, 'an unreadable boot id is not a boot: the hold stays', $r['plan']['release'] === [] && $r['plan']['held_after'] === ['WAN2']
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(9400, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B'), 'boot_id' => '']), $s);
+    wf_check($t, 'an unreadable boot id is not a boot: the hold stays', $r['plan']['release'] === [] && $r['plan']['held_after'] === ['WAN_B']
         && $r['state']['boot_id'] === 'b1');
 
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(9500, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2'), 'release' => 'requested']), $s);
-    wf_check($t, 'release from the page: released and not re-held while still bad', $r['plan']['release'] === ['WAN2']
-        && isset($r['state']['no_rehold']['WAN2']));
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(9500, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B'), 'release' => 'requested']), $s);
+    wf_check($t, 'release from the page: released and not re-held while still bad', $r['plan']['release'] === ['WAN_B']
+        && isset($r['state']['no_rehold']['WAN_B']));
     $r = wf_plan(wf_t_snap(9560, [], ['loss' => 30.0]), wf_t_applied($r['state'], $r['plan']));
     wf_check($t, 'release from the page: the next tick does not re-hold', $r['plan']['hold'] === []);
 
     $s = wf_state_new('b1');
-    $s['pending_failbacks']['WAN2'] = ['since' => 9600];
+    $s['pending_failbacks']['WAN_B'] = ['since' => 9600];
     $r = wf_plan(wf_t_snap(9610, [], [], ['failback' => false]), $s);
     wf_check($t, 'move-connections-back off: pending failbacks dropped, none planned', $r['plan']['failback'] === [] && $r['state']['pending_failbacks'] === []);
 
     $s = wf_state_new('b1');
     $s['last_now'] = 20000;
-    $s['unowned_alerted_at']['WAN2'] = 19990;
+    $s['unowned_alerted_at']['WAN_B'] = 19990;
     $r = wf_plan(wf_t_snap(10000, [], ['force_down' => true, 'status' => 'force_down']), $s);
     wf_check($t, 'clock moved back: the unowned alert is not silenced for the size of the jump', count($r['plan']['alerts']) === 1);
 
@@ -215,74 +215,74 @@ wf_register_suite('planner', function (): int {
     $snap = wf_t_snap(12000, [], ['loss' => 30.0], ['dry' => true]);
     $r = wf_plan(wf_dry_view($snap, $s['dry_held']), $s);
     $s = wf_dry_after($r['state'], $r['plan']);
-    wf_check($t, 'dry: a bad WAN2 is held in the simulation', $r['plan']['hold'] === ['WAN2'] && $s['dry_held'] === ['WAN2']);
+    wf_check($t, 'dry: a bad WAN_B is held in the simulation', $r['plan']['hold'] === ['WAN_B'] && $s['dry_held'] === ['WAN_B']);
     $snap = wf_t_snap(12060, [], ['loss' => 30.0], ['dry' => true]);
     $r = wf_plan(wf_dry_view($snap, $s['dry_held']), $s);
     $s = wf_dry_after($r['state'], $r['plan']);
-    wf_check($t, 'dry: still bad -> no repeated hold, still held', $r['plan']['hold'] === [] && $r['plan']['acting'] === false && $s['dry_held'] === ['WAN2']);
+    wf_check($t, 'dry: still bad -> no repeated hold, still held', $r['plan']['hold'] === [] && $r['plan']['acting'] === false && $s['dry_held'] === ['WAN_B']);
     $snap = wf_t_snap(12120, [], ['loss' => 3.0], ['dry' => true]);
     $r = wf_plan(wf_dry_view($snap, $s['dry_held']), $s);
     $s = wf_dry_after($r['state'], $r['plan']);
-    wf_check($t, 'dry: marginal while held -> stays held (hysteresis rehearsed)', $r['plan']['release'] === [] && $s['dry_held'] === ['WAN2']);
+    wf_check($t, 'dry: marginal while held -> stays held (hysteresis rehearsed)', $r['plan']['release'] === [] && $s['dry_held'] === ['WAN_B']);
     $snap = wf_t_snap(12180, [], [], ['dry' => true]);
     $r = wf_plan(wf_dry_view($snap, $s['dry_held']), $s);
     $s = wf_dry_after($r['state'], $r['plan']);
-    wf_check($t, 'dry: loss-free -> released, failback rehearsed', $r['plan']['release'] === ['WAN2'] && $s['dry_held'] === []
-        && isset($r['plan']['failback']['WAN2']));
+    wf_check($t, 'dry: loss-free -> released, failback rehearsed', $r['plan']['release'] === ['WAN_B'] && $s['dry_held'] === []
+        && isset($r['plan']['failback']['WAN_B']));
     $s = wf_state_new('b1');
-    $s['dry_held'] = ['WAN2'];
-    $s['last_held'] = ['WAN2'];
+    $s['dry_held'] = ['WAN_B'];
+    $s['last_held'] = ['WAN_B'];
     $snap = wf_t_snap(12240, [], ['loss' => 30.0]);
     $r = wf_plan($snap, wf_dry_exit($s, $snap));
-    wf_check($t, 'dry turned off: the simulated holds are dropped, not taken for a foreign config change; a bad WAN2 is held for real',
-        $r['plan']['foreign'] === [] && $r['plan']['hold'] === ['WAN2'] && $r['state']['dry_held'] === []
+    wf_check($t, 'dry turned off: the simulated holds are dropped, not taken for a foreign config change; a bad WAN_B is held for real',
+        $r['plan']['foreign'] === [] && $r['plan']['hold'] === ['WAN_B'] && $r['state']['dry_held'] === []
         && array_filter($r['plan']['log'], fn (string $l): bool => str_contains($l, 'outside the engine')) === []);
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(12300, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN2'), 'release' => 'dry']), $s);
-    wf_check($t, 'dry turned on while really holding: the real hold is released', $r['plan']['release'] === ['WAN2'] && $r['plan']['held_after'] === []);
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(12300, [], ['loss' => 30.0, 'force_down' => true, 'status' => 'force_down'], ['holds' => wf_t_rec('WAN_B'), 'release' => 'dry']), $s);
+    wf_check($t, 'dry turned on while really holding: the real hold is released', $r['plan']['release'] === ['WAN_B'] && $r['plan']['held_after'] === []);
     /* failback delay: the recovered WAN must read clean for failback_delay seconds before its flows move back */
     $d = ['failback_delay' => 600];
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
-    $r = wf_plan(wf_t_snap(13000, [], ['loss' => 0.0, 'force_down' => true, 'status' => 'force_down'], $d + ['holds' => wf_t_rec('WAN2')]), $s);
-    wf_check($t, 'delay: the release queues the failback without running it', $r['plan']['release'] === ['WAN2']
-        && $r['plan']['failback'] === [] && isset($r['state']['pending_failbacks']['WAN2']));
+    $s['last_held'] = ['WAN_B'];
+    $r = wf_plan(wf_t_snap(13000, [], ['loss' => 0.0, 'force_down' => true, 'status' => 'force_down'], $d + ['holds' => wf_t_rec('WAN_B')]), $s);
+    wf_check($t, 'delay: the release queues the failback without running it', $r['plan']['release'] === ['WAN_B']
+        && $r['plan']['failback'] === [] && isset($r['state']['pending_failbacks']['WAN_B']));
     $s0 = wf_t_applied($r['state'], $r['plan']);
     $r = wf_plan(wf_t_snap(13300, [], [], $d), $s0);
     wf_check($t, 'delay: 300 s of clean readings is not enough', $r['plan']['failback'] === []);
-    wf_check($t, 'delay: the status shows 300 s left', wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13300, 600)
+    wf_check($t, 'delay: the status shows 300 s left', wf_failback_wait($r['state']['pending_failbacks']['WAN_B'], 13300, 600)
         === ['state' => 'counting', 'left' => 300]);
     $r = wf_plan(wf_t_snap(13600, [], [], $d), $r['state']);
-    wf_check($t, 'delay: 600 s of clean readings runs the failback', isset($r['plan']['failback']['WAN2']));
-    wf_check($t, 'delay: the status shows it moving', wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13600, 600)['state'] === 'moving');
+    wf_check($t, 'delay: 600 s of clean readings runs the failback', isset($r['plan']['failback']['WAN_B']));
+    wf_check($t, 'delay: the status shows it moving', wf_failback_wait($r['state']['pending_failbacks']['WAN_B'], 13600, 600)['state'] === 'moving');
     $r = wf_plan(wf_t_snap(14201, [], [], $d), $r['state']);
     wf_check($t, 'delay: a due failback expires 600 s after it became due, not after it was queued',
-        $r['plan']['failback'] === [] && in_array('failback-expired WAN2', $r['plan']['log'], true));
+        $r['plan']['failback'] === [] && in_array('failback-expired WAN_B', $r['plan']['log'], true));
 
     $r = wf_plan(wf_t_snap(13300, [], ['loss' => 3.0], $d), $s0);
     wf_check($t, 'delay: a marginal reading restarts the countdown', $r['plan']['failback'] === []
-        && wf_failback_wait($r['state']['pending_failbacks']['WAN2'], 13300, 600) === ['state' => 'waiting', 'left' => 600]);
+        && wf_failback_wait($r['state']['pending_failbacks']['WAN_B'], 13300, 600) === ['state' => 'waiting', 'left' => 600]);
     $r = wf_plan(wf_t_snap(13400, [], [], $d), $r['state']);
     $r = wf_plan(wf_t_snap(13900, [], [], $d), $r['state']);
     wf_check($t, 'delay: the restarted countdown is not done after 500 s', $r['plan']['failback'] === []);
     $r = wf_plan(wf_t_snap(14000, [], [], $d), $r['state']);
-    wf_check($t, 'delay: done 600 s after the restart', isset($r['plan']['failback']['WAN2']));
+    wf_check($t, 'delay: done 600 s after the restart', isset($r['plan']['failback']['WAN_B']));
 
     $r = wf_plan(wf_t_snap(13300, [], ['loss' => 30.0], $d), $s0);
-    wf_check($t, 'delay: held again during the delay drops the failback', $r['plan']['hold'] === ['WAN2']
+    wf_check($t, 'delay: held again during the delay drops the failback', $r['plan']['hold'] === ['WAN_B']
         && $r['state']['pending_failbacks'] === [] && $r['plan']['failback'] === []);
 
     $r = wf_plan(wf_t_snap(13100, [], [], $d + ['failback_now' => true]), $s0);
-    wf_check($t, 'fail back now ends the delay', isset($r['plan']['failback']['WAN2'])
-        && in_array('failback-now: the delay ended for WAN2', $r['plan']['log'], true));
+    wf_check($t, 'fail back now ends the delay', isset($r['plan']['failback']['WAN_B'])
+        && in_array('failback-now: the delay ended for WAN_B', $r['plan']['log'], true));
     $r = wf_plan(wf_t_snap(13100, [], [], $d + ['failback_now' => true]), wf_state_new('b1'));
     wf_check($t, 'fail back now with nothing pending says so', in_array('failback-now: no failback is pending', $r['plan']['log'], true));
 
     $s = wf_state_new('b1');
-    $s['pending_failbacks']['WAN2'] = ['since' => 13000];
+    $s['pending_failbacks']['WAN_B'] = ['since' => 13000];
     $r = wf_plan(wf_t_snap(13010, [], [], $d), $s);
-    wf_check($t, 'a failback queued by 1.1 (no countdown recorded) runs as it would have', isset($r['plan']['failback']['WAN2']));
+    wf_check($t, 'a failback queued by 1.1 (no countdown recorded) runs as it would have', isset($r['plan']['failback']['WAN_B']));
 
     /* a DHCP WAN that loses its link loses its gateway address with it (VM 2026-10-08: the hold ran
      * "filter kill gateway_states" with an empty address); its states still route-to the old address */
@@ -290,20 +290,20 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(14000, [], []), wf_state_new('b1'));
     $r = wf_plan(wf_t_snap(14060, $lost, []), $r['state']);
     wf_check($t, 'a WAN that lost its gateway address is held and its states killed by the last address it had, on its interface',
-        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_targets'] === ['203.0.113.1@igc1']);
+        $r['plan']['hold'] === ['WAN_A'] && $r['plan']['kill_targets'] === ['203.0.113.1@vtnet1']);
     $r = wf_plan(wf_t_snap(14000, $lost, []), wf_state_new('b1'));
     wf_check($t, 'with no address ever seen, the kill is skipped and logged, never run without an address',
-        $r['plan']['hold'] === ['PRIMARY_WAN'] && $r['plan']['kill_targets'] === []
-        && in_array('kill states for PRIMARY_WAN skipped: no gateway address known', $r['plan']['log'], true));
+        $r['plan']['hold'] === ['WAN_A'] && $r['plan']['kill_targets'] === []
+        && in_array('kill states for WAN_A skipped: no gateway address known', $r['plan']['log'], true));
     $r = wf_plan(wf_t_snap(14000, ['gateway_ip' => 'dynamic'] + $lost, []), wf_state_new('b1'));
     wf_check($t, 'a gateway value that is no address (an unresolved dynamic gateway) is neither learned nor used for a kill',
-        $r['plan']['kill_targets'] === [] && !isset($r['state']['gateway_ips']['PRIMARY_WAN']));
+        $r['plan']['kill_targets'] === [] && !isset($r['state']['gateway_ips']['WAN_A']));
 
     $s = wf_state_new('b1');
-    $s['gateway_ips']['WAN2'] = '198.51.100.1';
+    $s['gateway_ips']['WAN_B'] = '198.51.100.1';
     $r = wf_plan(wf_t_snap(14100, [], ['if' => 'vtnet2', 'route_target' => '@vtnet2'] + $lost), $s);
     wf_check($t, '(q1) a held WAN with no gateway address now is killed by its last address on its interface',
-        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === ['198.51.100.1@vtnet2']);
+        $r['plan']['hold'] === ['WAN_B'] && $r['plan']['kill_targets'] === ['198.51.100.1@vtnet2']);
     $shared = fn (string $uuid, int $rank, string $if): array => wf_t_wan($uuid, '192.0.2.1', $rank,
         ['if' => $if, 'route_target' => "192.0.2.1@{$if}", 'loss' => 30.0]);
     $three = ['WAN_A' => $shared('aaaaaaaa-0000-4000-8000-00000000000a', 1, 'vtnet1'),
@@ -314,11 +314,11 @@ wf_register_suite('planner', function (): int {
         'force_down' => ['WAN_A' => false, 'WAN_B' => false, 'WAN_C' => false]]), wf_state_new('b1'));
     wf_check($t, '(q2) two held WANs that share a gateway address get one kill target each, told apart by interface',
         $r['plan']['hold'] === ['WAN_A', 'WAN_B'] && $r['plan']['kill_targets'] === ['192.0.2.1@vtnet1', '192.0.2.1@vtnet2']);
-    $r = wf_plan(wf_t_snap(14300, [], ['loss' => 30.0, 'if' => 'vt;1', 'route_target' => '172.16.12.1@vt;1']), wf_state_new('b1'));
-    $skips = array_values(array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'kill states for WAN2')));
+    $r = wf_plan(wf_t_snap(14300, [], ['loss' => 30.0, 'if' => 'vt;1', 'route_target' => '198.51.100.254@vt;1']), wf_state_new('b1'));
+    $skips = array_values(array_filter($r['plan']['log'], fn (string $l): bool => str_starts_with($l, 'kill states for WAN_B')));
     wf_check($t, '(q3) a kill target whose interface is not a plain name is skipped with one line',
-        $r['plan']['hold'] === ['WAN2'] && $r['plan']['kill_targets'] === []
-        && $skips === ['kill states for WAN2 skipped: no valid IPv4 gateway@interface target']);
+        $r['plan']['hold'] === ['WAN_B'] && $r['plan']['kill_targets'] === []
+        && $skips === ['kill states for WAN_B skipped: no valid IPv4 gateway@interface target']);
 
     /* ownership: a record proves a hold only by the boot that took it; b500 is the live boot, b400 the one before */
     $fdB = ['force_down' => true, 'status' => 'force_down'];
@@ -503,15 +503,15 @@ wf_register_suite('planner', function (): int {
         && wf_last_held([], [], ['WAN_B']) === [] && wf_last_held(['WAN_A'], ['WAN_B'], []) === ['WAN_A']);
 
     /* every state the planner and apply write loads back as saved: a state wrongly found corrupt releases every hold */
-    $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@igc2'];
+    $b = ['gateway_ip' => '198.51.100.1', 'route_target' => '198.51.100.1@vtnet2'];
     $at = fn (int $now, array $a, array $wanB, array $extra = []): array => wf_t_snap($now, $a, $wanB + $b, $extra);
     $fd = ['force_down' => true, 'status' => 'force_down'];
-    $held = ['holds' => wf_t_rec('WAN2')];
+    $held = ['holds' => wf_t_rec('WAN_B')];
     $produced = [];
     $r = wf_plan($at(20000, [], ['loss' => 30.0], ['unresolved' => ['bbbbbbbb-0000-4000-8000-00000000000f']]), wf_state_new('b1'));
-    $produced['a hold, as apply saves it before its config write'] = array_merge($r['state'], ['apply_pending' => ['WAN2' => 'hold']]);
+    $produced['a hold, as apply saves it before its config write'] = array_merge($r['state'], ['apply_pending' => ['WAN_B' => 'hold']]);
     $s = wf_t_applied($r['state'], $r['plan']);
-    $s['ts'] = wf_tailscale_decide($s['ts'], '203.0.113.1@igc1', 20000, WF_TS_STABLE_SECONDS, WF_TS_COOLDOWN_SECONDS)['ts'];
+    $s['ts'] = wf_tailscale_decide($s['ts'], '203.0.113.1@vtnet1', 20000, WF_TS_STABLE_SECONDS, WF_TS_COOLDOWN_SECONDS)['ts'];
     $produced['held, with a Tailscale default'] = $s;
     $r = wf_plan($at(20060, [], ['loss' => 5.0] + $fd, $held), $s);
     $produced['held at a marginal loss'] = $r['state'];
@@ -521,7 +521,7 @@ wf_register_suite('planner', function (): int {
     $produced['its failback due'] = $r['state'];
     $produced['force_down set by hand'] = wf_plan($at(20300, ['loss' => 30.0], $fd), wf_state_new('b1'))['state'];
     $s = wf_state_new('b1');
-    $s['last_held'] = ['WAN2'];
+    $s['last_held'] = ['WAN_B'];
     $r = wf_plan($at(20400, [], ['loss' => 30.0], $held), $s);
     $produced['released by hand, not re-held'] = wf_t_applied($r['state'], $r['plan']);
     $r = wf_plan(wf_dry_view($at(20500, [], ['loss' => 30.0], ['dry' => true]), []), wf_state_new('b1'));
@@ -533,11 +533,11 @@ wf_register_suite('planner', function (): int {
         . 'an unowned alert, no_rehold, dry_held, said, a settled loss with no fraction (5.0), a foreign record pruned',
         $any(fn (array $x): bool => $x['foreign_pruned'] !== []) &&
         $any(fn (array $x): bool => $x['apply_pending'] !== []) && $any(fn (array $x): bool => $x['ts']['default_gw'] !== null)
-        && $any(fn (array $x): bool => isset($x['pending_failbacks']['WAN2']) && $x['pending_failbacks']['WAN2']['due'] === null)
-        && $any(fn (array $x): bool => is_int($x['pending_failbacks']['WAN2']['due'] ?? null))
+        && $any(fn (array $x): bool => isset($x['pending_failbacks']['WAN_B']) && $x['pending_failbacks']['WAN_B']['due'] === null)
+        && $any(fn (array $x): bool => is_int($x['pending_failbacks']['WAN_B']['due'] ?? null))
         && $any(fn (array $x): bool => $x['unowned_alerted_at'] !== []) && $any(fn (array $x): bool => $x['no_rehold'] !== [])
         && $any(fn (array $x): bool => $x['dry_held'] !== []) && $any(fn (array $x): bool => $x['said'] !== [])
-        && $any(fn (array $x): bool => ($x['judgements']['WAN2']['last_settled_loss'] ?? null) === 5.0));
+        && $any(fn (array $x): bool => ($x['judgements']['WAN_B']['last_settled_loss'] ?? null) === 5.0));
     $dir = rtrim(sys_get_temp_dir(), '/') . '/wf-test-roundtrip-' . getmypid();
     foreach ($produced as $what => $state) {
         wf_state_save("{$dir}/state.json", $state);
