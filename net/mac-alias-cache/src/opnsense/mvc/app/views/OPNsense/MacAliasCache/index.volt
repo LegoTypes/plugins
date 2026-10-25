@@ -17,16 +17,16 @@
 
         function errorText(data) {
             var map = {
-                busy: "{{ lang._('The alias update lock is busy (a refresh is running). Try again in a moment.') }}",
+                busy: "{{ lang._('Another flush or alias refresh is running. Try again in a moment.') }}",
                 too_soon: "{{ lang._('A flush ran less than 10 seconds ago.') }}",
                 hosts_unavailable: "{{ lang._('The host list could not be read (host discovery unavailable); nothing was changed.') }}",
                 hosts_malformed: "{{ lang._('The host list has no usable rows (no MAC and address in the expected columns); nothing was changed.') }}",
                 state_unusable: "{{ lang._('The plugin state or the core MAC alias cache cannot be trusted; nothing was changed.') }}",
                 lock_unusable: "{{ lang._('The alias update lock file cannot be used safely; nothing was changed.') }}",
-                core_changed: "{{ lang._('This core version no longer matches what the plugin expects; nothing was changed.') }}",
-                backend: "{{ lang._('The backend returned an unexpected response:') }} ",
+                core_changed: "{{ lang._("Core's files, or an alias name in the applied configuration, no longer match what the plugin expects; nothing was changed.") }}",
+                backend: "{{ lang._('The backend returned an unexpected response:') }}",
             };
-            return (map[data.error] || (data.error + ': ')) + (data.detail || '');
+            return (map[data.error] || (data.error + ':')) + (data.detail ? ' ' + data.detail : '');
         }
 
         function summaryTable(summary) {
