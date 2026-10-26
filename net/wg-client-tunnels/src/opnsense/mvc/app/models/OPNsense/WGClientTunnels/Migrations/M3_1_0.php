@@ -33,7 +33,7 @@ use OPNsense\Core\Config;
 use OPNsense\WGClientTunnels\Engine;
 
 /**
- * Settings 3.0.0 -> 3.1.0 (spec 2026-10-20 section 3.5, convention C1): the managed list and the health mirror's
+ * Settings 3.0.0 -> 3.1.0: the managed list and the health mirror's
  * holds leave the settings model, which the API edits, for the engine model, which has no API. This model no
  * longer declares them, so the 3.0.0 values are read from the raw config nodes; the settings model's own
  * serialize after this run drops those nodes.
@@ -42,9 +42,9 @@ use OPNsense\WGClientTunnels\Engine;
  * tunnel's IPv4 gateway and is forced down; the record carries this boot's kern.boot_id, since a hold active at
  * the upgrade was taken in this boot. Every other held gateway is dropped and logged, its force_down left as it
  * is for a person to clear. A managed tunnel's IPv6 gateway that is forced down becomes a hold record too, its
- * IPv4 tunnel as underlay (spec 3.5a), but only when the 3.0.0 mirror ran (the plugin and its health mirror both
+ * IPv4 tunnel as underlay, but only when the 3.0.0 mirror ran (the plugin and its health mirror both
  * on): only then did it rewrite that force_down on every tick, so only then was it the mirror's. With either off,
- * such a gateway is a person's or Create's, and is left forced down as manual, logged once by name (ruling R35).
+ * such a gateway is a person's or Create's, and is left forced down as manual, logged once by name.
  * The engine model is brought to its own version before it is written, so the outcome is the same whichever of the
  * two models core migrates first. Once the models are serialized, the boot the rows carry is recorded in boot.json,
  * as the mirror records the boot it runs under: a reboot before the mirror's first tick then still finds the
@@ -168,7 +168,7 @@ class M3_1_0 extends BaseModelMigration
 
     /**
      * Record in boot.json the boot the carried rows were stamped with. With no readable boot id nothing was stamped,
-     * so nothing is recorded (ruling R17). Pure but for $record.
+     * so nothing is recorded. Pure but for $record.
      *
      * @param string                 $bootId the boot run() stamped, '' for none
      * @param callable(string): bool $record wgct_record_boot()

@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * VM test for the filter hook's fallback to the footprint (spec 2026-10-20 section 3.1 part B, cases k-n).
+ * VM test for the filter hook's fallback to the footprint.
  * Root on the disposable test VM only (vm_selftest.sh), never on a firewall. It loads the working tree's
  * plugins.inc.d/wgclienttunnels.inc beside a stub \OPNsense\Firewall\Plugin that only records what is
  * registered, and calls wgclienttunnels_firewall_at() with a temporary library, footprint and run directory,
@@ -349,7 +349,7 @@ PHP);
         @rmdir($part);
     }
 
-    /* (R30) the package removal's marker: the hook registers, reads, writes and logs nothing, library or not */
+    /* the package removal's marker: the hook registers, reads, writes and logs nothing, library or not */
     $fresh();
     $put($fp, json_encode($record));
     mkdir($run, 0700);
@@ -359,12 +359,12 @@ PHP);
     $withLib = $call("$T/lib", $fp);
     $withoutLib = $call($nolib, $fp);
     $listing = $call($nolib, $fp, false);
-    hooktest_check($tally, '(R30) removal marker => nothing registered, with the library, without it, or for a rules listing',
+    hooktest_check($tally, 'removal marker => nothing registered, with the library, without it, or for a rules listing',
         fn (): bool => [$withLib->anchors, $withLib->rules, $withoutLib->anchors, $withoutLib->rules, $listing->anchors, $listing->rules]
             === [[], [], [], [], [], []]);
-    hooktest_check($tally, '(R30) removal marker => no state written: the run directory holds the marker alone, the footprint is kept',
+    hooktest_check($tally, 'removal marker => no state written: the run directory holds the marker alone, the footprint is kept',
         fn (): bool => array_map('basename', glob("$run/*") ?: []) === ['removing'] && is_file($fp));
-    hooktest_check($tally, '(R30) removal marker => nothing logged',
+    hooktest_check($tally, 'removal marker => nothing logged',
         fn (): bool => $count($m, 'enforcing the footprint') === 0 && $count($m, 'no footprint') === 0);
     @unlink("$run/removing");
 

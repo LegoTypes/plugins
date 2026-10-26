@@ -4,20 +4,19 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# VM tests for the plugin's state directories and the one reader every trusted state file goes through
-# (spec 2026-10-20 section 3.2, convention C3). Root on the disposable test VM only (vm_selftest.sh), never
-# on a firewall: it moves /var/run/wgclienttunnels and /var/db/wgclienttunnels aside, runs a real reconcile
-# and plants files in the new run directory. At exit it removes what the test made and moves the originals
-# back. It runs the copy of the scripts vm_selftest.sh puts in /tmp/wgct, so the code under test is the
-# working tree, not the installed package; the installed package supplies only what wgct.sh calls through
-# its own fixed paths.
+# VM tests for the plugin's state directories and the one reader every trusted state file goes through. Root on the
+# disposable test VM only (vm_selftest.sh), never on a firewall: it moves /var/run/wgclienttunnels and
+# /var/db/wgclienttunnels aside, runs a real reconcile and plants files in the new run directory. At exit it removes
+# what the test made and moves the originals back. It runs the copy of the scripts vm_selftest.sh puts in /tmp/wgct, so
+# the code under test is the working tree, not the installed package; the installed package supplies only what wgct.sh
+# calls through its own fixed paths.
 #
 # The VM's cron runs the installed mirror four times a minute and the reconcile every minute, against the same
 # health.lock, skip marker and state directories as these cases. cron is stopped for the whole run, and the
 # rounds cron started before the stop are ended or waited out (wgct_settle.sh cron_quiesce), so only the test's
 # own runs act; it is started again at exit, after the originals are back.
 #
-# The mirror cases (spec section 3.2, lock bullets) run the copy's health_mirror.php with --dry, which still
+# The mirror cases run the copy's health_mirror.php with --dry, which still
 # takes health.lock and writes the skip markers but changes no gateway. Log counts are of the lines between two
 # marker lines this test logs through syslog: the closing one is waited for, and the plugin logs through
 # logger(1) as well, so every line a case caused is in the log before it, whatever syslog's latency
@@ -163,7 +162,7 @@ mark=$(lmark wireguard)
 $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1
 check "the first run with an openable lock logs one resume line" "$(lcount wireguard "$mark" -- 'wgct-health.*health.lock opens again')" 1
 
-# F4 (spec section 3.4): core's /tmp files are read for the devices core has and in the shape core writes.
+# Core's /tmp files are read for the devices core has and in the shape core writes.
 TUNNEL="$(dirname "$SRC")/tunnel.php"
 PLANTED=""
 cleanup_planted() {
@@ -204,7 +203,7 @@ $PHP -d log_errors=0 "$FRESH" --dry > "$T/f4b.out" 2>&1
 check "freshness --dry is at 'current' before the planted error file" "$(grep -c 'reason: current' "$T/f4b0.out")" 1
 check "a nobody-owned rules.debug.error with a future mtime leaves freshness at 'current'" "$(grep -c 'reason: current' "$T/f4b.out")" 1
 
-# F8 (spec section 3.8): a symlink at the hand-off path is never written through. A monitor change on the
+# A symlink at the hand-off path is never written through. A monitor change on the
 # dummy tunnel hands off the old monitor's kernel host route; the save happens before the hand-off, so the
 # error is reported with the new monitor already stored, and a second edit puts the old one back. The symlink
 # itself may be gone by then (the failed edit still runs the routes step, which consumes hand-off files), so
@@ -226,10 +225,10 @@ if [ -n "$UUID" ] && [ -n "$OLDMON" ] && [ -n "$GWUUID" ]; then
     echo "{\"uuid\":\"$UUID\",\"monitor\":\"$OLDMON\"}" | $PHP -d log_errors=0 "$TUNNEL" --json edit > "$T/f8r.out" 2>&1
     check "the second edit restores the dummy tunnel's monitor" "$($PHP -d log_errors=0 "$TUNNEL" --json list | $PHP -d log_errors=0 -r '$d = json_decode(stream_get_contents(STDIN), true); foreach ($d["tunnels"] as $t) { if ($t["name"] === "rehearse") { echo $t["monitor"]; } }')" "$OLDMON"
 else
-    check "the dummy tunnel rehearse and its gateway are found for the F8 case" "uuid=$UUID monitor=$OLDMON gateway=$GWUUID" "found"
+    check "the dummy tunnel rehearse and its gateway are found for the symlink case" "uuid=$UUID monitor=$OLDMON gateway=$GWUUID" "found"
 fi
 
-# R28: an entry script whose plugin library cannot be loaded ends quietly: exit 0, no output, one line per state in
+# An entry script whose plugin library cannot be loaded ends quietly: exit 0, no output, one line per state in
 # the WireGuard log, nothing in PHP's error log (core's GUI crash reporter reads it). They run from a copy of the
 # script directory without lib/, never the installed one; the copy's entry.php keeps its markers in a directory
 # of this test's own, so the VM's cron runs never see them. php runs with the production ini here (log_errors on).
@@ -276,7 +275,7 @@ $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
 $PHP "$E/scripts/core_contract.php" > /dev/null 2>&1
 check "the first run with the library back logs one recovery line and drops its marker" "$(lcount wireguard "$emark" -- 'core_contract.php loads the plugin library again')$(ls "$E/run" | grep -c '^core_contract')" 10
 
-# R30: while the package removal's marker exists, every entry script ends at once, before any library file is
+# While the package removal's marker exists, every entry script ends at once, before any library file is
 # loaded, and logs nothing; tunnel.php answers its caller; the removal's own release-holds runs on. lib/ is missing
 # here, so a script that went past the marker check would log the library failure and leave its .libfail marker.
 rm -rf "$E/scripts/lib"

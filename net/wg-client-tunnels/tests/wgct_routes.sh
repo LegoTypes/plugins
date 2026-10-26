@@ -4,7 +4,7 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# Shell tests for wgct.sh's route set (spec 2026-09-28 sections 3.4.1-3.4.2). Root on the disposable test VM
+# Shell tests for wgct.sh's route set. Root on the disposable test VM
 # only (vm_selftest.sh), never on a firewall: it creates lo91 and lo92 and routes documentation-range monitors.
 # Production wgct.sh honours no environment override, so the tests run a substituted copy that wgct_stub.sh
 # writes: a stub helper stands in for gateway_config.php, a temp directory for the state directory and a stub
@@ -209,7 +209,7 @@ touch "$STATE/db/footprint.json" "$STATE/fallback.json" "$STATE/fallback.logged"
 "$W" stop
 check "29 stop removes the footprint, the fallback record and its log marker" '[ ! -e "$STATE/db/footprint.json" ] && [ ! -e "$STATE/fallback.json" ] && [ ! -e "$STATE/fallback.logged" ]'
 
-# (ruling R37) the plugin settings waiting for their 3.1.0 migration: the route set changes nothing, said once per state
+# the plugin settings waiting for their 3.1.0 migration: the route set changes nothing, said once per state
 sed -e "s#logger -t#$T/logger -t#g" "$W" > "$T/wgct_fakes.sh"
 chmod +x "$T/wgct_fakes.sh"
 : > "$T/log"

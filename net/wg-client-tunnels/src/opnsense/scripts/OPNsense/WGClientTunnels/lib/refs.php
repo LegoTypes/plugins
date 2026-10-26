@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Remove's refusal set (spec 2026-09-24 section 6.3): everything in config
+ * Remove's refusal set: everything in config
  * that can name a tunnel's gateways or its interface, flattened into one list
  * of references -- the union of core's delGatewayAction and
  * AssignmentController::delItemAction checks, the rule fields those checks do
@@ -131,7 +131,7 @@ function wgct_refs_snapshot(array $groups): array {
 }
 
 /**
- * Why Remove must refuse (spec 6.3), changing nothing. Pure. Interface tokens
+ * Why Remove must refuse, changing nothing. Pure. Interface tokens
  * match exactly -- optN itself or its address optNip -- so opt1 never matches
  * opt13.
  *

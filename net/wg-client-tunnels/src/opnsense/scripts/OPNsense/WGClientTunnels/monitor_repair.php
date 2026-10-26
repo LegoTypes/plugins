@@ -6,7 +6,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Restart a missing IPv6 tunnel monitor (spec 2026-09-28 section 3.4.3). Run only by the minute cron, as the
+ * Restart a missing IPv6 tunnel monitor. Run only by the minute cron, as the
  * last step of `wgct.sh reconcile --repair` (after the route set has released routes.lock, and after
  * default_guard.php and freshness.php): never from a hook, the config syshook or an apply. At hook time the
  * tunnel's inner address is almost always still tentative, and under routes.alarm or replay_alarm the gateway
@@ -30,7 +30,7 @@ $mdl = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$mdl->enabled->isEqual('1')) {
     exit(0);
 }
-/* the 3.1.0 migration pending: the repair starts and replays nothing, said once per state (ruling R37) */
+/* the 3.1.0 migration pending: the repair starts and replays nothing, said once per state */
 if (wgct_pending_refuses('monitor-repair', 'wgct-monitor')) {
     exit(0);
 }
@@ -93,7 +93,7 @@ $result = wgct_repair_run($candidates, [
             $log('cannot open the gateway lock: ' . $e->getMessage());
             return false;
         }
-        /* the removal marker, checked again once the lock is held (ruling R30): the repair starts nothing */
+        /* the removal marker, checked again once the lock is held: the repair starts nothing */
         if ($lock !== null && wgct_removing()) {
             $lock->flock(LOCK_UN);
             $lock = null;

@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The apply half of every action (spec 2026-09-24 sections 4.6 and 6.1):
+ * The apply half of every action:
  *
  *   gateway lock -> commit (Config::lock, build, save once, unlock)
  *   -> hand-offs that are not config (route todo files, interface_reset)
@@ -32,12 +32,12 @@ const WGCT_GATEWAY_LOCK_FILE = '/tmp/filter_reload_gateway.lock';
 /* core files the contract check reads (wgct_core_contract) */
 const WGCT_CORE_ACTIONS_INTERFACE = '/usr/local/opnsense/service/conf/actions.d/actions_interface.conf';
 const WGCT_CORE_ROUTING_SCRIPT = '/usr/local/etc/rc.routing_configure';
-/* as long as the replay action's `flock -w 120` waits (ruling 22) */
+/* as long as the replay action's `flock -w 120` waits */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
 const WGCT_TIMEOUT = '/usr/bin/timeout';
 const WGCT_CONFIGCTL = '/usr/local/sbin/configctl';
 /*
- * How long the package removal waits on one core configd action (ruling R29): the gateway lock's own bound
+ * How long the package removal waits on one core configd action: the gateway lock's own bound
  * (WGCT_GATEWAY_LOCK_WAIT_MS), which every routing writer of the plugin already waits. A routes configure or an
  * alarm takes seconds; the bound only ends the wait of a removal stuck behind a configd that accepted the
  * connection and never answered, while configd itself finishes the action it started.
@@ -45,18 +45,16 @@ const WGCT_CONFIGCTL = '/usr/local/sbin/configctl';
 const WGCT_REMOVAL_CONFIGD_SECONDS = 120;
 const WGCT_ACTION_LOG_TAG = 'wgct-action';
 /*
- * Instances whose Create or Edit saved but whose apply has not completed
- * (ruling 20; S5 review I2), each with the apply mode it still needs. Kept in
- * /var/db, not /var/run, so it survives a reboot: boot runs only `wireguard
- * configure`, never `template reload`, so a tunnel whose apply never ran still
- * has no current wgN.conf after a reboot, and nothing else re-applies a saved
- * NAT or monitor change; either way it still needs Apply.
+ * Instances whose Create or Edit saved but whose apply has not completed, each with the apply mode it still needs. Kept
+ * in /var/db, not /var/run, so it survives a reboot: boot runs only `wireguard configure`, never `template reload`, so
+ * a tunnel whose apply never ran still has no current wgN.conf after a reboot, and nothing else re-applies a saved NAT
+ * or monitor change; either way it still needs Apply.
  */
 const WGCT_APPLY_PENDING_FILE = WGCT_DB_DIR . '/apply_pending.json';
 /* the longest an update of that record waits for another one: its critical section is a read and a rename */
 const WGCT_APPLY_PENDING_LOCK_WAIT_MS = 10000;
 /*
- * Create's apply (spec 6.1, amended): what core's WireGuard, assignment and
+ * Create's apply: what core's WireGuard, assignment and
  * routes applies do, with the routes applied once BEFORE the device exists.
  * WireGuard keeps the source address of its first path, core's force-gateway
  * rules keep that state alive and keepalive 25 refreshes it forever: a first
@@ -74,7 +72,7 @@ const WGCT_CREATE_APPLY_STEPS = [
     ['filter reload', []],                         // outbound NAT and the rendered pins
 ];
 /*
- * Remove's apply (ruling 21): registering after `wireguard configure` has
+ * Remove's apply: registering after `wireguard configure` has
  * destroyed the device is the order that leaves Assignments right.
  */
 const WGCT_REMOVE_APPLY_STEPS = [
@@ -107,7 +105,7 @@ function wgct_rebind_apply_steps(string $uuid): array {
 
 /*
  * The apply modes of `tunnel.php apply UUID [MODE]` and the configd action
- * apply_mode (S5 ruling 1), weakest first: each mode's steps do what every
+ * apply_mode, weakest first: each mode's steps do what every
  * weaker mode's do (`interface routes configure` ends with a filter reload,
  * and the tunnel applies run both), which is what lets a stronger apply
  * settle a weaker pending record (wgct_pending_settle()).
@@ -122,8 +120,7 @@ const WGCT_APPLY_MODES = ['filter', 'routes', 'first', 'tunnel'];
  * - tunnel: Create's steps, then `wireguard restart`: the re-run of Create's
  *   apply and an Edit of the tunnel itself. A re-run may find a device that
  *   already handshook by the wrong WAN (the step list carries on past a
- *   failed step), and an Edit moves the path, so both end with the restart
- *   (S5 ruling 2).
+ *   failed step), and an Edit moves the path, so both end with the restart.
  *
  * @param string $mode one of WGCT_APPLY_MODES
  * @param string $uuid the WireGuard instance
@@ -144,7 +141,7 @@ function wgct_apply_mode_steps(string $mode, string $uuid): array {
 
 /**
  * @return bool whether the mode's apply changes routing and so holds the
- *              gateway lock (spec 4.6 step 1); filter and none do not. Pure.
+ *              gateway lock; filter and none do not. Pure.
  */
 function wgct_apply_mode_locks(string $mode): bool {
     return in_array($mode, ['first', 'tunnel', 'routes'], true);
@@ -153,7 +150,7 @@ function wgct_apply_mode_locks(string $mode): bool {
 /**
  * The mode the Apply button (`tunnel.php apply UUID` without a mode) runs for
  * a pending record: the recorded one, except that Create's first apply is
- * re-run as the tunnel apply, restart included (S5 ruling 2); with nothing
+ * re-run as the tunnel apply, restart included; with nothing
  * recorded, the tunnel apply. Pure.
  */
 function wgct_rerun_mode(?string $recorded): string {
@@ -187,13 +184,10 @@ function wgct_step_refusal(string $action, array $params): ?string {
 }
 
 /**
- * What an action's apply means for the apply-pending record of its instance
- * (ruling 20; S5 review I2). A complete apply mode -- its exact step list,
- * every step OK -- is that mode, which settles a record of the same or a
- * weaker mode (wgct_pending_settle()). A Rebind, a Sentinel repair or a
- * failed apply is null and settles nothing. A saved Remove is 'forget'
- * whatever its apply did: the instance is no longer in config, so the record
- * could never be shown or cleared again. Pure.
+ * What an action's apply means for the apply-pending record of its instance. A complete apply mode -- its exact step
+ * list, every step OK -- is that mode, which settles a record of the same or a weaker mode (wgct_pending_settle()). A
+ * Rebind, a Sentinel repair or a failed apply is null and settles nothing. A saved Remove is 'forget' whatever its
+ * apply did: the instance is no longer in config, so the record could never be shown or cleared again. Pure.
  *
  * @param list<array{0: string, 1: list<string>}> $steps  the action's configd steps
  * @param list<string>                            $failed wgct_failed_steps() of its apply
@@ -313,13 +307,12 @@ function wgct_failure_footer(string $cmd, string $uuid): string {
  * Run a configd action and decode its JSON boundary once, for every API
  * caller (both controllers). A reply that does not decode to an array --
  * Backend::configdRun()/configdpRun() return '' on a timeout, a dropped
- * socket or a stripped 'Execute error' (ruling 14) -- used to be reported as
+ * socket or a stripped 'Execute error' -- used to be reported as
  * "ok: false, errors: ['backend: ']", which reads as nothing happened even
- * though the action may still be running on the box (controller review,
- * 2026-09-25); it is now a clear message naming the timeout used and telling
+ * though the action may still be running on the box; it is now a clear message naming the timeout used and telling
  * the caller to reload and check the log instead. `errors`, when the action
  * supplied one, is flattened to a plain list (array_values()): the GUI
- * (Task 8) reads one shape regardless of whether the underlying
+ * reads one shape regardless of whether the underlying
  * wgct_result() keyed it by request field or apply step.
  *
  * @param string       $action
@@ -351,8 +344,7 @@ function wgct_configd_json(string $action, array $params, int $timeout): array {
  * '0', 0 (int) and false all mean "run for real"; '1', 1 (int) and true all
  * mean "preview only"; anything else -- a stray float, a string like 'yes',
  * an array -- is refused rather than silently defaulting to either side, so a
- * malformed value can never fall through into a real Remove/Adopt/Sentinel
- * (controller review, 2026-09-25).
+ * malformed value can never fall through into a real Remove/Adopt/Sentinel.
  *
  * @param mixed $value the raw {dry: ...} POST value -- a JSON boundary, hence mixed
  * @return bool|null true for dry, false for real, null when the caller must refuse
@@ -378,7 +370,7 @@ final class WgctRemovingException extends \RuntimeException
 }
 
 /**
- * @return bool whether the package removal's marker exists (ruling R30)
+ * @return bool whether the package removal's marker exists
  */
 function wgct_removing(): bool {
     return is_file(WGCT_REMOVING_FILE);
@@ -388,7 +380,7 @@ function wgct_removing(): bool {
  * Core's gateway lock, for a writer that changes routing. The removal marker is checked again once the lock is
  * held: the removal writes it before its release-holds takes this lock, so a writer that was waiting here (up to
  * WGCT_GATEWAY_LOCK_WAIT_MS, longer than the removal waits for the mirror's lock) can never re-take a hold the
- * removal released, whatever the timing (ruling R30). Only release-holds passes $removal.
+ * removal released, whatever the timing. Only release-holds passes $removal.
  *
  * @param bool $removal the caller is the package removal's own release-holds
  * @return \SplFileObject the gateway lock, held until LOCK_UN or the object is released
@@ -665,7 +657,7 @@ function wgct_replay_set_now(array $ours, ?array $before): array {
 
 /**
  * One core configd action through configctl, bounded by timeout(1), for a caller that cannot count on the plugin's
- * own configd actions (the package removal, convention C6). configd answers a script action that ran with "OK";
+ * own configd actions (the package removal). configd answers a script action that ran with "OK";
  * no socket, no connection, "Execute error" or no answer within $seconds all count as configd not answering. When
  * the bound runs out only this wait ends: configd finishes the action it started. configctl inherits this
  * process's open files, a held lock included, but lives only as long as the call: it starts no daemon.
@@ -695,12 +687,12 @@ function wgct_after_apply(array $ours, ?array $before): array {
 
 /**
  * A config write that holds the gateway lock but applies nothing itself: the
- * API's in-process Create (spec 4.6 steps 1-5), whose apply then runs as the
+ * API's in-process Create, whose apply then runs as the
  * configd action `wgclienttunnels apply`, which takes the lock on its own -- so
  * the lock is released before this returns, never held across that call.
  * Lock order stays gateway lock, then Config::lock() (inside $commit). Any
  * gateway alarm dropped during the hold is replayed after release, as every
- * gateway-locked action does (ruling 13); the tunnel's own gateways are not
+ * gateway-locked action does; the tunnel's own gateways are not
  * running yet, and the apply replays them.
  *
  * @param callable(): array $commit a writer from writer.php, returning wgct_result()
@@ -737,7 +729,7 @@ function wgct_gateway_locked_commit(callable $commit): array {
 }
 
 /**
- * Spec 4.6 for an action that changes routing. A dry run takes no gateway
+ * The gateway-lock order for an action that changes routing. A dry run takes no gateway
  * lock and applies nothing.
  *
  * @param callable(): array $commit a writer from writer.php, returning wgct_result()
@@ -780,7 +772,7 @@ function wgct_routing_action(callable $commit, bool $dry): array {
      * Always replay, once the lock is released, whether the commit refused
      * to save, something above threw, or everything succeeded: routes.alarm
      * (flock -n) silently drops any alarm raised while we held it, for our
-     * own gateways (ruling 13, only once the commit actually saved) and for
+     * own gateways and for
      * any other gateway whose status changed meanwhile regardless.
      *
      * When $pending is set we are already unwinding a real failure, so a
@@ -833,7 +825,7 @@ function wgct_config_action(callable $commit, bool $dry): array {
 
 /**
  * A write whose apply is a filter reload alone (an Edit of the NAT sources):
- * no gateway lock (spec 4.6 step 1), then the reconcile. Anything but a filter
+ * no gateway lock, then the reconcile. Anything but a filter
  * reload in its steps is a bug upstream: it is not run, and the change stays
  * apply-pending.
  *
@@ -881,11 +873,11 @@ function wgct_filter_action(callable $commit): array {
  * @throws \InvalidArgumentException for an unknown mode, before anything runs
  */
 function wgct_apply_only(string $uuid, ?string $mode = null): array {
-    /* Ruling R37: no apply while the 3.1.0 migration is pending, before any lock or step. */
+    /* No apply while the 3.1.0 migration is pending, before any lock or step. */
     if (wgct_pending_refuses('apply', WGCT_ACTION_LOG_TAG)) {
         return wgct_result(['errors' => [WGCT_MIGRATION_PENDING], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
     }
-    /* Spec 3.6: before any lock or step, an instance the engine model does not list is not the plugin's to apply. */
+    /* Before any lock or step, an instance the engine model does not list is not the plugin's to apply. */
     if (!in_array($uuid, wgct_managed(), true)) {
         return wgct_result(['errors' => ['not a managed tunnel'], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
     }
@@ -1069,7 +1061,7 @@ function wgct_apply_selftest(): int {
         wgct_step_refusal('wireguard configure', []) === null && wgct_step_refusal('interface routes configure', []) === null
         && wgct_step_refusal('wgclienttunnels replay_alarm', ['a,b']) === null);
 
-    /* apply modes (S5, rulings 1 and 2): tunnel is the re-run and Edit's full apply */
+    /* apply modes: tunnel is the re-run and Edit's full apply */
     wgct_check($t, 'apply: modes -- first is Create\'s steps, tunnel adds wireguard restart <uuid>, routes and filter are one step each',
         wgct_apply_mode_steps('first', $u1) === WGCT_CREATE_APPLY_STEPS
         && wgct_apply_mode_steps('tunnel', $u1) === array_merge(WGCT_CREATE_APPLY_STEPS, [['wireguard restart', [$u1]]])
@@ -1085,7 +1077,7 @@ function wgct_apply_selftest(): int {
         wgct_apply_mode_locks('first') && wgct_apply_mode_locks('tunnel') && wgct_apply_mode_locks('routes')
         && !wgct_apply_mode_locks('filter') && !wgct_apply_mode_locks('none') && $refusedMode);
 
-    /* apply-pending (S5 review I2): each complete mode is its outcome; a saved Remove forgets the record */
+    /* apply-pending: each complete mode is its outcome; a saved Remove forgets the record */
     $sentinelSteps = [['interface loopback configure', []], ['interface routes configure', []]];
     wgct_check($t, 'apply: pending outcome -- each mode\'s complete step list with every step OK is that mode',
         wgct_pending_outcome(WGCT_CREATE_APPLY_STEPS, []) === 'first'
@@ -1208,7 +1200,7 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'log: an unknown priority logs at notice', str_contains(wgct_log_command(99, 'x'), ' -p user.notice '));
     wgct_check($t, 'log: warning and info map to their names',
         str_contains(wgct_log_command(LOG_WARNING, 'x'), ' -p user.warning ') && str_contains(wgct_log_command(LOG_INFO, 'x'), ' -p user.info '));
-    /* (M5) the apply-pending record's lock is waited for a bounded time: a temporary lock file, held by a second open */
+    /* the apply-pending record's lock is waited for a bounded time: a temporary lock file, held by a second open */
     $lockDir = rtrim(sys_get_temp_dir(), '/') . '/wgct-pending-selftest.' . getmypid();
     @mkdir($lockDir, 0700);
     $lockPath = "{$lockDir}/apply_pending.json.lock";
@@ -1222,11 +1214,11 @@ function wgct_apply_selftest(): int {
         $timedOut = $e->getMessage();
     }
     $waitedMs = intdiv(hrtime(true) - $started, 1000000);
-    wgct_check($t, 'apply: (M5) the apply-pending lock held elsewhere => a RuntimeException naming it after the bounded wait, not a wait forever',
+    wgct_check($t, 'apply: the apply-pending lock held elsewhere => a RuntimeException naming it after the bounded wait, not a wait forever',
         $timedOut === "{$lockPath} is still held after 200 ms; the apply-pending record was not changed" && $waitedMs >= 200 && $waitedMs < 5000);
     $holder->flock(LOCK_UN);
     $taken = wgct_apply_pending_lock($lockPath, 200);
-    wgct_check($t, 'apply: (M5) the lock free => taken at once', $taken->flock(LOCK_EX | LOCK_NB));
+    wgct_check($t, 'apply: the lock free => taken at once', $taken->flock(LOCK_EX | LOCK_NB));
     $taken->flock(LOCK_UN);
     unset($holder, $taken);
     @unlink($lockPath);

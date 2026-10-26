@@ -4,11 +4,10 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# Production wgct.sh and the PHP scripts honour no WGCT_* environment override (spec 2026-10-20 section 3.9,
-# convention C8): a variable in the environment of a root process must not choose which helper runs or where the
-# state lives. Root on the disposable test VM only (vm_selftest.sh), never on a firewall. It runs the production
-# file itself, not a substituted copy: the one named by the argument (vm_selftest.sh passes /tmp/wgct/wgct.sh, the
-# tree's copy), else the installed one.
+# Production wgct.sh and the PHP scripts honour no WGCT_* environment override: a variable in the environment of a root
+# process must not choose which helper runs or where the state lives. Root on the disposable test VM only
+# (vm_selftest.sh), never on a firewall. It runs the production file itself, not a substituted copy: the one named by
+# the argument (vm_selftest.sh passes /tmp/wgct/wgct.sh, the tree's copy), else the installed one.
 #
 # Usage: wgct_env.sh [/path/to/wgct.sh]
 

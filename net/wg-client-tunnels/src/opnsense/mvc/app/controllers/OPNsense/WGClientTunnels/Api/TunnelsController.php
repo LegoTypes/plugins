@@ -12,14 +12,14 @@ use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
 
 /**
- * The Upstream tunnels page (spec 6, 7). search, search_grid, options and edit_form are
+ * The Upstream tunnels page. search, search_grid, options and edit_form are
  * views derived from core on every request. Create and Edit are the writes
- * done in-process, because only they may see a private key (spec 6.1, 6.5);
+ * done in-process, because only they may see a private key;
  * each then runs the keyless configd action `wgclienttunnels apply_mode`.
  * Every other action runs in its own process through configd, with uuids,
  * gateway names and addresses as its only parameters. Every POST action that
  * writes, measures or previews (dry) refuses a read-only user first, before it
- * reads the dry flag (spec 2026-10-20-02 section 3.3).
+ * reads the dry flag.
  */
 class TunnelsController extends ApiControllerBase
 {
@@ -151,7 +151,7 @@ class TunnelsController extends ApiControllerBase
             if ($prep['errors'] !== []) {
                 return $this->formFailure($prep['errors'], $prep['notes'], 'create', WGCT_CREATE_FIELDS);
             }
-            /* spec 4.6: gateway lock (bounded, ruling 22), then Config::lock() inside the commit; the lock is
+            /* gateway lock (bounded), then Config::lock() inside the commit; the lock is
              * released before the configd apply below, which takes it itself (holding it across would deadlock) */
             $result = wgct_gateway_locked_commit(function () use ($prep, &$uuid): array {
                 $created = wgct_create_commit($prep, false);
@@ -170,7 +170,7 @@ class TunnelsController extends ApiControllerBase
             return $this->formFailure($result['errors'], $result['changes'], 'create', WGCT_CREATE_FIELDS);
         }
         /* the tunnel is saved and marked apply-pending by wgct_create_commit() itself, before this
-         * call (ruling 20); 'ok' below reflects only whether this apply succeeded, so a timeout or a
+         * call; 'ok' below reflects only whether this apply succeeded, so a timeout or a
          * failed step is never reported as success -- the uuid and the apply-pending finding are what
          * let the GUI offer Apply again */
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$result['uuid'], 'first'], 300);
@@ -184,10 +184,10 @@ class TunnelsController extends ApiControllerBase
     }
 
     /**
-     * Edit (spec 6.5): {edit: {...}, dry: 1} previews; without dry it saves the
+     * Edit: {edit: {...}, dry: 1} previews; without dry it saves the
      * differences in-process (the only step that sees a key) and hands the
      * apply to `apply_mode <uuid> <mode>`. The gateway lock is held for the save
-     * only when the edit changes routing (spec 4.6), and released before configd.
+     * only when the edit changes routing, and released before configd.
      */
     public function editAction(string $uuid = ''): array
     {
@@ -248,7 +248,7 @@ class TunnelsController extends ApiControllerBase
             ];
         }
         /* saved, and marked apply-pending with its mode by wgct_edit_commit() until an apply of at least
-         * that mode completes (S5 review I2); 'ok' reflects only whether this apply succeeded */
+         * that mode completes; 'ok' reflects only whether this apply succeeded */
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$uuid, $result['apply_mode']], 300);
         /* the save's own notes (a failed apply-pending mark) first, then the apply's */
         $applyErrors = array_merge(array_values($result['errors']), is_array($apply['errors'] ?? null) ? array_values($apply['errors']) : []);

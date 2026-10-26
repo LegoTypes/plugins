@@ -23,8 +23,7 @@
 #   _routes [quiet] | _cleanup
 #       the route set and its removal; run only under routes.lock (below)
 #
-# The route set comes from gateway_config.php (its line protocol: spec
-# 2026-09-28 section 3.4.1). Every run holds ${STATE_DIR}/routes.lock through
+# The route set comes from gateway_config.php (its line protocol). Every run holds ${STATE_DIR}/routes.lock through
 # "flock -o": only the waiting flock process holds the lock, and nothing the
 # section starts inherits it.
 
@@ -156,7 +155,7 @@ parse_failure() {
     fi
 }
 
-# The route set (spec 3.4.2). Run only under routes.lock (with_routes_lock).
+# The route set. Run only under routes.lock (with_routes_lock).
 routes_section() {
     local quiet="$1" out rc first keeps new kind dev addr nexthop gw4 gw6 monitor
 
@@ -168,7 +167,7 @@ routes_section() {
         return 0
     fi
     rm -f "${STATE_DIR}/parse_error"
-    # the plugin settings wait for their 3.1.0 migration (ruling R37): nothing is added or removed, said once per state
+    # the plugin settings wait for their 3.1.0 migration: nothing is added or removed, said once per state
     if [ "${first}" = "state|pending" ]; then
         if [ ! -f "${STATE_DIR}/routes.awaiting-migration" ]; then
             : > "${STATE_DIR}/routes.awaiting-migration"
@@ -328,10 +327,10 @@ EOF
     printf ']}\n'
 }
 
-# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.pre deletes it; spec 2026-10-20
-# section 3.11, ruling R30): while it exists nothing here adds, repairs or queues anything, so nothing rebuilds what
-# the removal takes away. stop (the removal's own), its section and the status lines still run. The minute cron's
-# reconcile says so each minute, which a removal that stopped partway is worth.
+# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.pre deletes it): while it exists nothing
+# here adds, repairs or queues anything, so nothing rebuilds what the removal takes away. stop (the removal's own), its
+# section and the status lines still run. The minute cron's reconcile says so each minute, which a removal that stopped
+# partway is worth.
 case "$1" in
     start|restart|configure_routes|reconcile|request_reconcile|_reconcile_wait|_reconcile_queued|_routes)
         if [ -f "${STATE_DIR}/removing" ]; then
@@ -348,13 +347,13 @@ case "$1" in
         with_routes_lock _routes
         ;;
     stop)
-        # A clean stop also ends the footprint a failed render would enforce, and the hook's note about it
-        # (spec 2026-10-20 section 3.1 part A); the next filter reload renders from config again.
+        # A clean stop also ends the footprint a failed render would enforce, and the hook's note about it;
+        # the next filter reload renders from config again.
         rm -f "${DB_DIR}/footprint.json" "${STATE_DIR}/fallback.json" "${STATE_DIR}/fallback.logged"
         with_routes_lock _cleanup && log_msg "stopped"
         ;;
     restart)
-        # While the plugin settings wait for their 3.1.0 migration (ruling R37) the route set adds nothing, so a
+        # While the plugin settings wait for their 3.1.0 migration the route set adds nothing, so a
         # restart must not remove first: the route set alone runs, refusing and saying so once.
         if [ "$(parse_config 2>/dev/null | head -n 1)" = "state|pending" ]; then
             with_routes_lock _routes

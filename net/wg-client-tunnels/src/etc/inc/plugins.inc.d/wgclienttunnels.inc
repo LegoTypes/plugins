@@ -106,9 +106,9 @@ function wgclienttunnels_firewall($fw)
 }
 
 /**
- * The filter hook (spec 2026-10-20 section 3.1 part B). Never throws into core.
+ * The filter hook. Never throws into core.
  *
- * While the package removal's marker ($runDir/removing, ruling R30) exists,
+ * While the package removal's marker ($runDir/removing) exists,
  * nothing is registered, read, written or logged: removing the package is
  * the user's configured removal of the pins. Otherwise:
  *
@@ -284,7 +284,7 @@ function wgclienttunnels_in_filter_reload(array $frames): bool
 }
 
 /**
- * The hook's own C3 reader, for when the library is missing: a regular file
+ * The hook's own trusted-file reader, for when the library is missing: a regular file
  * (never a symlink), owned by root, no larger than $maxBytes; anything else
  * reads as absent.
  *
@@ -307,7 +307,7 @@ function wgclienttunnels_read_state_file(string $path, int $maxBytes): ?string
 }
 
 /**
- * The footprint (spec section 3.1 B-2), or null when there is none or it is
+ * The footprint, or null when there is none or it is
  * not exactly what a render writes: 'at' and 'priority' ints, 'anchor'
  * matching ^[a-z_]+$, 'rules' a list of block rules whose keys come from the
  * fixed set, whose values are strings or bools and whose label is 32 hex

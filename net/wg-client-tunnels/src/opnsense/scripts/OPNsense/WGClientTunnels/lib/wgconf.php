@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Create's inputs (spec 2026-09-24 section 6.1): the wg-quick parser, the
+ * Create's inputs: the wg-quick parser, the
  * request check and the public-key derivation. Everything here except
  * wgct_derive_pubkey() is pure. The private and preshared keys travel only
  * in parameters marked #[\SensitiveParameter] -- PHP then leaves them out of
@@ -68,7 +68,7 @@ function wgct_normalize_address(string $address): ?array {
  * Parse a wg-quick client config. Pure. Reads PrivateKey and Address from the
  * [Interface], and PublicKey, PresharedKey and Endpoint from the one [Peer].
  * DNS, MTU, AllowedIPs, PersistentKeepalive and hook lines are ignored: the
- * plugin sets those itself (spec 6.1). Messages never quote a line.
+ * plugin sets those itself. Messages never quote a line.
  *
  * @param string $text the config as pasted or read from a file
  * @return array{errors: list<string>, public: array{addresses: array{inet: list<string>, inet6: list<string>}, peer_pubkey: string, endpoint_ip: string, endpoint_port: string, endpoint_family: string, has_psk: bool}, secret: array{privkey: string, psk: string}}
@@ -205,7 +205,7 @@ function wgct_request_flag(mixed $v): array {
  *
  * @param array $raw         keys of WGCT_CREATE_FIELDS. ipv6/unique: see wgct_request_flag()
  *                           (absent = the planner's default: ipv6 on exactly when the
- *                           config has an IPv6 address, unique per ruling 3);
+ *                           config has an IPv6 address, unique addressing then);
  *                           mtu: int or digits ('' or absent = measure);
  *                           nat4/nat6: list of strings or a comma-separated string
  * @param bool  $mtuRequired the API requires an MTU; the CLI measures one when absent

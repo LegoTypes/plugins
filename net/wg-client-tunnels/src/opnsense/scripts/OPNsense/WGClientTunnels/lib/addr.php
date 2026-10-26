@@ -5,8 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Address helpers for derivation, the planners and the views (spec
- * 2026-09-27 section 2). Every endpoint, route network and peer server
+ * Address helpers for derivation, the planners and the views. Every endpoint, route network and peer server
  * address the plugin compares goes through these, so a value typed by hand
  * in another notation still matches. Pure.
  */
@@ -40,7 +39,7 @@ function wgct_ip_family(string $ip): ?string {
 }
 
 /**
- * A global IPv6 address: inside 2000::/3 (spec 2). Admits 2001:db8::/32;
+ * A global IPv6 address: inside 2000::/3. Admits 2001:db8::/32;
  * excludes link-local, ULA, multicast, loopback, unspecified and IPv4-mapped.
  */
 function wgct_is_global6(string $ip): bool {

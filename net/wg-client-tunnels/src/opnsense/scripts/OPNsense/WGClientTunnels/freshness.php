@@ -6,11 +6,9 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Keep the rendered enforcement current between filter reloads (spec 4.4,
- * 4.7). No event fires when a WireGuard instance or peer is saved, so the
- * reconcile (config syshook, monitor/newwanip hooks, minute cron) compares
- * what the hook last rendered -- and what pf actually holds -- with what is
- * wanted now and acts on wgct_freshness_plan()'s decision:
+ * Keep the rendered enforcement current between filter reloads. No event fires when a WireGuard instance or peer is
+ * saved, so the reconcile (config syshook, monitor/newwanip hooks, minute cron) compares what the hook last rendered --
+ * and what pf actually holds -- with what is wanted now and acts on wgct_freshness_plan()'s decision:
  *   - MSS lines differ, the live anchor's rule count differs from the
  *     render, or the last render failed only at the anchor -> reload the
  *     anchor directly (pfctl -a), no filter reload needed;
@@ -27,7 +25,7 @@
  * rendered pin labels differ from the last listing's (WGCT_OBSERVED_FILE),
  * or that listing counted a miss, not on every reconcile; a listing that a
  * filter reload cut short (an identical reload too) or straddled is never
- * used, and is listed again (spec 2026-10-19).
+ * used, and is listed again.
  * Repeated reload requests for the same wanted pins are rate-limited with
  * exponential back-off, and a persistently failing anchor load, pf
  * observation or run logs at most once per distinct failure, so a render
@@ -119,7 +117,7 @@ try {
     $live = null;
     $liveFrom = null;
     /* The labels pf should hold: the rendered pins', or, while the hook enforces the footprint (no rendered
-     * record, fallback.json present), the footprint's (spec 2026-10-20 section 3.1 part D). */
+     * record, fallback.json present), the footprint's. */
     $fallback = $rendered === null ? wgct_read_fallback() : null;
     $footprint = wgct_read_footprint();
     $lookFor = wgct_rules_looked_for($rendered, $fallback, $fallback !== null ? $footprint : null);

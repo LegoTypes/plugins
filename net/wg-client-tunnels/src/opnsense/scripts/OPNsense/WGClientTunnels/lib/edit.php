@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Edit (spec 2026-09-24 section 6.5): the request check, the outbound NAT
+ * Edit: the request check, the outbound NAT
  * as Edit sees it, the dialog's prefill and the planner. All pure. The
  * planner compares the requested values with the derived record and returns
  * only the differences, the apply mode they need (none < filter < routes <
@@ -82,7 +82,7 @@ function wgct_edit_request(#[\SensitiveParameter] array $raw, string $uuid): arr
             $monitor = $str('monitor');
         }
     }
-    /* the IPv6 monitor: '' is unchanged too (spec 3.7), since the GUI sends it empty for a tunnel with none */
+    /* the IPv6 monitor: '' is unchanged too, since the GUI sends it empty for a tunnel with none */
     $monitor6 = null;
     if ($given('monitor6')) {
         if (!is_string($raw['monitor6'])) {
@@ -156,7 +156,7 @@ function wgct_edit_rule_text(array $r): string {
 }
 
 /**
- * The tunnel interface's outbound NAT as Edit sees it (ruling 6). A rule is
+ * The tunnel interface's outbound NAT as Edit sees it. A rule is
  * plain when it names only this interface, one family, a source Edit offers
  * and no negation: its source is ticked and unticked. Every other rule on
  * the interface is kept exactly as it is, and listed. Pure.
@@ -258,8 +258,8 @@ function wgct_edit_address_set(array $addresses): array {
 
 /**
  * The IPv6 tunnel address a swap config gives a tunnel: Create's
- * unique-addressing rule (spec 6.1), with the tunnel's own instance left out
- * of "already on an instance" (ruling 10). Pure.
+ * unique-addressing rule, with the tunnel's own instance left out
+ * of "already on an instance". Pure.
  *
  * @param list<string> $configV6 the config's IPv6 Address entries (not empty)
  * @return array{address: string, why: string, error: ?string}
@@ -295,7 +295,7 @@ function wgct_edit_ipv6_address(array $core, array $derived, string $uuid, strin
 
 /**
  * The Edit dialog's starting values: the tunnel's current configuration.
- * ipv6 is ticked when any IPv6 piece exists (ruling 9). Pure.
+ * ipv6 is ticked when any IPv6 piece exists. Pure.
  *
  * @param array  $snap the action snapshot
  * @param string $uuid the managed instance
@@ -336,7 +336,7 @@ function wgct_edit_prefill(array $snap, string $uuid): array {
 }
 
 /**
- * Everything Edit will write, or why it cannot (spec 6.5). Pure.
+ * Everything Edit will write, or why it cannot. Pure.
  *
  * @param array      $snap the action snapshot (with peer_fields and instance_pubkeys)
  * @param array      $refs wgct_refs_snapshot(): what may reference the IPv6 gateway that IPv6 off deletes
@@ -368,7 +368,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     $label = $t['name'] !== '' ? $t['name'] : $uuid;
     $plan['name'] = $t['name'];
 
-    /* a blocking finding stops the edit, unless the edit resolves it: a swap gives a supported endpoint (ruling 13) */
+    /* a blocking finding stops the edit, unless the edit resolves it: a swap gives a supported endpoint */
     $resolvable = $swap !== null ? ['endpoint-unsupported'] : [];
     $blocking = [];
     foreach ($t['findings'] as $f) {
@@ -456,12 +456,13 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $need['tunnel'] = true;
             $c[] = "peer {$label}: endpoint " . ($t['endpoint'] !== '' ? $t['endpoint'] : '(none)') . ' -> ' . wgct_format_endpoint($pub['endpoint_ip'], $pub['endpoint_port']);
         }
-        /* a replacement endpoint only (spec 6.5): new keys for the same server change no route */
+        /* a replacement endpoint only: new keys for the same server change no route */
         if ($pub['endpoint_ip'] !== $endpointNow && isset($theirs[$pub['endpoint_ip']])) {
             $e['config'] = "{$pub['endpoint_ip']} is already the endpoint of {$theirs[$pub['endpoint_ip']]}";
         }
         if ($pub['endpoint_ip'] !== $endpointNow && !isset($e['config'])) {
-            /* R2 from the other side: dpinger's host route to a monitor IP would capture the endpoint's /32 or /128 */
+            /* an endpoint must not be a monitor IP: dpinger's host route to a monitor IP would capture the endpoint's
+             * /32 or /128 */
             foreach ($core['gateways'] as $gwName => $g) {
                 if ($g['monitor'] !== '' && wgct_ip_equal($g['monitor'], $pub['endpoint_ip'])) {
                     $e['config'] = "{$pub['endpoint_ip']} is the monitor of {$gwName}; a tunnel endpoint may not be a monitor IP";
@@ -470,7 +471,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
     }
 
-    /* IPv6: on, off, or as it is (rulings 7-9) */
+    /* IPv6: on, off, or as it is */
     $v6State = ($t['gw6'] !== null && $t['ipv6_address'] !== null) ? 'on'
         : (($t['gw6'] !== null || $t['ipv6_address'] !== null) ? 'partial' : 'off');
     $v6Change = 'none';
@@ -510,7 +511,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         $e['unique'] = 'unique addressing takes effect only with a replacement config';
     }
 
-    /* the tunnel addresses: rewritten only by a swap or an IPv6 change (ruling 10) */
+    /* the tunnel addresses: rewritten only by a swap or an IPv6 change */
     if (($pub !== null || $v6Change !== 'none') && !isset($e['ipv6'])) {
         $v4 = $pub !== null
             ? [$pub['addresses']['inet'][0]]
@@ -537,7 +538,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
     }
 
-    /* the IPv6 monitor (spec 3.3, 3.7): the current value is a no-op unless the gateway needs Edit's repair;
+    /* the IPv6 monitor: the current value is a no-op unless the gateway needs Edit's repair;
      * a new one is checked as Create checks it. Turning IPv6 off drops the gateway and any monitor sent with it. */
     $monitor6 = null;
     if ($req['monitor6'] !== null && !$ipv6After) {
@@ -617,7 +618,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         $c[] = 'NOTE routing is reconfigured: every gateway monitor restarts, and the health mirror waits one settle window before releasing anything';
     }
 
-    /* monitor (R2, as Create checks it; the tunnel's own monitor is no conflict) */
+    /* monitor (as Create checks it; the tunnel's own monitor is no conflict) */
     if ($req['monitor'] !== null && $req['monitor'] !== $t['monitor'] && !wgct_ip_equal($req['monitor'], $t['monitor'])) {
         $monitor = $req['monitor'];
         if (filter_var($monitor, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
@@ -661,7 +662,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
     }
 
-    /* the endpoint route: a WAN move, or a swap to a new endpoint (rulings 12, 13) */
+    /* the endpoint route: a WAN move, or a swap to a new endpoint */
     $wanNow = $t['bound_wan'];
     $familyAfter = wgct_ip_family((string)$endpointAfter) ?? 'inet';
     $wanAfter = $req['wan'] ?? $wanNow;
@@ -742,7 +743,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
         }
     }
 
-    /* NAT sources (ruling 6): a ticked source adds one plain rule, an unticked one deletes its plain rules */
+    /* NAT sources: a ticked source adds one plain rule, an unticked one deletes its plain rules */
     $state = wgct_edit_nat_state($snap, $opt);
     $known = wgct_edit_nat_known($snap);
     $touched = ['inet' => false, 'inet6' => $v6Change !== 'none'];
@@ -1051,7 +1052,7 @@ function wgct_edit_selftest(): int {
     wgct_check($t, 'edit: (3.5a) IPv6 off and an edit that adds no IPv6 gateway => no hold record',
         $plan(['ipv6' => false] + $keepA)['holds'] === [] && $plan(['monitor6' => '2001:db8:ffff::30'] + $keepA)['holds'] === []);
 
-    /* ---- the IPv6 monitor (spec 3.7) ---- */
+    /* ---- the IPv6 monitor ---- */
     $r0 = wgct_edit_request(['monitor6' => ''], $u);
     $r1 = wgct_edit_request(['monitor6' => ' 2001:db8:ffff::30 '], $u);
     $r2 = wgct_edit_request(['monitor6' => 7], $u);

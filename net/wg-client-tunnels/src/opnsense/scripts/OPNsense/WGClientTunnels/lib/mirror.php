@@ -26,8 +26,8 @@
  *   live.sock_age     name => dpinger socket age in seconds, null when absent
  *
  * Collectors build the snapshot; wgct_locked_commit() is the only way the
- * mirror writes config (spec 2026-09-24 section 4.6). The hold records live in
- * the engine model, which has no API (spec 2026-10-20 section 3.5): a record
+ * mirror writes config. The hold records live in
+ * the engine model, which has no API: a record
  * proves a hold only when its boot is one the mirror itself ran under.
  */
 
@@ -93,9 +93,9 @@ function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $
 }
 
 /**
- * Whether a state-changing run must refuse because the 3.1.0 migration is pending (wgct_migration_pending(),
- * ruling R37): the engine model does not hold the managed list and the holds yet, so the run takes, releases and
- * writes nothing. Logged once per state, as an unreadable boot id is (ruling R17): the refusal once, and the first
+ * Whether a state-changing run must refuse because the 3.1.0 migration is pending (wgct_migration_pending()):
+ * the engine model does not hold the managed list and the holds yet, so the run takes, releases and
+ * writes nothing. Logged once per state, as an unreadable boot id is: the refusal once, and the first
  * run after the migration once, through the marker WGCT_RUN_DIR/<run>.awaiting-migration (a suffix of its own:
  * wgct.sh's queued-reconcile mark is reconcile.pending). A read-only listing never calls it.
  *
@@ -324,9 +324,8 @@ function wgct_await_gateway_status(array $expected, string $logTag): void {
 }
 
 /**
- * Which gateways to replay the routes alarm for once the lock is released
- * (spec 4.6 step 6): the action's own, plus every gateway whose status
- * changed while the lock was held. Pure.
+ * Which gateways to replay the routes alarm for once the lock is released: the action's own, plus every gateway whose
+ * status changed while the lock was held. Pure.
  *
  * @param list<string>               $ours      gateway names the action wrote
  * @param array<string, string>|null $before    gateway status taken before the lock
@@ -353,7 +352,7 @@ function wgct_replay_set(array $ours, ?array $before, ?array $after, array $forc
 }
 
 /**
- * The mirror's replay set (spec 4.6 step 6, as for every gateway-locked action): the force_down
+ * The mirror's replay set: the force_down
  * changes it applied, as written, plus every gateway whose status changed while it held the gateway
  * lock -- routes.alarm dropped those alarms, and gateway_watcher never raises them again. Pure.
  *
@@ -440,7 +439,7 @@ function wgct_settled(array $row, $age, $override) {
 }
 
 /**
- * Everything the decisions read from config, derived from core (spec 4.1).
+ * Everything the decisions read from config, derived from core.
  * Builds fresh models, so called after Config::lock() it reflects config.xml
  * as it is now.
  *
@@ -482,8 +481,8 @@ function wgct_collect_config() {
 }
 
 /**
- * The engine model's hold records resolved against the live boot and boot.json's (spec 3.5), for the mirror and
- * the Tunnels view. With no live boot id nothing is decided (ruling R17): no row is owned or pruned, so a reader
+ * The engine model's hold records resolved against the live boot and boot.json's, for the mirror and
+ * the Tunnels view. With no live boot id nothing is decided: no row is owned or pruned, so a reader
  * shows nothing held and the mirror's tick neither takes nor releases a hold.
  *
  * @param \OPNsense\WGClientTunnels\Engine $engine
@@ -542,8 +541,10 @@ function wgct_record_boot(string $bootId): bool {
 }
 
 /**
- * wgct_record_boot() at $path (the self-test's temporary file). The file is written (the C3 writer: root, 0600, in a
- * 0700 directory) only when it does not name $bootId already, read through the C3 reader: a boot id changes once
+ * wgct_record_boot() at $path (the self-test's temporary file). The file is written (the trusted-file writer: root,
+ * 0600, in a
+ * 0700 directory) only when it does not name $bootId already, read through the trusted-file reader: a boot id changes
+ * once
  * per boot, and a tick runs four times a minute, so a write each tick would only wear persistent storage.
  *
  * @return bool whether $path names $bootId now
@@ -556,7 +557,7 @@ function wgct_record_boot_at(string $path, string $bootId): bool {
 }
 
 /**
- * Decide which hold records are ours, by the boot each was taken in (spec 3.5, convention C1). Pure.
+ * Decide which hold records are ours, by the boot each was taken in. Pure.
  *
  * A record proves a hold only when its boot is one the plugin itself observed:
  *
@@ -635,8 +636,8 @@ function wgct_dedupe_hold_rows(array $rows, string $liveBoot, ?string $previousB
  * The hold records a commit writes for the planner's held set, or null when config already holds exactly these
  * (in any order). Every gateway held keeps its owned row, re-stamped with the live boot (when it was taken and on
  * which underlay kept), or gets a new row taken now: an IPv4 tunnel's on its WAN, an IPv6 gateway's on the IPv4
- * tunnel it follows (spec 3.5a); every other row goes: released by the planner, released by hand, foreign, or a
- * second row for one gateway. With no live boot id nothing is written, not even a prune (ruling R17). Pure.
+ * tunnel it follows; every other row goes: released by the planner, released by hand, foreign, or a
+ * second row for one gateway. With no live boot id nothing is written, not even a prune. Pure.
  *
  * @param array               $config    wgct_collect_config() (gateways, underlays, pairs, holds_rows, previous_boot)
  * @param array<string, true> $heldNames the planner's held set
@@ -684,7 +685,7 @@ function wgct_hold_rows_next(array $config, array $heldNames, string $liveBoot, 
 }
 
 /**
- * The log line of each hold record a commit pruned, in the spec's wording (3.5). Pure.
+ * The log line of each hold record a commit pruned, saying why the row went (released, foreign or duplicate). Pure.
  *
  * @param array $config wgct_collect_config() (foreign, duplicates) made under the commit's lock
  * @return list<string>
@@ -705,7 +706,7 @@ function wgct_hold_prune_lines(array $config): array {
 /**
  * Write the hold records for the planner's held set into the engine model when they differ from config. Call
  * only inside wgct_locked_commit(), with $config from a collection made under that lock. With no live boot id
- * nothing is written (ruling R17).
+ * nothing is written.
  *
  * @param array  $heldNames name => true
  * @param array  $config    wgct_collect_config() made under the lock
@@ -724,13 +725,13 @@ function wgct_commit_held(array $heldNames, array $config, string $liveBoot): bo
 }
 
 /**
- * What a package removal does with the hold records (spec 3.11, 3.5a). The gateway of every owned record is
+ * What a package removal does with the hold records. The gateway of every owned record is
  * released, except an IPv6 gateway pass 2 holds: that one is released only when pass 2, evaluated now on the live
  * readings, would bring it up (its IPv4 tunnel not forced down and reading healthy, wgct_ipv6_decide()). Otherwise
- * it stays forced down and its record is kept (ruling R31, narrowed): released then, it would be eligible while its
+ * it stays forced down and its record is kept: released then, it would be eligible while its
  * tunnel is dead, and with monitoring off for good. No readings, or no managed tunnel it follows, keep it too.
  * Every other record is forgotten with its gateway untouched. With no live boot id no record can be shown to be
- * ours (ruling R17): nothing is released, kept or forgotten, so every gateway stays as it is and the records stay
+ * ours: nothing is released, kept or forgotten, so every gateway stays as it is and the records stay
  * for a human to judge. Pure.
  *
  * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows the records as stored
@@ -798,7 +799,7 @@ function wgct_collect_live() {
 
 /**
  * The dpinger readings pass 2 decides from, read from each running dpinger's control socket: no subprocess, no
- * config and no configd, so the package removal reads them too (spec 3.5a, ruling R29). Called outside
+ * config and no configd, so the package removal reads them too. Called outside
  * Config::lock(), as wgct_collect_live() is.
  *
  * @return array{loss: array<string, ?int>, sock_age: array<string, ?int>} by gateway name
@@ -838,8 +839,8 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
 
     /* ---- pass 1: underlay ---- */
     if (!empty($config['boot_unreadable'])) {
-        /* Without the live boot id a new hold could not be recorded and no record can be shown to be ours
-         * (ruling R17): neither take nor release a hold this tick. The tick logs this once per state. */
+        /* Without the live boot id a new hold could not be recorded and no record can be shown to be ours: neither take
+         * nor release a hold this tick. The tick logs this once per state. */
         $report[] = 'underlay: kern.boot_id unreadable, pass skipped';
     } elseif ($live['status'] === null) {
         /* Without status every WAN would read absent and every tunnel would be
@@ -854,8 +855,7 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
             }
             $wanGw = $gws[$wanName] ?? null;
             /* a gateway with monitoring disabled has no dpinger socket and core reports it
-             * 'none' or 'force_down', never down: its reading is settled as it stands
-             * (spec 2026-09-27 section 3.4) */
+             * 'none' or 'force_down', never down: its reading is settled as it stands */
             [$wanSettled, $wanAge, $wanWindow] = $wanGw === null || !empty($wanGw['monitor_disable'])
                 ? [true, null, 0]
                 : wgct_settled($wanGw, $live['sock_age'][$wanName] ?? null, $settleOverride);
@@ -906,7 +906,7 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
 
     /* ---- pass 2: IPv6 follows its own IPv4 tunnel ---- */
     if (!empty($config['boot_unreadable'])) {
-        /* as pass 1 (ruling R17): no hold is taken or released without the live boot id */
+        /* as pass 1: no hold is taken or released without the live boot id */
         $report[] = 'ipv6: kern.boot_id unreadable, pass skipped';
     } else {
         foreach ($config['pairs'] as $ipv4Name => $ipv6Name) {
@@ -920,7 +920,7 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
             if ($ipv4 === null || $gw6 === null || $gw6['disabled']) {
                 continue;
             }
-            /* a force_down no record of this pass explains is a person's: left alone, as pass 1 does (spec 3.5a) */
+            /* a force_down no record of this pass explains is a person's: left alone, as pass 1 does */
             $isHeld = isset($held[$ipv6Name]);
             $manual = $gw6['force_down'] && !$isHeld;
             $currentDown = $forced[$ipv6Name];
@@ -1243,7 +1243,7 @@ function wgct_selftest() {
         printf("[%s] skip log plan: %s\n", $ok ? 'PASS' : 'FAIL', $label);
     }
 
-    /* ---- wgct_resolve_holds: who owns a hold record (spec 3.5) ---- */
+    /* ---- wgct_resolve_holds: who owns a hold record ---- */
     $live1 = 'a1b2c3d4e5f60718';
     $prev1 = '0123456789abcdef';
     $other = 'fedcba9876543210';
@@ -1395,7 +1395,7 @@ function wgct_selftest() {
     @rmdir($bootDir);
     $bootWrites = [
         ['no boot.json yet => written with the boot id', $written !== null && $written['boot'] === $live1],
-        ['(M4) boot.json already naming the boot => not written again: the same file (inode) and content',
+        ['boot.json already naming the boot => not written again: the same file (inode) and content',
             $written !== null && $unchanged === $written],
         ['boot.json naming another boot => rewritten with the live one',
             $changed !== null && $written !== null && $changed['inode'] !== $written['inode'] && $changed['boot'] === $prev1],
@@ -1469,7 +1469,7 @@ function wgct_selftest() {
             $rowsCfg([$stamped($uA, $other, $at, 'WAN_X')]), ['tun_a' => true], $live1, [$stamped($uA, $live1, $now)]],
         ['a held name with no gateway => no row',
             $rowsCfg([]), ['gone' => true], $live1, null],
-        ['(R17) no live boot id => nothing written at all, not even a prune',
+        ['no live boot id => nothing written at all, not even a prune',
             $rowsCfg([$stamped($uA, $other, $at)]), ['tun_a' => true], '', null],
     ];
     foreach ($nextCases as [$desc, $cfg, $heldNames, $liveBoot, $exp]) {
@@ -1483,7 +1483,7 @@ function wgct_selftest() {
         }
     }
 
-    /* ---- the pruned rows' log lines, in the spec's wording ---- */
+    /* ---- the pruned rows' log lines (released, foreign, duplicate) ---- */
     $ok = wgct_hold_prune_lines(['foreign' => ['tun_a' => 'released', 'tun_b' => 'foreign'], 'duplicates' => ['tun_c']]) === [
         'tun_a: released elsewhere; forgotten',
         'hold record for tun_b from another boot or box; not ours, left alone',
@@ -1493,22 +1493,22 @@ function wgct_selftest() {
     $total++;
     printf("[%s] holds: one log line per pruned row, released and foreign in their own words\n", $ok ? 'PASS' : 'FAIL');
 
-    /* ---- (R17) an unreadable live boot id: the tick neither takes nor releases a hold ---- */
+    /* ---- an unreadable live boot id: the tick neither takes nor releases a hold ---- */
     $frozen = ['boot_unreadable' => true];
     $plan = wgct_plan($frozen + $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'none']]), [], null);
     $ok = $plan['changes'] === [] && $plan['held'] === [] && !$plan['held_changed']
         && in_array('underlay: kern.boot_id unreadable, pass skipped', $plan['report'], true) && $plan['log'] === [];
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] holds: (R17) no boot id, WAN down => no hold taken, nothing logged by the plan\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] holds: no boot id, WAN down => no hold taken, nothing logged by the plan\n", $ok ? 'PASS' : 'FAIL');
     $plan = wgct_plan($frozen + $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]), $live(),
         ['tun_a' => true, 'tun_a-ipv6' => true], null);
     $ok = $plan['changes'] === [] && $plan['held'] === ['tun_a' => true, 'tun_a-ipv6' => true] && !$plan['held_changed'];
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] holds: (R17) no boot id, WAN up => no hold released\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] holds: no boot id, WAN up => no hold released\n", $ok ? 'PASS' : 'FAIL');
 
-    /* ---- spec 3.5a: pass 2 holds its IPv6 gateways by record, as pass 1 does ---- */
+    /* ---- pass 2 holds its IPv6 gateways by record, as pass 1 does ---- */
     /* the pair tun_a / tun_a-ipv6 on WAN_A with uuids, hold records and boots: a wgct_collect_config() as the tick sees it */
     $pairCfg = function (array $gw = [], array $rows = []) use ($config, $uA, $uB, $uC, $live1): array {
         $o = [];
@@ -1586,7 +1586,7 @@ function wgct_selftest() {
     $total++;
     printf("[%s] ipv6 holds: (p5) no live boot id => pass 2 takes no hold (IPv4 unhealthy) and releases none (IPv4 healthy), and says so\n", $ok ? 'PASS' : 'FAIL');
 
-    /* ---- wgct_release_plan: what a package removal does with the hold records (spec 3.11, 3.5a) ---- */
+    /* ---- wgct_release_plan: what a package removal does with the hold records ---- */
     /* IPv4 tunnel gateways named after their uuids' first digit, force_down as given */
     $ipv4Gws = function (array $forceDown) use ($row): array {
         $gws = [];
@@ -1610,7 +1610,7 @@ function wgct_selftest() {
         ['mixed rows with a duplicate => each gateway once, released or pruned, sorted',
             [$hold($uC, $live1), $hold($uB, $other), $hold($uA, $other), $hold($uA, $live1)], $live1, null,
             $ipv4Gws([$uA => true, $uB => true, $uC => true]), ['release' => [$uA, $uC], 'prune' => [$uB], 'keep' => []]],
-        ['(R17) no live boot id => nothing released and nothing pruned, every gateway left as it is',
+        ['no live boot id => nothing released and nothing pruned, every gateway left as it is',
             [$hold($uA, $live1), $hold($uB, $other)], '', $prev1, $ipv4Gws([$uA => true, $uB => true]),
             ['release' => [], 'prune' => [], 'keep' => []]],
     ];
@@ -1659,7 +1659,7 @@ function wgct_selftest() {
         ['(p7) a foreign IPv6 row => pruned, never kept or released',
             [$stamped($uB, $other, $at, 'tun_a')], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
             $readings(0, 600), ['release' => [], 'prune' => [$uB], 'keep' => []], $live1],
-        ['(p7) (R17) no live boot id => nothing released, pruned or kept',
+        ['(p7) no live boot id => nothing released, pruned or kept',
             [$v6Row], $pairCfg(['tun_a-ipv6' => ['force_down' => true]])['gateways'], $pairs,
             $readings(0, 600), ['release' => [], 'prune' => [], 'keep' => []], ''],
     ];

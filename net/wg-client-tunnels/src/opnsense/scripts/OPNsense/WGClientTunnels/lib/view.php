@@ -5,17 +5,16 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The Tunnels view (spec 7), shared by `tunnel.php list|status` and the API:
+ * The Tunnels view, shared by `tunnel.php list|status` and the API:
  * managed tunnels derived from core with their clamps and findings (the
  * render-failed and render-fallback findings included), and the WireGuard instances the
  * plugin does not manage, for Adopt. `pinned` on each tunnel says whether pf holds a plugin
  * pin for it, by the render state (wgct_pins_in_pf()): what the render emits, the footprint's
  * pins while the hook enforces them, none while render-failed shows; a blocking finding's hint
  * then says its pins stay in place (wgct_pin_hint()). A tunnel whose Create or Edit saved but whose apply
- * has not completed carries the apply-pending finding (ruling 20). `held` names
- * the IPv4 gateways whose hold record the health mirror owns (spec 2026-10-20
- * section 3.5). Reads config; writes nothing. The pure helpers below it turn the view into the
- * API's tunnel records and the Tunnels grid's flat rows.
+ * has not completed carries the apply-pending finding. `held` names
+ * the IPv4 gateways whose hold record the health mirror owns. Reads config; writes nothing. The pure helpers below it
+ * turn the view into the API's tunnel records and the Tunnels grid's flat rows.
  */
 
 require_once __DIR__ . '/tunnels.php';
@@ -174,7 +173,7 @@ function wgct_gateway_label_class(string $status): string {
 }
 
 /**
- * The Monitors column (spec 3.8): the IPv4 monitor, and the IPv6 one or "none" when the tunnel has an IPv6
+ * The Monitors column: the IPv4 monitor, and the IPv6 one or "none" when the tunnel has an IPv6
  * gateway without its own monitor. Pure.
  *
  * @param array $t a derived record (gw4, monitor, gw6, monitor6)

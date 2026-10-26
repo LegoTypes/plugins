@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The tunnel MTU for Create (spec 6.1), ported from add_proton_tunnel.php: a
+ * The tunnel MTU for Create, ported from add_proton_tunnel.php: a
  * bisecting DF ping from the bound WAN's own address to the endpoint, path
  * MTU minus the WireGuard overhead for the endpoint's family (60 bytes over
  * IPv4, 80 over IPv6), clamped to 1280-1420. A WAN's path is not always
@@ -13,7 +13,7 @@
  * dropped every large packet. Takes up to
  * ~30 s and holds no config or gateway lock; the page runs it as its own keyless action before
  * Create, and a CLI Create without an MTU runs it before locking anything. Only one measurement
- * runs at a time (spec 2026-10-20-02 section 3.3): each is a burst of pings, so a second request
+ * runs at a time: each is a burst of pings, so a second request
  * is refused, never queued, on measure.lock under the run directory.
  */
 
@@ -30,7 +30,7 @@ const WGCT_PING_HEADER = ['inet' => 28, 'inet6' => 48];
 const WGCT_PING_MAX_PAYLOAD = ['inet' => 1472, 'inet6' => 1452];
 
 /**
- * WireGuard's outer overhead: IP header + 8 UDP + 32 WireGuard (spec 2026-09-27 section 3.6).
+ * WireGuard's outer overhead: IP header + 8 UDP + 32 WireGuard.
  */
 function wgct_wg_overhead(string $family): int {
     return $family === 'inet6' ? 80 : 60;
@@ -103,8 +103,7 @@ function wgct_common_prefix6(string $a, string $b): int {
  * The IPv6 source for probing an endpoint, from `ifconfig -L <dev> inet6`:
  * a global address, not deprecated, tentative, detached, duplicated or
  * temporary; the longest prefix shared with the endpoint, then the longest
- * preferred lifetime, a static address's being infinite (spec 2026-09-27
- * section 3.6). Pure.
+ * preferred lifetime, a static address's being infinite. Pure.
  */
 function wgct_pick_source6(string $ifconfigOut, string $endpoint): ?string {
     $best = null;

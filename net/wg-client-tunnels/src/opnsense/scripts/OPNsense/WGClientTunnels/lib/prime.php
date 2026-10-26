@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The IPv6 prime's decisions (spec 2026-10-03): a provider such as Proton sends every IPv6 reply of a peer to one
+ * The IPv6 prime's decisions: a provider such as Proton sends every IPv6 reply of a peer to one
  * client address it learns from the peer's non-ICMP traffic, and dpinger's echo requests never teach it. A tunnel
  * whose IPv6 gateway is down gets no LAN traffic, so after a fresh session nothing would ever teach it. When a
  * tunnel's IPv6 gateway is down while its WireGuard session is up, prime.php sends one TCP connect from the
@@ -31,7 +31,7 @@ const WGCT_PRIME_DOWN = ['down', 'loss', 'delay+loss'];
 const WGCT_PRIME_UP = ['none', 'delay'];
 
 /**
- * Whether a watched tunnel needs a prime now (spec section 3.2). Pure.
+ * Whether a watched tunnel needs a prime now. Pure.
  *
  * @param array $w       a wgct_repair_watch() row
  * @param array $probe   status6: the IPv6 gateway's status as core reports it, null when absent; handshake_age:

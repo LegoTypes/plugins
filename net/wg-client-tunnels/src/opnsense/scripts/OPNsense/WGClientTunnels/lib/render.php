@@ -5,14 +5,13 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Rendered enforcement (spec 2026-09-24 sections 4.4, 4.5): WAN pins and
+ * Rendered enforcement: WAN pins and
  * inner-source blocks registered as filter rules, and the MSS clamp as match
  * rules in a head anchor, all derived from the managed tunnels at every filter
  * reload -- never stored in config. The hook records what it rendered in
  * WGCT_RENDERED_FILE; the reconcile (freshness.php) compares against it.
  * A render that registered its rules also records them in WGCT_FOOTPRINT_FILE,
- * which the hook enforces when a later render fails (spec 2026-10-20 section
- * 3.1); the hook says so in WGCT_FALLBACK_FILE.
+ * which the hook enforces when a later render fails; the hook says so in WGCT_FALLBACK_FILE.
  *
  * core calls every *_firewall hook (this file's entry point) not only during
  * a real filter reload but also just to list rules for display
@@ -57,8 +56,8 @@ const WGCT_STATE_MAX_BYTES = 65536;
 
 const WGCT_RENDERED_FILE = WGCT_RUN_DIR . '/rendered.json';
 
-/* The rules the last render that registered them put in place, and its MSS lines (spec 2026-10-20 section 3.1
- * part A). It survives a reboot; the hook enforces it when a render fails, and reads it with its own reader, which
+/* The rules the last render that registered them put in place, and its MSS lines.
+ * It survives a reboot; the hook enforces it when a render fails, and reads it with its own reader, which
  * takes at most WGCT_FOOTPRINT_MAX_BYTES (the hook copies the path and the limit). */
 const WGCT_FOOTPRINT_FILE = WGCT_DB_DIR . '/footprint.json';
 const WGCT_FOOTPRINT_MAX_BYTES = 65536;
@@ -213,7 +212,7 @@ function wgct_read_rendered(): ?array {
 }
 
 /**
- * The only reader of a state file the plugin trusts (C3). The file must be a regular file (never a
+ * The only reader of a state file the plugin trusts. The file must be a regular file (never a
  * symlink), owned by root and no larger than $maxBytes; anything else reads as absent. PHP has no
  * O_NOFOLLOW, so the check comes before the read; the state directories being root 0700 is what makes the
  * remaining race unreachable.
@@ -385,7 +384,7 @@ function wgct_error_file_stale(int $mtime, int $renderedAt): bool {
 const WGCT_RULES_ERROR_MAX_BYTES = 65536;
 
 /**
- * Whether the text of /tmp/rules.debug.error has the shape filter.inc leaves there (spec 3.4): not empty, and
+ * Whether the text of /tmp/rules.debug.error has the shape filter.inc leaves there: not empty, and
  * its first line names pfctl. The caller has already read it through wgct_read_state_file(), so it is a
  * root-owned regular file of at most WGCT_RULES_ERROR_MAX_BYTES. Pure.
  *
@@ -696,7 +695,7 @@ function wgct_write_observed(array $record): bool {
  * Poll for an exclusive flock on $path: retry LOCK_EX|LOCK_NB every $pollMs
  * for up to $timeoutMs rather than blocking without bound. Shared by
  * freshness.php (which can run inside a configd action, via the monitor hook) and
- * the gateway lock in lib/apply.php (which waits at most 120 s, ruling 22).
+ * the gateway lock in lib/apply.php (which waits at most 120 s).
  * The lock is held for as long as the returned object is referenced; the
  * process exiting releases it.
  *
@@ -773,7 +772,7 @@ function wgct_report_freshness_outcome(?string $error): void {
 }
 
 /**
- * The freshness decision (spec 4.4, 4.7; controller rulings 2026-09-24), pure
+ * The freshness decision, pure
  * over its inputs so it is directly testable -- freshness.php only does I/O
  * around it: read rendered.json, stat /tmp/rules.debug.error (through
  * wgct_error_file_stale()), read pf's live state (through
@@ -986,8 +985,7 @@ function wgct_anchor_log_plan(?string $priorFailHash, bool $success, array $mssL
  * that included: the rules are in place), false when anything before or
  * during the registration failed. On false the hook enforces the footprint
  * instead (wgclienttunnels_firewall_at()). Inside a real filter reload a
- * true render also records what it registered as the footprint (spec
- * 2026-10-20 section 3.1 part A): the rules and MSS lines while the plugin
+ * true render also records what it registered as the footprint: the rules and MSS lines while the plugin
  * is enabled, the empty footprint while it is disabled.
  *
  * $wanted, $loader, $writer, $inReload, $footprinter and $log are injectable so the
@@ -1056,7 +1054,7 @@ function wgct_render_firewall(
     } catch (\Throwable $e) {
         $rendered = ['at' => time(), 'failed' => true, 'error' => $e->getMessage(), 'enabled' => false,
                      'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
-        /* only a real filter reload says so: a rules listing changes and logs nothing (ruling R27) */
+        /* only a real filter reload says so: a rules listing changes and logs nothing */
         if ($apply) {
             $log(LOG_ERR, '[wgct-render] rules not rendered: ' . $e->getMessage());
         }
@@ -1101,7 +1099,7 @@ function wgct_anchor_only_failure(array $rendered): bool {
 }
 
 /**
- * The footprint a render records (spec 2026-10-20 section 3.1 part A): the rule confs it registered, at the
+ * The footprint a render records: the rule confs it registered, at the
  * priority and with the anchor it used, and the anchor's MSS lines. A disabled render records no rules and no
  * lines: "nothing to hold", which is not "no footprint". Pure.
  *
@@ -1150,8 +1148,7 @@ function wgct_read_fallback(): ?array {
 }
 
 /**
- * The render state the views show, and where the plugin's pins in pf come from (spec 2026-10-20 section 3.1
- * part D). Pure.
+ * The render state the views show, and where the plugin's pins in pf come from. Pure.
  *   - fallback.json present: the global, non-blocking render-fallback finding; pf holds the footprint's rules,
  *     with the plugin enabled or not (the hook enforces the footprint either way);
  *   - otherwise, with the plugin enabled, no rendered record or a failed one: render-failed. pf holds no plugin
@@ -1184,7 +1181,7 @@ function wgct_render_state(bool $enabled, ?array $rendered, ?array $fallback, ?a
 }
 
 /**
- * The rule confs whose labels freshness looks for in pf (spec 2026-10-20 section 3.1 part D): the rendered pins'
+ * The rule confs whose labels freshness looks for in pf: the rendered pins'
  * while there is a rendered record, the footprint's while the hook enforces it (no record, fallback.json present),
  * else none. Pure.
  *
@@ -1283,7 +1280,7 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] render_firewall: \$wanted throws => no rules, anchor kept, failed recorded\n", $ok ? 'PASS' : 'FAIL');
 
-    /* (ruling R27) a rules listing whose render fails logs nothing; only a real filter reload logs it, at err */
+    /* a rules listing whose render fails logs nothing; only a real filter reload logs it, at err */
     $logged = [];
     $logger = function (int $priority, string $message) use (&$logged): void {
         $logged[] = [$priority, $message];
@@ -1448,29 +1445,29 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] freshness_plan: mss only differs => anchor retry\n", $ok ? 'PASS' : 'FAIL');
 
-    /* (M2) enabled, pins wanted, no footprint and no fallback record (a box upgraded from 3.7_1, whose render is
+    /* enabled, pins wanted, no footprint and no fallback record (a box upgraded from 3.7_1, whose render is
      * current): the first reconcile asks for the reload that records the footprint, as for no rendered record */
     $p1 = wgct_freshness_plan($wanted, $current, null, null, 1000, ['anchor_count' => 1, 'missing_labels' => 0], false);
     $ok = $p1['reload'] === true && $p1['anchor'] === false && $p1['reason'] === 'no footprint recorded' && $p1['state'] !== null;
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] freshness_plan: (M2) enabled, pins wanted, the render current but no footprint and no fallback => reload\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] freshness_plan: enabled, pins wanted, the render current but no footprint and no fallback => reload\n", $ok ? 'PASS' : 'FAIL');
     $p2 = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, ['anchor_count' => 1, 'missing_labels' => 0], true);
     $ok = $p2['reload'] === false && $p2['anchor'] === false && $p2['reason'] === 'current' && $p2['state'] === null;
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] freshness_plan: (M2) no loop: once that reload has recorded a footprint the next plan is current\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] freshness_plan: no loop: once that reload has recorded a footprint the next plan is current\n", $ok ? 'PASS' : 'FAIL');
     $p3 = wgct_freshness_plan($wanted, $current, null, $p1['state'], 1010, ['anchor_count' => 1, 'missing_labels' => 0], false);
     $ok = $p3['reload'] === false && $p3['state'] !== null && $p3['state']['notified'] === true;
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] freshness_plan: (M2) a footprint that is still not recorded is asked for again only past the rate limit\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] freshness_plan: a footprint that is still not recorded is asked for again only past the rate limit\n", $ok ? 'PASS' : 'FAIL');
     $p = wgct_freshness_plan($wantedDisabled, $currentEmpty, null, null, 1000, ['anchor_count' => 0, 'missing_labels' => 0], false);
     $q = wgct_freshness_plan($wantedMssOnly, ['pins' => $emptyPins] + $current, null, null, 1000, ['anchor_count' => 1, 'missing_labels' => 0], false);
     $ok = $p['reload'] === false && $p['reason'] === 'current' && $q['reload'] === false && $q['reason'] === 'current';
     $fail += $ok ? 0 : 1;
     $total++;
-    printf("[%s] freshness_plan: (M2) no footprint with the plugin disabled, or no pins wanted => no reload for it\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] freshness_plan: no footprint with the plugin disabled, or no pins wanted => no reload for it\n", $ok ? 'PASS' : 'FAIL');
 
     /* wgct_error_file_stale: pure boundary check, same-second counts as stale */
     $ok = wgct_error_file_stale(1000, 1000) === true;
@@ -2063,7 +2060,7 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] record: corrupt reads as none\n", $ok ? 'PASS' : 'FAIL');
 
-    /* the C3 reader and the state directories, on temporary files */
+    /* the trusted-file reader and the state directories, on temporary files */
     $tmp = sys_get_temp_dir() . '/wgct-state-' . getmypid();
     mkdir($tmp, 0700);
     file_put_contents("$tmp/good", '{"a":1}');
@@ -2122,7 +2119,7 @@ function wgct_render_selftest(): int {
 }
 
 /**
- * Self-test for the footprint (spec 2026-10-20 section 3.1 parts A, B and D): what a render records, the hook's
+ * Self-test for the footprint: what a render records, the hook's
  * copied literals, the hook's readers, the render state the views show and the labels freshness looks for.
  * Writes only temporary files.
  *
@@ -2208,7 +2205,7 @@ function wgct_footprint_selftest(callable $makeFw): array {
         $safely(fn (): bool => str_contains((string)@file_get_contents(dirname(__DIR__) . '/entry.php'),
             "const WGCT_ENTRY_RUN_DIR = '" . WGCT_RUN_DIR . "';")));
 
-    /* the hook's footprint reader (section 3.1 B-2), on temporary root-owned files */
+    /* the hook's footprint reader, on temporary root-owned files */
     $d = sys_get_temp_dir() . '/wgct-footprint-' . getmypid();
     @mkdir($d, 0700);
     $wanRule = [

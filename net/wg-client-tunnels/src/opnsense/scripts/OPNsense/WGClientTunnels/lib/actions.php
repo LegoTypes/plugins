@@ -5,13 +5,13 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The action planners (spec 2026-09-24 section 6): Create, Rebind, Adopt,
+ * The action planners: Create, Rebind, Adopt,
  * Remove and the default-route sentinel. Each is a pure function from a
  * snapshot of core config -- wgct_action_snapshot() in writer.php, or the
  * fixture below -- to the exact objects to write, a change list, and the
  * reasons it cannot proceed. Nothing here reads config or holds a key.
  *
- * Conventions the plugin owns (spec 6.1): instance N is the lowest free from
+ * Conventions the plugin owns: instance N is the lowest free from
  * 1; listen port 51820+N; IPv4 far gateway 10.2.0.(3+N); IPv6 next hop
  * fd00::N:2 and, with unique addressing, tunnel address fd00::N:1/128. "Free"
  * means all of those are unused, so a clash skips to the next N.
@@ -26,13 +26,13 @@ require_once __DIR__ . '/selftest.php';
 const WGCT_INSTANCE_MAX = 251;
 const WGCT_PORT_BASE = 51820;
 /* the gateway fields a template tunnel supplies; fargw, monitor_disable,
- * force_down and defaultgw are always set as spec 6.1 says */
+ * force_down and defaultgw are always set by Create */
 const WGCT_GATEWAY_COPY_FIELDS = [
     'monitor_noroute', 'monitor_killstates', 'monitor_killstates_priority', 'priority', 'weight',
     'latencylow', 'latencyhigh', 'losslow', 'losshigh', 'interval', 'time_period', 'loss_interval', 'data_length', 'nosync',
 ];
 /* the gateway fields that decide when dpinger reports delay, loss or down: an IPv6 tunnel gateway takes them
- * from its IPv4 gateway (spec 3.2) */
+ * from its IPv4 gateway */
 const WGCT_THRESHOLD_FIELDS = ['latencylow', 'latencyhigh', 'losslow', 'losshigh', 'interval', 'time_period', 'loss_interval', 'data_length'];
 /* snatrules fields a copied rule does not take from its template (volatile, or its own) */
 const WGCT_SNAT_SKIP_FIELDS = ['interface', 'sequence', 'sort_order', 'prio_group', 'audit'];
@@ -85,7 +85,7 @@ function wgct_ip_in(string $ip, array $list): bool {
 }
 
 /**
- * The firewall's own IPv6 networks (spec 3.5): every non-link-local address of configd's ifconfig dump as
+ * The firewall's own IPv6 networks: every non-link-local address of configd's ifconfig dump as
  * "address/bits", and every prefix in the delegated-prefix files dhcp6c writes. Pure.
  *
  * @param mixed        $ifconfig    `interface list ifconfig` decoded: device => ['ipv6' => [['ipaddr', 'subnetbits', 'link-local'], ...]]
@@ -122,7 +122,7 @@ function wgct_local6_parse(mixed $ifconfig, array $prefixFiles): array {
 }
 
 /**
- * Why an address cannot be a tunnel's IPv6 monitor, or null when it can (spec 3.3). Pure.
+ * Why an address cannot be a tunnel's IPv6 monitor, or null when it can. Pure.
  *
  * @param array        $core      wgct_core_snapshot()
  * @param list<string> $local6    wgct_local6_parse()
@@ -169,7 +169,7 @@ function wgct_monitor6_error(array $core, array $local6, string $monitor, ?strin
 }
 
 /**
- * An IPv6 tunnel gateway's monitor fields (spec 3.2): its own monitor, which core must not route (the plugin
+ * An IPv6 tunnel gateway's monitor fields: its own monitor, which core must not route (the plugin
  * installs M/128 -iface wgN), and the thresholds of the tunnel's IPv4 gateway, so a latency spike never reads
  * down on core's tighter defaults. Pure.
  *
@@ -287,7 +287,7 @@ function wgct_canonical_ip(string $ip): string {
 
 /**
  * Every IPv6 tunnel address on any WireGuard instance, managed or not,
- * enabled or not: FreeBSD refuses one IPv6 address on two interfaces (ruling 3).
+ * enabled or not: FreeBSD refuses one IPv6 address on two interfaces.
  *
  * @param array $core wgct_core_snapshot()
  * @return array<string, string> canonical address => instance name
@@ -307,7 +307,7 @@ function wgct_instance_ipv6(array $core): array {
 
 /**
  * Does any managed tunnel follow the fd00::N:1 convention for its own wgN?
- * Then new tunnels default to it too (ruling 3). Pure.
+ * Then new tunnels default to it too. Pure.
  *
  * @param array $derived wgct_derive()
  * @return bool
@@ -349,7 +349,7 @@ function wgct_retoken(string $text, array $map): string {
 
 /**
  * The hold record of an IPv6 tunnel gateway that Create or Edit adds forced down: the health mirror's pass 2 then
- * owns that force_down and releases it once the IPv4 tunnel reads healthy (spec 3.5a). With no live boot id no hold
+ * owns that force_down and releases it once the IPv4 tunnel reads healthy. With no live boot id no hold
  * can be recorded, so there is none, and the gateway stays forced down until a person unticks it. Pure.
  *
  * @param string $bootId   the live kern.boot_id (the action snapshot's boot_id), '' when unreadable
@@ -377,12 +377,12 @@ function wgct_gw6_start_text(array $holds, string $gw6Name): string {
 }
 
 /**
- * Everything Create will write, or why it cannot (spec 6.1). Pure.
+ * Everything Create will write, or why it cannot. Pure.
  *
- * @param array $snap the action snapshot (see Task 3 Interfaces)
+ * @param array $snap the action snapshot
  * @param array $req  wgct_create_request()['req'] with 'mtu' set
  * @param array $conf wgct_parse_wgquick()['public']
- * @return array see Task 3 Interfaces
+ * @return array
  */
 function wgct_plan_create(array $snap, array $req, array $conf): array {
     $core = $snap['core'];
@@ -431,7 +431,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     if ($wanError !== null) {
         $e['wan'] = $wanError;
     }
-    /* R2 from the other side: dpinger's host route to a monitor IP would capture the handshake */
+    /* an endpoint must not be a monitor IP: dpinger's host route to a monitor IP would capture the handshake */
     foreach ($core['gateways'] as $gwName => $g) {
         if ($g['monitor'] !== '' && wgct_ip_equal($g['monitor'], $endpoint)) {
             $e['config'] = "{$endpoint} is the monitor of {$gwName}; a tunnel endpoint may not be a monitor IP";
@@ -457,7 +457,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         ]];
     }
 
-    /* the monitor IP is used for nothing else (R2) */
+    /* the monitor IP is used for nothing else */
     $monitor = $req['monitor'];
     $uses = [];
     foreach ($core['gateways'] as $gwName => $g) {
@@ -494,7 +494,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         }
     }
 
-    /* addresses: IPv4 from the config; IPv6 from the config or fd00::N:1 (rulings 3 and 4) */
+    /* addresses: IPv4 from the config; IPv6 from the config or fd00::N:1 */
     $v4 = $conf['addresses']['inet'][0] ?? '';
     $v6conf = $conf['addresses']['inet6'];
     $ipv6 = $req['ipv6'] ?? ($v6conf !== []);
@@ -529,7 +529,7 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         }
     }
 
-    /* the IPv6 gateway's own monitor (spec 3.3) */
+    /* the IPv6 gateway's own monitor */
     $monitor6 = '';
     if ($ipv6) {
         if ($req['monitor6'] === '') {
@@ -705,13 +705,13 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
 }
 
 /**
- * Rebind an unbound tunnel (spec 6.2). Pure.
+ * Rebind an unbound tunnel. Pure.
  *
  * @param array  $snap      the action snapshot
  * @param string $uuid      the managed instance
  * @param string $wan       the WAN gateway to bind to
  * @param string $staleUuid a stale-route candidate to delete, or ''
- * @return array see Task 3 Interfaces
+ * @return array
  */
 function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleUuid): array {
     $core = $snap['core'];
@@ -759,7 +759,7 @@ function wgct_plan_rebind(array $snap, string $uuid, string $wan, string $staleU
 }
 
 /**
- * Adopt an existing WireGuard instance (spec 7): add its uuid to the managed list. Pure.
+ * Adopt an existing WireGuard instance: add its uuid to the managed list. Pure.
  *
  * @return array{errors: list<string>, changes: list<string>, managed: list<string>}
  */
@@ -781,12 +781,12 @@ function wgct_plan_adopt(array $snap, string $uuid): array {
 }
 
 /**
- * Remove a managed tunnel (spec 6.3), or say why not. Pure.
+ * Remove a managed tunnel, or say why not. Pure.
  *
  * @param array  $snap the action snapshot
  * @param array  $refs wgct_refs_snapshot()
  * @param string $uuid the managed instance
- * @return array see Task 3 Interfaces
+ * @return array
  */
 function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
     $core = $snap['core'];
@@ -873,7 +873,7 @@ function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
         }
     }
 
-    /* nothing else may reference it (spec 6.3) */
+    /* nothing else may reference it */
     $own = array_merge(
         array_map(fn (int|string $u): string => 'route:' . $u, array_keys($plan['routes'])),
         array_map(fn (string $u): string => 'snat:' . $u, $plan['snat']),
@@ -904,7 +904,7 @@ function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
 }
 
 /**
- * The no-default sentinel (spec 4.3; port of setup_default_sentinel.php):
+ * The no-default sentinel:
  * NO_DEFAULT4/NO_DEFAULT6, address-less gateways at priority 254 on a
  * loopback assigned with "Dynamic gateway policy". Pure.
  *
@@ -912,8 +912,8 @@ function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
  * @param array  $gateways   name => the sentinel field set (plus 'priority') as strings
  * @param string $device        the sentinel loopback, e.g. lo1
  * @param bool   $loopbackAdded the writer is creating that loopback in this save
- * @return array see Task 3 Interfaces; 'steps' holds only the applies that
- *               match what changed (ruling 19): `interface reconfigure` restarts
+ * @return array 'steps' holds only the applies that
+ *               match what changed: `interface reconfigure` restarts
  *               DNS and DHCP (interface_configure with $reload), so it runs
  *               only for a new or changed assignment
  */
@@ -1115,7 +1115,7 @@ function wgct_actions_selftest(): int {
         && $p['peer']['serverport'] === '51820' && !isset($p['peer']['psk']));
     $g4 = $p['gateways'][0]['fields'] ?? [];
     $g6 = $p['gateways'][1]['fields'] ?? [];
-    wgct_check($t, 'create: gateways take the template thresholds and the spec behaviour fields',
+    wgct_check($t, 'create: gateways take the template thresholds and the standard behaviour fields',
         count($p['gateways']) === 2 && $p['gateways'][0]['name'] === 'tun_c' && $p['gateways'][1]['name'] === 'tun_c-ipv6'
         && $g4['gateway'] === '10.2.0.6' && $g4['interface'] === 'opt4' && $g4['monitor'] === '203.0.113.12' && $g4['latencylow'] === '900'
         && $g4['fargw'] === '1' && $g4['monitor_disable'] === '0' && $g4['force_down'] === '0' && $g4['defaultgw'] === '0'
@@ -1195,7 +1195,7 @@ function wgct_actions_selftest(): int {
     wgct_check($t, 'create: a rule that is not copied (disabled, or IPv6 with IPv6 off) may name the template interface',
         wgct_plan_create($s, ['ipv6' => false] + $req, $conf)['errors'] === []);
 
-    /* unique addressing default (ruling 3): the fixture's tun_a is fd00::1:1 on wg1, so the convention is in use */
+    /* unique addressing default: the fixture's tun_a is fd00::1:1 on wg1, so the convention is in use */
     $c = $conf;
     $c['addresses']['inet6'] = ['2001:db8::2:2/128'];
     $p = wgct_plan_create($snap, $req, $c);
@@ -1222,7 +1222,7 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_create($snap, ['unique' => false] + $req, $conf);
     wgct_check($t, 'create: unique addressing off with an address already on an instance => refused', $err($p, 'unique'));
 
-    /* a config without IPv6 (ruling 4) */
+    /* a config without IPv6 */
     $c = $conf;
     $c['addresses']['inet6'] = [];
     wgct_check($t, 'create: IPv6 requested but the config has no IPv6 address => refused on ipv6',
@@ -1286,7 +1286,7 @@ function wgct_actions_selftest(): int {
         $p['errors'] === [] && count($p['nat']) === 3
         && $p['nat'][0] === ['enabled' => '1', 'ipprotocol' => 'inet', 'source_net' => 'opt3', 'destination_net' => 'any', 'target' => '', 'description' => 'tun_c: outbound NAT from opt3']
         && $p['nat'][2]['ipprotocol'] === 'inet6');
-    wgct_check($t, 'create: no template => gateways get the spec behaviour fields and core\'s default thresholds',
+    wgct_check($t, 'create: no template => gateways get the standard behaviour fields and core\'s default thresholds',
         $p['gateways'][0]['fields']['fargw'] === '1' && $p['gateways'][0]['fields']['monitor_disable'] === '0'
         && !isset($p['gateways'][0]['fields']['latencylow']));
     $p = wgct_plan_create($snap, ['nat' => ['inet' => [], 'inet6' => []]] + $noTpl, $conf);
@@ -1303,7 +1303,7 @@ function wgct_actions_selftest(): int {
     wgct_check($t, 'create: WireGuard disabled => a warning, not a refusal',
         $has(wgct_plan_create($s, $req, $conf)['changes'], 'WARNING WireGuard is disabled'));
 
-    /* ---- the IPv6 monitor (spec 3.3) ---- */
+    /* ---- the IPv6 monitor ---- */
     $l6 = wgct_local6_parse([
         'igc1' => ['ipv6' => [['ipaddr' => '2001:DB8:1:1::1', 'subnetbits' => 64, 'link-local' => false],
                               ['ipaddr' => 'fe80::1', 'subnetbits' => 64, 'link-local' => true]]],
@@ -1424,7 +1424,6 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_remove($s6, [], 'i-d');
     wgct_check($t, 'remove: an IPv6 endpoint route (/128, non-canonical) is deleted with the tunnel',
         isset($p['routes']['r-d']) && $p['routes']['r-d'] === '2001:DB8:0::13/128');
-    /* S1: removed in Task 10 */
     $s6u = $s6;
     unset($s6u['core']['routes']['r-d']);
     $p = wgct_plan_rebind($s6u, 'i-d', 'WAN_A6', '');
@@ -1438,7 +1437,7 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_rebind($s, 'i-a', 'WAN_B', 'r-v6');
     wgct_check($t, 'rebind: an IPv4 tunnel is not offered a /128 stale route',
         isset(wgct_stale_candidates($s['core'])['r-v6']) && $p['errors'] === ['the route to delete is not a stale endpoint route']);
-    /* IPv6 endpoints: /128 via the IPv6 WAN gateway; family mismatch, 6rd/6to4 and monitor refusals (S1 lifted) */
+    /* IPv6 endpoints: /128 via the IPv6 WAN gateway; family mismatch, 6rd/6to4 and monitor refusals */
     $conf6 = ['endpoint_ip' => '2001:db8::12', 'endpoint_family' => 'inet6'] + $conf;
     $p = wgct_plan_create($snap, ['wan' => 'WAN_A6'] + $req, $conf6);
     wgct_check($t, 'create: an IPv6 endpoint gets a /128 via the IPv6 WAN gateway',

@@ -44,8 +44,8 @@
         }
 
         /* a dialog title that may include a server-supplied name: a text node, never an HTML string --
-         * BootstrapDialog renders a string title as HTML, which would re-encode plain()'s output (review
-         * finding 5). Callers pass the already-decoded text. */
+         * BootstrapDialog renders a string title as HTML, which would re-encode plain()'s output.
+         * Callers pass the already-decoded text. */
         function titleText(text) {
             return $('<span/>').text(text);
         }
@@ -139,10 +139,10 @@
 
         /* status is jQuery's: 'success' only for a completed request whose reply parsed as JSON. An error
          * page, a timeout or a login redirect reaches the callback as a jqXHR without any of our keys,
-         * and must never read as "Nothing to change" (review I4). Every action's result shares the same
+         * and must never read as "Nothing to change". Every action's result shares the same
          * {ok, saved, errors, ...} shape (actions.php wgct_result()); ok:false with no error lines (an
          * apply step failed with only 'apply' detail, nothing in 'errors') must still read as a failure,
-         * never as success or "Nothing to change" (review finding 1). */
+         * never as success or "Nothing to change". */
         function errorList(r, status) {
             if (!r || (status !== undefined && status !== 'success')
                 || !('ok' in r || 'result' in r || 'status' in r || 'errors' in r)) {
@@ -189,9 +189,9 @@
         }
 
         /* applyUuid/applyName: the uuid and name of a tunnel that is saved (Create, or an earlier Apply); when
-         * its apply did not complete, the dialog offers "Apply again" (ruling 20) -- the finding apply-pending
-         * stays until one completes. applyName is the tunnel's own name, never the dialog title (review
-         * finding 4: a title like "Rebind NAME" must not become the next dialog's "Apply Rebind NAME"). */
+         * its apply did not complete, the dialog offers "Apply again" -- the finding apply-pending
+         * stays until one completes. applyName is the tunnel's own name, never the dialog title
+         * (a title like "Rebind NAME" must not become the next dialog's "Apply Rebind NAME"). */
         function showResult(title, r, status, applyUuid, applyName) {
             var failed = errorList(r, status).length > 0;
             var buttons = [{label: "{{ lang._('Close') }}", action: function (d) { d.close(); }}];
@@ -205,8 +205,8 @@
             var body = resultBody(r, status);
             if (r && r.saved === true && r.ok === false) {
                 /* the config write happened even though the apply step after it did not finish -- never let
-                 * that read as a lost change (review finding 1). The wording follows what the dialog actually
-                 * offers: only Create/Apply's own retry uses the generic apply endpoint (ruling 21); Rebind's
+                 * that read as a lost change. The wording follows what the dialog actually
+                 * offers: only Create/Apply's own retry uses the generic apply endpoint; Rebind's
                  * own apply ("interface routes configure", then "wireguard restart") is not the same pipeline, so its
                  * failure gets a plainer message instead of a misleading "Apply again". */
                 body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
@@ -349,12 +349,12 @@
 
         /* the last parsed IPv6 address list (sorted, comma-joined); ipv6Defaults only recomputes the
          * checkbox defaults when this actually changes, so an explicit uncheck/check survives further
-         * edits elsewhere in the pasted config (review finding 7). Reset to null whenever the dialog opens
+         * edits elsewhere in the pasted config. Reset to null whenever the dialog opens
          * on a blank config, so the next paste always recomputes regardless of a coincidental match with a
          * previous session's list. */
         var lastV6 = null;
 
-        /* rulings 3 and 4: IPv6 only when the config has an address; unique addressing on by default when that
+        /* IPv6 only when the config has an address; unique addressing on by default when that
          * address is already on a WireGuard instance or the managed tunnels use fd00::N:1. A missed match only
          * leaves the box unchecked, and the planner then refuses the duplicate explicitly. */
         function ipv6Defaults() {
@@ -377,7 +377,7 @@
                 $('#create\\.unique').prop('checked', hasV6 && (options.unique_convention || shared));
                 natRows();
             }
-            /* the WAN list follows the pasted endpoint's family (IPv4 with no config pasted, ruling: same list as before) */
+            /* the WAN list follows the pasted endpoint's family (IPv4 with no config pasted: the same list as before) */
             var wans = wansHint(p.endpoint_family);
             var current = $('#create\\.wan').val();
             fillSelect('#create\\.wan', wans,
@@ -468,7 +468,7 @@
                     refreshAll();
                     if (status === 'success' && r && r.result === 'saved') {
                         $('#dialogCreate').modal('hide');
-                        /* applyName is the submitted name, never the dialog title (review finding 4) */
+                        /* applyName is the submitted name, never the dialog title */
                         showResult("{{ lang._('Create tunnel') }}", r, status, r.uuid, c.name);
                         return;
                     }
@@ -520,7 +520,7 @@
                         refreshAll();
                         /* saved === true even with an apply error still means the route write happened:
                          * close and show it (changes plus the apply error), never leave it stuck behind the
-                         * form (review finding 3) */
+                         * form */
                         if (status === 'success' && r && r.saved === true) {
                             $('#dialogRebind').modal('hide');
                             showResult(titleText("{{ lang._('Rebind') }} " + plain(t.name)), r, status);
@@ -534,7 +534,7 @@
             });
         }
 
-        /* ---- Edit (spec 6.5) ---- */
+        /* ---- Edit ---- */
 
         /* the tunnel whose Edit dialog is open: {uuid, name (decoded), form (the prefill)} */
         var editState = null;
@@ -542,7 +542,7 @@
         var lastEditV6 = null;
         /* a NAT source list as core's multi-select dropdown (as Create's): the interfaces and aliases on offer,
          * plus any current source the choices lack (a disabled interface, an alias of another type), still
-         * selected, so an unchanged Save never deletes it (ruling 14) */
+         * selected, so an unchanged Save never deletes it */
         function natSelect(selector, items, selected) {
             var choices = items.slice();
             $.each(selected, function (i, v) {
@@ -556,7 +556,7 @@
         /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: wgPublic()'s
          * result, or null when none is pasted). The gateways offered are the ENDPOINT's family -- the pasted
          * config's, else the tunnel's own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN
-         * move is how a tunnel bound through a gateway of the other family is repaired (spec 3.8), so an IPv6
+         * move is how a tunnel bound through a gateway of the other family is repaired, so an IPv6
          * endpoint bound by a /128 via an IPv4 gateway is offered the IPv6 gateways. A family with no saved
          * gateway gets one disabled hint option in its place (wansHint), never an empty list -- except under the
          * unbound placeholder, which already keeps the list non-empty and shares the hint's empty value (two
@@ -606,7 +606,7 @@
             $('#row_edit\\.monitor6').toggle(box.prop('checked'));
         }
 
-        /* rulings 3 and 4 for a replacement config: unique addressing on by default when its IPv6 address is
+        /* For a replacement config: unique addressing on by default when its IPv6 address is
          * on another instance or the managed tunnels use fd00::N:1 */
         function editDefaults() {
             var f = editState.form;
@@ -906,7 +906,7 @@
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
         /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
-         * autofill, ever sees it (review finding 6) */
+         * autofill, ever sees it */
         $('#create\\.config').attr({
             spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'
         });

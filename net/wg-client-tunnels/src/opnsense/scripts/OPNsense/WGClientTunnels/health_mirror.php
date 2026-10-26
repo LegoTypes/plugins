@@ -23,7 +23,7 @@
  *    holding in between, exactly as dpinger does), when its dpinger socket is
  *    missing, or when the IPv4 gateway itself is force_down (pass 1, or by hand).
  *    As in pass 1, only a force_down this pass set itself is ever released: an
- *    IPv6 gateway forced down by hand is left alone (spec 2026-10-20 3.5a).
+ *    IPv6 gateway forced down by hand is left alone.
  *
  * Keeping tunnel gateways out of the default-gateway election is NOT this
  * script's job: the sentinel gateways and default_guard.php do that.
@@ -38,11 +38,11 @@
  * write as the force_down values they explain. A record is ours only when its boot is the
  * live one, or the one boot.json names at the first tick after a reboot (that
  * tick re-stamps it); any other record is pruned with one log line and its
- * force_down left alone (spec 2026-10-20 section 3.5). Each tick ends by
+ * force_down left alone. Each tick ends by
  * recording the live boot id in boot.json, written only when it names another
  * boot. A tick that cannot read kern.boot_id takes, releases and records no
  * hold, and says so once per state. So does a tick while the plugin settings
- * wait for their 3.1.0 migration (ruling R37): the hold records are not in the
+ * wait for their 3.1.0 migration: the hold records are not in the
  * engine model yet.
  *
  * Settle guard: a dpinger that has just started has no samples yet, so what it
@@ -130,7 +130,7 @@ if ($snapshotOut) {
  * The 3.1.0 migration pending (between pkg installing these files and the
  * package's run_migrations.php): the hold records are still 3.7_1's list in the
  * settings node, so the tick takes, releases and records nothing, said once per
- * state (ruling R37). --dry only says so. A mirror switched off would not have
+ * state. --dry only says so. A mirror switched off would not have
  * run either, so it ends quietly first, as it does below.
  */
 $switches = new \OPNsense\WGClientTunnels\WGClientTunnels();
@@ -167,7 +167,7 @@ try {
 /*
  * The package removal writes its marker while it holds health.lock (+PRE_DEINSTALL.pre), so a tick that passed
  * entry.php's check just before the marker appeared finds the lock taken, or the marker once it has the lock:
- * either way it ends here, and no tick re-takes a hold after the removal released it (ruling R30).
+ * either way it ends here, and no tick re-takes a hold after the removal released it.
  */
 if (wgct_removing()) {
     exit(0);
@@ -243,8 +243,7 @@ if (empty($plan['changes'])) {
 }
 
 /*
- * A change is needed. Commit it in the order every config writer follows
- * (spec 2026-09-24 section 4.6):
+ * A change is needed. Commit it in the order every config writer follows:
  *
  *   1. core's gateway lock (/tmp/filter_reload_gateway.lock) -- applying force_down is a full
  *      routing reconfigure, which restarts every dpinger; overlapping
@@ -267,7 +266,7 @@ $before = wgct_gateway_status();
 try {
     $gwLock = wgct_gateway_lock();
 } catch (WgctRemovingException $e) {
-    /* the removal marker appeared while this tick waited for the gateway lock: it saves nothing (ruling R30) */
+    /* the removal marker appeared while this tick waited for the gateway lock: it saves nothing */
     exit(0);
 } catch (\RuntimeException $e) {
     wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, true, 'gateway change left for the next tick: ' . $e->getMessage(), 'gateway lock available again');

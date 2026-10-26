@@ -51,7 +51,7 @@ class ServiceController extends ApiMutableServiceControllerBase
     }
 
     /**
-     * Create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel (spec 4.3); {dry: '1'} previews.
+     * Create or repair the NO_DEFAULT4/NO_DEFAULT6 sentinel; {dry: '1'} previews.
      */
     public function sentinelAction(): array
     {

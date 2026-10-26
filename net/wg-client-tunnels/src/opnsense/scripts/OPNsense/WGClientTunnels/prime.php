@@ -6,7 +6,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Teach the provider each tunnel's IPv6 address (spec 2026-10-03). Run by the cron right after each health mirror
+ * Teach the provider each tunnel's IPv6 address. Run by the cron right after each health mirror
  * tick, four times a minute; never from a hook. When a managed tunnel's IPv6 gateway is down while its WireGuard
  * session is up, send one TCP connect from the tunnel's own IPv6 address to its IPv6 monitor: a provider
  * that learns the client address from non-ICMP traffic then sends the replies back to it. No config write, no

@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The action writers (spec 2026-09-24 sections 4.6 and 6). Each runs its
+ * The action writers. Each runs its
  * planner on a snapshot taken under Config::lock(), writes the models in the
  * order core needs, validates every one and saves once. With --dry, or on any
  * error, it saves nothing and re-reads config, so no half-written tree stays
@@ -31,7 +31,7 @@ require_once __DIR__ . '/mirror.php';
 
 /**
  * Forget the per-process field caches, so the next model built sees what was
- * just written into the config tree (spec 6.1). ModelRelationField keeps the
+ * just written into the config tree. ModelRelationField keeps the
  * related models' option lists in private statics (reset by reflection, as
  * the retired scripts did). InterfaceField keeps the interface list --
  * filtered by `enable` for gateways -- in BaseListField's statics
@@ -64,7 +64,7 @@ function wgct_model_errors(\OPNsense\Base\BaseModel $mdl, string $label): array 
 /**
  * Everything the planners read. Call under Config::lock() in a writer.
  *
- * @return array the action snapshot (Task 3 Interfaces)
+ * @return array the action snapshot
  */
 function wgct_action_snapshot(): array {
     $root = Config::getInstance()->object();
@@ -127,7 +127,7 @@ function wgct_action_snapshot(): array {
 const WGCT_PREFIX_FILE_MAX_BYTES = 4096;
 
 /**
- * The delegated-prefix files core writes for the devices it has (spec 3.4): exactly /tmp/<dev>_prefixv6 and
+ * The delegated-prefix files core writes for the devices it has: exactly /tmp/<dev>_prefixv6 and
  * /tmp/<dev>:slaac_prefixv6 per device, never a glob, so a file someone drops under another name is never read.
  * A name that cannot be a device (a path separator, a leading dot) is skipped. Pure; $read is
  * wgct_read_state_file() in production, which accepts only a root-owned regular file of at most the given size.
@@ -153,7 +153,7 @@ function wgct_local6_files(array $devices, callable $read): array {
 }
 
 /**
- * The firewall's own IPv6 networks (spec 3.5), for Create's and Edit's IPv6 monitor check: configd's ifconfig
+ * The firewall's own IPv6 networks, for Create's and Edit's IPv6 monitor check: configd's ifconfig
  * dump (`interface list ifconfig`, which runs `pluginctl -D`) and the delegated prefixes dhcp6c records for the
  * devices core knows (wgct_local6_files()). Called only from the prepare steps, which hold no lock:
  * never inside Config::lock(), never from the mirror, reconcile or the filter hook.
@@ -176,11 +176,11 @@ function wgct_local6_snapshot(): ?array {
  * 'result' => wgct_result()]. Unless it saved, config is re-read. Every
  * action writer (Create, Edit, Remove, Rebind, Adopt, the sentinel, a dry run
  * of each included) comes through here, so here, under the lock, an action
- * refuses while the 3.1.0 migration is pending (ruling R37): the engine model
+ * refuses while the 3.1.0 migration is pending: the engine model
  * it writes does not hold the managed list and the holds yet.
  *
  * @param callable(): array $mutate
- * @param string            $description the config-history text of the save (ruling 23)
+ * @param string            $description the config-history text of the save
  * @return array wgct_result()
  */
 function wgct_action_commit(callable $mutate, string $description): array {
@@ -203,7 +203,7 @@ function wgct_action_commit(callable $mutate, string $description): array {
 }
 
 /**
- * Everything Create does before it touches config (spec 6.1): check the
+ * Everything Create does before it touches config: check the
  * request, parse the config, derive our public key, and measure the MTU when
  * none was given. Holds no lock: the MTU probe alone can take ~30 s.
  *
@@ -252,7 +252,7 @@ function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequire
  * Write a Create plan into the models. Call only inside Config::lock(). The
  * assignment goes into the config tree first -- core's MVC NetworkInterface
  * cannot take a wgN that is not saved yet, and a gateway may only name an
- * enabled interface (spec 6.1 ruling) -- then each model is validated,
+ * enabled interface -- then each model is validated,
  * serialized, and the caches reset, so the next one validates against it.
  *
  * @param array $plan   wgct_plan_create() without errors
@@ -359,11 +359,11 @@ function wgct_add_start_holds(\OPNsense\WGClientTunnels\Engine $engine, array $h
 }
 
 /**
- * Create's config write (spec 4.6 steps 2-5).
+ * Create's config write.
  *
  * @param array $prep wgct_create_prepare() without errors
  * @return array wgct_result(): steps WGCT_CREATE_APPLY_STEPS, gateways the new tunnel's.
- *               A saved Create is marked apply-pending until an apply completes (ruling 20).
+ *               A saved Create is marked apply-pending until an apply completes.
  */
 function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): array {
     $result = wgct_action_commit(function () use ($prep, $dry): array {
@@ -390,7 +390,7 @@ function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): arra
 }
 
 /**
- * Rebind's config write (spec 6.2). The stale route's kernel route goes by
+ * Rebind's config write. The stale route's kernel route goes by
  * core's todo hand-off; the apply is wgct_rebind_apply_steps():
  * `interface routes configure` (which ends with its own filter reload), then
  * `wireguard restart` so the tunnel handshakes again on the new route.
@@ -475,8 +475,8 @@ function wgct_hold_items_of(array $rows, array $gateways): array {
 }
 
 /**
- * Remove's config write (spec 6.3), after the refusal check. The assignment
- * is taken out of the tree directly (ruling 2026-09-25): core's MVC path
+ * Remove's config write, after the refusal check. The assignment
+ * is taken out of the tree directly: core's MVC path
  * refuses lock=1 and queues deletes in the todo file shared with pending GUI
  * edits. interface_reset() runs later, as the first apply hand-off.
  *
@@ -541,10 +541,10 @@ function wgct_remove_commit(string $uuid, bool $dry): array {
 }
 
 /**
- * The sentinel's config write (spec 4.3), ported from
+ * The sentinel's config write, ported from
  * setup_default_sentinel.php: loopback, its assignment (written into the tree
  * before the gateways, as in Create), both gateways; idempotent. Its apply
- * steps come from the plan and match what changed (ruling 19): a
+ * steps come from the plan and match what changed: a
  * description-only repair is saved and applies nothing.
  *
  * @return array wgct_result()
@@ -668,7 +668,7 @@ function wgct_edit_prepare(#[\SensitiveParameter] array $raw, string $uuid): arr
 }
 
 /**
- * The planner's view of a swap (ruling 11): the public parts, our public key,
+ * The planner's view of a swap: the public parts, our public key,
  * and whether the config's preshared key equals the stored one -- compared
  * here, in-process, so the planner never holds a key.
  *
@@ -813,18 +813,18 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
 }
 
 /**
- * Edit's config write (spec 6.5, 4.6 steps 2-5): re-plan on a snapshot taken
+ * Edit's config write: re-plan on a snapshot taken
  * under Config::lock(), write only the differences, save once. A plan that
  * needs a routing apply is refused, nothing written, when the caller does not
  * hold the gateway lock (it classified the edit before the lock and config
  * changed meanwhile). Every saved Edit is marked apply-pending with its mode
- * until an apply of at least that mode completes (S5 review I2).
+ * until an apply of at least that mode completes.
  *
  * @param array $prep        wgct_edit_prepare() without errors
  * @param bool  $dry         validate and preview only
  * @param bool  $gatewayHeld whether the caller holds the gateway lock
  * @return array wgct_result(): steps and apply_mode from the plan's mode; route_todos its deleted
- *               routes and the old monitor's host route (S5 review I3)
+ *               routes and the old monitor's host route
  */
 function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $gatewayHeld): array {
     $uuid = $prep['req']['uuid'];
@@ -862,8 +862,8 @@ function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $g
 
 /**
  * The edit's apply mode on the current config, read without any lock, to
- * decide whether to take the gateway lock before wgct_edit_commit() (spec 4.6
- * lock order). A refused plan reads as none; the locked re-plan then refuses
+ * decide whether to take the gateway lock before wgct_edit_commit() (the lock
+ * order). A refused plan reads as none; the locked re-plan then refuses
  * it again, or refuses a routing change it does not hold the lock for.
  *
  * @param array $prep wgct_edit_prepare() without errors
@@ -949,7 +949,7 @@ function wgct_engine_selftest(): int {
     wgct_check($t, 'migrate: a gateway of a tunnel that left the managed list => dropped',
         $plan([$iUpper], [$gA], $gateways, $ipv4, [], true, true, $boot) === ['rows' => [], 'dropped' => [$gA], 'manual' => []]);
 
-    /* (p6, spec 3.5a) the IPv6 gateways pass 2 governs: 3.7_1's pass 2 rewrote their force_down every tick */
+    /* (p6) the IPv6 gateways pass 2 governs: 3.7_1's pass 2 rewrote their force_down every tick */
     $gA6 = '2222222a-2222-4222-8222-22222222222a';
     $gD6 = '2222222d-2222-4222-8222-22222222222d';
     $gateways6 = $gateways + [$gA6 => true, $gD6 => false];
@@ -969,20 +969,20 @@ function wgct_engine_selftest(): int {
     wgct_check($t, 'migrate: (p6) (m3) kern.boot_id unreadable => no IPv6 row either, the forced IPv6 gateway dropped (named) with the held one',
         $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, true, true, '') === ['rows' => [], 'dropped' => [$gA, $gA6], 'manual' => []]);
 
-    /* (R35) a forced IPv6 pair gateway was the mirror's only while the 3.7_1 mirror ran: enabled and health_mirror on */
+    /* a forced IPv6 pair gateway was the mirror's only while the 3.7_1 mirror ran: enabled and health_mirror on */
     $rowA = ['gateway' => $gA, 'boot' => $boot, 'underlay' => 'WAN_B'];
-    wgct_check($t, 'migrate: (R35) enabled and health_mirror both on => the forced IPv6 pair gateway gets its row',
+    wgct_check($t, 'migrate: enabled and health_mirror both on => the forced IPv6 pair gateway gets its row',
         $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, true, true, $boot)
             === ['rows' => [$rowA, ['gateway' => $gA6, 'boot' => $boot, 'underlay' => 'tun_a']], 'dropped' => [], 'manual' => []]);
-    wgct_check($t, 'migrate: (R35) the health mirror off => no IPv6 row: the forced IPv6 gateway is left forced down as manual; the held IPv4 row stays',
+    wgct_check($t, 'migrate: the health mirror off => no IPv6 row: the forced IPv6 gateway is left forced down as manual; the held IPv4 row stays',
         $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, true, false, $boot) === ['rows' => [$rowA], 'dropped' => [], 'manual' => [$gA6]]);
-    wgct_check($t, 'migrate: (R35) the plugin disabled => no IPv6 row: the forced IPv6 gateway is left forced down as manual',
+    wgct_check($t, 'migrate: the plugin disabled => no IPv6 row: the forced IPv6 gateway is left forced down as manual',
         $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, false, true, $boot) === ['rows' => [$rowA], 'dropped' => [], 'manual' => [$gA6]]);
-    wgct_check($t, 'migrate: (R35) both off => manual too',
+    wgct_check($t, 'migrate: both off => manual too',
         $plan($managed, [], $gateways6, $ipv4, $ipv6, false, false, $boot) === ['rows' => [], 'dropped' => [], 'manual' => [$gA6]]);
-    wgct_check($t, 'migrate: (R35) the mirror off and also named in held => manual once, not dropped, no row',
+    wgct_check($t, 'migrate: the mirror off and also named in held => manual once, not dropped, no row',
         $plan($managed, [$gA6], $gateways6, $ipv4, $ipv6, true, false, $boot) === ['rows' => [], 'dropped' => [], 'manual' => [$gA6]]);
-    wgct_check($t, 'migrate: (R35) the mirror off, kern.boot_id unreadable => the IPv6 gateway manual, the held one dropped',
+    wgct_check($t, 'migrate: the mirror off, kern.boot_id unreadable => the IPv6 gateway manual, the held one dropped',
         $plan($managed, [$gA], $gateways6, $ipv4, $ipv6, true, false, '') === ['rows' => [], 'dropped' => [$gA], 'manual' => [$gA6]]);
 
     /* what the migration logs (M3_1_0::report()) */
@@ -995,7 +995,7 @@ function wgct_engine_selftest(): int {
     wgct_check($t, 'migrate: (ledger) the tunnels\' gateways unreadable with nothing held => one warning, naming none',
         $report($none, [], $boot, 'snapshot failed', [])
             === [[LOG_WARNING, "[wgct-migrate] the tunnels' gateways cannot be read (snapshot failed), so no hold is carried over"]]);
-    wgct_check($t, 'migrate: (R35) the mirror off => one line names the forced IPv6 gateways left forced down as manual',
+    wgct_check($t, 'migrate: the mirror off => one line names the forced IPv6 gateways left forced down as manual',
         $report(['rows' => [$rowA], 'dropped' => [], 'manual' => [$gA6]], [$gA], $boot, null, $names) === [
             [LOG_NOTICE, "[wgct-migrate] tun_a-ipv6 ({$gA6}) left forced down as manual: the 3.7_1 health mirror was off"],
             [LOG_NOTICE, "[wgct-migrate] the hold of tun_a ({$gA}) is carried over, taken in boot {$boot}"],
@@ -1007,7 +1007,7 @@ function wgct_engine_selftest(): int {
         $report(['rows' => [], 'dropped' => [$gA], 'manual' => []], [$gA], '', null, $names) === [[LOG_WARNING,
             "[wgct-migrate] kern.boot_id cannot be read, so no hold is carried over; tun_a ({$gA}) keep their force_down until it is cleared by hand"]]);
 
-    /* (M3) after its save the migration records the boot it stamped in boot.json, so a reboot before the first
+    /* after its save the migration records the boot it stamped in boot.json, so a reboot before the first
      * mirror tick still knows the carried rows as its own */
     $recordBoot = [\OPNsense\WGClientTunnels\Migrations\M3_1_0::class, 'recordBoot'];
     $recorded = [];
@@ -1015,12 +1015,12 @@ function wgct_engine_selftest(): int {
         $recorded[] = $bootId;
         return true;
     };
-    wgct_check($t, 'migrate: (M3) a readable boot id => recorded in boot.json once, nothing logged',
+    wgct_check($t, 'migrate: a readable boot id => recorded in boot.json once, nothing logged',
         $recordBoot($boot, $recorder) === null && $recorded === [$boot]);
     $recorded = [];
-    wgct_check($t, 'migrate: (M3) (R17) kern.boot_id unreadable => nothing recorded, nothing logged',
+    wgct_check($t, 'migrate: kern.boot_id unreadable => nothing recorded, nothing logged',
         $recordBoot('', $recorder) === null && $recorded === []);
-    wgct_check($t, 'migrate: (M3) boot.json that cannot be written => one warning naming the boot and what it costs',
+    wgct_check($t, 'migrate: boot.json that cannot be written => one warning naming the boot and what it costs',
         $recordBoot($boot, fn (string $bootId): bool => false) === "[wgct-migrate] boot {$boot} could not be recorded in boot.json;"
             . ' a reboot before the first health mirror tick makes the carried holds foreign');
 

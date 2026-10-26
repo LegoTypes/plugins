@@ -4,11 +4,10 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# VM test of what a package removal does (spec 2026-10-20 section 3.11, convention C6, rulings R29-R31):
-# `tunnel.php --json release-holds` and the plugin's +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and
-# +POST_INSTALL.pre, run against the plugin vm_overlay.sh put onto the installed package. Root on the disposable
-# test VM only, never on a firewall. The real `pkg delete` and `pkg add -f` halves run on the CI-built package
-# (spec section 6 step 2), not here.
+# VM test of what a package removal does:
+# `tunnel.php --json release-holds` and the plugin's +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and +POST_INSTALL.pre, run
+# against the plugin vm_overlay.sh put onto the installed package. Root on the disposable test VM only, never on a
+# firewall. The real `pkg delete` and `pkg add -f` halves run on the CI-built package, not here.
 #
 # The VM's tunnel `rehearse` is bound to WAN_B, the second VM WAN. A hold is taken the way the mirror takes one:
 # WAN_B's gateway forced down in its settings, then one mirror tick. Only WAN_B's gateway is ever forced down; the
@@ -18,11 +17,11 @@
 #   a. release-holds with rehearse held: exit 0, rehearse force_down=0, no hold record, routing re-synced through
 #      configd, the alarm replayed for rehearse, one "deinstall: released rehearse" line in the WireGuard log;
 #      run again with nothing held: "deinstall: nothing held", nothing saved.
-#   d. release-holds with rehearse held and configd stopped (R29): it ends well within its bound, force_down=0 and
+#   d. release-holds with rehearse held and configd stopped: it ends well within its bound, force_down=0 and
 #      no hold record are saved, routing is skipped and one line says configd is not answering.
 #  d2. release-holds with nothing held and configd still stopped: it ends well within its bound, makes no configd
 #      call and logs "nothing held" alone.
-#   p. An IPv6 gateway pass 2 holds (spec 3.5a, case p7): rehearse gets an IPv6 gateway `rehearse-ipv6` through
+#   p. An IPv6 gateway pass 2 holds: rehearse gets an IPv6 gateway `rehearse-ipv6` through
 #      core's gateway model (monitoring off), and one mirror tick takes its hold, since rehearse's monitor never
 #      answers (100% loss). With that reading settled, release-holds keeps rehearse-ipv6 forced down with its record
 #      and names it ("left forced down (IPv6, its tunnel is not healthy)"). Then rehearse's monitor is pointed at
@@ -31,11 +30,11 @@
 #   f. A mirror tick that needs a change waits for the gateway lock (held by flock until the .pre has written the
 #      removal marker or ended, WAN_B forced down and no hold taken yet) while it holds health.lock; the .pre meanwhile gives
 #      up on health.lock after 60 s (its own bound), writes the marker and runs release-holds. Once the gateway lock
-#      is free the tick stops at the marker: no hold record, rehearse not forced down (R30, review fix I2).
+#      is free the tick stops at the marker: no hold record, rehearse not forced down.
 #   b. With PKG_UPGRADE set: +PRE_DEINSTALL.pre with rehearse held changes nothing (the hold and its record, the
 #      state directories with the footprint, the MSS anchor, the pin labels in pf, no removal marker), and
 #      +POST_DEINSTALL.post keeps both state directories.
-#   c. A real removal with rehearse held, mirror ticks running back to back all the while (R30): +PRE_DEINSTALL.pre
+#   c. A real removal with rehearse held, mirror ticks running back to back all the while: +PRE_DEINSTALL.pre
 #      releases rehearse and no tick re-takes the hold; the removal marker stays, the MSS anchor is empty; with the
 #      marker wgct.sh reconcile, request_reconcile and a filter reload rebuild nothing; +POST_DEINSTALL.post then
 #      removes both state directories.
@@ -272,7 +271,7 @@ check "a: again with nothing held: exit 0, ok, nothing saved, nothing released, 
 check "a: one line: deinstall: nothing held" "$(deinstall_lines "$mark")" "deinstall: nothing held"
 release_wan_b
 
-# d. release-holds with configd not answering (R29)
+# d. release-holds with configd not answering
 hold
 check "d: rehearse held again" "$($PHP "$T/fact.php" force_down rehearse) $($PHP "$T/fact.php" rows)" "1 1"
 settled $LINENO
@@ -295,7 +294,7 @@ check "d: rehearse force_down=0 and no hold record saved; WAN_B still forced dow
 check "d: two lines: the release, then configd not answering" "$(deinstall_lines "$mark" | tr '\n' '|')" \
     "deinstall: released rehearse|deinstall: configd not answering; routing applies the release at its next configure|"
 
-# d2. nothing held, configd still stopped (review fix I1)
+# d2. nothing held, configd still stopped
 mark=$(lmark wireguard)
 start=$(date +%s)
 $PHP "$TUNNEL" --json release-holds > "$T/d2.json"
@@ -311,7 +310,7 @@ check "d2: one line: deinstall: nothing held" "$(deinstall_lines "$mark")" "dein
 service configd start > /dev/null 2>&1
 release_wan_b
 
-# p. an IPv6 gateway pass 2 holds (spec 3.5a, p7)
+# p. an IPv6 gateway pass 2 holds
 settled $LINENO
 cp /conf/config.xml "$T/before-p.xml"
 $PHP "$T/gw.php" rehearse-ipv6 && /usr/local/sbin/configctl interface routes configure > /dev/null
@@ -359,7 +358,7 @@ settled $LINENO
 check "p: the config of before the case is back: no rehearse-ipv6, rehearse's own monitor, nothing held" \
     "[$($PHP "$T/fact.php" uuid rehearse-ipv6)] $(facts)" "[] 0 0 0 0"
 
-# f. a tick waiting on the gateway lock while the .pre runs (review fix I2)
+# f. a tick waiting on the gateway lock while the .pre runs
 $PHP "$T/gw.php" WAN_B force_down=1 && /usr/local/sbin/configctl interface routes configure > /dev/null
 settled $LINENO
 check "f: WAN_B forced down, no hold taken yet" "$(facts)" "0 0 1 0"

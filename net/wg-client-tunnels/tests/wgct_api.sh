@@ -4,8 +4,8 @@
 # All rights reserved.
 # BSD 2-Clause License
 #
-# VM tests for the plugin's API guards and the one-at-a-time MTU measurement (spec 2026-10-20 section 3.3,
-# convention C4). Root on the disposable test VM only (vm_selftest.sh), never on a firewall.
+# VM tests for the plugin's API guards and the one-at-a-time MTU measurement. Root on the disposable test VM only
+# (vm_selftest.sh), never on a firewall.
 #
 # It creates two throw-away users through core's own User model and gives each an API key: one with access
 # to the plugin page plus core's user-config-readonly privilege (what throwReadOnly() checks), and a control
@@ -21,7 +21,7 @@
 #         configd's log shows no plugin action in that window. The control user's dry sentinel preview answers
 #         200 and does appear in the log, so the check can see what it looks for.
 # Case 3: two concurrent measure-mtu runs give one measurement and one refusal.
-# Case 4: the control user's settings/set POST naming `managed` and `held` (spec section 3.5, convention C1) is
+# Case 4: the control user's settings/set POST naming `managed` and `held` is
 #         saved with no validation message and changes neither the settings node (its persisted_at stamp aside,
 #         which every save rewrites) nor the engine node: the settings model has no such fields. Should a change
 #         get through, the old values are posted back so the VM keeps its managed list.
@@ -30,7 +30,7 @@
 #         PHP's error log does not grow: no fatal reaches core's crash reporter. cron is stopped meanwhile, so no
 #         tick runs without its library, and the file is put back at once (and at exit).
 #
-# Case 5: an unmanaged WireGuard instance (spec section 3.6, F6): apply refuses it and does nothing. The instance
+# Case 5: an unmanaged WireGuard instance: apply refuses it and does nothing. The instance
 #         is created through core's Server model with a synthetic key, a documentation-range address and
 #         enabled=0, so it has no device; the observables are configd's log (an apply would log its
 #         `wireguard restart UUID`) and `wg show all latest-handshakes`. It is removed at exit.

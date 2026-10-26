@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Tunnel derivation (spec 2026-09-24 section 3). Core config is the only
+ * Tunnel derivation. Core config is the only
  * source of truth: a managed tunnel is assembled from its WireGuard instance
  * and peer, the interface assignment of its device, the /32 or /128 route to
  * its endpoint, the gateways on its interface, outbound NAT and the gateway
@@ -47,7 +47,7 @@ function wgct_log(int $priority, string $message): void {
     exec(wgct_log_command($priority, $message) . ' > /dev/null 2>&1');
 }
 
-/* finding code => [blocking, where it is fixed] (spec section 3.4) */
+/* finding code => [blocking, where it is fixed] */
 const WGCT_FINDINGS = [
     'instance-missing' => [true, 'the managed WireGuard instance was deleted; Remove in the tunnel list (tunnel.php remove) drops it from the managed list'],
     'not-assigned' => [true, 'Interfaces > Assignments: assign the wgN device'],
@@ -102,7 +102,7 @@ const WGCT_PINS_KEPT_HINT = '; its firewall pins stay in place while this stands
 
 /**
  * A tunnel with a blocking finding is shown but skipped by the health mirror, the route set and the monitor
- * repair. Its WAN pins, inner-source block and MSS clamp stay (spec 2026-10-20 section 3.1 part C).
+ * repair. Its WAN pins, inner-source block and MSS clamp stay.
  *
  * @param array $tunnel derived record
  * @return bool
@@ -224,7 +224,7 @@ function wgct_xml_list(\SimpleXMLElement $root, string ...$path): array {
 /*
  * The shapes core's own models enforce (Gateways.xml and GatewayGroups.xml name Mask, AliasNameField, interface
  * assignment keys), applied again to everything a restored config.xml can carry into a pf line, a route or a
- * device name (spec 3.7, convention C7). The model masks do not run on a restored file. "D" keeps a trailing
+ * device name. The model masks do not run on a restored file. "D" keeps a trailing
  * newline from passing "$".
  */
 const WGCT_GATEWAY_NAME_MASK = '/^[a-zA-Z0-9_-]{1,32}$/D';
@@ -300,7 +300,7 @@ function wgct_valid_ip_field(mixed $v, bool $allowEmpty = false): bool {
 }
 
 /**
- * The snapshot with every value core would reject removed (spec 3.7). Pure, so the self-tests reach it with
+ * The snapshot with every value core would reject removed. Pure, so the self-tests reach it with
  * hand-built input; wgct_core_snapshot() hands it the raw values. What fails is dropped or blanked, and 'invalid'
  * names each affected field once, never the value, because findings reach the GUI.
  *
@@ -385,7 +385,7 @@ function wgct_core_snapshot() {
  * The tunnels' part of the snapshot alone: instances, peers, interfaces and gateways, with the routes, outbound NAT,
  * gateway groups, aliases, DNS servers and forwarders left empty. The models of those ask configd while they load
  * (on 26.7.7 the routes and aliases 10 s each, outbound NAT 120 s and the gateway groups 100 s when configd does not
- * answer), so the package removal, which needs only each tunnel's gateways, reads this (ruling R29). Derived from
+ * answer), so the package removal, which needs only each tunnel's gateways, reads this. Derived from
  * it, a tunnel's devices and gateways are as from the whole snapshot; its binding and findings are not.
  *
  * @return array see wgct_derive()
@@ -452,7 +452,7 @@ function wgct_core_read(bool $context): array {
     if ($context) {
         wgct_core_read_context($core, $root);
     }
-    /* the plugin's route switch (the monitor routes, spec 3.5) and core's dpinger defaults, read once here so
+    /* the plugin's route switch (the monitor routes) and core's dpinger defaults, read once here so
      * the derivation stays pure */
     $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
     $core['dpinger_defaults'] = [];
@@ -514,7 +514,7 @@ function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
 /* the settings model version whose migration (M3_1_0) moves the managed list and the holds into the engine model */
 const WGCT_SETTINGS_MIGRATED_VERSION = '3.1.0';
 
-/* what a state-changing run says while that migration is pending (ruling R37) */
+/* what a state-changing run says while that migration is pending */
 const WGCT_MIGRATION_PENDING = 'the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php);'
     . ' nothing is held, released or written until they are';
 
@@ -569,16 +569,16 @@ function wgct_managed_in(\SimpleXMLElement $root, callable $engine): array {
 
 /**
  * @return bool whether config.xml's settings node waits for its 3.1.0 migration (wgct_settings_pending()): every
- *              state-changing run refuses then (ruling R37)
+ *              state-changing run refuses then
  */
 function wgct_migration_pending(): bool {
     return wgct_settings_pending(Config::getInstance()->object());
 }
 
 /**
- * The WireGuard instances the plugin manages, in order, from the engine model (spec 3.5): the API cannot edit it.
+ * The WireGuard instances the plugin manages, in order, from the engine model: the API cannot edit it.
  * While the 3.1.0 migration is pending, the list 3.7_1 stored in the settings node, which the migration carries
- * over (wgct_managed_in(), ruling R37): a render in that window pins what 3.7_1 pinned, and one that cannot read it
+ * over (wgct_managed_in()): a render in that window pins what 3.7_1 pinned, and one that cannot read it
  * fails into the footprint.
  *
  * @return list<string> instance uuids
@@ -670,7 +670,7 @@ function wgct_wg_devices(array $core): array {
 }
 
 /**
- * The routes that can bind a tunnel (spec 2.2): enabled /32 IPv4 and /128
+ * The routes that can bind a tunnel: enabled /32 IPv4 and /128
  * global IPv6 routes whose gateway is not on a WireGuard device. Pure.
  * Derivation and Rebind both use this, so they cannot disagree on what a
  * binding is.
@@ -696,7 +696,7 @@ function wgct_binding_routes(array $core): array {
 }
 
 /**
- * stale-route candidates (spec 3.4): binding routes to an address that is no
+ * stale-route candidates: binding routes to an address that is no
  * peer's endpoint. Pure.
  *
  * @param array $core wgct_core_snapshot()
@@ -741,7 +741,7 @@ function wgct_binding_target(array $core, string $wan, string $family): array {
 }
 
 /**
- * The WAN pins of an instance's peers (spec 2026-10-20 section 3.1 part C): every peer, in order, whose server
+ * The WAN pins of an instance's peers: every peer, in order, whose server
  * address is IPv4 or global IPv6 (wgct_endpoint_ip()) and has a binding route. A hostname, a ULA or a link-local
  * endpoint, or one with no binding route, gets no pin and stops no other peer's. Pure.
  *
@@ -842,7 +842,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     if (!$if['enable']) {
         $t['findings'][] = wgct_finding('interface-disabled', "{$opt} ({$t['device']}) is disabled");
     }
-    /* the inner-source block of a bound tunnel, whatever the findings; an unbound one stays unpinned (spec 2) */
+    /* the inner-source block of a bound tunnel, whatever the findings; an unbound one stays unpinned */
     $t['pins']['inner'] = $t['pins']['wan'] !== [] && $if['enable'];
 
     /* MTU: the interface value wins when set (core applies it after WireGuard starts) */
@@ -880,7 +880,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     if ($t['gw6'] !== null) {
         $t['ipv6_next_hop'] = $core['gateways'][$t['gw6']]['gateway'];
     }
-    /* the IPv6 gateway's own monitor (R3, spec 3.5) */
+    /* the IPv6 gateway's own monitor */
     if ($t['gw6'] !== null) {
         $g6 = $core['gateways'][$t['gw6']];
         $t['monitor6_mode'] = !empty($g6['monitor_disable']) ? 'off' : ($g6['monitor'] === '' ? 'empty' : 'monitored');
@@ -895,7 +895,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         );
     }
 
-    /* MSS clamping needs at least the IPv4 minimum, and the IPv6 minimum when there is an IPv6 address (R8) */
+    /* MSS clamping needs at least the IPv4 minimum, and the IPv6 minimum when there is an IPv6 address */
     if ($t['mtu'] < 576) {
         $t['findings'][] = wgct_finding('mtu-too-small', "mtu {$t['mtu']} is below the IPv4 minimum 576");
     } elseif ($t['mtu'] < 1280 && $t['ipv6_address'] !== null) {
@@ -920,7 +920,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         $t['findings'][] = wgct_finding('nat-missing', 'no IPv6 outbound NAT on ' . $opt);
     }
 
-    /* each monitor IP must be used for nothing else (R2, and R3 for the IPv6 one) */
+    /* each monitor IP must be used for nothing else (the IPv6 monitor included) */
     foreach ([[$t['monitor'], $t['gw4']], [$t['monitor6'], $t['gw6']]] as [$m, $own]) {
         if ($m === '') {
             continue;
@@ -934,7 +934,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         }
     }
 
-    /* the IPv6 gateway's monitor state (spec 3.5) */
+    /* the IPv6 gateway's monitor state */
     if ($t['monitor6_mode'] === 'off') {
         $t['findings'][] = wgct_finding('ipv6-unmonitored', "{$t['gw6']}: IPv6 health follows the IPv4 tunnel only");
     } elseif ($t['monitor6_mode'] === 'empty') {
@@ -962,7 +962,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
 }
 
 /**
- * Why a monitored IPv6 gateway needs Edit's re-save (spec 3.5, 3.7): core may route its monitor, or its
+ * Why a monitored IPv6 gateway needs Edit's re-save: core may route its monitor, or its
  * thresholds are tighter than its IPv4 gateway's. The routes switch is not a reason: Edit cannot fix it. Pure.
  *
  * @param array $core wgct_core_snapshot()
@@ -1008,7 +1008,7 @@ function wgct_threshold(string $value, int|string|null $default): ?int {
 
 /**
  * The health mirror's inputs: pass 1 needs an enforceable (bound) tunnel,
- * pass 2 only an enabled, unblocked tunnel with both gateways (spec 3.3).
+ * pass 2 only an enabled, unblocked tunnel with both gateways.
  *
  * @param array $derived wgct_derive()
  * @return array ['underlays' => [gw4 => WAN gateway], 'pairs' => [gw4 => gw6]]
@@ -1031,7 +1031,7 @@ function wgct_mirror_inputs(array $derived) {
 }
 
 /**
- * gateway_config.php's output (spec 3.4.1), read by wgct.sh's route set and status: `state|on` or
+ * gateway_config.php's output, read by wgct.sh's route set and status: `state|on` or
  * `state|off`, then one `route` line per tunnel the route set configures and one `keep` line per managed
  * tunnel that is blocked (its recorded routes are kept, never deleted, while the finding stands). A tunnel
  * with no IPv6 or a disabled instance gets no line. Pure.
@@ -1059,7 +1059,7 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
             || (string)$t['ipv6_next_hop'] === '') {
             continue;
         }
-        /* the same shapes the snapshot enforced, again at the point the line is written (spec 3.7) */
+        /* the same shapes the snapshot enforced, again at the point the line is written */
         $address = explode('/', (string)$t['ipv6_address'], 2);
         if (!wgct_valid_ip_field($address[0]) || (isset($address[1]) && preg_match('/^[0-9]{1,3}$/D', $address[1]) !== 1)
             || !wgct_valid_ip_field($t['ipv6_next_hop']) || !wgct_valid_ip_field($t['monitor6'], true)
@@ -1073,7 +1073,7 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
 }
 
 /**
- * gateway_config.php's output while the 3.1.0 migration is pending (ruling R37): `state|pending` in place of the
+ * gateway_config.php's output while the 3.1.0 migration is pending: `state|pending` in place of the
  * state line, so wgct.sh's route set changes nothing, and the route lines kept for its status listing. Pure.
  *
  * @param list<string> $lines wgct_route_lines()
@@ -1084,8 +1084,8 @@ function wgct_route_lines_pending(array $lines): array {
 }
 
 /**
- * What the WAN pins (R1) and inner-source blocks (R7) cover, from each record's
- * pins (spec 2026-10-20 section 3.1 part C): a bound tunnel is pinned whatever
+ * What the WAN pins and inner-source blocks cover, from each record's
+ * pins: a bound tunnel is pinned whatever
  * its findings, for every bound peer. Pure; canonical order so two sets compare
  * with ===. A pin whose WAN cannot be resolved to an enabled interface keeps
  * its entry with wan_if '' -- fail closed, so the handshake is blocked on every
@@ -1182,7 +1182,7 @@ function wgct_pin_rules(array $pinSet) {
 }
 
 /**
- * Whether a tunnel's device gets the MSS clamp (spec 2026-10-20 section 3.1 part C): an enabled instance whose
+ * Whether a tunnel's device gets the MSS clamp: an enabled instance whose
  * valid wgN device has an interface assignment, which gives its MTU, whatever its findings. The clamp is not a
  * pin, so a tunnel with no binding route gets it too. Pure.
  *
@@ -1194,7 +1194,7 @@ function wgct_mss_applies(array $t): bool {
 }
 
 /**
- * The MSS anchor's contents (R8): both directions, because the segment size a
+ * The MSS anchor's contents: both directions, because the segment size a
  * LAN host uses is set by the SYN-ACK arriving inbound on the tunnel. A
  * max-mss below the family's minimum would make pfctl reject the whole
  * anchor, so a tunnel too small to clamp safely (mtu-too-small) is skipped
@@ -1340,7 +1340,7 @@ function wgct_tunnels_selftest() {
             function ($c) { $c['gateways']['tun_a']['monitor'] = '203.0.113.53'; return $c; }, ['i-a'], ['monitor-shared'], true],
         ['monitor shared with another gateway => monitor-shared',
             function ($c) { $c['gateways']['WAN_A']['monitor'] = '203.0.113.9'; return $c; }, ['i-a'], ['monitor-shared'], true],
-        ['route via the tunnel device itself is excluded (spec 3.1) => unbound, no stale-route',
+        ['route via the tunnel device itself is excluded => unbound, no stale-route',
             function ($c) {
                 $c['routes']['r-a']['enabled'] = false;
                 $c['routes']['r-b'] = ['network' => '198.51.100.10/32', 'gateway' => 'tun_a', 'enabled' => true];
@@ -1795,7 +1795,7 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] derive: (t) wgct_dpinger_defaults keeps int thresholds, drops the rest\n", $ok ? 'PASS' : 'FAIL');
 
-    /* gateway_config.php's protocol (spec 3.4.1) */
+    /* gateway_config.php's protocol */
     $c = $base();
     $d = wgct_derive($c, ['i-a']);
     $ok = wgct_route_lines($d, false, true) === ['state|off'] && wgct_route_lines($d, true, false) === ['state|off'];
@@ -1826,7 +1826,7 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] routes: (e) an IPv4-only or disabled tunnel => no line\n", $ok ? 'PASS' : 'FAIL');
 
-    /* values from a restored config (spec 3.7): validated again where the snapshot is built and where they are used */
+    /* values from a restored config: validated again where the snapshot is built and where they are used */
     $invalidOf = fn (array $core): array => wgct_snapshot_validate($core);
     $findingFor = fn (array $core, string $field): bool => in_array($field, $core['invalid'] ?? [], true)
         && count(array_filter(wgct_derive($core, ['i-a'])['global'], fn (array $f): bool => $f['code'] === 'core-value-invalid'
@@ -1965,7 +1965,7 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] values: a non-numeric MTU is cast, and a hostile WAN interface key pins fail-closed\n", $ok ? 'PASS' : 'FAIL');
 
-    /* pin by binding, not by enforceability (spec 2026-10-20 3.1 part C): a bound tunnel keeps its pins while a
+    /* pin by binding, not by enforceability: a bound tunnel keeps its pins while a
      * blocking finding stands, for every peer */
     $p = ['fail' => 0, 'total' => 0];
     $safely = function (callable $case): bool {
@@ -2100,7 +2100,7 @@ function wgct_tunnels_selftest() {
                 && wgct_clamp_for(wgct_derive($c2, ['i-a'])['tunnels'][0], true) === null;
         }));
 
-    /* (M1, ruling R37) the window between pkg installing 3.8's files and the 3.1.0 migration */
+    /* the window between pkg installing 3.8's files and the 3.1.0 migration */
     $cfg = fn (string $settings, string $engine = ''): \SimpleXMLElement
         => simplexml_load_string("<opnsense><OPNsense>{$settings}{$engine}</OPNsense></opnsense>");
     $uA = '0000000a-0000-4000-8000-00000000000a';
@@ -2108,14 +2108,14 @@ function wgct_tunnels_selftest() {
     $old = $cfg("<WGClientTunnels version=\"3.0.0\"><enabled>1</enabled><managed>{$uA},{$uUpper}</managed><held/></WGClientTunnels>");
     $new = $cfg('<WGClientTunnels version="3.1.0"><enabled>1</enabled></WGClientTunnels>',
         "<WGClientTunnelsEngine version=\"1.0.0\"><managed>{$uA}</managed></WGClientTunnelsEngine>");
-    wgct_check($p, 'migration: (M1) a settings node stored below 3.1.0 is pending; 3.1.0 or later is not',
+    wgct_check($p, 'migration: a settings node stored below 3.1.0 is pending; 3.1.0 or later is not',
         wgct_settings_pending($old) && !wgct_settings_pending($new)
         && !wgct_settings_pending($cfg('<WGClientTunnels version="3.2.0"/>')));
-    wgct_check($p, 'migration: (M1) a settings node without a version reads as 0.0.0, as core reads it: pending',
+    wgct_check($p, 'migration: a settings node without a version reads as 0.0.0, as core reads it: pending',
         wgct_settings_pending($cfg('<WGClientTunnels><enabled>1</enabled></WGClientTunnels>')));
-    wgct_check($p, 'migration: (M1) no settings node at all (a new install) has nothing to carry over: not pending',
+    wgct_check($p, 'migration: no settings node at all (a new install) has nothing to carry over: not pending',
         !wgct_settings_pending($cfg('')));
-    wgct_check($p, 'migration: (M1) the legacy list is 3.7_1\'s as stored, in order, upper case kept; none stored => none',
+    wgct_check($p, 'migration: the legacy list is 3.7_1\'s as stored, in order, upper case kept; none stored => none',
         wgct_legacy_managed($old) === [$uA, $uUpper]
         && wgct_legacy_managed($cfg('<WGClientTunnels version="3.0.0"><enabled>1</enabled></WGClientTunnels>')) === []);
     $unreadable = function (\SimpleXMLElement $root): bool {
@@ -2126,7 +2126,7 @@ function wgct_tunnels_selftest() {
         }
         return false;
     };
-    wgct_check($p, 'migration: (M1) a legacy list that is not one text value (two managed nodes, or elements inside) => it throws',
+    wgct_check($p, 'migration: a legacy list that is not one text value (two managed nodes, or elements inside) => it throws',
         $unreadable($cfg("<WGClientTunnels version=\"3.0.0\"><managed>{$uA}</managed><managed>{$uUpper}</managed></WGClientTunnels>"))
         && $unreadable($cfg("<WGClientTunnels version=\"3.0.0\"><managed><item>{$uA}</item></managed></WGClientTunnels>")));
     $engineReads = 0;
@@ -2134,11 +2134,11 @@ function wgct_tunnels_selftest() {
         $engineReads++;
         return [$uA];
     };
-    wgct_check($p, 'migration: (M1) pending => the managed list is the legacy one, and the engine model is not read',
+    wgct_check($p, 'migration: pending => the managed list is the legacy one, and the engine model is not read',
         wgct_managed_in($old, $engine) === [$uA, $uUpper] && $engineReads === 0);
-    wgct_check($p, 'migration: (M1) migrated => the managed list is the engine model\'s',
+    wgct_check($p, 'migration: migrated => the managed list is the engine model\'s',
         wgct_managed_in($new, $engine) === [$uA] && $engineReads === 1);
-    wgct_check($p, 'migration: (M1) pending with an unreadable legacy list => the managed list throws (a render falls back to the footprint)',
+    wgct_check($p, 'migration: pending with an unreadable legacy list => the managed list throws (a render falls back to the footprint)',
         (function () use ($cfg, $engine): bool {
             try {
                 wgct_managed_in($cfg('<WGClientTunnels version="3.0.0"><managed>a</managed><managed>b</managed></WGClientTunnels>'), $engine);
@@ -2147,7 +2147,7 @@ function wgct_tunnels_selftest() {
             }
             return false;
         })());
-    wgct_check($p, 'migration: (M1) a pending route set says so on its state line and keeps its route lines for the status listing',
+    wgct_check($p, 'migration: a pending route set says so on its state line and keeps its route lines for the status listing',
         wgct_route_lines_pending(['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']) === ['state|pending', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']
         && wgct_route_lines_pending(['state|off']) === ['state|pending']);
     $fail += $p['fail'];

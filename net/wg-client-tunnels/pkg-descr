@@ -66,6 +66,11 @@ Features:
 Plugin Changelog
 ================
 
+3.8_1
+
+* The source moved to github.com/LegoTypes/plugins; no change to
+  the plugin.
+
 3.8
 
 * Security release. When a render fails, the firewall keeps enforcing the

@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The command line of tunnel.php (spec 6.4).
+ * The command line of tunnel.php.
  * --json prints one JSON object and returns 0 whatever happened: configd's
  * script_output turns a non-zero exit into a bare "Execute error", so
  * failures travel inside the JSON. create reads its request as JSON on stdin;
@@ -137,7 +137,7 @@ function wgct_cli_main(array $args): int {
          * are the only things that throw InvalidArgumentException, and both
          * run before any writer or step is called: that failure can never
          * follow a save, so any "after the save" footer would be misleading
-         * there (controller review, 2026-09-25). Everything else reaches
+         * there. Everything else reaches
          * here from inside or after an action function, which may have
          * already saved. A dry run saves nothing either.
          */
@@ -240,29 +240,29 @@ function wgct_cli_emit_mtu(array $m, bool $json): int {
     return 0;
 }
 
-/* release-holds' line when hold records exist but kern.boot_id cannot be read (ruling R17) */
+/* release-holds' line when hold records exist but kern.boot_id cannot be read */
 const WGCT_RELEASE_BOOT_UNREADABLE = 'deinstall: kern.boot_id cannot be read, so no hold record can be shown to be ours;'
     . ' nothing released or forgotten, every gateway left as it is';
-/* release-holds' line when configd does not answer the routing re-sync (ruling R29) */
+/* release-holds' line when configd does not answer the routing re-sync */
 const WGCT_RELEASE_CONFIGD_DOWN = 'deinstall: configd not answering; routing applies the release at its next configure';
 
 /**
- * `release-holds`, which +PRE_DEINSTALL runs on a real removal (spec 3.11, convention C6; rulings R29-R31), while
+ * `release-holds`, which +PRE_DEINSTALL runs on a real removal, while
  * the removal marker keeps every other entry point of the plugin stopped:
  *
  * 1. Under the gateway lock, outside Config::lock(): the dpinger readings, from their sockets alone (no configd).
  *    Then under Config::lock(): force_down=0 on the gateway of every owned hold record, except an IPv6 gateway
- *    whose tunnel pass 2 would not bring up now (wgct_release_plan(), spec 3.5a): that one stays forced down and
+ *    whose tunnel pass 2 would not bring up now (wgct_release_plan()): that one stays forced down and
  *    keeps its record. Every other record is forgotten with its gateway untouched, saved once. With records but no
- *    live boot id it changes nothing (ruling R17): leaving a gateway forced down is the safe side, releasing one it
+ *    live boot id it changes nothing: leaving a gateway forced down is the safe side, releasing one it
  *    cannot prove it holds is not.
  * 2. One line to the WireGuard log says what it released and forgot, and names the IPv6 gateways it leaves forced
- *    down (ruling R31, narrowed by spec 3.5a).
+ *    down.
  * 3. Only when something was released: core's `interface routes configure` through configctl, still under the
  *    gateway lock, as the mirror runs its reconfigure. Then the lock is released and the alarms dropped while it was
  *    held, the released gateways' own included, are replayed through core's `interface routes alarm`. Each configd
  *    call is bounded (wgct_configctl_bounded()); when configd does not answer the re-sync, both are skipped with one
- *    line, and routing applies the saved release at its next configure (ruling R29). The plugin's own configd
+ *    line, and routing applies the saved release at its next configure. The plugin's own configd
  *    actions are never used: the removal deletes them. With nothing released no configd call is made.
  *
  * Never throws: a failure is logged and returned.
@@ -277,7 +277,7 @@ function wgct_release_holds(): array {
     $lock = null;
     try {
         /* the hold records are 3.7_1's list in the settings node until the 3.1.0 migration has run: nothing can be
-         * shown to be ours, so every gateway is left as it is (ruling R37) */
+         * shown to be ours, so every gateway is left as it is */
         if (wgct_pending_refuses('release-holds', WGCT_ACTION_LOG_TAG)) {
             $out['errors'][] = 'deinstall: ' . WGCT_MIGRATION_PENDING . '; every gateway left as it is';
             return $out;
@@ -288,7 +288,7 @@ function wgct_release_holds(): array {
         $commit = wgct_locked_commit(function () use ($readings): array {
             $engine = new \OPNsense\WGClientTunnels\Engine();
             /*
-             * The tunnels' part alone: the rest asks configd while it loads, which may not answer (ruling R29).
+             * The tunnels' part alone: the rest asks configd while it loads, which may not answer.
              * The pairs are the mirror's: every finding that blocks a tunnel comes from this part.
              */
             $core = wgct_core_tunnel_snapshot();
@@ -531,7 +531,7 @@ function wgct_cli_own_selftest(): int {
         wgct_release_log_line([], ['tun_c'], []) === 'deinstall: nothing held; hold records forgotten, their gateways left as they are: tun_c'
         && wgct_release_log_line(['rehearse'], ['tun_c', 'tun_d'], [])
             === 'deinstall: released rehearse; hold records forgotten, their gateways left as they are: tun_c, tun_d');
-    wgct_check($t, 'cli: release-holds names the IPv6 gateways it keeps forced down because their tunnel is not healthy (R31, narrowed by spec 3.5a)',
+    wgct_check($t, 'cli: release-holds names the IPv6 gateways it keeps forced down because their tunnel is not healthy',
         wgct_release_log_line(['tun_a'], [], ['tun_a-ipv6']) === 'deinstall: released tun_a; left forced down (IPv6, its tunnel is not healthy): tun_a-ipv6'
         && wgct_release_log_line([], ['tun_c'], ['tun_a-ipv6', 'tun_b-ipv6'])
             === 'deinstall: nothing released; hold records forgotten, their gateways left as they are: tun_c; left forced down (IPv6, its tunnel is not healthy): tun_a-ipv6, tun_b-ipv6');

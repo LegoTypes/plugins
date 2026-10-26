@@ -5,7 +5,7 @@
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The IPv6 monitor repair's decisions (spec 2026-09-28 section 3.4.3): which tunnels to watch, whether one
+ * The IPv6 monitor repair's decisions: which tunnels to watch, whether one
  * needs a dpinger start, the back-off, and the order of one tick. Pure: monitor_repair.php does the reading,
  * the starting and the logging.
  */
@@ -44,7 +44,7 @@ function wgct_repair_watch(array $derived, array $core): array {
 }
 
 /**
- * Whether a watched gateway needs a dpinger start now (spec 3.4.3 step 2). Pure.
+ * Whether a watched gateway needs a dpinger start now. Pure.
  *
  * @param array $w       a wgct_repair_watch() row
  * @param array $probe   pid_live: its pidfile names a live process; routed: interfaces_routed_address6()
@@ -165,7 +165,7 @@ function wgct_repair_route_dev(array $lines, string $ip): ?string {
 }
 
 /**
- * One repair tick over its candidates (spec 3.4.3 steps 4-6). The gateway status is taken before the gateway
+ * One repair tick over its candidates. The gateway status is taken before the gateway
  * lock; the lock is taken at most once, never waited for; each candidate's pidfile is re-checked under it
  * (a concurrent core reconfigure may have started it); every start happens before one shared poll, so the
  * lock is held about WGCT_REPAIR_POLL_SECONDS whatever the number of candidates; the replay after release
