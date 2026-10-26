@@ -196,10 +196,17 @@ uu_register_suite('model', function (): int {
     $gf = fn (array $protos): ?string => \OPNsense\UnboundUpstream\UnboundUpstream::groupFamily($protos);
     uu_check(
         $t,
-        'groupFamily: all IPv4 is inet, all IPv6 is inet6, both families and no members are null, unknown protocols skipped',
-        $gf(['inet', 'inet']) === 'inet' && $gf(['inet6']) === 'inet6' && $gf(['inet', 'inet6']) === null
-            && $gf(['inet6', 'inet']) === null && $gf([]) === null && $gf(['', 'inet6', 'x', 'inet6']) === 'inet6'
-            && $gf(['', 'inet6', 'inet']) === null && $gf(['', 'x']) === null
+        'groupFamily: all IPv4 is inet, all IPv6 is inet6, both families is mixed in either order, no usable member is null',
+        $gf(['inet', 'inet']) === 'inet' && $gf(['inet6']) === 'inet6' && $gf(['inet', 'inet6']) === 'mixed'
+            && $gf(['inet6', 'inet']) === 'mixed' && $gf([]) === null && $gf(['', 'inet6', 'x', 'inet6']) === 'inet6'
+            && $gf(['', 'inet6', 'inet']) === 'mixed' && $gf(['', 'x']) === null
+    );
+    $gp = fn (string $family): array => \OPNsense\UnboundUpstream\UnboundUpstream::groupProblems('g1', $family);
+    uu_check(
+        $t,
+        'groupProblems: a mixed group gets the exact one-family message; inet, inet6 and no usable member get none',
+        $gp('mixed') === ['The gateway group g1 has IPv4 and IPv6 members; use a group of one address family.']
+            && $gp('inet') === [] && $gp('inet6') === [] && $gp('') === []
     );
 
     $v4 = uu_test_model_group_uuid('proton_test_grp');

@@ -140,16 +140,10 @@ class UnboundUpstream extends BaseModel
             $protos[] = (string)($gateways[$name]['ipprotocol'] ?? '');
         }
         $family = self::groupFamily($protos);
-        if ($family === null && array_filter($protos, fn (string $p): bool => $p === 'inet' || $p === 'inet6') !== []) {
-            $messages->appendMessage(new Message(
-                sprintf(
-                    gettext('The gateway group %s has IPv4 and IPv6 members; use a group of one address family.'),
-                    $group
-                ),
-                $this->gateway_group->__reference
-            ));
+        foreach (self::groupProblems($group, (string)$family) as $problem) {
+            $messages->appendMessage(new Message($problem, $this->gateway_group->__reference));
         }
-        $family ??= '';
+        $family = $family === 'inet' || $family === 'inet6' ? $family : '';
 
         $uuidNames = [];
         foreach ($model->gateway_item->iterateItems() as $key => $item) {
@@ -249,7 +243,7 @@ class UnboundUpstream extends BaseModel
      * The address family of a group, from its members' protocols in tier order.
      *
      * @param list<string> $protocols each member's ipprotocol; anything but 'inet' and 'inet6' is skipped
-     * @return string|null 'inet' or 'inet6', null for a group with no usable member or with both families
+     * @return string|null 'inet', 'inet6' or 'mixed' (both families), null for a group with no usable member
      */
     public static function groupFamily(array $protocols): ?string
     {
@@ -260,10 +254,27 @@ class UnboundUpstream extends BaseModel
             }
             $family ??= $proto;
             if ($proto !== $family) {
-                return null;
+                return 'mixed';
             }
         }
         return $family;
+    }
+
+    /**
+     * What is wrong with the group itself for this plugin: a group of both address families. Pure.
+     *
+     * @param string $family what groupFamily() returned, with null as ''
+     * @return list<string>
+     */
+    public static function groupProblems(string $groupName, string $family): array
+    {
+        if ($family !== 'mixed') {
+            return [];
+        }
+        return [sprintf(
+            gettext('The gateway group %s has IPv4 and IPv6 members; use a group of one address family.'),
+            $groupName
+        )];
     }
 
     /**
