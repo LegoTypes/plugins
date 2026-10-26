@@ -30,8 +30,8 @@ namespace OPNsense\UnboundUpstream;
 
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
-use OPNsense\Interfaces\Settings;
 use OPNsense\Firewall\Util;
+use OPNsense\Interfaces\Settings;
 use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
 use OPNsense\Routes\Route;
@@ -166,23 +166,26 @@ class UnboundUpstream extends BaseModel
         $covered = [];
         $seen = [];
         foreach ($this->resolvers->resolver->iterateItems() as $row) {
-            /* a gateway deleted since the row was saved is no member either: the UUID stands in for its name */
-            $name = $uuidNames[$row->gateway->getValue()] ?? $row->gateway->getValue();
-            if ($members !== null && !isset($members[$name])) {
-                $messages->appendMessage(new Message(
-                    sprintf(gettext('Gateway %s is not a member of the selected group.'), $name),
-                    $row->gateway->__reference
-                ));
-            } else {
-                $covered[$name] = true;
+            /* an empty gateway is the field's own Required message; a gateway deleted since the row was saved is no
+             * member either, and its UUID stands in for its name */
+            if (!$row->gateway->isEmpty()) {
+                $name = $uuidNames[$row->gateway->getValue()] ?? $row->gateway->getValue();
+                if ($members !== null && !isset($members[$name])) {
+                    $messages->appendMessage(new Message(
+                        sprintf(gettext('Gateway %s is not a member of the selected group.'), $name),
+                        $row->gateway->__reference
+                    ));
+                } else {
+                    $covered[$name] = true;
+                }
+                if (isset($seen[$name])) {
+                    $messages->appendMessage(new Message(
+                        sprintf(gettext('Gateway %s has more than one resolver row.'), $name),
+                        $row->gateway->__reference
+                    ));
+                }
+                $seen[$name] = true;
             }
-            if (isset($seen[$name])) {
-                $messages->appendMessage(new Message(
-                    sprintf(gettext('Gateway %s has more than one resolver row.'), $name),
-                    $row->gateway->__reference
-                ));
-            }
-            $seen[$name] = true;
             $this->appendProblems(
                 $messages,
                 $row->address->getValue(),
@@ -279,7 +282,8 @@ class UnboundUpstream extends BaseModel
 
     /**
      * Whether core lets Unbound use IPv6, from the stored System: Settings: General value, which says "disabled".
-     * Core's is_ipv6_allowed() reads the same field and counts any value but "1" as allowed.
+     * Core's is_ipv6_allowed() reads the same field and uses empty(), which allows "" and "0" and refuses
+     * any other value; the two agree for every value a boolean field holds.
      */
     public static function ipv6AllowedFrom(string $disableIpv6): bool
     {

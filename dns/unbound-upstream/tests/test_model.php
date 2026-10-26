@@ -337,6 +337,48 @@ uu_register_suite('model', function (): int {
             )
     );
 
+    $emptyRow = ['gateway' => '', 'address' => '2001:db8:a::54'];
+    uu_check(
+        $t,
+        'two rows with an empty gateway get only the field\'s own Required message each',
+        array_column(
+            uu_test_model_messages($far + ['resolver' => '2001:db8:a::53'], [$emptyRow, $emptyRow]),
+            'message'
+        ) === ['A value is required.', 'A value is required.']
+    );
+
+    $snapshot = fn (): string => (string)preg_replace(
+        '/ persisted_at="[^"]*"/',
+        '',
+        (string)\OPNsense\Core\Config::getInstance()->object()->asXML()
+    );
+    $before = $snapshot();
+    $mixedRefused = [];
+    $mixedUuid = '';
+    try {
+        $groups = new \OPNsense\Routing\GatewayGroups();
+        $node = $groups->gateway_group->add();
+        $node->setNodes(['name' => 'uu_mixed_grp', 'item' => 'wg-test-429|0', 'item2' => 'wg-far-a-ipv6|0']);
+        $mixedUuid = (string)($node->getAttributes()['uuid'] ?? '');
+        $groups->serializeToConfig(false, true);
+        $mixedRefused = uu_test_model_field(
+            uu_test_model_messages(['enabled' => '1', 'gateway_group' => $mixedUuid, 'resolver' => '10.2.0.1']),
+            'gateway_group'
+        );
+    } finally {
+        $groups = new \OPNsense\Routing\GatewayGroups();
+        if ($mixedUuid !== '') {
+            $groups->gateway_group->del($mixedUuid);
+        }
+        $groups->serializeToConfig(false, true);
+    }
+    uu_check(
+        $t,
+        'Save refuses a group of both families on the group field (built in memory, removed in the case)',
+        in_array('The gateway group uu_mixed_grp has IPv4 and IPv6 members; use a group of one address family.', $mixedRefused, true)
+    );
+    uu_check($t, 'the in-memory group left the configuration as it was', $snapshot() === $before);
+
     $core = new \OPNsense\Interfaces\Settings();
     $storedV6 = $core->disableipv6->getValue();
     $refusedV6 = [];
