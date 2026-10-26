@@ -1,0 +1,420 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian
+# All rights reserved.
+#
+# WireGuard upstream tunnels: the managed tunnels' IPv6 addresses, their
+# next-hop and monitor routes, and the reconcile.
+#
+#   start | restart | configure_routes
+#       add each managed tunnel's IPv6 address to its device, the host route
+#       to its IPv6 next hop and the host route to its IPv6 monitor
+#   reconcile [--repair]
+#       the same as start, silent unless it repairs something; then
+#       default_guard.php, freshness.php and core_contract.php; with --repair
+#       (the minute cron only) monitor_repair.php, which restarts a missing
+#       IPv6 monitor
+#   request_reconcile
+#       the config syshook's entry: queue a reconcile and return at once
+#   stop     remove what start added, and the footprint the filter hook falls back to
+#   status   the service line core's service framework reads
+#   routes_status
+#       per-tunnel IPv6 route and monitor state as JSON
+#   _routes [quiet] | _cleanup
+#       the route set and its removal; run only under routes.lock (below)
+#
+# The route set comes from gateway_config.php (its line protocol: spec
+# 2026-09-28 section 3.4.1). Every run holds ${STATE_DIR}/routes.lock through
+# "flock -o": only the waiting flock process holds the lock, and nothing the
+# section starts inherits it.
+
+# Every file this script writes is root's alone; the state directories are 0700 (see ensure_state_dir).
+umask 077
+
+SCRIPTS="/usr/local/opnsense/scripts/OPNsense/WGClientTunnels"
+STATE_DIR="/var/run/wgclienttunnels"
+DB_DIR="/var/db/wgclienttunnels"
+RECORD="${STATE_DIR}/active_gateways"
+GUARD="${SCRIPTS}/default_guard.php"
+FRESHNESS="${SCRIPTS}/freshness.php"
+PHP="/usr/local/bin/php"
+FLOCK="/usr/local/bin/flock"
+# core's WireGuard log takes the program name "wireguard"; the prefix tells these lines from core's
+LOGGER_TAG="wireguard"
+
+# A state directory is root 0700: -m applies only to a directory that mkdir creates, so chmod follows.
+ensure_state_dir() {
+    mkdir -p -m 700 "$1" && chmod 700 "$1"
+}
+
+log_msg() {
+    logger -t "${LOGGER_TAG}" "[wgct-routes] $1"
+}
+
+# The route protocol on stdout. PHP diagnostics go to stderr, so a notice can
+# never land ahead of the state line.
+parse_config() {
+    "${PHP}" -d display_errors=stderr "${SCRIPTS}/gateway_config.php"
+}
+
+# The device a host route to exactly $1 leaves by; nothing when the address
+# is reached by a network or default route, or not at all.
+host_route_dev() {
+    /sbin/route -n get -inet6 "$1" 2>/dev/null | awk -v ip="$1" '
+        $1 == "destination:" { dst = $2 }
+        $1 == "interface:" { dev = $2 }
+        END { if (dst == ip) print dev }'
+}
+
+# A tunnel's IPv6 address and the interface route to its IPv6 next hop.
+configure_gateway() {
+    local iface="$1" ipv6_addr="$2" ipv6_gw="$3" addr_only
+
+    if ! /sbin/ifconfig "${iface}" > /dev/null 2>&1; then
+        log_msg "interface ${iface} does not exist, skipping"
+        return 1
+    fi
+
+    /sbin/ifconfig "${iface}" inet6 -ifdisabled 2>/dev/null
+
+    addr_only=$(echo "${ipv6_addr}" | cut -d/ -f1)
+    if ! /sbin/ifconfig "${iface}" | grep -q "${addr_only}"; then
+        /sbin/ifconfig "${iface}" inet6 "${ipv6_addr}" alias
+        log_msg "added ${ipv6_addr} to ${iface}"
+    fi
+
+    if ! /usr/bin/netstat -rn -f inet6 | grep -q "${ipv6_gw}.*${iface}"; then
+        /sbin/route -q -n add -6 "${ipv6_gw}" -iface "${iface}"
+        log_msg "added route ${ipv6_gw} via ${iface}"
+    fi
+}
+
+# Run "route add|delete" for a monitor's host route: 0 on success, which also
+# forgets an earlier failure of that (monitor, device); on failure, log once
+# per (monitor, device) in route_failures, so a persistent failure does not
+# repeat every minute. No -q here: route(8) prints nothing under it, and the
+# log line carries route's reason.
+monitor_route() {
+    local verb="$1" monitor="$2" dev="$3" out reason file="${STATE_DIR}/route_failures"
+    shift 3
+    if out=$(/sbin/route -n "${verb}" -6 -host "${monitor}" "$@" 2>&1); then
+        if grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
+            grep -vxF "${monitor}|${dev}" "${file}" > "${file}.tmp"
+            mv -f "${file}.tmp" "${file}"
+        fi
+        return 0
+    fi
+    if ! grep -qxF "${monitor}|${dev}" "${file}" 2>/dev/null; then
+        printf '%s|%s\n' "${monitor}" "${dev}" >> "${file}"
+        reason=$(printf '%s' "${out}" | tr '\n' ' ')
+        log_msg "route ${verb} for monitor ${monitor} on ${dev} failed${reason:+: ${reason}}"
+    fi
+    return 1
+}
+
+# The host route to a tunnel's IPv6 monitor, as an interface route: it needs
+# no next hop, so it works as soon as the device exists. A host route to the
+# monitor that the plugin did not record (a static route, an operator's
+# route) is left alone and noted once in foreign_routes.
+configure_monitor_route() {
+    local iface="$1" monitor="$2" current
+    current=$(host_route_dev "${monitor}")
+    if [ "${current}" = "${iface}" ]; then
+        return 0
+    fi
+    if [ -n "${current}" ]; then
+        if ! grep -qxF "${monitor}|${current}" "${STATE_DIR}/foreign_routes" 2>/dev/null; then
+            printf '%s|%s\n' "${monitor}" "${current}" >> "${STATE_DIR}/foreign_routes"
+            log_msg "monitor ${monitor} of ${iface} already has a host route via ${current}; left alone"
+        fi
+        return 0
+    fi
+    if monitor_route add "${monitor}" "${iface}" -iface "${iface}"; then
+        log_msg "added monitor route ${monitor} via ${iface}"
+    fi
+}
+
+# Forget foreign routes that are gone, so a new one is noted again.
+prune_foreign() {
+    local file="${STATE_DIR}/foreign_routes" tmp monitor current
+    [ -f "${file}" ] || return 0
+    tmp=$(mktemp "${file}.XXXXXX") || return 0
+    while IFS='|' read -r monitor current; do
+        if [ "$(host_route_dev "${monitor}")" = "${current}" ]; then
+            printf '%s|%s\n' "${monitor}" "${current}" >> "${tmp}"
+        fi
+    done < "${file}"
+    mv -f "${tmp}" "${file}"
+}
+
+# A helper failure, logged once per distinct failure.
+parse_failure() {
+    local key="exit $1: $2"
+    if [ "$(cat "${STATE_DIR}/parse_error" 2>/dev/null)" != "${key}" ]; then
+        printf '%s\n' "${key}" > "${STATE_DIR}/parse_error"
+        log_msg "gateway_config.php failed (${key}); routes left as they are"
+    fi
+}
+
+# The route set (spec 3.4.2). Run only under routes.lock (with_routes_lock).
+routes_section() {
+    local quiet="$1" out rc first keeps new kind dev addr nexthop gw4 gw6 monitor
+
+    out=$(parse_config)
+    rc=$?
+    first=$(printf '%s\n' "${out}" | head -n 1)
+    if [ "${rc}" -ne 0 ] || { [ "${first}" != "state|on" ] && [ "${first}" != "state|off" ] && [ "${first}" != "state|pending" ]; }; then
+        parse_failure "${rc}" "${first}"
+        return 0
+    fi
+    rm -f "${STATE_DIR}/parse_error"
+    # the plugin settings wait for their 3.1.0 migration (ruling R37): nothing is added or removed, said once per state
+    if [ "${first}" = "state|pending" ]; then
+        if [ ! -f "${STATE_DIR}/routes.awaiting-migration" ]; then
+            : > "${STATE_DIR}/routes.awaiting-migration"
+            log_msg "route set refused: the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php); routes left as they are"
+        fi
+        return 0
+    fi
+    if [ -f "${STATE_DIR}/routes.awaiting-migration" ]; then
+        rm -f "${STATE_DIR}/routes.awaiting-migration"
+        log_msg "route set runs again: the plugin settings are migrated to 3.1.0"
+    fi
+    # plugin or IPv6 routes off: nothing is maintained and nothing removed; only stop removes
+    if [ "${first}" = "state|off" ]; then
+        [ "${quiet}" = "quiet" ] || log_msg "IPv6 routes are off; routes left as they are"
+        return 0
+    fi
+
+    prune_foreign
+    keeps=$(printf '%s\n' "${out}" | awk -F'|' '$1 == "keep" { print $2 }')
+    new=$(mktemp "${RECORD}.XXXXXX") || return 1
+
+    # stale monitor routes first, so a monitor moved between tunnels is added again below
+    if [ -f "${RECORD}" ]; then
+        while IFS='|' read -r dev addr nexthop gw4 monitor; do
+            [ -n "${dev}" ] || continue
+            if printf '%s\n' "${keeps}" | grep -qxF "${dev}"; then
+                printf '%s|%s|%s|%s|%s\n' "${dev}" "${addr}" "${nexthop}" "${gw4}" "${monitor}" >> "${new}"
+                continue
+            fi
+            [ -n "${monitor}" ] || continue
+            if printf '%s\n' "${out}" | awk -F'|' -v d="${dev}" -v m="${monitor}" \
+                '$1 == "route" && $2 == d && $7 == m { found = 1 } END { exit !found }'; then
+                continue
+            fi
+            if [ "$(host_route_dev "${monitor}")" = "${dev}" ]; then
+                if monitor_route delete "${monitor}" "${dev}"; then
+                    log_msg "removed monitor route ${monitor} via ${dev}"
+                fi
+            fi
+        done < "${RECORD}"
+    fi
+
+    printf '%s\n' "${out}" | awk -F'|' '$1 == "route"' > "${new}.routes"
+    while IFS='|' read -r kind dev addr nexthop gw4 gw6 monitor; do
+        configure_gateway "${dev}" "${addr}" "${nexthop}" || continue
+        [ -z "${monitor}" ] || configure_monitor_route "${dev}" "${monitor}"
+        printf '%s|%s|%s|%s|%s\n' "${dev}" "${addr}" "${nexthop}" "${gw4}" "${monitor}" >> "${new}"
+    done < "${new}.routes"
+    rm -f "${new}.routes"
+
+    mv -f "${new}" "${RECORD}"
+    touch "${STATE_DIR}/enabled"
+    [ "${quiet}" = "quiet" ] || log_msg "IPv6 gateway routes configured"
+}
+
+# Remove every recorded route and address (stop). Reads the previous
+# version's four-field record too. Run only under routes.lock.
+cleanup_section() {
+    local dev addr nexthop gw4 monitor removed
+    if [ -f "${RECORD}" ]; then
+        while IFS='|' read -r dev addr nexthop gw4 monitor; do
+            [ -n "${dev}" ] || continue
+            removed=""
+            if [ -n "${monitor}" ] && [ "$(host_route_dev "${monitor}")" = "${dev}" ]; then
+                monitor_route delete "${monitor}" "${dev}" && removed=" and monitor route ${monitor}"
+            fi
+            /sbin/route -q -n delete -6 "${nexthop}" 2>/dev/null
+            /sbin/ifconfig "${dev}" inet6 "${addr%/*}" -alias 2>/dev/null
+            log_msg "removed ${addr} and route ${nexthop}${removed} from ${dev}"
+        done < "${RECORD}"
+        rm -f "${RECORD}"
+    fi
+    rm -f "${STATE_DIR}/enabled"
+}
+
+# Run a route-set section under routes.lock. Only the flock process holds the
+# lock (-o closes it for the section), every caller waits at most 10 s, and
+# exit 75 means that wait ran out.
+with_routes_lock() {
+    local rc
+    ensure_state_dir "${STATE_DIR}"
+    "${FLOCK}" -E 75 -w 10 -o "${STATE_DIR}/routes.lock" "$0" "$@"
+    rc=$?
+    if [ "${rc}" -eq 75 ]; then
+        log_msg "$1 skipped: another run held ${STATE_DIR}/routes.lock for 10 s"
+    fi
+    return "${rc}"
+}
+
+# up, down or unknown from a gateway's dpinger socket (loss below 100%)
+dpinger_state() {
+    local sock="/var/run/dpinger_$1.sock" out loss
+    if [ ! -S "${sock}" ]; then
+        echo unknown
+        return
+    fi
+    out=$(echo "" | /usr/bin/nc -U "${sock}" 2>/dev/null)
+    if [ -z "${out}" ]; then
+        echo unknown
+        return
+    fi
+    loss=$(echo "${out}" | awk '{print $NF}')
+    if [ "${loss}" -lt 100 ] 2>/dev/null; then
+        echo up
+    else
+        echo down
+    fi
+}
+
+# The service line core's service framework reads (ApiMutableServiceControllerBase::statusAction looks
+# for "is running" / "not running"), and nothing else.
+do_status() {
+    if [ -f "${STATE_DIR}/enabled" ]; then
+        echo "wgclienttunnels is running"
+    else
+        echo "wgclienttunnels is not running"
+    fi
+}
+
+# Per-tunnel IPv6 route and monitor state as one JSON object, for the operator
+# (configctl wgclienttunnels routes_status).
+do_routes_status() {
+    local out first=1 kind dev addr nexthop gw4 gw6 monitor route_ok ipv4_status v6 m_route m_running status
+    out=$(parse_config)
+    printf '{"gateways":['
+    while IFS='|' read -r kind dev addr nexthop gw4 gw6 monitor; do
+        case "${kind}" in
+            route|keep) ;;
+            *) continue ;;
+        esac
+        [ "${first}" = 1 ] || printf ','
+        first=0
+        if [ "${kind}" = "keep" ]; then
+            printf '{"interface":"%s","status":"blocked"}' "${dev}"
+            continue
+        fi
+        route_ok=false
+        /usr/bin/netstat -rn -f inet6 | grep -q "${nexthop}.*${dev}" && route_ok=true
+        ipv4_status=$(dpinger_state "${gw4}")
+        m_route=false
+        m_running=false
+        v6="${ipv4_status}"
+        if [ -n "${monitor}" ]; then
+            [ "$(host_route_dev "${monitor}")" = "${dev}" ] && m_route=true
+            pgrep -qF "/var/run/dpinger_${gw6}.pid" 2>/dev/null && m_running=true
+            v6=$(dpinger_state "${gw6}")
+        fi
+        status=down
+        if [ "${route_ok}" = true ] && [ "${v6}" = up ]; then
+            status=up
+        fi
+        printf '{"interface":"%s","ipv6_address":"%s","ipv6_gateway":"%s","ipv4_gateway":"%s","route_exists":%s,"ipv4_status":"%s","monitor6":"%s","monitor6_route_ok":%s,"monitor6_running":%s,"status":"%s","description":"%s"}' \
+            "${dev}" "${addr}" "${nexthop}" "${gw4}" "${route_ok}" "${ipv4_status}" "${monitor}" "${m_route}" "${m_running}" "${status}" "${gw6}"
+    done <<EOF
+${out}
+EOF
+    printf ']}\n'
+}
+
+# The package removal's marker (+PRE_DEINSTALL.pre writes it, +POST_INSTALL.pre deletes it; spec 2026-10-20
+# section 3.11, ruling R30): while it exists nothing here adds, repairs or queues anything, so nothing rebuilds what
+# the removal takes away. stop (the removal's own), its section and the status lines still run. The minute cron's
+# reconcile says so each minute, which a removal that stopped partway is worth.
+case "$1" in
+    start|restart|configure_routes|reconcile|request_reconcile|_reconcile_wait|_reconcile_queued|_routes)
+        if [ -f "${STATE_DIR}/removing" ]; then
+            if [ "$1" = "reconcile" ] && [ "$2" = "--repair" ]; then
+                log_msg "the package is being removed (${STATE_DIR}/removing exists): the plugin does nothing; delete it if the package is still installed"
+            fi
+            exit 0
+        fi
+        ;;
+esac
+
+case "$1" in
+    start|configure_routes)
+        with_routes_lock _routes
+        ;;
+    stop)
+        # A clean stop also ends the footprint a failed render would enforce, and the hook's note about it
+        # (spec 2026-10-20 section 3.1 part A); the next filter reload renders from config again.
+        rm -f "${DB_DIR}/footprint.json" "${STATE_DIR}/fallback.json" "${STATE_DIR}/fallback.logged"
+        with_routes_lock _cleanup && log_msg "stopped"
+        ;;
+    restart)
+        # While the plugin settings wait for their 3.1.0 migration (ruling R37) the route set adds nothing, so a
+        # restart must not remove first: the route set alone runs, refusing and saying so once.
+        if [ "$(parse_config 2>/dev/null | head -n 1)" = "state|pending" ]; then
+            with_routes_lock _routes
+        else
+            with_routes_lock _cleanup && with_routes_lock _routes
+        fi
+        ;;
+    reconcile)
+        # Idempotent repair pass for event hooks and cron: adds only what is
+        # missing and stays silent unless it actually had to fix something.
+        ensure_state_dir "${DB_DIR}"
+        with_routes_lock _routes quiet
+        # Then make sure no tunnel carries a default route (see default_guard.php).
+        "${PHP}" "${GUARD}"
+        # Then keep the rendered pins and MSS anchor current (freshness.php).
+        "${PHP}" "${FRESHNESS}"
+        # Then report, once, a core update that changed an internal the plugin copies.
+        "${PHP}" "${SCRIPTS}/core_contract.php"
+        # The minute cron alone restarts a missing IPv6 monitor (monitor_repair.php):
+        # never the hooks, where the address is still tentative or the gateway lock held.
+        if [ "$2" = "--repair" ]; then
+            "${PHP}" "${SCRIPTS}/monitor_repair.php"
+        fi
+        ;;
+    request_reconcile)
+        # The config syshook: mark a reconcile wanted and return at once, so core's config-event
+        # handler is never held up. Each request queues a detached waiter on reconcile.lock; a waiter
+        # that finds the mark cleared by an earlier run exits, so a burst costs one or two reconciles
+        # and a request made during a run still gets a run that sees it.
+        ensure_state_dir "${STATE_DIR}"
+        : > "${STATE_DIR}/reconcile.pending"
+        /usr/sbin/daemon -f "$0" _reconcile_wait
+        ;;
+    _reconcile_wait)
+        # A reconcile running past the wait leaves the mark for the next request or the minute cron.
+        wait=120
+        "${FLOCK}" -E 75 -w "${wait}" -o "${STATE_DIR}/reconcile.lock" "$0" _reconcile_queued
+        if [ $? -eq 75 ]; then
+            log_msg "queued reconcile skipped: another reconcile held reconcile.lock for ${wait} s; the minute reconcile will run it"
+        fi
+        ;;
+    _reconcile_queued)
+        [ -f "${STATE_DIR}/reconcile.pending" ] || exit 0
+        rm -f "${STATE_DIR}/reconcile.pending"
+        "$0" reconcile
+        ;;
+    _routes)
+        routes_section "$2"
+        ;;
+    _cleanup)
+        cleanup_section
+        ;;
+    status)
+        do_status
+        ;;
+    routes_status)
+        do_routes_status
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|request_reconcile|status|routes_status}"
+        exit 1
+        ;;
+esac

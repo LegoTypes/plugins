@@ -1,0 +1,1027 @@
+{#
+ # Copyright (C) 2026 cayossarian
+ # All rights reserved.
+ # BSD 2-Clause License
+ #}
+
+<style>
+    a.wgct-link { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
+    a.wgct-link:hover { text-decoration: none; border-bottom-style: solid; }
+    .wgct-result pre { white-space: pre-wrap; }
+</style>
+
+<script>
+    $(document).ready(function () {
+        var links = {
+            instance: '/ui/wireguard/general#instances',
+            peers: '/ui/wireguard/general#peers',
+            assignments: '/ui/interfaces/assignment',
+            iface: '/interfaces.php?if=',
+            gateways: '/ui/routing/configuration',
+            routes: '/ui/routes',
+            nat: '/ui/firewall/source_nat',
+            groups: '/ui/routing/gateway_groups',
+            rules: '/ui/firewall/filter'
+        };
+        /* core's deep links (opnsense_ui.js getUrlHash()): the page's grid opens or filters on the hash value */
+        function hashValue(value) {
+            return encodeURIComponent(plain(value));
+        }
+        function gatewayHref(uuid) {
+            return uuid ? links.gateways + '#edit=' + hashValue(uuid) : links.gateways;
+        }
+        var failedText = "{{ lang._('The request failed (session expired or the web server is restarting). Reload the page and try again.') }}";
+        var options = null;
+
+        /* plain() is the exact inverse of core's escaping. For a session client, core answers an array reply
+         * through htmlspecialchars(..., ENT_NOQUOTES) (Mvc/Response.php), which turns only '&', '<' and '>' into
+         * '&amp;', '&lt;' and '&gt;'. This undoes exactly those three, '&amp;' last so that a literal '&lt;'
+         * the server sent (escaped to '&amp;lt;') comes back as '&lt;', not '<'. It never interprets the string as
+         * HTML, so no markup can be introduced; the result only reaches .text(), .val() and .attr(), which do
+         * not parse it either. */
+        function plain(s) {
+            return String(s === undefined || s === null ? '' : s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+        }
+
+        /* a dialog title that may include a server-supplied name: a text node, never an HTML string --
+         * BootstrapDialog renders a string title as HTML, which would re-encode plain()'s output (review
+         * finding 5). Callers pass the already-decoded text. */
+        function titleText(text) {
+            return $('<span/>').text(text);
+        }
+
+        function link(text, href) {
+            return $('<a/>').addClass('wgct-link').attr('href', href).text(plain(text));
+        }
+
+        function dash() {
+            return $('<span/>').text('—');
+        }
+
+        /* the grid's cells (core UIBootgrid formatters, (column, row) signature). Each returns a DOM node
+         * built with .text()/.attr(), never an HTML string, so no config-derived value (a tunnel, interface
+         * or gateway name, a finding text) is ever parsed as markup. Row values arrive entity-encoded like
+         * every API reply and pass through plain() exactly once: inside link(), or right before .text() or
+         * .attr(). */
+        function gwNode(name, uuid, held) {
+            if (!name) {
+                return dash()[0];
+            }
+            var cell = $('<div/>').append(link(name, gatewayHref(uuid)));
+            if (held) {
+                cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
+            }
+            return cell[0];
+        }
+
+        /* a gateway's status as core's gateway page shows it: a coloured plug with the status as its tooltip.
+         * labelClass comes from wgct_gateway_label_class() (a fixed set of classes); anything else is ignored */
+        function statusNode(labelClass, statusText) {
+            if (!/^fa fa-plug text-(success|warning|danger|default)$/.test(labelClass || '')) {
+                return dash()[0];
+            }
+            return $('<i class="bootgrid-tooltip" data-toggle="tooltip"/>')
+                .addClass(labelClass)
+                .attr('title', plain(statusText || "{{ lang._('Pending') }}"))[0];
+        }
+
+        function linkOrDash(text, href) {
+            return (text ? link(text, href) : dash())[0];
+        }
+
+        var gridFormatters = {
+            tunnel: function (column, t) {
+                var cell = $('<div/>').append(link(t.name, links.instance));
+                if (t.device) {
+                    var ifaceLabel = t.interface_descr || t.interface;
+                    cell.append($('<br/>'), $('<small class="text-muted"/>').append(t.interface
+                        ? link(t.device + (ifaceLabel ? ' / ' + ifaceLabel : ''), links.iface + encodeURIComponent(plain(t.interface)))
+                        : link(t.device + ' — ' + "{{ lang._('not assigned') }}", links.assignments)));
+                }
+                if (t.enabled !== '1') {
+                    cell.append(' ', $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"));
+                }
+                return cell[0];
+            },
+            endpoint: function (column, t) { return linkOrDash(t.endpoint, links.peers); },
+            boundwan: function (column, t) { return linkOrDash(t.bound_wan, links.routes); },
+            mtu: function (column, t) {
+                var cell = $('<div/>').text(t.mtu);
+                if (t.clamp_text) {
+                    cell.append($('<br/>'), $('<small class="text-muted"/>').text(plain(t.clamp_text)));
+                }
+                return cell[0];
+            },
+            gw4: function (column, t) { return gwNode(t.gw4, t.gw4_uuid, t.held); },
+            gw6: function (column, t) { return gwNode(t.gw6, t.gw6_uuid, false); },
+            status4: function (column, t) { return statusNode(t.gw4_label_class, t.gw4_status_text); },
+            status6: function (column, t) { return statusNode(t.gw6_label_class, t.gw6_status_text); },
+            nat: function (column, t) { return linkOrDash(t.nat_text, links.nat); },
+            groups: function (column, t) { return linkOrDash(t.groups_text, links.groups); },
+            monitors: function (column, t) { return t.monitors_text ? $('<span/>').text(plain(t.monitors_text))[0] : dash()[0]; },
+            /* bootgrid-tooltip: the grid gives each badge core's tooltip, which shows the title as text */
+            findings: function (column, t) {
+                if (!t.findings.length) {
+                    return dash()[0];
+                }
+                var cell = $('<div/>');
+                $.each(t.findings, function (i, f) {
+                    cell.append($('<span class="label bootgrid-tooltip" style="display:inline-block; margin:1px;"/>')
+                        .addClass(f.blocking ? 'label-danger' : 'label-warning')
+                        .attr('title', plain(f.detail) + ' — ' + plain(f.fix))
+                        .text(plain(f.code)), ' ');
+                });
+                return cell[0];
+            }
+        };
+
+        /* ---- action results ---- */
+
+        /* status is jQuery's: 'success' only for a completed request whose reply parsed as JSON. An error
+         * page, a timeout or a login redirect reaches the callback as a jqXHR without any of our keys,
+         * and must never read as "Nothing to change" (review I4). Every action's result shares the same
+         * {ok, saved, errors, ...} shape (actions.php wgct_result()); ok:false with no error lines (an
+         * apply step failed with only 'apply' detail, nothing in 'errors') must still read as a failure,
+         * never as success or "Nothing to change" (review finding 1). */
+        function errorList(r, status) {
+            if (!r || (status !== undefined && status !== 'success')
+                || !('ok' in r || 'result' in r || 'status' in r || 'errors' in r)) {
+                return [r && r.errorMessage ? plain(r.errorMessage) : failedText];
+            }
+            var out = [];
+            $.each(r.errors || [], function (k, m) { out.push(plain(m)); });
+            if (out.length === 0 && (r.ok === false
+                || (r.result === 'failed' && $.isEmptyObject(r.validations || {})))) {
+                out.push(failedText);
+            }
+            return out;
+        }
+
+        function resultLines(r) {
+            var lines = [];
+            $.each((r && r.changes) || [], function (i, c) { lines.push(plain(c)); });
+            $.each((r && r.apply) || [], function (i, s) { lines.push('configctl ' + plain(s.action) + ': ' + plain(s.result)); });
+            if (r && r.after && r.after.reconcile) {
+                lines.push("{{ lang._('alarm replayed for') }}: " + (r.after.replayed.length ? $.map(r.after.replayed, plain).join(', ') : '—'));
+                lines.push("{{ lang._('reconcile') }}: " + plain(r.after.reconcile));
+            }
+            return lines;
+        }
+
+        function resultBody(r, status) {
+            var body = $('<div class="wgct-result"/>');
+            var errors = errorList(r, status);
+            $.each(errors, function (i, m) { body.append($('<div class="alert alert-danger"/>').text(m)); });
+            var lines = errors.length && !(r && 'changes' in r) ? [] : resultLines(r);
+            if (lines.length) {
+                body.append($('<pre/>').text(lines.join('\n')));
+            } else if (!errors.length) {
+                body.append($('<p/>').text("{{ lang._('Nothing to change.') }}"));
+            }
+            return body;
+        }
+
+        function runApply(uuid, name) {
+            ajaxCall('/api/wgclienttunnels/tunnels/apply/' + uuid, {}, function (r, status) {
+                refreshAll();
+                showResult(titleText("{{ lang._('Apply') }} " + plain(name)), r, status, uuid, name);
+            });
+        }
+
+        /* applyUuid/applyName: the uuid and name of a tunnel that is saved (Create, or an earlier Apply); when
+         * its apply did not complete, the dialog offers "Apply again" (ruling 20) -- the finding apply-pending
+         * stays until one completes. applyName is the tunnel's own name, never the dialog title (review
+         * finding 4: a title like "Rebind NAME" must not become the next dialog's "Apply Rebind NAME"). */
+        function showResult(title, r, status, applyUuid, applyName) {
+            var failed = errorList(r, status).length > 0;
+            var buttons = [{label: "{{ lang._('Close') }}", action: function (d) { d.close(); }}];
+            if (failed && applyUuid) {
+                buttons.unshift({
+                    label: "{{ lang._('Apply again') }}",
+                    cssClass: 'btn-primary',
+                    action: function (d) { d.close(); runApply(applyUuid, applyName); }
+                });
+            }
+            var body = resultBody(r, status);
+            if (r && r.saved === true && r.ok === false) {
+                /* the config write happened even though the apply step after it did not finish -- never let
+                 * that read as a lost change (review finding 1). The wording follows what the dialog actually
+                 * offers: only Create/Apply's own retry uses the generic apply endpoint (ruling 21); Rebind's
+                 * own apply ("interface routes configure", then "wireguard restart") is not the same pipeline, so its
+                 * failure gets a plainer message instead of a misleading "Apply again". */
+                body.prepend($('<div class="alert alert-warning"/>').text(applyUuid
+                    ? "{{ lang._('Saved; the apply did not complete. Apply again, or use the Apply button in the tunnel row.') }}"
+                    : "{{ lang._('Saved; the follow-up step above did not complete. Check the list and VPN > WireGuard > Upstream tunnels log.') }}"
+                ));
+            }
+            /* the caller has already reloaded the lists when the reply arrived: they are current behind
+             * this dialog, not only once it is closed */
+            BootstrapDialog.show({
+                type: failed ? BootstrapDialog.TYPE_DANGER : BootstrapDialog.TYPE_INFO,
+                title: title,
+                message: body,
+                buttons: buttons
+            });
+        }
+
+        /* preview with dry=1 first: the confirmation lists exactly what will change, or why it cannot */
+        function confirmAction(title, url, yesLabel) {
+            ajaxCall(url, {dry: '1'}, function (preview, previewStatus) {
+                var refused = errorList(preview, previewStatus).length > 0;
+                var nothing = !refused && resultLines(preview).length === 0;
+                var buttons = [{label: "{{ lang._('Cancel') }}", action: function (d) { d.close(); }}];
+                if (!refused && !nothing) {
+                    buttons.push({
+                        label: yesLabel,
+                        cssClass: 'btn-primary',
+                        action: function (d) {
+                            d.close();
+                            ajaxCall(url, {}, function (r, status) {
+                                refreshAll();
+                                showResult(title, r, status);
+                            });
+                        }
+                    });
+                }
+                BootstrapDialog.show({
+                    type: refused ? BootstrapDialog.TYPE_DANGER : BootstrapDialog.TYPE_WARNING,
+                    title: title,
+                    message: resultBody(preview, previewStatus),
+                    buttons: buttons
+                });
+            });
+        }
+
+        /* ---- dialogs ---- */
+
+        function loadOptions(done) {
+            /* POST like the lists: the choices (templates, stale routes) change with every action */
+            ajaxCall('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
+                if (!data || status !== 'success' || data.status !== 'ok') {
+                    showResult("{{ lang._('Upstream tunnels') }}", null, status);
+                    return;
+                }
+                options = data;
+                done();
+            });
+        }
+
+        function fillSelect(selector, items, selected) {
+            var select = $(selector).empty();
+            $.each(items, function (i, it) {
+                select.append($('<option/>').val(it.value).text(plain(it.label))
+                    .prop('selected', selected.indexOf(it.value) !== -1).prop('disabled', !!it.disabled));
+            });
+            select.selectpicker('refresh');
+        }
+
+        /* the WAN gateways that can carry an endpoint of this family (IPv4 when unknown) */
+        function wansFor(family) {
+            var f = family || 'inet';
+            return options.wans.filter(function (w) { return w.family === f; });
+        }
+
+        /* wansFor(family), or a single disabled hint option in its place when none is saved: a WAN select
+         * for a family with nothing to offer is never left empty */
+        function wansHint(family) {
+            var wans = wansFor(family);
+            if (wans.length > 0) {
+                return wans;
+            }
+            var f = family || 'inet';
+            return [{value: '', disabled: true, label: f === 'inet6'
+                ? "{{ lang._('(no saved IPv6 gateway: save the WAN\'s DHCPv6 gateway once on System > Gateways)') }}"
+                : "{{ lang._('(no saved IPv4 gateway)') }}"}];
+        }
+
+        /* the public parts of a wg-quick config, read in the browser; the private key is never touched */
+        function wgPublic(text) {
+            var section = '';
+            var endpoint = null;
+            var v6 = [];
+            $.each((text || '').split(/\r?\n/), function (i, raw) {
+                var line = raw.split('#')[0].trim();
+                if (line === '') {
+                    return;
+                }
+                if (line.charAt(0) === '[') {
+                    section = line.toLowerCase();
+                    return;
+                }
+                var eq = line.indexOf('=');
+                if (eq < 0) {
+                    return;
+                }
+                var key = line.slice(0, eq).trim().toLowerCase();
+                var value = line.slice(eq + 1).trim();
+                if (section === '[peer]' && key === 'endpoint') {
+                    endpoint = value;
+                } else if (section === '[interface]' && key === 'address') {
+                    $.each(value.split(','), function (j, a) {
+                        a = a.trim();
+                        if (a.indexOf(':') !== -1) {
+                            v6.push(a.split('/')[0]);
+                        }
+                    });
+                }
+            });
+            var m = endpoint ? endpoint.match(/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9A-Fa-f:.]+)\]):\d{1,5}$/) : null;
+            var ip = m ? (m[1] || m[2].toLowerCase()) : null;
+            return {endpoint_ip: ip, endpoint_family: m ? (m[1] ? 'inet' : 'inet6') : null, v6: v6};
+        }
+
+        /* an IPv6 address in one comparable form: 8 groups, lower case, no leading zeros */
+        function expand6(address) {
+            var a = String(address || '').toLowerCase().split('%')[0];
+            var halves = a.split('::');
+            if (halves.length > 2) {
+                return a;
+            }
+            var head = halves[0] ? halves[0].split(':') : [];
+            var tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+            var groups = head.slice();
+            for (var i = 0; halves.length === 2 && i < 8 - head.length - tail.length; i++) {
+                groups.push('0');
+            }
+            groups = groups.concat(tail);
+            return $.map(groups, function (g) { return (parseInt(g, 16) || 0).toString(16); }).join(':');
+        }
+
+        /* the last parsed IPv6 address list (sorted, comma-joined); ipv6Defaults only recomputes the
+         * checkbox defaults when this actually changes, so an explicit uncheck/check survives further
+         * edits elsewhere in the pasted config (review finding 7). Reset to null whenever the dialog opens
+         * on a blank config, so the next paste always recomputes regardless of a coincidental match with a
+         * previous session's list. */
+        var lastV6 = null;
+
+        /* rulings 3 and 4: IPv6 only when the config has an address; unique addressing on by default when that
+         * address is already on a WireGuard instance or the managed tunnels use fd00::N:1. A missed match only
+         * leaves the box unchecked, and the planner then refuses the duplicate explicitly. */
+        function ipv6Defaults() {
+            if (!options) {
+                return;
+            }
+            var p = wgPublic($('#create\\.config').val());
+            var key = p.v6.slice().sort().join(',');
+            if (key !== lastV6) {
+                lastV6 = key;
+                var hasV6 = p.v6.length > 0;
+                $('#create\\.ipv6').prop('disabled', !hasV6).prop('checked', hasV6);
+                var known = $.map(options.instance_ipv6, expand6);
+                var shared = false;
+                $.each(p.v6, function (i, a) {
+                    if (known.indexOf(expand6(a)) !== -1) {
+                        shared = true;
+                    }
+                });
+                $('#create\\.unique').prop('checked', hasV6 && (options.unique_convention || shared));
+                natRows();
+            }
+            /* the WAN list follows the pasted endpoint's family (IPv4 with no config pasted, ruling: same list as before) */
+            var wans = wansHint(p.endpoint_family);
+            var current = $('#create\\.wan').val();
+            fillSelect('#create\\.wan', wans,
+                wans.some(function (w) { return w.value === current; }) ? [current] : (wans.length ? [wans[0].value] : []));
+        }
+
+        function natRows() {
+            var template = $('#create\\.template').val() !== '';
+            var ipv6 = $('#create\\.ipv6').prop('checked');
+            $('#row_create\\.nat4').toggle(!template);
+            $('#row_create\\.nat6').toggle(!template && ipv6);
+            $('#row_create\\.unique').toggle(ipv6);
+            $('#row_create\\.monitor6').toggle(ipv6);
+        }
+
+        /* the keyless MTU probe (measure_mtu) for Create's and Edit's MTU fields */
+        function measureMtu(endpoint, wan, mtuInput, why, button) {
+            if (!endpoint || !wan) {
+                why.text("{{ lang._('Choose the WAN, and paste a config with an IPv4 or [IPv6] endpoint for a new server, first.') }}");
+                return;
+            }
+            button.prop('disabled', true);
+            why.text("{{ lang._('Measuring the path; this takes up to half a minute...') }}");
+            ajaxCall('/api/wgclienttunnels/tunnels/measure_mtu', {wan: wan, endpoint: endpoint}, function (r, status) {
+                button.prop('disabled', false);
+                if (status === 'success' && r && r.ok) {
+                    mtuInput.val(r.mtu);
+                    why.text(plain(r.why));
+                } else {
+                    why.text(errorList(r, status).join('; '));
+                }
+            });
+        }
+
+        function measure() {
+            measureMtu(wgPublic($('#create\\.config').val()).endpoint_ip, $('#create\\.wan').val(),
+                $('#create\\.mtu'), $('#wgct-mtu-why'), $('#wgct-measure'));
+        }
+
+        /* "Load file": the browser reads the file into the textbox; nothing is uploaded */
+        function fileLoader(button, input, target) {
+            button.on('click', function () { input.click(); });
+            input.on('change', function () {
+                var file = this.files && this.files[0];
+                if (!file) {
+                    return;
+                }
+                var reader = new FileReader();
+                reader.onload = function () {
+                    target.val(reader.result).trigger('input');
+                    input.val('');
+                };
+                reader.readAsText(file);
+            });
+        }
+
+        function openCreate() {
+            loadOptions(function () {
+                lastV6 = null;
+                $('#create\\.config, #create\\.name, #create\\.monitor, #create\\.monitor6, #create\\.mtu').val('');
+                $('#create\\.ipv6').prop('checked', false).prop('disabled', true);
+                $('#create\\.unique').prop('checked', false);
+                var createWans = wansHint('inet');
+                fillSelect('#create\\.wan', createWans, createWans.length ? [createWans[0].value] : []);
+                fillSelect('#create\\.template', [{value: '', label: "{{ lang._('(none: choose NAT sources)') }}"}].concat(options.templates),
+                    options.templates.length ? [options.templates[0].value] : ['']);
+                fillSelect('#create\\.nat4', options.nat_sources, []);
+                fillSelect('#create\\.nat6', options.nat_sources, []);
+                $('#wgct-mtu-why').text('');
+                $('#wgct-create-errors').empty();
+                handleFormValidation('frm_dialogCreate', {});
+                natRows();
+                $('#create\\.references').empty().append(referencesTable(noReferences));
+                $('#dialogCreate').modal('show');
+            });
+        }
+
+        function submitCreate() {
+            var data = getFormData('frm_dialogCreate');
+            var c = data.create;
+            var run = function () {
+                $('#btn_dialogCreate_save').prop('disabled', true);
+                $('#btn_dialogCreate_save_progress').addClass('fa fa-spinner fa-pulse');
+                ajaxCall('/api/wgclienttunnels/tunnels/create', data, function (r, status) {
+                    $('#btn_dialogCreate_save').prop('disabled', false);
+                    $('#btn_dialogCreate_save_progress').removeClass('fa fa-spinner fa-pulse');
+                    /* every reply, a refusal included: a failure after the save still leaves a tunnel to show */
+                    refreshAll();
+                    if (status === 'success' && r && r.result === 'saved') {
+                        $('#dialogCreate').modal('hide');
+                        /* applyName is the submitted name, never the dialog title (review finding 4) */
+                        showResult("{{ lang._('Create tunnel') }}", r, status, r.uuid, c.name);
+                        return;
+                    }
+                    handleFormValidation('frm_dialogCreate', (status === 'success' && r && r.validations) || {});
+                    var box = $('#wgct-create-errors').empty();
+                    $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
+                    if (status !== 'success') {
+                        /* the request died after the save, perhaps: the list shows apply-pending and an Apply button then */
+                        box.append($('<div class="alert alert-warning"/>').text("{{ lang._('If the tunnel appears in the list with the finding apply-pending, it was saved: press its Apply button.') }}"));
+                    }
+                });
+            };
+            var missing = [];
+            if (c.template === '' && c.nat4 === '') {
+                missing.push('IPv4');
+            }
+            if (c.template === '' && c.ipv6 === '1' && c.nat6 === '') {
+                missing.push('IPv6');
+            }
+            if (missing.length === 0) {
+                run();
+                return;
+            }
+            BootstrapDialog.show({
+                type: BootstrapDialog.TYPE_WARNING,
+                title: "{{ lang._('No outbound NAT') }}",
+                message: "{{ lang._('No NAT sources for') }} " + missing.join(" {{ lang._('and') }} ")
+                    + ". {{ lang._('The inner-source block drops everything a LAN sends into a tunnel without outbound NAT (finding nat-missing). Create it anyway?') }}",
+                buttons: [
+                    {label: "{{ lang._('Cancel') }}", action: function (d) { d.close(); }},
+                    {label: "{{ lang._('Create anyway') }}", cssClass: 'btn-warning', action: function (d) { d.close(); run(); }}
+                ]
+            });
+        }
+
+        function openRebind(t) {
+            loadOptions(function () {
+                var rebindWans = wansHint(t.endpoint_family);
+                fillSelect('#rebind\\.wan', rebindWans, rebindWans.length ? [rebindWans[0].value] : []);
+                var stale = options.stale_routes.filter(function (s) { return s.family === (t.endpoint_family || 'inet'); });
+                fillSelect('#rebind\\.stale', [{value: '', label: "{{ lang._('(keep every route)') }}"}].concat(stale), ['']);
+                $('#wgct-rebind-errors').empty();
+                $('#btn_dialogRebind_save').off('click').on('click', function () {
+                    $('#btn_dialogRebind_save').prop('disabled', true);
+                    $('#btn_dialogRebind_save_progress').addClass('fa fa-spinner fa-pulse');
+                    ajaxCall('/api/wgclienttunnels/tunnels/rebind/' + t.uuid, getFormData('frm_dialogRebind'), function (r, status) {
+                        $('#btn_dialogRebind_save').prop('disabled', false);
+                        $('#btn_dialogRebind_save_progress').removeClass('fa fa-spinner fa-pulse');
+                        refreshAll();
+                        /* saved === true even with an apply error still means the route write happened:
+                         * close and show it (changes plus the apply error), never leave it stuck behind the
+                         * form (review finding 3) */
+                        if (status === 'success' && r && r.saved === true) {
+                            $('#dialogRebind').modal('hide');
+                            showResult(titleText("{{ lang._('Rebind') }} " + plain(t.name)), r, status);
+                            return;
+                        }
+                        var box = $('#wgct-rebind-errors').empty();
+                        $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
+                    });
+                });
+                $('#dialogRebind').modal('show');
+            });
+        }
+
+        /* ---- Edit (spec 6.5) ---- */
+
+        /* the tunnel whose Edit dialog is open: {uuid, name (decoded), form (the prefill)} */
+        var editState = null;
+        /* the last parsed IPv6 list of the replacement config (as lastV6 for Create) */
+        var lastEditV6 = null;
+        /* a NAT source list as core's multi-select dropdown (as Create's): the interfaces and aliases on offer,
+         * plus any current source the choices lack (a disabled interface, an alias of another type), still
+         * selected, so an unchanged Save never deletes it (ruling 14) */
+        function natSelect(selector, items, selected) {
+            var choices = items.slice();
+            $.each(selected, function (i, v) {
+                if (!choices.some(function (it) { return it.value === v; })) {
+                    choices.push({value: v, label: v});
+                }
+            });
+            fillSelect(selector, choices, selected);
+        }
+
+        /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: wgPublic()'s
+         * result, or null when none is pasted). The gateways offered are the ENDPOINT's family -- the pasted
+         * config's, else the tunnel's own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN
+         * move is how a tunnel bound through a gateway of the other family is repaired (spec 3.8), so an IPv6
+         * endpoint bound by a /128 via an IPv4 gateway is offered the IPv6 gateways. A family with no saved
+         * gateway gets one disabled hint option in its place (wansHint), never an empty list -- except under the
+         * unbound placeholder, which already keeps the list non-empty and shares the hint's empty value (two
+         * options of one value would let the later, disabled hint win the selection). First comes the
+         * unbound placeholder when the tunnel has no bound WAN (Rebind is what binds one), or, when the pasted
+         * config's family differs from the bound gateway's saved family AND also changes the endpoint address
+         * (else the planner infers nothing -- matching its own "on an endpoint change" rule), a placeholder for
+         * the same WAN's gateway of the new family: its value is the bound WAN itself, which the planner treats
+         * as none named and replaces with the single gateway of the new family on the same interface (edit.php,
+         * the endpoint route; an unsaved bound gateway has no family, and the planner infers nothing for it).
+         * The bound WAN is always listed: when neither that placeholder nor the family's gateways name it (the
+         * other family, a sentinel, a WireGuard-interface gateway, an unsaved automatic DHCPv6 gateway), it is
+         * appended under its own name, so neither the opener nor a later keystroke drops it out from under the
+         * tunnel. */
+        function editWans(pasted) {
+            var f = editState.form;
+            var wans = [];
+            var family = pasted ? pasted.endpoint_family : null;
+            var endpointChanged = !!(pasted && pasted.endpoint_ip !== null && (family === 'inet6'
+                ? expand6(pasted.endpoint_ip) !== expand6(f.endpoint_ip) : pasted.endpoint_ip !== f.endpoint_ip));
+            if (!f.wan) {
+                wans.push({value: '', label: "{{ lang._('(unbound: Rebind binds it to a WAN)') }}"});
+            } else if (endpointChanged && f.wan_family && family && family !== f.wan_family) {
+                wans.push({value: f.wan, label: family === 'inet6'
+                    ? "{{ lang._('(the IPv6 gateway of the bound WAN)') }}"
+                    : "{{ lang._('(the IPv4 gateway of the bound WAN)') }}"});
+            }
+            var endpointFamily = family || f.endpoint_family || 'inet';
+            wans = wans.concat(f.wan ? wansHint(endpointFamily) : wansFor(endpointFamily));
+            if (f.wan && !wans.some(function (w) { return w.value === f.wan; })) {
+                wans.push({value: f.wan, label: f.wan});
+            }
+            return wans;
+        }
+
+        function editRows() {
+            var text = $('#edit\\.config').val();
+            var swap = $.trim(text) !== '';
+            var box = $('#edit\\.ipv6');
+            var canOn = editState.form.ipv6 === true || wgPublic(text).v6.length > 0;
+            box.prop('disabled', !canOn);
+            if (!canOn) {
+                box.prop('checked', false);
+            }
+            $('#row_edit\\.unique').toggle(swap && box.prop('checked'));
+            $('#row_edit\\.nat6').toggle(box.prop('checked'));
+            $('#row_edit\\.monitor6').toggle(box.prop('checked'));
+        }
+
+        /* rulings 3 and 4 for a replacement config: unique addressing on by default when its IPv6 address is
+         * on another instance or the managed tunnels use fd00::N:1 */
+        function editDefaults() {
+            var f = editState.form;
+            var p = wgPublic($('#edit\\.config').val());
+            var key = p.v6.slice().sort().join(',');
+            if (key !== lastEditV6) {
+                lastEditV6 = key;
+                var known = $.map(f.ipv6_others, expand6);
+                var shared = false;
+                $.each(p.v6, function (i, a) {
+                    if (known.indexOf(expand6(a)) !== -1) {
+                        shared = true;
+                    }
+                });
+                $('#edit\\.unique').prop('checked', p.v6.length > 0 ? (f.unique_convention || shared) : f.unique === true);
+            }
+            /* the WAN list follows the replacement config's endpoint family (editWans). The selection is kept
+             * while it is still listed -- a gateway the user picked survives further edits of the config, and
+             * on the transition into a family mismatch the placeholder, whose value is the bound WAN, stays
+             * selected -- else it falls back to the bound WAN (always listed), so undoing a family change never
+             * proposes a WAN move nobody asked for */
+            var wans = editWans(p);
+            var listed = function (v) { return wans.some(function (w) { return w.value === v; }); };
+            var current = $('#edit\\.wan').val();
+            var selected = listed(current) ? current : (listed(f.wan) ? f.wan : (wans.length ? wans[0].value : ''));
+            /* selected may legitimately be '' -- the unbound placeholder's own value, still one of wans --
+             * so it is always passed through, never dropped as if nothing were selected */
+            fillSelect('#edit\\.wan', wans, [selected]);
+            editRows();
+        }
+
+        function editMeasure() {
+            var text = $('#edit\\.config').val();
+            measureMtu($.trim(text) !== '' ? wgPublic(text).endpoint_ip : plain(editState.form.endpoint_ip),
+                $('#edit\\.wan').val() || plain(editState.form.wan),
+                $('#edit\\.mtu'), $('#wgct-edit-mtu-why'), $('#wgct-edit-measure'));
+        }
+
+        /* Tunnel References: what Create and Edit leave to the core pages, each linked as deep as the page allows --
+         * a gateway opens its dialog, the rules page selects the interface, Source NAT and the peers grid filter on
+         * it. A topic with nothing that references the tunnel (every topic, before Create) still gets its row,
+         * linking the page by its menu path. f: {gw4, gw4_uuid, gw6, gw6_uuid, groups, peer_name, interface} */
+        var noReferences = {gw4: '', gw4_uuid: '', gw6: '', gw6_uuid: '', groups: [], peer_name: '', interface: ''};
+        function referencesTable(f) {
+            var body = $('<tbody/>');
+            var row = function (title, nodes, pageName, pageHref) {
+                var cell = $('<td/>');
+                $.each(nodes.length > 0 ? nodes : [link(pageName, pageHref)], function (i, n) {
+                    cell.append($('<div/>').append(n));
+                });
+                body.append($('<tr/>').append($('<th style="width: 35%;"/>').text(title), cell));
+            };
+            var opt = f.interface;
+            var gateways = [];
+            $.each([[f.gw4, f.gw4_uuid], [f.gw6, f.gw6_uuid]], function (i, g) {
+                if (g[0]) {
+                    gateways.push(link(g[0], gatewayHref(g[1])));
+                }
+            });
+            row("{{ lang._('Gateways') }}", gateways, "{{ lang._('System: Gateways: Configuration') }}", links.gateways);
+            row("{{ lang._('Gateway groups') }}", $.map(f.groups, function (g) { return link(g, links.groups); }),
+                "{{ lang._('System: Gateways: Group') }}", links.groups);
+            row("{{ lang._('Firewall rules') }}", opt ? [link(opt, links.rules + '#interface=' + hashValue(opt))] : [],
+                "{{ lang._('Firewall: Rules') }}", links.rules);
+            row("{{ lang._('Outbound NAT') }}", opt ? [link(opt, links.nat + '#search=' + hashValue(opt))] : [],
+                "{{ lang._('Firewall: NAT: Source NAT') }}", links.nat);
+            row("{{ lang._('Peer') }}", f.peer_name ? [link(f.peer_name, links.peers + '&search=' + hashValue(f.peer_name))] : [],
+                "{{ lang._('VPN: WireGuard: Peers') }}", links.peers);
+            row("{{ lang._('Interface') }}", opt ? [link(opt, links.iface + hashValue(opt))] : [],
+                "{{ lang._('Interfaces: Assignments') }}", links.assignments);
+            return $('<table class="table table-condensed" style="margin-bottom: 0;"/>').append(body);
+        }
+
+        function openEdit(t) {
+            /* POST like the lists: the prefill and the choices change with every action */
+            ajaxCall('/api/wgclienttunnels/tunnels/edit_form/' + t.uuid, {}, function (data, status) {
+                if (!data || status !== 'success' || data.status !== 'ok') {
+                    showResult(titleText("{{ lang._('Edit') }} " + plain(t.name)), data, status);
+                    return;
+                }
+                /* edit_form's reply carries the same choices as the options action (plus form); wansFor() reads
+                 * them from here so it sees this dialog's own fresh WAN list, not a stale or absent one */
+                options = data;
+                var f = data.form;
+                editState = {uuid: t.uuid, name: plain(f.name), form: f};
+                lastEditV6 = null;
+                $('#edit\\.name').val(plain(f.name) + ' (' + plain(f.device) + ', ' + plain(f.interface) + ')');
+                $('#edit\\.config').val('');
+                $('#edit\\.monitor').val(plain(f.monitor));
+                $('#edit\\.monitor6').val(plain(f.monitor6 || ''));
+                $('#edit\\.mtu').val(f.mtu);
+                /* nothing pasted yet: the endpoint's own family, with the bound WAN always listed (editWans) */
+                fillSelect('#edit\\.wan', editWans(null), [f.wan]);
+                $('#edit\\.ipv6').prop('checked', f.ipv6 === true);
+                $('#edit\\.unique').prop('checked', f.unique === true);
+                natSelect('#edit\\.nat4', data.nat_sources, f.nat4);
+                natSelect('#edit\\.nat6', data.nat_sources, f.nat6);
+                var kept = $('#wgct-edit-kept').empty();
+                $.each(f.nat_kept, function (i, k) { kept.append($('<div/>').text(plain(k))); });
+                $('#wgct-edit-kept-wrap').toggle(f.nat_kept.length > 0);
+                $('#edit\\.references').empty().append(referencesTable(f));
+                $('#wgct-edit-mtu-why').text(f.mtu_effective !== f.mtu
+                    ? "{{ lang._('The interface MTU overrides this value (finding mtu-override):') }} " + f.mtu_effective : '');
+                $('#wgct-edit-errors').empty();
+                handleFormValidation('frm_dialogEdit', {});
+                editRows();
+                $('#dialogEdit').modal('show');
+            });
+        }
+
+        /* preview (dry=1) first: the confirmation lists exactly what changes and which apply runs */
+        function submitEdit() {
+            var st = editState;
+            var url = '/api/wgclienttunnels/tunnels/edit/' + st.uuid;
+            var title = titleText("{{ lang._('Edit') }} " + st.name);
+            /* edit.nat4/6 arrive as core's comma lists of the selected sources */
+            var data = getFormData('frm_dialogEdit');
+            var busy = function (on) {
+                $('#btn_dialogEdit_save').prop('disabled', on);
+                $('#btn_dialogEdit_save_progress').toggleClass('fa fa-spinner fa-pulse', on);
+            };
+            var formErrors = function (r, status) {
+                handleFormValidation('frm_dialogEdit', (status === 'success' && r && r.validations) || {});
+                var box = $('#wgct-edit-errors').empty();
+                $.each(errorList(r, status), function (i, m) { box.append($('<div class="alert alert-danger"/>').text(m)); });
+            };
+            busy(true);
+            ajaxCall(url, $.extend({}, data, {dry: '1'}), function (preview, previewStatus) {
+                busy(false);
+                /* a refusal with field messages only has no error lines: result 'failed' decides, not errorList */
+                if (!preview || preview.result === 'failed' || errorList(preview, previewStatus).length > 0) {
+                    formErrors(preview, previewStatus);
+                    return;
+                }
+                handleFormValidation('frm_dialogEdit', {});
+                if (resultLines(preview).length === 0) {
+                    $('#wgct-edit-errors').empty().append($('<div class="alert alert-info"/>').text("{{ lang._('Nothing to change.') }}"));
+                    return;
+                }
+                BootstrapDialog.show({
+                    type: BootstrapDialog.TYPE_WARNING,
+                    title: title,
+                    message: resultBody(preview, previewStatus),
+                    buttons: [
+                        {label: "{{ lang._('Cancel') }}", action: function (d) { d.close(); }},
+                        {label: "{{ lang._('Save') }}", cssClass: 'btn-primary', action: function (d) {
+                            d.close();
+                            busy(true);
+                            ajaxCall(url, data, function (r, status) {
+                                busy(false);
+                                /* every reply: a failure after the save still changed the tunnel */
+                                refreshAll();
+                                if (status === 'success' && r && (r.saved === true || r.result === 'unchanged')) {
+                                    $('#dialogEdit').modal('hide');
+                                    showResult(title, r, status, r.saved === true ? st.uuid : null, st.name);
+                                    return;
+                                }
+                                formErrors(r, status);
+                            });
+                        }}
+                    ]
+                });
+            });
+        }
+
+        /* ---- the lists ---- */
+
+        /* the managed tunnels: core's grid over search_grid (POST, like every core grid), which pages,
+         * sorts and searches server side. No selection column and no add/edit/delete: the row commands are
+         * the plugin's own actions, Rebind and Apply only on the rows whose findings call for them. */
+        var tunnelsGrid = $("#{{ formGridTunnels['table_id'] }}").UIBootgrid({
+            search: '/api/wgclienttunnels/tunnels/search_grid',
+            options: {
+                selection: false,
+                responsive: true,
+                formatters: gridFormatters
+            },
+            commands: {
+                wgct_edit: {
+                    classname: 'fa fa-fw fa-pencil',
+                    title: "{{ lang._('Edit') }}",
+                    sequence: 5,
+                    /* a row whose WireGuard instance is gone has nothing to edit */
+                    filter: function (cell) { return cell.getData().device !== ''; },
+                    method: function (event, cell) { openEdit(cell.getData()); }
+                },
+                wgct_apply: {
+                    classname: 'fa fa-fw fa-play',
+                    title: "{{ lang._('Run the apply the saved change still needs') }}",
+                    sequence: 10,
+                    filter: function (cell) { return cell.getData().apply_pending === true; },
+                    method: function (event, cell) {
+                        var t = cell.getData();
+                        runApply(t.uuid, t.name);
+                    },
+                    /* the one command that finishes an interrupted Create or Edit: make it stand out */
+                    onRendered: function () { this.removeClass('btn-default').addClass('btn-warning'); }
+                },
+                wgct_rebind: {
+                    classname: 'fa fa-fw fa-link',
+                    title: "{{ lang._('Rebind to a WAN') }}",
+                    sequence: 20,
+                    filter: function (cell) { return cell.getData().unbound === true; },
+                    method: function (event, cell) { openRebind(cell.getData()); }
+                },
+                wgct_remove: {
+                    classname: 'fa fa-fw fa-trash-o',
+                    title: "{{ lang._('Remove') }}",
+                    sequence: 30,
+                    method: function (event, cell) {
+                        var t = cell.getData();
+                        confirmAction(titleText("{{ lang._('Remove') }} " + plain(t.name)), '/api/wgclienttunnels/tunnels/remove/' + t.uuid, "{{ lang._('Remove') }}");
+                    }
+                }
+            }
+        });
+
+        /* the global findings and the WireGuard instances the plugin does not manage */
+        function renderLists(data) {
+            var banners = [];
+            var ubody = $('<tbody/>');
+            if (!data || data.status !== 'ok') {
+                banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? plain(data.errorMessage) : failedText));
+            } else {
+                $.each(data.global, function (i, f) {
+                    banners.push($('<div class="alert alert-warning"/>').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
+                });
+                if (!data.unmanaged.length) {
+                    ubody.append($('<tr/>').append($('<td colspan="5"/>').text("{{ lang._('Every WireGuard instance is managed.') }}")));
+                }
+                $.each(data.unmanaged, function (i, u) {
+                    ubody.append($('<tr/>').append(
+                        $('<td/>').append(link(u.name, links.instance)),
+                        $('<td/>').text(plain(u.device)),
+                        $('<td/>').append(linkOrDash(u.endpoint, links.peers)),
+                        $('<td/>').append(u.enabled
+                            ? $('<span/>').text("{{ lang._('yes') }}")
+                            : $('<span class="label label-default"/>').text("{{ lang._('disabled') }}")),
+                        $('<td/>').append($('<button type="button" class="btn btn-default btn-xs"/>')
+                            .append($('<i class="fa fa-plus fa-fw"/>'), ' ', $('<span/>').text("{{ lang._('Adopt') }}"))
+                            .on('click', function () {
+                                confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgclienttunnels/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
+                            }))
+                    ));
+                });
+            }
+            $('#tunnel-banners').empty().append(banners);
+            $('#unmanaged-table tbody').replaceWith(ubody);
+        }
+
+        /* POST, like the grid: an action's reply is followed by a fresh read, never a stored one. Only the
+         * latest request renders, so a slow reply can never overwrite a newer one. */
+        var listsRequest = 0;
+        function refreshLists() {
+            var request = ++listsRequest;
+            ajaxCall('/api/wgclienttunnels/tunnels/search', {}, function (data, status) {
+                if (request === listsRequest) {
+                    renderLists(status === 'success' ? data : null);
+                }
+            });
+        }
+
+        /* after every action that can change the list, and on Refresh view */
+        function refreshAll() {
+            tunnelsGrid.bootgrid('reload');
+            refreshLists();
+        }
+
+        /* ---- wiring ---- */
+
+        mapDataToFormUI({'frm_general': '/api/wgclienttunnels/settings/get'}).done(function () {
+            formatTokenizersUI();
+            $('.selectpicker').selectpicker('refresh');
+        });
+        $('#reconfigureAct').SimpleActionButton({
+            onPreAction: function () {
+                var dfObj = new $.Deferred();
+                saveFormToEndpoint('/api/wgclienttunnels/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
+                return dfObj;
+            },
+            onAction: function () { refreshAll(); }
+        });
+        /* Settings: forms/general.xml gives each switch a <brief>, always shown in its row's wide third column,
+         * and a <help>, core's full help. Core renders the full help as a hidden block under the (narrow)
+         * checkbox; it moves, intact, under the brief, so core's "full help" toggle shows and hides it as on any
+         * other page. The rows' info icons go: the brief is always visible and the toggle covers the rest. */
+        $('#frm_general [data-for^="help_for_"]').each(function () {
+            var help = $(this);
+            var id = help.attr('data-for').substring('help_for_'.length);
+            var cell = help.closest('tr').children('td').eq(2);
+            cell.prepend(help.detach());
+            cell.prepend($('<div class="wgct-brief"/>').append($('#wgct-briefs [data-wgct-brief-for="' + id + '"]').contents()));
+        });
+        $('#frm_general .control-label > a.showhelp, #frm_general .control-label > i.fa-info-circle').remove();
+        /* the sentinel's repair belongs with the switch for the other half of the default-route exclusion */
+        $('#wgclienttunnels\\.default_guard').closest('tr').children('td').eq(2).append($('#wgct-exclusion-wrap').detach().show());
+        $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
+        $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
+        /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
+         * autofill, ever sees it (review finding 6) */
+        $('#create\\.config').attr({
+            spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'
+        });
+        $('#create\\.mtu').after($('#wgct-measure-wrap').detach().show());
+        $('#create\\.config').after($('#wgct-file-wrap').detach().show());
+        $('#wgct-measure').on('click', measure);
+        fileLoader($('#wgct-file-btn'), $('#wgct-file'), $('#create\\.config'));
+        $('#create\\.config').on('input', ipv6Defaults);
+        $('#create\\.ipv6').on('change', natRows);
+        $('#create\\.template').on('change', natRows);
+        $('#create\\.wan').on('change', function () {
+            if (wgPublic($('#create\\.config').val()).endpoint_ip) {
+                measure();
+            }
+        });
+        $('#btn_dialogCreate_save').on('click', submitCreate);
+        /* the pasted config holds the private key: it never stays in the page */
+        $('#dialogCreate').on('hidden.bs.modal', function () { $('#create\\.config').val(''); });
+        $('#btn-create').on('click', openCreate);
+        /* Edit: its own form (edit.*); the replacement config may hold a private key and never stays in the page */
+        $('#frm_dialogEdit').prepend($('<div id="wgct-edit-errors"/>'));
+        $('#edit\\.config').attr({spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', autocorrect: 'off'});
+        $('#edit\\.name').prop('readonly', true);
+        $('#edit\\.mtu').after($('#wgct-edit-measure-wrap').detach().show());
+        $('#edit\\.config').after($('#wgct-edit-file-wrap').detach().show());
+        $('#edit\\.nat4').closest('td').append($('#wgct-edit-kept-wrap').detach());
+        fileLoader($('#wgct-edit-file-btn'), $('#wgct-edit-file'), $('#edit\\.config'));
+        $('#wgct-edit-measure').on('click', editMeasure);
+        $('#edit\\.config').on('input', editDefaults);
+        $('#edit\\.ipv6').on('change', editRows);
+        $('#btn_dialogEdit_save').on('click', submitEdit);
+        $('#dialogEdit').on('hidden.bs.modal', function () { $('#edit\\.config').val(''); });
+        $('#btn-sentinel').on('click', function () {
+            confirmAction("{{ lang._('Check default-route exclusion') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
+        });
+        $('#btn-refresh').on('click', refreshAll);
+        /* the grid's own refresh button reloads the grid; bring the banners and the unmanaged list along */
+        $("#{{ formGridTunnels['table_id'] }}-refresh-button").on('click', refreshLists);
+        /* the grid loads itself */
+        refreshLists();
+    });
+</script>
+
+<div class="content-box" id="settings">
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general', 'msgzone_width': 8]) }}
+    <div style="padding: 0 1em 1em 1em;">
+        <button class="btn btn-primary" id="reconfigureAct"
+                data-endpoint="/api/wgclienttunnels/service/reconfigure"
+                data-label="{{ lang._('Apply') }}"
+                data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
+                type="button"></button>
+    </div>
+</div>
+<div class="content-box" id="tunnels" style="padding: 1em; margin-top: 1em;">
+    <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 or /128 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
+        <a href="/ui/interfaces/assignment">{{ lang._('Interfaces: Assignments') }}</a></p>
+    <div id="tunnel-banners"></div>
+    <button class="btn btn-primary" id="btn-create" type="button"><i class="fa fa-plus fa-fw"></i> {{ lang._('Create') }}</button>
+    <button class="btn btn-default" id="btn-refresh" type="button"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
+    <div style="margin-top: 1em;">
+        {{ partial('layout_partials/base_bootgrid_table', formGridTunnels + {'command_width': '140', 'hide_add': true, 'hide_delete': true}) }}
+    </div>
+    <h4>{{ lang._('WireGuard instances the plugin does not manage') }}</h4>
+    <table class="table table-striped table-condensed" id="unmanaged-table">
+        <thead>
+            <tr>
+                <th>{{ lang._('Instance') }}</th>
+                <th>{{ lang._('Device') }}</th>
+                <th>{{ lang._('Endpoint') }}</th>
+                <th>{{ lang._('Enabled') }}</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+</div>
+
+{# each Settings switch's brief help (forms/general.xml <brief>), placed in its row by the script above #}
+<div id="wgct-briefs" style="display: none;">
+{% for section in generalForm['sections'] %}
+{% for field in section['children'] %}
+{% if field['brief'] is defined %}
+    <div data-wgct-brief-for="{{ field['id'] }}">{{ lang._(field['brief']) }}</div>
+{% endif %}
+{% endfor %}
+{% endfor %}
+</div>
+<div id="wgct-exclusion-wrap" style="display: none; margin-top: 0.5em;">
+    <button class="btn btn-default btn-xs" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Check default-route exclusion') }}</button>
+    {# full help, like the switches': core's "full help" toggle shows it once this sits inside the form #}
+    <div class="hidden" data-for="help_for_wgct_sentinel" style="margin-top: 0.25em;">
+        <small>{{ lang._('The other half of the exclusion: creates or repairs NO_DEFAULT4 and NO_DEFAULT6, the address-less gateways at priority 254 on a loopback that keep every tunnel out of the default-gateway election. It shows what it would change before changing anything; with nothing to change, it says so.') }}</small>
+    </div>
+</div>
+<span id="wgct-measure-wrap" style="display: none;">
+    <button type="button" class="btn btn-default btn-xs" id="wgct-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
+    <small class="text-muted" id="wgct-mtu-why"></small>
+</span>
+<span id="wgct-file-wrap" style="display: none;">
+    <br/><button type="button" class="btn btn-default btn-xs" id="wgct-file-btn"><i class="fa fa-folder-open-o fa-fw"></i> {{ lang._('Load file') }}</button>
+    <input type="file" id="wgct-file" accept=".conf,text/plain" style="display: none;"/>
+</span>
+<span id="wgct-edit-measure-wrap" style="display: none;">
+    <button type="button" class="btn btn-default btn-xs" id="wgct-edit-measure"><i class="fa fa-tachometer fa-fw"></i> {{ lang._('Measure') }}</button>
+    <small class="text-muted" id="wgct-edit-mtu-why"></small>
+</span>
+<span id="wgct-edit-file-wrap" style="display: none;">
+    <br/><button type="button" class="btn btn-default btn-xs" id="wgct-edit-file-btn"><i class="fa fa-folder-open-o fa-fw"></i> {{ lang._('Load file') }}</button>
+    <input type="file" id="wgct-edit-file" accept=".conf,text/plain" style="display: none;"/>
+</span>
+<div id="wgct-edit-kept-wrap" style="display: none; margin-top: 0.5em;">
+    <small class="text-muted">{{ lang._('Other outbound NAT rules on this interface, kept exactly as they are (edit them on Firewall: NAT: Source NAT):') }}</small>
+    <div id="wgct-edit-kept" class="text-muted small"></div>
+</div>
+
+{{ partial("layout_partials/base_dialog", ['fields': createForm, 'id': 'dialogCreate', 'label': lang._('Create tunnel')]) }}
+{{ partial("layout_partials/base_dialog", ['fields': rebindForm, 'id': 'dialogRebind', 'label': lang._('Rebind tunnel')]) }}
+{{ partial("layout_partials/base_dialog", ['fields': editForm, 'id': 'dialogEdit', 'label': lang._('Edit tunnel')]) }}

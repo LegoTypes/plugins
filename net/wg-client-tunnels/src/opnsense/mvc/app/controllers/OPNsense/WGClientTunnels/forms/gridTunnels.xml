@@ -1,0 +1,96 @@
+<form>
+    <!-- The Tunnels grid (getFormGrid()): one column per wgct_grid_row() field that
+         is sorted and searched on; each formatter lives in index.volt -->
+    <field>
+        <id>tunnel.name</id>
+        <label>Tunnel</label>
+        <grid_view>
+            <formatter>tunnel</formatter>
+            <min-width>140</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.endpoint</id>
+        <label>Endpoint</label>
+        <grid_view>
+            <formatter>endpoint</formatter>
+            <min-width>120</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.bound_wan</id>
+        <label>Bound WAN</label>
+        <grid_view>
+            <formatter>boundwan</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.mtu</id>
+        <label>MTU</label>
+        <grid_view>
+            <formatter>mtu</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.gw4</id>
+        <label>IPv4 gateway</label>
+        <grid_view>
+            <formatter>gw4</formatter>
+            <min-width>120</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.gw4_status_text</id>
+        <label>IPv4 status</label>
+        <grid_view>
+            <formatter>status4</formatter>
+            <width>90</width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.gw6</id>
+        <label>IPv6 gateway</label>
+        <grid_view>
+            <formatter>gw6</formatter>
+            <min-width>120</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.gw6_status_text</id>
+        <label>IPv6 status</label>
+        <grid_view>
+            <formatter>status6</formatter>
+            <width>90</width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.monitors_text</id>
+        <label>Monitors</label>
+        <grid_view>
+            <formatter>monitors</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.nat_text</id>
+        <label>Outbound NAT</label>
+        <grid_view>
+            <formatter>nat</formatter>
+            <min-width>100</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.groups_text</id>
+        <label>Groups</label>
+        <grid_view>
+            <formatter>groups</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>tunnel.findings_text</id>
+        <label>Findings</label>
+        <grid_view>
+            <formatter>findings</formatter>
+            <min-width>110</min-width>
+        </grid_view>
+    </field>
+</form>

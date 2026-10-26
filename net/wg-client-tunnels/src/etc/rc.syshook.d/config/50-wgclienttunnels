@@ -1,0 +1,17 @@
+#!/bin/sh
+
+# Copyright (C) 2026 cayossarian
+# All rights reserved.
+# BSD 2-Clause License
+#
+# Config-change hook: core runs every script in rc.syshook.d/config/ after a
+# config save (Config::save -> syslog config-event -> configd
+# system.event.config_changed -> rc.syshook config). Queue a reconcile of the
+# managed tunnels' IPv6 addresses and routes, the default-route guard and the
+# rendered rules, and return at once: core runs these hooks one after another
+# and skips config events while they run. The reconcile is idempotent and
+# silent unless it repairs something, so the plugin's own saves do not loop.
+# It never writes config.
+
+/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh request_reconcile
+exit 0

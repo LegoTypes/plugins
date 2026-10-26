@@ -1,0 +1,7 @@
+<menu>
+    <VPN>
+        <WireGuard>
+            <UpstreamTunnels order="45" VisibleName="Upstream tunnels" url="/ui/wgclienttunnels"/>
+        </WireGuard>
+    </VPN>
+</menu>

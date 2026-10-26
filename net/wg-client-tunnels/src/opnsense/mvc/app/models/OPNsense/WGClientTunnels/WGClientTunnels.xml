@@ -1,0 +1,35 @@
+<model>
+    <mount>//OPNsense/WGClientTunnels</mount>
+    <version>3.1.0</version>
+    <description>WireGuard upstream tunnels settings</description>
+    <items>
+        <enabled type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </enabled>
+        <health_mirror type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </health_mirror>
+        <ipv6_routes type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </ipv6_routes>
+        <default_guard type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </default_guard>
+        <wan_pins type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </wan_pins>
+        <inner_source type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </inner_source>
+        <mss_clamp type="BooleanField">
+            <Default>0</Default>
+            <Required>Y</Required>
+        </mss_clamp>
+    </items>
+</model>

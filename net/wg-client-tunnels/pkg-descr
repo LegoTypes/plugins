@@ -1,0 +1,323 @@
+WireGuard Upstream Tunnels Plugin
+
+Creates, edits, binds, monitors and removes WireGuard upstream tunnels
+(ProtonVPN and similar) from one page. The core WireGuard, interface,
+gateway, route and NAT pages stay the source of truth: every tunnel is
+derived from core configuration on each use, and the plugin stores only
+which instances it manages, which gateways it holds down, and its switches.
+
+Features:
+- Create a tunnel from a pasted wg-quick config -- WireGuard instance and
+  peer, interface, IPv4 and IPv6 gateways, endpoint route to the chosen WAN
+  and outbound NAT, in one save -- with the MTU measured from that WAN, and
+  the monitor IPs (IPv4, and IPv6 when IPv6 is on)
+- Edit a tunnel in place -- outbound NAT sources, MTU, monitor IPs (IPv4
+  and IPv6), bound WAN, IPv6 on or off, or a server swap from a
+  replacement wg-quick config -- with a preview of exactly what changes;
+  its name, device, interface and gateway names never change, so groups
+  and rules keep working
+- Remove a tunnel and everything it owns (refused while anything references
+  it), Rebind an unbound tunnel to a WAN, Adopt an existing WireGuard
+  instance, and Check default-route exclusion (the NO_DEFAULT4/NO_DEFAULT6
+  gateways), each with a dry-run preview, from the plugin's page or
+  tunnel.php
+- One page: the settings pane above a standard grid of every managed tunnel
+  with its derived parts, live gateway status, links to the core page that
+  owns each part, and findings; it reloads as soon as an action completes
+- Gives each managed tunnel's IPv6 gateway its host routes (to its next hop
+  and to its own monitor) and keeps its tunnel address in place: at boot,
+  on gateway and WAN address events, on every configuration change, and
+  every minute as a safety net
+- Health mirror (every 15 s):
+  - binds each tunnel to the WAN its endpoint route uses and holds the
+    tunnel down while that WAN is down, so a tunnel never migrates to the
+    other WAN
+  - forces each IPv6 tunnel gateway down along with its IPv4 tunnel when
+    that tunnel loses packets, loses its monitor or is forced down, using
+    the IPv4 gateway's loss thresholds with hysteresis; core's own monitor
+    on the IPv6 gateway, pinged through the tunnel, takes it down when IPv6
+    alone fails
+  - ignores a freshly restarted monitor's readings until they settle, in
+    both directions: a gateway is never released in the middle of an
+    outage, and a gateway change elsewhere never takes a healthy WAN's
+    tunnels down; a WAN disabled or forced down acts at once
+  - replays the gateway alarm its own reconfigure would otherwise drop,
+    so firewall rules and states follow the change
+- IPv6 prime (after each health mirror tick, whatever the health mirror
+  switch): when a tunnel's IPv6 gateway is down while its WireGuard
+  session is up, sends one TCP connection from the tunnel's IPv6 address
+  to its monitor, so a provider that learns the address to answer from
+  such traffic (pings never teach it) learns the right one; backs off
+  from 2 to 30 minutes, starts over with each new session, and logs each
+  attempt and the recovery
+- Default-route guard: removes a default route whose next hop belongs
+  only to a tunnel or other non-default gateway, for IPv4 and IPv6, working
+  together with address-less sentinel gateways that keep tunnels out of
+  the default-gateway election
+- Firewall enforcement rendered from each tunnel's core configuration:
+  - pins each tunnel's endpoint to the WAN it is bound to, and blocks
+    it everywhere when that WAN is unusable
+  - blocks traffic leaving a tunnel from any source but that tunnel's
+    own address, so only traffic NAT-ed to it enters it
+  - clamps TCP MSS in both directions from each tunnel's MTU, so an
+    MTU change on the WireGuard page takes effect without other edits
+- Leaves disabled gateways and an operator's manual force-down alone
+
+Plugin Changelog
+================
+
+3.8
+
+* Security release. When a render fails, the firewall keeps enforcing the
+  pins last put in place and the page says so (a render-fallback
+  finding); before, the pins vanished
+* The MSS clamp applies to every enabled, assigned tunnel whose MTU is in
+  range, an unbound tunnel and one with a blocking finding included; a
+  bound tunnel with a blocking finding is still pinned
+* The managed list and the holds are kept apart from the settings, where
+  the settings API cannot change them, and are released only by their own
+  record, for IPv6 gateways too; the mirror leaves a hand-forced IPv6
+  gateway alone
+* A restored backup's holds are pruned, not released: a gateway held when
+  the backup was taken stays forced down until unticked by hand
+* A mirror tick that cannot run logs it once
+* Locks and state live under root-only directories
+* Core's /tmp files are read for their devices only
+* Actions and previews honour the read-only guard; an MTU measurement
+  started while one runs is refused with a message
+* Apply refuses an instance the plugin does not manage
+* Values from a restored configuration, interface groups included, are
+  validated again before use
+* The route hand-off never writes through an existing path
+* Production scripts carry no test overrides
+* The page decodes core's escaping exactly (&amp;, &lt;, &gt;), nothing
+  more
+* Removing the package releases the holds and removes what the plugin
+  added, after stopping the plugin first; it names any IPv6 gateway it
+  leaves down and never waits on a configd that does not answer. An
+  upgrade keeps everything
+* The cron and configd entries end quietly when the plugin library
+  cannot be loaded
+* File headers name the copyright handle only
+* settings/get no longer returns the managed and held lists
+* The engine state is per box and is not part of the HA sync
+
+3.7_1
+
+* Freshness lists the ruleset only when it changed (pf's ruleset
+  checksum and the rendered pin labels), not on every reconcile; a
+  listing cut short by a filter reload, even one that leaves the ruleset
+  unchanged, is listed again, and a recorded miss is checked again at
+  every reconcile
+
+3.7
+
+* Health mirror settle guard: a freshly restarted gateway monitor's
+  reading no longer counts in either direction until the monitor has run
+  for the gateway's averaging period; the last decision stands. Every
+  gateway change restarts all monitors, and a fresh monitor reads down
+  before it has samples, so a gateway Apply forced a healthy WAN's
+  tunnels down until the next settled reading (1 min 45 s on a live
+  firewall, with no tunnel left up while the other WAN was held). A WAN
+  disabled or forced down in configuration still acts at once
+* Default-route guard: a default route is removed only when every
+  gateway on its next hop (address and interface) is a non-default one;
+  a non-default gateway sharing a default gateway's next hop no longer
+  gets the native default deleted
+* Settings: each switch shows a short help line at all times and its
+  full help under it with the form's "full help" toggle (core's own);
+  the rows' inert info icons are gone
+
+3.6
+
+* IPv6 prime: when a tunnel's IPv6 gateway is down while its WireGuard
+  session is up (a handshake within 180 s), one TCP connection from the
+  tunnel's IPv6 address to its IPv6 monitor teaches a provider that
+  answers every reply to an address it learns from traffic. Without it,
+  a fresh session (e.g. after a power failure) left the IPv6 gateway down
+  for good: a down gateway gets no LAN traffic, and the monitor's pings
+  never teach the provider. Runs after each health mirror tick, backs off
+  from 2 to 30 minutes, and logs to the WireGuard log as [wgct-prime]
+
+3.5_2
+
+* The inner-source block lets only the tunnel's own address leave it,
+  not any of the firewall's: every tunnel's address is the firewall's, so
+  a packet NATed for one tunnel could leave by another (e.g. after a
+  gateway failover), and a provider that learns the client address from
+  traffic could then send all of that tunnel's replies to the other
+  tunnel's address. The rule's label now names its source, so an upgrade
+  reloads the filter by itself
+
+3.5_1
+
+* The health mirror also replays the alarm of any other gateway whose
+  status changed while it held the gateway lock (a WAN going down during
+  a mirror reconfigure was dropped by routes.alarm and never raised again,
+  so routing did not follow it); Create, Edit and Rebind already did
+
+3.5
+
+* Logs to core's WireGuard log (VPN > WireGuard > Log File) under the
+  program name wireguard, with [wgct-*] prefixes; the separate
+  Upstream tunnels log page and its syslog destination are gone
+* A queued reconcile that waits more than two minutes logs that it gave
+  up (the minute reconcile runs it)
+* The core-contract check is silent while the plugin is disabled and
+  runs one at a time
+
+3.4
+
+* Its own log, VPN > WireGuard > Upstream tunnels log, read with core's
+  log viewer; the plugin's lines leave the system log
+* The service status answers core's service framework directly; the
+  per-tunnel route JSON is configctl wgclienttunnels routes_status
+* The config-change hook queues its reconcile and returns at once; a
+  save made during a reconcile gets a reconcile of its own (the minute
+  reconcile still covers a queue that waited over two minutes)
+* core-contract finding when a core update changes the gateway lock or
+  routing alarm command the plugin copies
+
+3.3
+
+* Each tunnel's IPv6 gateway has its own monitor, pinged through the
+  tunnel: an IPv6 failure inside a tunnel whose IPv4 still works takes
+  only that IPv6 gateway down and the IPv6 gateway groups fail over (the
+  IPv4 and IPv6 groups may then leave by different servers until it
+  recovers). The plugin owns the monitor's host route and restarts a
+  missing IPv6 monitor within a minute.
+* After upgrading, existing tunnels show ipv6-unmonitored and behave
+  exactly as before until each is edited; nothing changes on upgrade.
+* Setting the IPv6 monitor in Edit rewrites the IPv6 gateway's
+  description, monitor and thresholds (copied from the IPv4 gateway) and
+  reconfigures routing, so every gateway monitor restarts.
+* Create with IPv6, and an Edit that turns IPv6 on, require an IPv6
+  monitor.
+* The WAN lists show a hint when no gateway of the endpoint's family is
+  saved.
+* Edit offers the bound WAN's other-family gateway only when the pasted
+  config changes the endpoint, and a refused new endpoint reports one
+  error.
+
+3.2
+
+* IPv6 endpoints: a tunnel may connect to its server over IPv6, bound by a
+  /128 route to a WAN's IPv6 gateway, with the same WAN pin, underlay and
+  Create, Edit, swap, Rebind and Remove handling as an IPv4 endpoint. Save
+  an automatic DHCPv6 gateway once on System > Gateways to bind to it.
+* Measure probes IPv6 paths from a global WAN address (80 bytes of overhead).
+* A tunnel held down on a WAN gateway with monitoring disabled is released
+  once the gateway is enabled again.
+* Create refuses an endpoint that is some gateway's monitor address.
+
+3.1
+
+* Edit a managed tunnel from the Tunnels tab or tunnel.php edit (JSON on
+  stdin): outbound NAT sources, MTU, monitor IP, bound WAN, IPv6 on/off and
+  a server swap; the preview lists exactly what changes, an edit that
+  changes nothing saves nothing, a refusal writes nothing, and the apply
+  follows the change (NAT alone reloads the filter without the gateway
+  lock; a tunnel change ends with wireguard restart)
+* A saved change whose apply did not complete stays apply-pending with the
+  apply it still needs; tunnel.php apply UUID (the Apply button) runs that
+  apply, and only a complete one clears it. Create's re-run is the tunnel
+  apply, which now ends with wireguard restart, so a re-run handshakes via
+  the bound WAN; tunnel.php apply UUID filter|routes|first|tunnel names one
+* The Edit dialog links what Edit leaves to the core pages (gateways,
+  gateway groups, firewall rules, outbound NAT, peer, interface), each as
+  deep as the page allows; the grid's gateway links open that gateway (3.1_1)
+* Shown as VPN > WireGuard > Upstream tunnels, and its firewall rules are
+  described "WireGuard Upstream Tunnels:"; the package, pages' URLs and
+  configd actions keep their wgclienttunnels names (3.1_1)
+* Settings and tunnels on one page: the settings pane, with Apply under
+  the switches, above the tunnel list; the tabs are gone. Ensure sentinel
+  is now Check default-route exclusion, beside the Default-route guard
+  switch (tunnel.php ensure-sentinel is unchanged) (3.1_1)
+* The settings show each switch's help in its own column, saying when it
+  is normally enabled (3.1_1)
+* Fix: Firewall > Rules showed no rules at all while the pins rendered.
+  They now register at priority 99999, which core's Rules page files under
+  Automatically generated rules; the order pf evaluates them in is
+  unchanged (3.1_1)
+* Removed the migration from the 2.x plugin (os-wg-ipv6-gateway); a
+  configuration saved before 3.0 comes up with default settings (3.1_1)
+* Fix: wgct.sh is installed executable. Since 3.0 was first installed as a
+  package it was not, so the minute's reconcile (route self-heal,
+  default-route guard, rule freshness), the service actions and the
+  interface hooks failed with "Permission denied" (3.1_2)
+
+3.0
+
+* Renamed from os-wg-ipv6-gateway: package os-wg-client-tunnels, namespace
+  OPNsense\WGClientTunnels, configd, pages and API under wgclienttunnels;
+  model 3.0.0 copies the 2.x settings and removes the old section (a 1.x
+  section must first be migrated by os-wg-ipv6-gateway 2.x)
+* The reconcile (every minute and on each config save) migrates an old
+  section that config holds without a new one, as a Config History revert
+  to a pre-3.0 revision leaves it; a refusal is logged once per state
+* Runtime under /var/run/wgclienttunnels and /var/db/wgclienttunnels, pf
+  anchor wgclienttunnels_mss, rules described "WireGuard Client Tunnels:",
+  syslog tags wgct-*
+* tunnels.php is gone; tunnel.php list replaces it
+* A WireGuard start, stop, restart or configure step is issued only for an
+  instance uuid core recognises; core reads anything else as a CARP vhid
+* WireGuard is part of core: the os-wireguard dependency is dropped
+* The Tunnels tab lists the managed tunnels in core's grid (sorting,
+  search, paging, horizontal scroll), with Remove, Rebind and Apply as row
+  commands; the grid, the banners and the unmanaged list reload when an
+  action's reply arrives, not only when its result dialog is closed
+
+2.2
+
+* Create a tunnel from a pasted wg-quick config -- WireGuard instance and
+  peer, interface, IPv4 and IPv6 gateways, endpoint route and outbound NAT
+  -- with the MTU measured from the bound WAN
+* Remove, Rebind and Adopt from the Tunnels tab or tunnel.php, each with a
+  dry-run preview; Remove refuses while anything references the tunnel
+* Ensure sentinel builds the NO_DEFAULT4/NO_DEFAULT6 gateways
+* Every action saves once under the config lock, applies through configd
+  and replays gateway alarms dropped while it held the gateway lock
+* A Create whose apply did not complete shows the apply-pending finding
+  and an Apply button, across a reboot
+* Create installs the endpoint route before the tunnel's first handshake,
+  and Rebind restarts the tunnel, so it handshakes via the bound WAN
+* tunnel.php command line; tunnels.php stays as its list alias
+
+2.1
+
+* Rendered WAN pins, inner-source blocks and a TCP MSS clamp (both
+  directions) derived from core, each with its own switch
+* The configuration reconcile requests a filter reload when the
+  rendered rules or the MSS anchor fall out of date, with back-off
+* A render-failed finding; the Tunnels tab also shows each tunnel's
+  clamp
+
+2.0
+
+* Tunnels are derived from core configuration on every use; the plugin
+  keeps only which WireGuard instances it manages (the per-gateway rows
+  are migrated away)
+* Read-only Tunnels tab with live gateway status, the mirror's held
+  marker, links to the owning core pages, and findings
+* The health mirror's held set lives in the plugin configuration
+* Switches for the health mirror, IPv6 routes and default-route guard
+* Reconcile on every configuration change, not only each minute
+
+1.1
+
+* The health mirror re-reads config under the config lock before saving,
+  so a change saved in the GUI while it runs is never reverted
+* Mirror decisions are a pure function of a snapshot; --snapshot and
+  --plan-from=FILE capture and replay one
+* Applying the plugin's settings builds its models under the config lock
+
+1.0
+
+* Per-tunnel IPv6 addresses and gateway host routes, restored at boot,
+  on gateway and WAN events, and by a one-minute reconcile
+* Health mirror with WAN binding, IPv6-follows-IPv4, loss hysteresis and
+  a settle guard for freshly restarted monitors
+* Serialised reconfigures and a configd alarm replay, so the mirror
+  cannot starve itself or drop gateway alarms
+* Default-route guard for tunnels and other non-default gateways
+* Dashboard service status detection
