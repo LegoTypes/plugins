@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Status and logging (spec 2026-10-17 section 3.8): syslog lines, the blocked-packet line, durations and the status
+ * Status and logging: syslog lines, the blocked-packet line, durations and the status
  * document. Pure except uu_log() and uu_logger().
  */
 
@@ -89,7 +89,7 @@ function uu_duration_text(int $seconds): string
 }
 
 /**
- * The status page's document (section 3.8). The mode, member and timers are the plan's view of now (recovered
+ * The status page's document. The mode, member and timers are the plan's view of now (recovered
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
  *
  * @param array{now: int, wall: int,

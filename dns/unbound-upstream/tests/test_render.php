@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Rendered allow-list for the resolver (spec section 3.6b): the confs, and the registration hook's
+ * Rendered allow-list for the resolver: the confs, and the registration hook's
  * never-throws behaviour. The text core renders from them is checked by test_render_vm.php. The footprint's rules
- * (spec -04 section 3.2) are rendered from a state file in a scratch directory, as uu_wanted_render() reads the
+ * are rendered from a state file in a scratch directory, as uu_wanted_render() reads the
  * plugin's own.
  */
 
@@ -172,7 +172,7 @@ uu_register_suite('render', function (): int {
     });
     uu_check($t, 'the failure line carries no control characters', $logged === ['rules not rendered: bad?[0m?value']);
 
-    /* the footprint (spec -04 section 3.2; rulings R1, R2, R11, R47, R48): the address the plugin last used */
+    /* the footprint: the address the plugin last used */
     uu_check($t, 'labels: the footprint block and a footprint pass have labels of their own',
         uu_try_case(fn (): bool => uu_label_footprint() === md5('uu-footprint')
             && uu_label_footprint_pass('opt14') === md5('uu-footprint-pass-opt14')
@@ -241,7 +241,7 @@ uu_register_suite('render', function (): int {
             return $r['rules'] === $at([$fpBlock]) && $r['tables'] === [] && $r['logged'] === [];
         }));
     uu_check($t, '(r3) enabled on 192.0.2.9 with the footprint 192.0.2.1: the setting\'s passes, the footprint pass, '
-        . 'the counting block, the backstop, the footprint block, all at UU_RULE_PRIORITY in that order (R47)',
+        . 'the counting block, the backstop, the footprint block, all at UU_RULE_PRIORITY in that order',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $on, $at, $today, $fpPass,
             $fpBlock): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
@@ -251,7 +251,7 @@ uu_register_suite('render', function (): int {
                 && $r['tables'] === [[UU_BLOCK_TABLE, false, null]] && $r['logged'] === [];
         }));
     uu_check($t, '(r11) enabled on B with the footprint A: the footprint pass to A comes before the counting block, '
-        . 'and every pass before every block (R47)',
+        . 'and every pass before every block',
         uu_try_case(function () use ($a, $b): bool {
             $c = uu_rule_confs('192.0.2.9', [$a, $b], true, ['resolver' => '192.0.2.1', 'interface' => 'opt14']);
             $types = array_column($c, 'type');
@@ -299,7 +299,7 @@ uu_register_suite('render', function (): int {
             return $r['rules'] === $at($today) && $r['logged'] === [];
         }));
     uu_check($t, '(r12) the settings cannot be read, a footprint recorded: the footprint pass and block, no table, and '
-        . 'one error (R48)',
+        . 'one error',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $at, $fpPass,
             $fpBlock): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
@@ -310,7 +310,7 @@ uu_register_suite('render', function (): int {
                 && !str_contains($r['logged'][0][1], 'is blocked');
         }));
     uu_check($t, '(r13) the settings and the gateway records cannot be read: the footprint block alone, and one error '
-        . 'naming both reads and the address now blocked (R48)',
+        . 'naming both reads and the address now blocked',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $at, $fpBlock): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.1', $onWg1));
             $r = $render($dir . '/state.json', null, null);
@@ -321,7 +321,7 @@ uu_register_suite('render', function (): int {
                     . 'until a filter reload can read the gateway records';
         }));
     uu_check($t, '(r14) disabled with no footprint: the settings are read once, the gateway records never, nothing is '
-        . 'rendered and nothing logged (R48)',
+        . 'rendered and nothing logged',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $off): bool {
             $none = $render($dir . '/state.json', $off, null);
             uu_state_save($dir . '/state.json', $stateOf(null, null));
@@ -349,7 +349,7 @@ uu_register_suite('render', function (): int {
                     . 'records';
         }));
 
-    /* the footprint reader itself (ruling R1) */
+    /* the footprint reader itself */
     uu_check($t, 'footprint: none recorded is none, and no problem',
         uu_try_case(fn (): bool => uu_footprint_from_state($stateOf(null, null), $records, '')
             === ['footprint' => null, 'problem' => null]));
@@ -415,14 +415,14 @@ uu_register_suite('render', function (): int {
                 'logged' => $logged];
     };
     $r = $refused(md5('uu-footprint-pass-opt14'));
-    uu_check($t, '(M5) a refused footprint pass costs only itself: the setting\'s passes, the counting block, the '
+    uu_check($t, 'a refused footprint pass costs only itself: the setting\'s passes, the counting block, the '
         . 'backstop and the footprint block all register, one error naming the rule',
         !$r['threw'] && $r['labels'] === [md5('uu-pass-opt14'), md5('uu-pass-opt15'), md5('uu-block'),
             md5('uu-backstop'), md5('uu-footprint')]
         && $r['logged'] === [['err', 'rules: "Unbound upstream: the address the plugin last used, through the device '
             . 'of its route" not rendered: refused; twice']]);
     $r = $refused(md5('uu-pass-opt14'));
-    uu_check($t, '(M5) a refused first setting pass costs only itself: the other passes and every block register',
+    uu_check($t, 'a refused first setting pass costs only itself: the other passes and every block register',
         !$r['threw'] && $r['labels'] === [md5('uu-pass-opt15'), md5('uu-footprint-pass-opt14'), md5('uu-block'),
             md5('uu-backstop'), md5('uu-footprint')]
         && count($r['logged']) === 1 && $r['logged'][0][0] === 'err');

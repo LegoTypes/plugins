@@ -47,7 +47,7 @@ uu_register_suite('render_vm', function (): int {
     uu_check($t, 'no unresolved ## placeholder', !str_contains($text, '##'));
     printf("%s", preg_replace('/^/m', '    | ', $text));
 
-    /* (r10) the footprint's rules with the plugin disabled (spec -04 section 3.2): a pass on the route's device */
+    /* (r10) the footprint's rules with the plugin disabled: a pass on the route's device */
     $fw = new \OPNsense\Firewall\Plugin();
     $fw->setInterfaceMapping($mapping);
     uu_render_firewall($fw, fn (): array => ['enabled' => false, 'resolver' => '', 'members' => [],

@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Live snapshot parsers (spec section 3.2): route get, unbound-control forward, sysctl, ps, group tiers; and the pf
- * observation the snapshot makes through an injected pfctl (section 3.6c): what it reads, and that a status never
- * lists the ruleset; and the pfctl runner, whose stderr file lives in the root-only run directory (convention C3).
+ * Live snapshot parsers: route get, unbound-control forward, sysctl, ps, group tiers; and the pf
+ * observation the snapshot makes through an injected pfctl: what it reads, and that a status never
+ * lists the ruleset; and the pfctl runner, whose stderr file lives in the root-only run directory.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -216,7 +216,7 @@ uu_register_suite('snapshot', function (): int {
             return $clean === ['out' => 'whole', 'err' => "No ALTQ support in kernel\n"]
                 && uu_pf_listing_usable($clean['err']);
         }));
-    /* convention C3: the stderr file lives in the run directory it is given, never in /tmp; tempnam() falls back
+    /* the stderr file lives in the run directory it is given, never in /tmp; tempnam() falls back
      * to the system temporary directory when that one is unusable, which is refused */
     $stub = function (string $dir): string {
         file_put_contents($dir . '/stub.sh', "#!/bin/sh\nls \"\$1\"\n");

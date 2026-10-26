@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Choice, failback timers and probe outcomes (spec sections 3.3 and 3.5).
+ * Choice, failback timers and probe outcomes.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';

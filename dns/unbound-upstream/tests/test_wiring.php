@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The plugin's wiring on the test VM (spec sections 3.1 and 3.11): the hook table, the hook order, the privileges,
+ * The plugin's wiring on the test VM: the hook table, the hook order, the privileges,
  * configd's answers and the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
  * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
@@ -228,7 +228,7 @@ uu_register_suite('wiring', function (): int {
         $after('Forward') === 'UnboundUpstream' && $after('LogFile') === 'UnboundUpstreamLog'
         && count(array_unique($menu)) === count($menu));
 
-    /* section 3.11: the status privilege reads the state and nothing else; the page privilege keeps everything */
+    /* The status privilege reads the state and nothing else; the page privilege keeps everything */
     $aclXml = simplexml_load_file('/usr/local/opnsense/mvc/app/models/OPNsense/UnboundUpstream/ACL/ACL.xml');
     $patterns = function (string $priv) use ($aclXml): array {
         return $aclXml === false ? [] : array_map('strval', $aclXml->xpath("/acl/{$priv}/patterns/pattern") ?: []);
@@ -253,7 +253,7 @@ uu_register_suite('wiring', function (): int {
         $allows('page-services-unboundupstream', '/api/unboundupstream/service/state')
         && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
 
-    /* finding L1: program() is an unanchored regex, and core's resolver log filter is program("unbound") */
+    /* program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';
     $filters = uu_test_program_filters(is_readable($conf) ? (string)file_get_contents($conf) : '');
     $selects = fn (string $pattern): bool => preg_match('~' . str_replace('~', '\~', $pattern) . '~', UU_SYSLOG_IDENT) === 1;
@@ -280,7 +280,7 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'the hook file cleans what it logs with the same function as the scripts',
         uu_try_case(fn (): bool => unboundupstream_clean("a\x1bb\nc") === 'a?b; c'
             && unboundupstream_clean('plain') === 'plain'));
-    /* N1: a php whose open_basedir admits only core's inc directory loads the hook file but cannot read
+    /* A php whose open_basedir admits only core's inc directory loads the hook file but cannot read
      * lib/logline.php, as when the library is missing: the hook's own prefix stays, only the message is withheld */
     $code = 'require "' . $inc . '"; echo unboundupstream_error_line("cron: cannot read the settings: ", '
         . '"secret\nsecond line"), PHP_EOL, unboundupstream_error_line("render hook failed: ", "a\x1bb"), PHP_EOL;';
@@ -290,9 +290,9 @@ uu_register_suite('wiring', function (): int {
     if ($out !== "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n") {
         printf("  without the library: %s\n", preg_replace('/[^\x20-\x7e]/', '?', substr($out, 0, 400)));
     }
-    uu_check($t, '(N1) without the plugin library a hook\'s error line keeps its prefix and withholds only the message',
+    uu_check($t, 'without the plugin library a hook\'s error line keeps its prefix and withholds only the message',
         $out === "cron: cannot read the settings: $withheld\nrender hook failed: $withheld\n");
-    uu_check($t, '(N1) with the library the error line is the prefix and the cleaned message',
+    uu_check($t, 'with the library the error line is the prefix and the cleaned message',
         uu_try_case(fn (): bool => unboundupstream_error_line('cron: cannot read the settings: ', "a\x1bb\nc")
             === 'cron: cannot read the settings: a?b; c'));
     uu_check($t, 'cron is empty while the plugin is disabled', unboundupstream_cron() === []);
@@ -300,7 +300,7 @@ uu_register_suite('wiring', function (): int {
 
     /* (r9) core lists the automatic rules from the web server's process, which cannot search the root-only run
      * directory: there the state reads as missing, with no problem, so the render's footprint read has nothing to log
-     * and the listing shows the setting's rules only (spec -04 section 3.2) */
+     * and the listing shows the setting's rules only */
     $aside = UU_STATE_PATH . '.r9';
     $had = file_exists(UU_STATE_PATH);
     $saved = $had ? (string)file_get_contents(UU_STATE_PATH) : null;
@@ -346,12 +346,12 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, '(r9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $had && !file_exists($aside)
         && ($had ? (string)file_get_contents(UU_STATE_PATH) : null) === $saved);
 
-    /* I1: the state set aside is put back exactly, and a move aside that fails runs nothing and touches nothing */
+    /* The state set aside is put back exactly, and a move aside that fails runs nothing and touches nothing */
     $savedState = uu_state_new();
     $savedState['resolver'] = '192.0.2.7';
     $mine = uu_state_new();
     $mine['resolver'] = '192.0.2.1';
-    uu_check($t, '(I1) a move aside that fails: nothing runs, the saved state stays as it was, no aside file',
+    uu_check($t, 'a move aside that fails: nothing runs, the saved state stays as it was, no aside file',
         uu_scratch_case(function (string $dir) use ($savedState, $mine): bool {
             $path = $dir . '/state.json';
             uu_state_save($path, $savedState);
@@ -362,7 +362,7 @@ uu_register_suite('wiring', function (): int {
             }, fn (string $from, string $to): bool => false);
             return !$ran && uu_state_read($path)['state'] === $savedState && !file_exists($path . '.aside');
         }));
-    uu_check($t, '(I1) a body that writes its state and throws: the saved state is back, no aside file',
+    uu_check($t, 'a body that writes its state and throws: the saved state is back, no aside file',
         uu_scratch_case(function (string $dir) use ($savedState, $mine): bool {
             $path = $dir . '/state.json';
             uu_state_save($path, $savedState);
@@ -372,7 +372,7 @@ uu_register_suite('wiring', function (): int {
             }, 'rename');
             return uu_state_read($path)['state'] === $savedState && !file_exists($path . '.aside');
         }));
-    uu_check($t, '(I1) no saved state: the body\'s state is removed, nothing is left',
+    uu_check($t, 'no saved state: the body\'s state is removed, nothing is left',
         uu_scratch_case(function (string $dir) use ($mine): bool {
             $path = $dir . '/state.json';
             uu_test_state_aside($path, $path . '.aside', function (callable $place) use ($mine): void {
@@ -390,7 +390,7 @@ uu_register_suite('wiring', function (): int {
     $status = trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status'));
     uu_check($t, 'configctl status answers with the line the service base class reads (plugin disabled)',
         $status === 'unboundupstream is not running');
-    /* finding D1: start and stop regenerate cron, so a minute job left behind goes even while disabled */
+    /* Start and stop regenerate cron, so a minute job left behind goes even while disabled */
     $job = '/usr/local/sbin/configctl unboundupstream evaluate';
     $tab = (string)shell_exec('/usr/bin/crontab -l 2>/dev/null');
     $stale = tempnam('/tmp', 'uu_cron');
@@ -407,7 +407,7 @@ uu_register_suite('wiring', function (): int {
         && !str_contains((string)shell_exec('/usr/bin/crontab -l 2>/dev/null'), $job)
         && trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status')) === 'unboundupstream is not running');
 
-    /* (e2) decision D4: with the plugin disabled, a state recording a footprint keeps the minute job, so a stop that
+    /* (e2) with the plugin disabled, a state recording a footprint keeps the minute job, so a stop that
      * could not restore is retried; without one the job goes. The evaluate lock is held throughout and the minute's
      * tick is at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
      * runs; the saved state, the crontab and cron's running state are put back as found */
@@ -511,7 +511,7 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'the monitor hook with a comma-separated string (pluginctl -c monitor) passes the same names',
         uu_test_wait_configd($named, $before));
 
-    /* Task 10 M3: the installed evaluate.php replays a recording made before 1.3 (no contract_input.core_commands)
+    /* The installed evaluate.php replays a recording made before 1.3 (no contract_input.core_commands)
      * without a PHP warning; the recording is this box's own, written to a scratch directory and removed, and is
      * replayed as enabled, since a disabled plugin's plan stops before it reads the contract */
     $m3 = null;
@@ -541,7 +541,7 @@ uu_register_suite('wiring', function (): int {
     if ($m3 !== null && ($m3['rc'] !== 0 || $m3Warned)) {
         printf("  replay exited %d:\n%s\n", $m3['rc'], $m3['out']);
     }
-    uu_check($t, '(M3) evaluate.php replay of a recording without contract_input.core_commands (the shape before 1.3) plans, exits 0 and prints no PHP warning',
+    uu_check($t, 'evaluate.php replay of a recording without contract_input.core_commands (the shape before 1.3) plans, exits 0 and prints no PHP warning',
         $m3 !== null && $m3['rc'] === 0 && !$m3Warned && str_contains($m3['out'], '"plan"'));
 
     $before = uu_test_evaluations();

@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Live collectors (spec 2026-10-17 section 3.2). Read-only: the plugin model, gateway groups and records and
+ * Live collectors. Read-only: the plugin model, gateway groups and records and
  * status, the dpinger processes' ages, Unbound's state, forwarders and generated configuration, the resolver's
- * route, one sysctl, the core hook files and configd actions files the contract checks, and pf (section 3.6c: the
+ * route, one sysctl, the core hook files and configd actions files the contract checks, and pf (the
  * ruleset checksum, the counting table, and the ruleset listing only when an evaluation finds no verdict for the
  * live checksum). Builds the Snapshot uu_plan() consumes (planner.php). The parsers are pure; the collectors are not
  * and run only where core is installed.
@@ -229,7 +229,7 @@ function uu_route_ours(array $route, array $members): bool
 }
 
 /**
- * The members the renderer gives pass rules (section 3.6b): those whose gateway record names an interface. Members
+ * The members the renderer gives pass rules: those whose gateway record names an interface. Members
  * sharing an interface share its rules, so the verdict asks each for them.
  *
  * @param array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
@@ -249,7 +249,7 @@ function uu_ruled_members(array $members): array
 }
 
 /**
- * What pf says about the plugin's rules and its counting table (section 3.6c), through pfctl. The rules come from
+ * What pf says about the plugin's rules and its counting table, through pfctl. The rules come from
  * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver and the
  * members' interfaces and devices), except that an evaluation (listRules) never reuses a recorded fault: it lists
  * again while the fault stands, and a status call shows it. Otherwise an evaluation lists the ruleset (again when
@@ -616,7 +616,7 @@ function uu_snapshot_recorded(array $snapshot): array
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
  * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved, or
  *     the saved one is a fault (it is verified again), or a listing was cut short: an evaluation's snapshot, never
- *     a status call's (section 3.6c)
+ *     a status call's
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
  *         probe_name: string},
@@ -764,7 +764,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
         $hooks = function_exists('unbound_configure') && array_key_exists('unbound_start', unbound_configure());
     }
 
-    /* pf: the rules' verdict for the live checksum and the counting table (section 3.6c) */
+    /* pf: the rules' verdict for the live checksum and the counting table */
     $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_rules_record_load(UU_RULES_PATH), $wall,
         $listRules, 'uu_pfctl_run');
 

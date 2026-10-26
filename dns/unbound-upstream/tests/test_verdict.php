@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Readings and verdicts (spec section 3.2): settled, young, cached and no readings.
+ * Readings and verdicts: settled, young, cached and no readings.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';

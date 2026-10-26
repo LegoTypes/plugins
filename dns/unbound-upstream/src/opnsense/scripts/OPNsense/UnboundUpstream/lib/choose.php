@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Candidate choice, failback timers and probe outcomes (spec 2026-10-17 sections 3.3 and 3.5). Pure.
+ * Candidate choice, failback timers and probe outcomes. Pure.
  *
  * Timers = array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                              probe_failures: int,
@@ -125,7 +125,7 @@ function uu_candidates(
 }
 
 /**
- * Spec 3.5 table: 'ok', 'flush_infra' (direct passes, Unbound fails, not yet flushed) or 'fail'.
+ * Probe outcome: 'ok', 'flush_infra' (direct passes, Unbound fails, not yet flushed) or 'fail'.
  * A null through-Unbound result means the check did not run (candidate entry), so the direct probe decides.
  */
 function uu_probe_outcome(bool $direct, ?bool $throughUnbound, bool $afterFlushInfra): string

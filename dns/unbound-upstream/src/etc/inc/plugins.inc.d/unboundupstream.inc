@@ -28,7 +28,7 @@
 
 /*
  * Hooks. plugins_scan() sorts the file names, so this file runs after unbound.inc: on unbound_start Unbound's
- * restart is already launched when the evaluate below is queued (spec 3.1). The configure hooks only queue
+ * restart is already launched when the evaluate below is queued. The configure hooks only queue
  * `configctl -d unboundupstream evaluate` and return; the cron and firewall hooks read the plugin's state through its
  * own libraries; none can throw into core.
  */
@@ -190,7 +190,7 @@ function unboundupstream_cron()
 }
 
 /**
- * Rendered rules (spec 3.6b, and the footprint's while the state records one) at every filter reload. Never throws: a
+ * Rendered rules (and the footprint's while the state records one) at every filter reload. Never throws: a
  * missing library renders nothing, and what each other failure keeps is uu_render_firewall()'s. Lines go through
  * logger(1): the hook runs inside core's filter reload and must not openlog() over core's ident.
  */

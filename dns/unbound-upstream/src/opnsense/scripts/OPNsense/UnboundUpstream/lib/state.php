@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state under /var/run (spec 2026-10-17 section 3.3). Lost at boot on purpose: a boot starts in fallback.
+ * Runtime state under /var/run. Lost at boot on purpose: a boot starts in fallback.
  *
  * State = array{version: int, mode: string, member: ?string, timers: Timers, control_failures: int,
  *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
@@ -18,7 +18,7 @@ declare(strict_types=1);
  *               next_hop '' on lo0, as route(8) prints it)
  * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
  * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
- * wall-clock time, for display only. checks are the last direct and through-Unbound results (section 3.8),
+ * wall-clock time, for display only. checks are the last direct and through-Unbound results,
  * tls_applied the TLS flag the plugin last gave forward_add (Unbound cannot print it back; null before the plugin
  * set the forwarders) and blocked the counting table's blocked packets at the last evaluation, so a rise is logged.
  * route_installed is the resolver route the plugin last added or changed (null after its delete), so the route

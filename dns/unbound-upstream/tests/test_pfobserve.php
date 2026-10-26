@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Observing pf (spec section 3.6c): the ruleset checksum, a table's counters, the rule verdict read from the
+ * Observing pf: the ruleset checksum, a table's counters, the rule verdict read from the
  * kernel's own text by keyword, and the verification kept once per checksum, in a record read as a regular file
- * only (convention C3).
+ * only.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -17,7 +17,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/pf
 require_once __DIR__ . '/scratch.php';
 
 /**
- * The record read of a named pipe, in a child php under timeout -f (ruling R61): a reader that blocks on the pipe, as
+ * The record read of a named pipe, in a child php under timeout -f: a reader that blocks on the pipe, as
  * one that opens it without O_NONBLOCK does while no writer comes, fails the case after 5 s with the evidence instead
  * of hanging the suite. True when the child read null.
  */
@@ -138,7 +138,7 @@ uu_register_suite('pfobserve', function (): int {
     $v = uu_rules_verdict($vsr, $resolver, [['if' => ''] + $members[0], $members[1]]);
     uu_check($t, 'verdict: a member without a device is reported, not matched to any device',
         !$v['loaded'] && $v['problems'] === ['wg-a pass: no device']);
-    /* the footprint's rules (spec -04 section 3.2, ruling R2): the verdict reads neither, so the old address's rules
+    /* the footprint's rules: the verdict reads neither, so the old address's rules
      * beside the setting's leave the setting's verdict as it is; a footprint block under the backstop's label would
      * not, and a footprint pass under the member's pass label would not either */
     $fpBlock = fn (string $label): string => $vsr
@@ -156,7 +156,7 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, '(p3) a footprint pass to the old address on a member\'s device reads loaded under its own label',
         uu_try_case(fn (): bool
             => $verdict($fpPass(uu_label_footprint_pass('opt1'))) === ['loaded' => true, 'problems' => []]));
-    uu_check($t, '(p3) the same pass under the member\'s pass label reads "wg-a pass: wrong address" (why R2 gives it '
+    uu_check($t, '(p3) the same pass under the member\'s pass label reads "wg-a pass: wrong address" (why it gets '
         . 'its own)',
         uu_try_case(fn (): bool => $verdict($fpPass(uu_label_pass('opt1')))
             === ['loaded' => false, 'problems' => ['wg-a pass: wrong address']]));
@@ -343,7 +343,7 @@ uu_register_suite('pfobserve', function (): int {
     unlink($path);
     rmdir($dir . '/sub');
     rmdir($dir);
-    /* convention C3: the record is read as a regular file of at most UU_FILE_MAX_BYTES only */
+    /* the record is read as a regular file of at most UU_FILE_MAX_BYTES only */
     $valid = (string)json_encode($record);
     foreach (['link' => '(p1) record: a symbolic link to a valid record',
               'dir' => '(p1) record: a directory at the path', 'fifo' => 'record: a named pipe at the path',

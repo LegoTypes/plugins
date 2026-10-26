@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The planner (spec sections 3.2 to 3.4, 3.10 and the section 5 planner list; Review Focus 2 to 4).
+ * The planner.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -321,7 +321,7 @@ uu_register_suite('planner', function (): int {
         && uu_test_reason_has($inTunnel['reasons'], 'fib sync delay unreadable')
         && uu_test_reason_has($inFallback['reasons'], 'fib sync delay unreadable'));
 
-    /* ruling R44: a zone read that failed never lets the plan enter tunnel mode, and in tunnel it falls back */
+    /* a zone read that failed never lets the plan enter tunnel mode, and in tunnel it falls back */
     $plans = null;
     try {
         $s = uu_test_snapshot();
@@ -478,8 +478,8 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'disabled setting → stop', $p['action'] === 'stop' && !$p['escalate_restart']
         && uu_test_reason_has($p['reasons'], 'disabled in settings'));
 
-    /* ruling R52: the minute job stays while a footprint remains, so a disabled plugin's tick on a silent channel
-     * restarts Unbound only within section 3.10's bound, never once a minute */
+    /* the minute job stays while a footprint remains, so a disabled plugin's tick on a silent channel
+     * restarts Unbound only within the bound, never once a minute */
     $tick = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $tick['settings']['enabled'] = false;
     $tick['unbound']['control_ok'] = false;
@@ -491,7 +491,7 @@ uu_register_suite('planner', function (): int {
     $d2 = uu_plan($tick, $d1['state']);
     $tick['now'] = $now + UU_ESCALATE_MIN_SECONDS;
     $d3 = uu_plan($tick, $d2['state']);
-    uu_check($t, '(R52) disabled tick, footprint, silent channel → a stop with no restart on the first and second evaluations, with one on the third at 120 s',
+    uu_check($t, 'disabled tick, footprint, silent channel → a stop with no restart on the first and second evaluations, with one on the third at 120 s',
         $d1['action'] === 'stop' && !$d1['escalate_restart'] && $d1['state']['control_failures'] === 1
         && $d1['state']['control_silent_since'] === $now
         && $d2['action'] === 'stop' && !$d2['escalate_restart'] && $d2['state']['control_failures'] === 2
@@ -500,11 +500,11 @@ uu_register_suite('planner', function (): int {
         && uu_test_reason_has($d1['reasons'], 'disabled in settings')
         && uu_test_reason_has($d1['reasons'], 'silent (1 evaluations, 0 s)')
         && uu_test_reason_has($d3['reasons'], 'while stopping', 'restart Unbound when the stop cannot restore'));
-    /* M5: with cacheflush on, the due tick's line says no restart follows, as tunnel mode's does */
+    /* With cacheflush on, the due tick's line says no restart follows, as tunnel mode's does */
     $flushTick = $tick;
     $flushTick['contract_input']['cacheflush'] = true;
     $flushDue = uu_plan($flushTick, $d2['state']);
-    uu_check($t, '(R52, M5) the due tick with cacheflush on → its line says the restart escalation is disabled, and promises no restart',
+    uu_check($t, 'the due tick with cacheflush on → its line says the restart escalation is disabled, and promises no restart',
         uu_test_reason_has($flushDue['reasons'], 'while stopping', 'restart escalation disabled: cacheflush on')
         && !uu_test_reason_has($flushDue['reasons'], 'restart Unbound'));
     $tick['now'] = $now;
@@ -515,7 +515,7 @@ uu_register_suite('planner', function (): int {
     $e3 = uu_plan($tick, $e2['state']);
     $tick['now'] = $now + UU_ESCALATE_MIN_SECONDS;
     $e4 = uu_plan($tick, $e3['state']);
-    uu_check($t, '(R52) disabled tick: three silent evaluations within 120 s → no restart; the fourth at 120 s → one',
+    uu_check($t, 'disabled tick: three silent evaluations within 120 s → no restart; the fourth at 120 s → one',
         !$e3['escalate_restart'] && $e3['state']['control_failures'] === 3 && $e4['escalate_restart']);
     $answering = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $answering['settings']['enabled'] = false;
@@ -530,7 +530,7 @@ uu_register_suite('planner', function (): int {
             && $a['state']['control_silent_since'] === null;
         $st = $a['state'];
     }
-    uu_check($t, '(R52) disabled tick with an answering channel → never a restart, the count cleared', $never);
+    uu_check($t, 'disabled tick with an answering channel → never a restart, the count cleared', $never);
     $tickDead = $tick;
     $tickDead['unbound']['pid_alive'] = false;
     $tickDeadPlan = uu_plan($tickDead, $counted);
@@ -540,12 +540,12 @@ uu_register_suite('planner', function (): int {
     $tickRemove = $tick;
     $tickRemove['stop'] = UU_STOP_REMOVE;
     $tickRemovePlan = uu_plan($tickRemove, $counted);
-    uu_check($t, '(R52, R53) a stopped Unbound, a requested stop or the removal (whose restarts are apply\'s own, at once) → no count and no escalation',
+    uu_check($t, 'a stopped Unbound, a requested stop or the removal (whose restarts are apply\'s own, at once) → no count and no escalation',
         !$tickDeadPlan['escalate_restart'] && $tickDeadPlan['state']['control_failures'] === 0
         && !$tickRequestedPlan['escalate_restart'] && $tickRequestedPlan['state']['control_failures'] === 0
         && !$tickRemovePlan['escalate_restart'] && $tickRemovePlan['state']['control_failures'] === 0);
 
-    /* ruling R53: every other silent-channel stop waits for the same bound, so the undo of a replaced address, which a
+    /* every other silent-channel stop waits for the same bound, so the undo of a replaced address, which a
      * disabled plugin's tick runs first while the setting names another, restarts at most once per bound */
     foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
         $undo = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
@@ -558,13 +558,13 @@ uu_register_suite('planner', function (): int {
         $u2 = uu_plan($undo, $u1['state']);
         $undo['now'] = $now + UU_ESCALATE_MIN_SECONDS;
         $u3 = uu_plan($undo, $u2['state']);
-        uu_check($t, "(R53) the undo of a replaced address, plugin $what, silent channel → no restart on the first and second evaluations, one on the third at 120 s",
+        uu_check($t, "the undo of a replaced address, plugin $what, silent channel → no restart on the first and second evaluations, one on the third at 120 s",
             $u1['action'] === 'stop' && !$u1['escalate_restart'] && $u1['state']['control_failures'] === 1
             && !$u2['escalate_restart'] && $u2['state']['control_failures'] === 2
             && $u3['escalate_restart'] && $u3['state']['control_failures'] === 0
             && uu_test_reason_has($u1['reasons'], 'resolver setting changed'));
     }
-    /* ruling R51: a tick while the removal marker exists is such a stop too */
+    /* a tick while the removal marker exists is such a stop too */
     foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
         $m = null;
         $ok = uu_try_case(function () use ($on, $footprint, $now, &$m): bool {
@@ -583,12 +583,12 @@ uu_register_suite('planner', function (): int {
                 && !$m2['escalate_restart'] && $m2['state']['control_failures'] === 2
                 && $m3['escalate_restart'] && $m3['state']['control_failures'] === 0;
         });
-        uu_check($t, "(R51, R53) a tick while the removal marker exists, plugin $what, silent channel → a stop with no restart on the first and second evaluations, one on the third at 120 s",
+        uu_check($t, "a tick while the removal marker exists, plugin $what, silent channel → a stop with no restart on the first and second evaluations, one on the third at 120 s",
             $ok && $m !== null && uu_test_reason_has($m['reasons'], 'package is being removed', 'removal marker')
             && !uu_test_reason_has($m['reasons'], 'disabled in settings'));
     }
 
-    /* rulings R50 and R51: an evaluation's causes, for its run and for the undo of a replaced address before it */
+    /* an evaluation's causes, for its run and for the undo of a replaced address before it */
     $causes = [
         'an evaluation: none, and the undo as the replaced address\'s' => [null, false,
             fn (): array => ['run' => null, 'undo' => UU_STOP_RESOLVER]],
@@ -602,7 +602,7 @@ uu_register_suite('planner', function (): int {
             fn (): array => ['run' => UU_STOP_REMOVE, 'undo' => UU_STOP_REMOVE]],
     ];
     foreach ($causes as $what => [$stop, $removing, $want]) {
-        uu_check($t, "(R50, R51) the causes of $what",
+        uu_check($t, "the causes of $what",
             uu_try_case(fn (): bool => uu_plan_causes($stop, $removing) === $want()));
     }
 
@@ -633,7 +633,7 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'no stop cause and enabled → no stop reason',
         uu_plan_stop_reason(uu_test_snapshot()) === null);
 
-    /* Task 10 M3: a recording made before 1.3 has no contract_input.core_commands; replay reads it as nothing
+    /* A recording made before 1.3 has no contract_input.core_commands; replay reads it as nothing
      * drifted, and plans without a PHP warning */
     $old = uu_test_snapshot();
     unset($old['contract_input']['core_commands']);
@@ -657,17 +657,17 @@ uu_register_suite('planner', function (): int {
     if ($warnings !== []) {
         printf("  %s\n", implode("\n  ", $warnings));
     }
-    uu_check($t, '(M3) a pre-1.3 recording (no core_commands): planned bare it warns; as replay reads it, it plans as with no drift and without a warning',
+    uu_check($t, 'a pre-1.3 recording (no core_commands): planned bare it warns; as replay reads it, it plans as with no drift and without a warning',
         $bare && $bareWarned && $replayed && $warnings === [] && $upgraded !== null
         && $upgraded['contract_input']['core_commands'] === []);
-    uu_check($t, '(M3) a recording that has core_commands keeps them',
+    uu_check($t, 'a recording that has core_commands keeps them',
         uu_try_case(function (): bool {
             $s = uu_test_snapshot();
             $s['contract_input']['core_commands'] = ['cron restart'];
             return uu_snapshot_recorded($s) === $s;
         }));
 
-    // Mode recovery (Review Focus 4).
+    // Mode recovery.
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-b');
     $p = uu_plan($s, uu_state_new());
     uu_check($t, 'state file lost but live root is the resolver → treated as tunnel on the route\'s member',

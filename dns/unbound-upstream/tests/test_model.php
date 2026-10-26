@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The settings model: defaults and Save-time validation (spec section 3.9). Needs the OPNsense model
+ * The settings model: defaults and Save-time validation. Needs the OPNsense model
  * classes, so it runs only on the test VM (vm_selftest.sh) and reports a skip anywhere else.
  */
 

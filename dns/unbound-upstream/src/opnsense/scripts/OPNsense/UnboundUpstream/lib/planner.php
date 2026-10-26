@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The planner (spec 2026-10-17 sections 3.2 to 3.4 and 3.10). Pure: (snapshot, state) -> plan.
+ * The planner. Pure: (snapshot, state) -> plan.
  *
  * Snapshot = array{now: int, wall: int, settings: array{enabled: bool, dry_run: bool, group: string, resolver: string,
  *                  failback_delay: int, probe_name: string},
@@ -32,7 +32,7 @@ declare(strict_types=1);
  *   action: 'stop' (disabled, a stop cause, or Unbound not running), 'skip' (control channel silent), 'tunnel'
  *   (apply tries candidates in order; the first is the target), 'fallback' (leave tunnel mode) or 'none'.
  *   candidates is always the full choice list, so apply can move on when the current member fails its resolver
- *   checks. reassert and route_repair are the section 3.4 reconcile and are only set with 'none'. state carries
+ *   checks. reassert and route_repair are the reconcile and are only set with 'none'. state carries
  *   the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
@@ -133,7 +133,7 @@ function uu_plan_result(
 }
 
 /**
- * One more evaluation with Unbound's control channel silent (section 3.10): the count, the first such evaluation's
+ * One more evaluation with Unbound's control channel silent: the count, the first such evaluation's
  * time, how long the channel has been silent, its reason line, and whether a restart is due: after
  * UU_ESCALATE_EVALUATIONS evaluations over at least UU_ESCALATE_MIN_SECONDS, so a fresh start is never restarted.
  *
@@ -273,7 +273,7 @@ function uu_plan(array $s, array $st): array
     }
     $st['timers'] = uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall']);
 
-    /* when the state file does not say tunnel, the live root decides the mode (Review Focus 4); with the control
+    /* when the state file does not say tunnel, the live root decides the mode; with the control
      * channel silent there is no live root, and our route via a member is the evidence instead */
     $liveRoot = $s['unbound']['live_root'];
     $liveIsResolver = $liveRoot === [$resolver];
@@ -337,7 +337,7 @@ function uu_plan(array $s, array $st): array
         return uu_plan_result('stop', $candidates, false, false, $escalate, $st, $reasons);
     }
     if (!$s['unbound']['enabled'] || !$s['unbound']['pid_alive']) {
-        /* the user stopped Unbound: a silent control channel is no fault and nothing escalates (Review Focus 3) */
+        /* the user stopped Unbound: a silent control channel is no fault and nothing escalates */
         $st['control_failures'] = 0;
         $st['control_silent_since'] = null;
         $reasons[] = 'Unbound not running: ' . ($s['unbound']['enabled'] ? 'no live pid' : 'disabled');
@@ -366,7 +366,7 @@ function uu_plan(array $s, array $st): array
     $st['control_failures'] = 0;
     $st['control_silent_since'] = null;
 
-    /* never repair a route the plugin did not make; the contract refuses tunnel mode over it (Review Focus 1) */
+    /* never repair a route the plugin did not make; the contract refuses tunnel mode over it */
     $foreign = $route['present'] && !$route['ours'];
     $rejectRepair = !$foreign && !($route['present'] && $route['reject']);
 

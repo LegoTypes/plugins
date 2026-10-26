@@ -7,12 +7,12 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Scratch directories for the cases that read files the plugin trusts (convention C3): a fresh, randomly named
+ * Scratch directories for the cases that read files the plugin trusts: a fresh, randomly named
  * 0700 directory per case, the four kinds of path that are not a regular file within the read limit, and the runner
  * that turns a case's throw into a failure.
  */
 
-const UU_SCRATCH_MIB = 1048576;           /* the spec's limit (section 5.3), pinned here apart from UU_FILE_MAX_BYTES */
+const UU_SCRATCH_MIB = 1048576;           /* the zone files' size limit, pinned here apart from UU_FILE_MAX_BYTES */
 
 /** A new 0700 directory under the system temporary directory, by its real path (tempnam() resolves its dir). */
 function uu_scratch_dir(): string

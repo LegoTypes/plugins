@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Observing pf (spec 2026-10-17 section 3.6c): the ruleset checksum, a table's counters, the verdict on the
+ * Observing pf: the ruleset checksum, a table's counters, the verdict on the
  * plugin's rules read from the kernel's own listing by keyword, and that verdict kept once per checksum so the
  * 2.5 s ruleset listing is only paid after the ruleset changed. Pure apart from the record file.
  *

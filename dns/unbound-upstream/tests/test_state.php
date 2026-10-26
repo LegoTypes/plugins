@@ -7,8 +7,8 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state under /var/run (spec section 3.3): round trip and every way a file can be unusable, the path read
- * as a regular file only, and the run directory's mode (convention C3).
+ * Runtime state under /var/run: round trip and every way a file can be unusable, the path read
+ * as a regular file only, and the run directory's mode.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -176,7 +176,7 @@ uu_register_suite('state', function (): int {
     file_put_contents($path, json_encode($bad));
     uu_check($t, 'a non-string resolver loads as a new state', uu_state_load($path) === $new);
 
-    /* finding M4: json_decode turns an all-digit gateway name into an int key; the timers must survive it */
+    /* json_decode turns an all-digit gateway name into an int key; the timers must survive it */
     $digits = $s;
     $digits['timers'] = ['123' => $s['timers']['wg-a']];
     uu_state_save($path, $digits);
@@ -215,7 +215,7 @@ uu_register_suite('state', function (): int {
         && is_array($badAt) && uu_state_from_doc($badAt) === null
         && is_array($badType) && uu_state_from_doc($badType) === null);
 
-    /* convention C3: only a regular file of at most UU_FILE_MAX_BYTES is read; anything else is a new state, and
+    /* only a regular file of at most UU_FILE_MAX_BYTES is read; anything else is a new state, and
      * the read names why */
     $valid = (string)json_encode($s);
     $reads = function (string $kind, string $problem) use ($valid, $new): bool {
@@ -288,8 +288,7 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'run dir: a regular file at the path throws',
         $refuses(fn (string $dir): bool => file_put_contents($dir . '/run', 'x') === 1));
 
-    // The footprint (spec -04 section 3.2): one definition, and what an evaluation that changed it runs (ruling R4,
-    // decision D4).
+    // The footprint: one definition, and what an evaluation that changed it runs.
     $recorded = uu_state_new();
     $recorded['resolver'] = '192.0.2.1';
     $named = uu_state_new();
@@ -316,26 +315,26 @@ uu_register_suite('state', function (): int {
             uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled, null)
                 === ['reload' => $reload, 'cron' => $cron]));
     }
-    /* ruling R51: a tick while the removal marker exists is an evaluation and follows the footprint; only remove
-     * itself waits, and runs core's reload and cron restart after its stop (ruling R4) */
+    /* a tick while the removal marker exists is an evaluation and follows the footprint; only remove
+     * itself waits, and runs core's reload and cron restart after its stop */
     $marker = [
         'a tick while the removal marker exists, A → null, enabled: reload' => [true, true, false],
         'a tick while the removal marker exists, A → null, disabled: reload and cron' => [false, true, true],
     ];
     foreach ($marker as $what => [$enabled, $reload, $cron]) {
-        uu_check($t, "(R51) footprint $what",
+        uu_check($t, "footprint $what",
             uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, $enabled, UU_STOP_REMOVING)
                 === ['reload' => $reload, 'cron' => $cron]));
     }
     foreach (['A → null' => ['192.0.2.1', null], 'null → A' => [null, '192.0.2.1'],
               'A → B' => ['192.0.2.1', '192.0.2.9']] as $what => [$before, $after]) {
-        uu_check($t, "(R51) footprint $what in remove itself, enabled or disabled: nothing until its stop is over",
+        uu_check($t, "footprint $what in remove itself, enabled or disabled: nothing until its stop is over",
             uu_try_case(fn (): bool => uu_footprint_actions($before, $after, true, UU_STOP_REMOVE)
                 === ['reload' => false, 'cron' => false]
                 && uu_footprint_actions($before, $after, false, UU_STOP_REMOVE)
                 === ['reload' => false, 'cron' => false]));
     }
-    uu_check($t, '(R51) footprint A → null in a requested stop or the undo of a replaced address: as an evaluation',
+    uu_check($t, 'footprint A → null in a requested stop or the undo of a replaced address: as an evaluation',
         uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, false, UU_STOP_REQUEST)
             === ['reload' => true, 'cron' => true]
             && uu_footprint_actions('192.0.2.1', null, true, UU_STOP_RESOLVER)

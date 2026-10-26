@@ -57,11 +57,11 @@ function uu_test_lock_release(array $holder): void
 uu_register_suite('lock', function (): int {
     $t = ['fail' => 0, 'total' => 0];
 
-    uu_check($t, '(C1) the removal waits 120 s for the lock',
+    uu_check($t, 'the removal waits 120 s for the lock',
         uu_try_case(fn (): bool => UU_REMOVE_LOCK_WAIT_SECONDS === 120 && UU_LOCK_WAIT_SECONDS === 60));
-    uu_check($t, '(C1) policy: remove waits UU_REMOVE_LOCK_WAIT_SECONDS and gives up at LOG_ERR',
+    uu_check($t, 'policy: remove waits UU_REMOVE_LOCK_WAIT_SECONDS and gives up at LOG_ERR',
         uu_try_case(fn (): bool => uu_lock_policy('remove') === ['seconds' => 120, 'prio' => LOG_ERR]));
-    uu_check($t, '(C1) policy: an evaluation, start and stop wait UU_LOCK_WAIT_SECONDS and give up at LOG_WARNING',
+    uu_check($t, 'policy: an evaluation, start and stop wait UU_LOCK_WAIT_SECONDS and give up at LOG_WARNING',
         uu_try_case(fn (): bool => uu_lock_policy('evaluate') === ['seconds' => 60, 'prio' => LOG_WARNING]
             && uu_lock_policy('start') === uu_lock_policy('evaluate')
             && uu_lock_policy('stop') === uu_lock_policy('evaluate')));
@@ -96,10 +96,10 @@ uu_register_suite('lock', function (): int {
             uu_test_lock_release($holder);
         }
     });
-    uu_check($t, '(C1) a lock held by another process: after the wait uu_lock_run returns 1 and never calls fn',
+    uu_check($t, 'a lock held by another process: after the wait uu_lock_run returns 1 and never calls fn',
         $ok && $held !== null && $held['rc'] === 1 && $held['ran'] === false
         && $held['took'] >= 1000000000 && $held['took'] < 5000000000);
-    uu_check($t, '(C1) the wait that runs out logs once, at the priority given, with the text built when it ran out',
+    uu_check($t, 'the wait that runs out logs once, at the priority given, with the text built when it ran out',
         $ok && $held !== null && $held['logged'] === [['an evaluation held the lock for 1 s: the text built at the '
             . 'timeout', LOG_ERR]] && count($held['built']) === 1 && $held['built'][0] >= 1000000000);
 
@@ -119,7 +119,7 @@ uu_register_suite('lock', function (): int {
         }
         return true;
     });
-    uu_check($t, '(C1) a free lock: fn runs, its exit status is returned, nothing is logged, and the lock is let go',
+    uu_check($t, 'a free lock: fn runs, its exit status is returned, nothing is logged, and the lock is let go',
         $ok && $free === ['rc' => 7, 'logged' => [], 'again' => true]);
 
     return uu_tally_report('lock', $t);

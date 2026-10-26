@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core contract (spec section 3.10): each broken input refuses tunnel mode with its own named failure; a core
- * command a removal falls back to that no longer matches core is a note (ruling R6), and the package scripts run the
- * same commands (spec -04 section 3.2, C6).
+ * Core contract: each broken input refuses tunnel mode with its own named failure; a core
+ * command a removal falls back to that no longer matches core is a note, and the package scripts run the
+ * same commands.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -130,7 +130,7 @@ uu_register_suite('contract', function (): int {
     uu_check($t, 'unrestorable zone: failure lists the problems',
         !$c['ok'] && $c['failures'] === ['root zone cannot be restored: second . zone, forward-first']);
 
-    /* ruling R44: a zone read that failed refuses tunnel mode; it is never read as no root zone */
+    /* a zone read that failed refuses tunnel mode; it is never read as no root zone */
     $c = null;
     try {
         $in = uu_test_contract_input();
@@ -171,7 +171,7 @@ uu_register_suite('contract', function (): int {
     uu_check($t, 'several broken inputs report every failure',
         !$c['ok'] && count($c['failures']) === 3);
 
-    // The core commands a removal falls back to when configd does not answer (spec -04 section 3.2, C6; ruling R6).
+    // The core commands a removal falls back to when configd does not answer.
     $conf = "[reload]\ncommand:/usr/local/etc/rc.filter_configure\nparameters: %s\ntype:script\n"
         . "message:Reloading filter\n\n"
         . "[sync]\ncommand:/usr/local/etc/rc.filter_synchronize\nparameters:\ntype:script\n\n"
@@ -202,7 +202,7 @@ uu_register_suite('contract', function (): int {
         && str_starts_with($c['notes'][2] ?? '', 'core command changed: unbound restart'));
 
     /* the package scripts run core's two commands as remove does: configd when it says OK within the timeout, else
-     * core's script (ruling R55) */
+     * core's script */
     $scripts = [];
     foreach (['+POST_INSTALL.post', '+POST_DEINSTALL.post'] as $name) {
         $text = @file_get_contents(__DIR__ . '/../' . $name);
@@ -255,7 +255,7 @@ uu_register_suite('contract', function (): int {
         if ($seen !== []) {
             printf("  %s\n", implode("\n  ", $seen));
         }
-        uu_check($t, "(R55) $name under /bin/sh: core's script runs unless configctl exits 0 saying OK (no socket, a timeout, an error reply, no reply), and the line always exits 0",
+        uu_check($t, "$name under /bin/sh: core's script runs unless configctl exits 0 saying OK (no socket, a timeout, an error reply, no reply), and the line always exits 0",
             $all);
     }
     foreach ($scripts as $name => $text) {

@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Root-zone parser and shape (spec 2026-10-17 section 3.4). Pure.
+ * Root-zone parser and shape. Pure.
  *
  * Reads the forward zones out of Unbound's generated configuration and reports whether the root zone has a
  * shape forward_add can restore: no "." zone, or exactly one whose only options are forward-addr and

@@ -18,14 +18,14 @@
             if (!c) { return "{{ lang._('not yet') }}"; }
             return (c.ok ? "{{ lang._('ok') }}" : "{{ lang._('failed') }}") + ' (' + plain(c.member) + ', ' + new Date(c.at * 1000).toLocaleString() + ')';
         }
-        /* the member's reading (section 3.2): only a settled window qualifies it for choice */
+        /* the member's reading: only a settled window qualifies it for choice */
         var readings = {
             'settled': "{{ lang._('settled') }}",
             'young': "{{ lang._('young (window not yet full)') }}",
             'cached': "{{ lang._('cached (last reading of the gateway watcher)') }}",
             'none': "{{ lang._('none') }}"
         };
-        /* section 3.6c: loaded, verifying (the ruleset changed since the last evaluation) or the named problems; then
+        /* loaded, verifying (the ruleset changed since the last evaluation) or the named problems; then
            the address the footprint block keeps while the plugin may still be using it, when there is one */
         function rulesText(data) {
             var r = data.rules || {};

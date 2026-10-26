@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Rendered allow-list (spec 2026-10-17 section 3.6b): queries to the resolver may leave only through a member
+ * Rendered allow-list: queries to the resolver may leave only through a member
  * of the configured group. One pass per member, then two blocks to the resolver on every other interface,
  * registered as filter rules at every filter reload and never stored in the configuration. Core calls the
  * plugin's firewall hook both for a real reload and to list rules for display, so the hook only registers.

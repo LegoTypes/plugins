@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Status and logging (spec section 3.8): the blocked-count log line, the route flags, durations and the status
+ * Status and logging: the blocked-count log line, the route flags, durations and the status
  * document.
  */
 
@@ -69,7 +69,7 @@ uu_register_suite('log', function (): int {
     $armed = ['armed' => true, 'fill' => false, 'blocked' => 37];
     $route = uu_snapshot_fixture('route_get_member.txt');
     $doc = uu_status_doc($s, $plan, $armed, $route);
-    uu_check($t, 'status: every section 3.8 field',
+    uu_check($t, 'status: every field',
         array_keys($doc) === ['enabled', 'dry_run', 'resolver', 'mode', 'member', 'tier', 'unbound', 'live_root',
             'configured_root', 'tls_applied', 'route', 'rules_loaded', 'rules', 'footprint', 'counter_armed', 'blocked',
             'checks', 'members', 'last_switch', 'contract', 'next']);
@@ -120,7 +120,7 @@ uu_register_suite('log', function (): int {
         $doc['checks'] === $st['checks'] && $doc['contract'] === uu_contract($s['contract_input'])
         && $doc['next']['action'] === 'none' && $doc['last_switch'] === null);
 
-    /* (l1) the footprint (ruling R21): the address the plugin last used, when the setting does not cover it */
+    /* (l1) the footprint: the address the plugin last used, when the setting does not cover it */
     $fst = $st;
     $fst['resolver'] = '192.0.2.1';
     $fst['route_installed'] = ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'];

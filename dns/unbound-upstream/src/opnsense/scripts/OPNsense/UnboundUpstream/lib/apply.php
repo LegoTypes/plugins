@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Apply a plan (spec 2026-10-17 sections 3.4, 3.5, 3.7 and 3.10) through injected I/O, so order and failure
+ * Apply a plan through injected I/O, so order and failure
  * handling are testable. uu_live_io() binds the real commands.
  *
  * Io = array{route: callable(string $verb, list<string> $args): bool, sleep_ms: callable(int $ms): void,
@@ -248,7 +248,7 @@ final class UuApplyRun
     }
 
     /**
-     * Section 3.7: the configured forwarders back if Unbound may be on the resolver, then the route drained and
+     * The configured forwarders back if Unbound may be on the resolver, then the route drained and
      * deleted. A restore that failed ends in a restart (restartForStop()), and when that fails too, in
      * stopIncomplete().
      */
@@ -274,7 +274,7 @@ final class UuApplyRun
      * forward_add, a `forward` that does not confirm, an unrestorable zone; so does their undo of a replaced address,
      * which runs under their cause. Any other stop (a replaced resolver address in an evaluation, a disabled plugin's
      * tick, a tick while the removal marker exists, dry run's undo) restarts only on a silent channel, which nothing
-     * else can undo, and only once the planner's escalate_restart says the silence has lasted section 3.10's bound: the
+     * else can undo, and only once the planner's escalate_restart says the silence has lasted the bound: the
      * minute job repeats those stops, while a footprint remains even disabled. Never while Unbound is disabled in its
      * settings, even with its pid still alive; with cacheflush on only for remove itself (the restart wipes the cache
      * the user keeps, and a removal has nothing after it but the reject route). Confirmed through `forward`, polled for
@@ -301,7 +301,7 @@ final class UuApplyRun
             $this->log("stop: $why, and with cacheflush on a restart would wipe its cache: no restart", LOG_ERR);
             return false;
         }
-        $this->log("stop: $why, so only a restart brings back its configured root zone (section 3.7): restarting "
+        $this->log("stop: $why, so only a restart brings back its configured root zone: restarting "
             . 'Unbound' . ($flush ? ', although with cacheflush on it wipes the cache: the package is being removed'
             : ''), LOG_WARNING);
         if (!($this->io['restart_unbound'])()) {
@@ -406,7 +406,7 @@ final class UuApplyRun
         $this->routeDelete();
     }
 
-    /** Control channel silent: nothing can be read or set; only the section 3.10 escalation acts. */
+    /** Control channel silent: nothing can be read or set; only the escalation acts. */
     private function skip(): void
     {
         $this->reasons(LOG_WARNING);
@@ -420,7 +420,7 @@ final class UuApplyRun
             $ok ? LOG_WARNING : LOG_ERR);
     }
 
-    /** Staying: the reconcile (route, then reassert) and the per-evaluation checks of section 3.5 on M. */
+    /** Staying: the reconcile (route, then reassert) and the per-evaluation checks on M. */
     private function none(): void
     {
         $member = $this->st['member'];
@@ -449,7 +449,7 @@ final class UuApplyRun
     }
 
     /**
-     * Section 3.4 "entering tunnel mode" for each candidate in order; the first that passes is the member. None
+     * "Entering tunnel mode" for each candidate in order; the first that passes is the member. None
      * left, or Unbound refusing the resolver (no other member would change that): fallback.
      *
      * @param list<string> $names
@@ -494,7 +494,7 @@ final class UuApplyRun
         return 'ok';
     }
 
-    /** The section 3.5 table for the current member; false when it reached UU_PROBE_FAILURES and was marked. */
+    /** The probe-outcome table for the current member; false when it reached UU_PROBE_FAILURES and was marked. */
     private function check(string $name): bool
     {
         $direct = $this->probeDirect($name);
@@ -522,7 +522,7 @@ final class UuApplyRun
         return false;
     }
 
-    /** Fallback steps 1 to 3 (section 3.4); the reject route only once Unbound is off the resolver. */
+    /** Fallback steps 1 to 3; the reject route only once Unbound is off the resolver. */
     private function fallback(): void
     {
         if (!$this->restore()) {
@@ -690,7 +690,7 @@ final class UuApplyRun
         return $ok;
     }
 
-    /** A changed route reaches the data path up to fib_max_sync_delay_ms later (section 3.4 step 1). */
+    /** A changed route reaches the data path up to fib_max_sync_delay_ms later. */
     private function fibWait(): void
     {
         if (!$this->fibPending) {
@@ -1007,7 +1007,7 @@ function uu_drill(string $server, string $name): bool
 }
 
 /**
- * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (section 3.1); a failing
+ * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS; a failing
  * route or unbound-control call logs its output here, where the output is known. Every restart, whatever its cause,
  * is uu_unbound_restart(): core's restart through configd, else core's own command.
  *

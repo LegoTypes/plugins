@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The switch notification (spec 2026-10-17 section 3.11): after an evaluation saved a new last_switch, one JSON POST
+ * The switch notification: after an evaluation saved a new last_switch, one JSON POST
  * to the notify URL. A prompt for the receiver to read the state, so only the last switch is sent and a failure is
  * logged, never retried.
  */

@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core contract (spec 2026-10-17 section 3.10). Pure.
+ * Core contract. Pure.
  *
  * Takes the snapshot's contract input and says whether tunnel mode may run. Every failure refuses tunnel mode
  * and is shown on the status page verbatim, so the strings are part of the interface. Notes are status-only.
@@ -52,7 +52,7 @@ function uu_contract(array $c): array
     if ($c['foreign_route'] === true) {
         $failures[] = 'resolver route not ours';
     }
-    /* section 3.6c: verifying (a status call after the ruleset changed) is no fault, the next evaluation lists */
+    /* Verifying (a status call after the ruleset changed) is no fault, the next evaluation lists */
     if ($c['rules']['state'] === 'verifying') {
         $notes[] = 'firewall rules are being verified (the ruleset changed)';
     } elseif ($c['rules']['state'] !== 'loaded') {

@@ -7,8 +7,8 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Root-zone parser and shape (spec section 3.4): only shapes forward_add can restore; and the configuration files
- * it reads, regular files only (convention C3).
+ * Root-zone parser and shape: only shapes forward_add can restore; and the configuration files
+ * it reads, regular files only.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -111,7 +111,7 @@ uu_register_suite('zone', function (): int {
     uu_check($t, 'a comment after a clause header does not hide the zone',
         $z['shape'] === 'one' && $z['addrs'] === ['192.0.2.53'] && $z['problems'] === []);
 
-    /* convention C3 (ruling R9): the zone files are read as regular files only, each up to 1 MiB, so a large
+    /* the zone files are read as regular files only, each up to 1 MiB, so a large
      * blocklist file still counts and no forward-zone lies past 1 MiB; the cut falls at a line's end, so a line
      * past it is lost whole, never shortened */
     uu_check($t, '(z1) zone texts: the regular files are read, and a 2 MiB file yields its first 1 MiB up to its '
@@ -137,7 +137,7 @@ uu_register_suite('zone', function (): int {
         'named pipe' => fn (string $path) => uu_scratch_place('fifo', $path, ''),
     ];
     foreach ($skipped as $what => $place) {
-        uu_check($t, "(I3) zone texts: a *.conf $what beside a regular root zone file is a failed read (null), so the "
+        uu_check($t, "zone texts: a *.conf $what beside a regular root zone file is a failed read (null), so the "
             . 'zone is unrestorable, "configuration unreadable"',
             uu_scratch_case(function (string $dir) use ($place): bool {
                 file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
@@ -146,7 +146,7 @@ uu_register_suite('zone', function (): int {
                 return $got === null && uu_root_zone($got)['problems'] === ['configuration unreadable'];
             }));
     }
-    uu_check($t, '(I3) zone texts: a *.conf that cannot be opened (a socket) is a failed read (null)',
+    uu_check($t, 'zone texts: a *.conf that cannot be opened (a socket) is a failed read (null)',
         uu_scratch_case(function (string $dir): bool {
             file_put_contents($dir . '/a.conf', "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n");
             $sock = stream_socket_server('unix://' . $dir . '/dot.conf');
@@ -160,7 +160,7 @@ uu_register_suite('zone', function (): int {
                 fclose($sock);
             }
         }));
-    uu_check($t, '(I3) zone texts: a link or a named pipe that is a dot file or has another name is not counted: the '
+    uu_check($t, 'zone texts: a link or a named pipe that is a dot file or has another name is not counted: the '
         . '*.conf files are read',
         uu_scratch_case(function (string $dir): bool {
             $root = "forward-zone:\n  name: \".\"\n  forward-addr: 192.0.2.53\n";
@@ -186,7 +186,7 @@ uu_register_suite('zone', function (): int {
                 && uu_root_zone($got)['addrs'] === [];
         }));
 
-    /* ruling R43: no path in the directory is resolved through a link, so no device is ever looked up */
+    /* no path in the directory is resolved through a link, so no device is ever looked up */
     uu_check($t, '(z2) zone texts: a directory reached through a symbolic link is a failed read (null), never no '
         . 'zone; the real one is read',
         uu_scratch_case(function (string $dir): bool {
@@ -196,7 +196,7 @@ uu_register_suite('zone', function (): int {
             symlink($dir . '/real', $dir . '/link');
             return uu_zone_texts($dir . '/link') === null && uu_zone_texts($dir . '/real') === [$root];
         }));
-    /* ruling R44: the helper tells "could not look" from "nothing there" */
+    /* the helper tells "could not look" from "nothing there" */
     $helperRun = function (string $dir): array {
         $out = [];
         $rc = -1;
@@ -213,7 +213,7 @@ uu_register_suite('zone', function (): int {
             return $helperRun($dir . '/link') === [1, ''] && $helperRun($dir . '/none') === [1, '']
                 && $helperRun($dir . '/real') === [0, '{"texts": [], "skipped": 0}'];
         }));
-    uu_check($t, '(I3) zone_read.py: every *.conf entry it skips is counted, the regular files still printed',
+    uu_check($t, 'zone_read.py: every *.conf entry it skips is counted, the regular files still printed',
         uu_scratch_case(function (string $dir) use ($helperRun): bool {
             file_put_contents($dir . '/a.conf', 'x');
             symlink($dir . '/a.conf', $dir . '/b.conf');
@@ -250,7 +250,7 @@ uu_register_suite('zone', function (): int {
                 return $rc === 0 && count($out) === 1 ? explode(' ', trim($out[0])) : null;
             };
             /* the interfaces before the link exists, and the link made by ln(1): PHP's symlink() resolves its target,
-             * and that lookup alone clones a tun interface (the VM probe in the Task 3 report) */
+             * and that lookup alone clones a tun interface (found by probing the VM) */
             $before = $ifaces();
             $rc = 1;
             exec('/bin/ln -s /dev/tun ' . escapeshellarg($dir . '/b.conf'), result_code: $rc);

@@ -8,7 +8,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The plugin's single entry point (spec 2026-10-17 sections 3.1, 3.4, 3.7, 3.8 and 3.10):
+ * The plugin's single entry point:
  *   evaluate.php [evaluate] [NAMES]   one evaluation (configd, cron, hooks); NAMES is ONE comma-separated list of
  *                                     the gateways the monitor hook passed (configd hands %s over as one parameter)
  *   evaluate.php start                regenerate cron (the minute job exists while enabled, or while a footprint is
@@ -24,9 +24,8 @@ declare(strict_types=1);
  *                                     mode with nothing left to undo it), until the package's post-install deletes
  *                                     it. With a run directory it cannot trust it only restarts Unbound; a marker it
  *                                     cannot make is an error, and the stop runs all the same
- *   evaluate.php status               the section 3.8 JSON for the page; without the lock, it changes nothing but
+ *   evaluate.php status               the JSON for the page; without the lock, it changes nothing but
  *                                     the run directory (uu_run_dir()), and it never lists the ruleset
- *                                     (section 3.6c)
  *   evaluate.php selftest             the pure suites, from a source tree (the package carries no tests)
  *   evaluate.php record FILE          write the live snapshot and the saved state to FILE; changes nothing else
  *                                     but the run directory (uu_run_dir())
@@ -212,7 +211,7 @@ function uu_evaluate(?string $stop, array $named): int
 /**
  * Snapshot, the rules' verification saved when this run made one, plan, apply, the counting table's upkeep and
  * blocked-count line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
- * (uu_footprint_follow()), then the switch notification when the run switched (section 3.11), for one set of
+ * (uu_footprint_follow()), then the switch notification when the run switched, for one set of
  * settings. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with
  * changes the checksum anyway; the stop for a replaced resolver address would also verify the rules against an
  * address they are no longer rendered for and save that verdict under the live checksum.
@@ -293,7 +292,7 @@ function uu_footprint_follow(?string $before, bool $enabled, ?string $stop): voi
 }
 
 /**
- * Section 3.6c: put the resolver back into the counting table, which the rules reference but which does not hold
+ * Put the resolver back into the counting table, which the rules reference but which does not hold
  * exactly the resolver (a boot, a flush from Diagnostics, the first reload after enabling). The plugin's only pf
  * write, and in dry run too: the table is the counting block's upkeep, and the rules are rendered in dry run.
  */
@@ -315,7 +314,7 @@ function uu_block_table_fill(string $resolver): void
 }
 
 /**
- * Section 3.10: right after a start Unbound's control socket accepts before its workers serve it, so a silent
+ * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
  * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
  * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo.
  *
@@ -386,7 +385,7 @@ function uu_status_main(): int
 {
     $settings = uu_settings();
     $st = uu_state_load(UU_STATE_PATH);
-    /* never lists the ruleset (section 3.6c): the checksum and the counting table only */
+    /* never lists the ruleset: the checksum and the counting table only */
     $s = uu_route_adopt(uu_snapshot($settings, [], null, false), $st['route_installed']);
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],

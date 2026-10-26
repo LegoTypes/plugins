@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Readings and verdicts (spec 2026-10-17 section 3.2). Pure.
+ * Readings and verdicts. Pure.
  *
  * A reading is one tick's evidence for one member: settled (dpinger has run a whole time_period), young
  * (it has data but not a whole window), cached (no dpinger data, the watcher's cache entry stands in) or

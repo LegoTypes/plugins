@@ -7,9 +7,9 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The live snapshot against the test VM's gateways (spec section 3.2). Runs only where core and the VM's
+ * The live snapshot against the test VM's gateways. Runs only where core and the VM's
  * proton_test_grp exist; elsewhere it registers a suite that skips. Read-only, except that a snapshot makes the
- * plugin's run directory 0700 if it is missing or another mode (ruling R10).
+ * plugin's run directory 0700 if it is missing or another mode.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -64,7 +64,7 @@ uu_register_suite('snapshot_vm', function (): int {
         && $c['foreign_route'] === false && $c['unmonitored_members'] === [] && $c['resolver_is_monitor'] === []
         && $c['resolver_in_static'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
-    /* ruling R6: the constants are core's commands as this VM's core runs them, so a drift note means core changed */
+    /* the constants are core's commands as this VM's core runs them, so a drift note means core changed */
     uu_check($t, 'contract input: core\'s filter reload, cron restart and unbound restart are the commands a removal falls back to',
         array_key_exists('core_commands', $c) && $c['core_commands'] === []);
 
