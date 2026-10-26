@@ -15,13 +15,13 @@
         <id>unboundupstream.gateway_group</id>
         <label>Gateway group</label>
         <type>dropdown</type>
-        <help>The saved IPv4 gateway group whose members are the tunnels to the resolver. Every member must be monitored.</help>
+        <help>The saved gateway group, all of one address family, whose members are the tunnels to the resolver. Every member must be monitored.</help>
     </field>
     <field>
         <id>unboundupstream.resolver</id>
-        <label>Resolver</label>
+        <label>Default resolver</label>
         <type>text</type>
-        <help>The resolver's address inside the tunnels, for example 10.2.0.1. It must not be a gateway monitor address or lie inside a static route.</help>
+        <help>The resolver's address inside the tunnels, used by every member without its own below. IPv4 or IPv6.</help>
     </field>
     <field>
         <id>unboundupstream.failback_delay</id>

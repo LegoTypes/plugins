@@ -23,11 +23,32 @@
             </Model>
             <ValidationMessage>Select a saved gateway group.</ValidationMessage>
         </gateway_group>
+        <!-- the Default resolver: either family, checked against the group in the model class -->
         <resolver type="NetworkField">
             <NetMaskAllowed>N</NetMaskAllowed>
-            <AddressFamily>ipv4</AddressFamily>
-            <ValidationMessage>Enter a single IPv4 address, for example 10.2.0.1.</ValidationMessage>
+            <ValidationMessage>Enter a single IPv4 or IPv6 address.</ValidationMessage>
         </resolver>
+        <!-- one optional resolver per group member; the gateway column stores the gateway's UUID -->
+        <resolvers>
+            <resolver type="ArrayField">
+                <gateway type="ModelRelationField">
+                    <Model>
+                        <gateways>
+                            <source>OPNsense.Routing.Gateways</source>
+                            <items>gateway_item</items>
+                            <display>name</display>
+                        </gateways>
+                    </Model>
+                    <Required>Y</Required>
+                    <ValidationMessage>Select a gateway.</ValidationMessage>
+                </gateway>
+                <address type="NetworkField">
+                    <NetMaskAllowed>N</NetMaskAllowed>
+                    <Required>Y</Required>
+                    <ValidationMessage>Enter a single IPv4 or IPv6 address.</ValidationMessage>
+                </address>
+            </resolver>
+        </resolvers>
         <failback_delay type="IntegerField">
             <Default>120</Default>
             <Required>Y</Required>

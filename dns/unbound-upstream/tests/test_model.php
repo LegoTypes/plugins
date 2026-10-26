@@ -31,6 +31,70 @@ function uu_test_model_refused(array $values): array
     return $fields;
 }
 
+/**
+ * Every validation message after applying $values to a fresh model, with $rows added to the resolvers grid.
+ *
+ * @param array<string, string> $values
+ * @param list<array{gateway: string, address: string}> $rows gateway UUID and address of each row
+ * @return list<array{field: string, message: string}> field is the last part of the node's reference
+ */
+function uu_test_model_messages(array $values, array $rows = []): array
+{
+    $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    $m->setNodes($values);
+    foreach ($rows as $row) {
+        $m->resolvers->resolver->add()->setNodes($row);
+    }
+    $out = [];
+    foreach ($m->performValidation() as $msg) {
+        $out[] = [
+            'field' => substr((string)strrchr('.' . $msg->getField(), '.'), 1),
+            'message' => (string)$msg->getMessage(),
+        ];
+    }
+    return $out;
+}
+
+/**
+ * The messages of one field.
+ *
+ * @param list<array{field: string, message: string}> $messages
+ * @return list<string>
+ */
+function uu_test_model_field(array $messages, string $field): array
+{
+    return array_values(array_map(
+        fn (array $m): string => $m['message'],
+        array_filter($messages, fn (array $m): bool => $m['field'] === $field)
+    ));
+}
+
+/**
+ * A gateway group's UUID by name.
+ */
+function uu_test_model_group_uuid(string $name): string
+{
+    foreach ((new \OPNsense\Routing\GatewayGroups())->gateway_group->iterateItems() as $key => $group) {
+        if ($group->name->getValue() === $name) {
+            return (string)$key;
+        }
+    }
+    return '';
+}
+
+/**
+ * A gateway's UUID by name, from core's Gateways model.
+ */
+function uu_test_model_gateway_uuid(string $name): string
+{
+    foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $key => $gw) {
+        if ($gw->name->getValue() === $name) {
+            return (string)$key;
+        }
+    }
+    return '';
+}
+
 uu_register_suite('model', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $loader = '/usr/local/opnsense/mvc/script/load_phalcon.php';
@@ -93,9 +157,10 @@ uu_register_suite('model', function (): int {
 
     uu_check(
         $t,
-        'resolver must be IPv4: 2001:db8::1 refused, 10.2.0.1 accepted',
-        in_array('resolver', uu_test_model_refused(['resolver' => '2001:db8::1']), true)
+        'resolver takes either family: 2001:db8::1 and 10.2.0.1 accepted, a name refused',
+        !in_array('resolver', uu_test_model_refused(['resolver' => '2001:db8::1']), true)
             && !in_array('resolver', uu_test_model_refused(['resolver' => '10.2.0.1']), true)
+            && in_array('resolver', uu_test_model_refused(['resolver' => 'resolver.example.test']), true)
     );
     uu_check(
         $t,
@@ -126,6 +191,142 @@ uu_register_suite('model', function (): int {
         $t,
         'an unknown gateway group is refused when enabled',
         in_array('gateway_group', uu_test_model_refused(['enabled' => '1', 'gateway_group' => $uuid, 'resolver' => '10.2.0.1']), true)
+    );
+
+
+    $v4 = uu_test_model_group_uuid('proton_test_grp');
+    $v6 = uu_test_model_group_uuid('uu_far6_grp');
+    $gw429 = uu_test_model_gateway_uuid('wg-test-429');
+    $gwA = uu_test_model_gateway_uuid('wg-far-a-ipv6');
+    $gwB = uu_test_model_gateway_uuid('wg-far-b-ipv6');
+    if ($v4 === '' || $v6 === '' || $gw429 === '' || $gwA === '' || $gwB === '') {
+        uu_check($t, 'model: the Proton and far-end groups and gateways are not on this box (base missing)', false);
+        return uu_tally_report('model', $t);
+    }
+    $resolverMsgs = fn (array $msgs): array => array_merge(
+        uu_test_model_field($msgs, 'resolver'),
+        uu_test_model_field($msgs, 'address'),
+        uu_test_model_field($msgs, 'gateway')
+    );
+    uu_check(
+        $t,
+        'enabled on the IPv4 group with Default 10.2.0.1 and no rows: nothing about the resolver (1.3 settings mean the same)',
+        $resolverMsgs(uu_test_model_messages(['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1'])) === []
+    );
+    $problems = fn (string $addr, string $group, string $family, bool $v6, array $mon, array $nets): array =>
+        \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems($addr, $group, $family, $v6, $mon, $nets);
+    $linkLocal = 'Enter a resolver address that is not link-local, multicast, loopback or unspecified.';
+    $v6Group = 'The group uu_far6_grp is IPv6; its resolvers must be IPv6 addresses.';
+    $v4Group = 'The group proton_test_grp is IPv4; its resolvers must be IPv4 addresses.';
+
+    uu_check(
+        $t,
+        'resolverProblems: an IPv6 address in an IPv6 group has none; an IPv4 one gets exactly the IPv6-group message, and the reverse',
+        $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, [], []) === []
+            && $problems('192.0.2.53', 'uu_far6_grp', 'inet6', true, [], []) === [$v6Group]
+            && $problems('192.0.2.53', 'proton_test_grp', 'inet', true, [], []) === []
+            && $problems('2001:db8:a::53', 'proton_test_grp', 'inet', true, [], []) === [$v4Group]
+    );
+    $bad = ['fe80::1' => 'inet6', '169.254.0.1' => 'inet', 'ff02::1' => 'inet6', '224.0.0.251' => 'inet', '::' => 'inet6',
+        '0.0.0.0' => 'inet', '::1' => 'inet6', '127.0.0.53' => 'inet', '::ffff:192.0.2.1' => 'inet6'];
+    $bad_ok = true;
+    foreach ($bad as $addr => $family) {
+        $bad_ok = $bad_ok && $problems($addr, 'g', $family, true, [], []) === [$linkLocal];
+    }
+    uu_check(
+        $t,
+        'resolverProblems: link-local, multicast, unspecified, loopback and IPv4-mapped addresses give the not-link-local message alone',
+        $bad_ok
+    );
+    uu_check(
+        $t,
+        'resolverProblems: an IPv6 address while IPv6 is not allowed gets the IPv6-allowed message; IPv4 does not',
+        $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', false, [], [])
+            === ['Unbound does not use IPv6 while IPv6 is not allowed.']
+            && $problems('192.0.2.53', 'proton_test_grp', 'inet', false, [], []) === []
+    );
+    uu_check(
+        $t,
+        'resolverProblems: a gateway monitor equal to the resolver is refused in canonical form, both families',
+        $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, ['g' => '2001:DB8:A:0::53'], [])
+            === ['Resolver 2001:db8:a::53 is the monitor address of gateway g.']
+            && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, ['g' => '10.2.0.1'], [])
+            === ['Resolver 10.2.0.1 is the monitor address of gateway g.']
+            && $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, ['g' => '2001:db8:a::54'], []) === []
+    );
+    uu_check(
+        $t,
+        'resolverProblems: a static route holding the resolver is refused, both families, and not the other family',
+        $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, [], ['2001:db8:a::/48'])
+            === ['Resolver 2001:db8:a::53 lies inside the static route 2001:db8:a::/48.']
+            && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, [], ['10.2.0.0/24'])
+            === ['Resolver 10.2.0.1 lies inside the static route 10.2.0.0/24.']
+            && $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, [], ['10.2.0.0/24']) === []
+            && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, [], ['2001:db8:a::/48']) === []
+    );
+
+    $far = ['enabled' => '1', 'gateway_group' => $v6];
+    $rowA = ['gateway' => $gwA, 'address' => '2001:db8:a::53'];
+    $rowB = ['gateway' => $gwB, 'address' => '2001:db8:b::53'];
+    $notMember = 'Gateway wg-test-429 is not a member of the selected group.';
+    $twice = 'Gateway wg-far-b-ipv6 has more than one resolver row.';
+    $needAll = 'Enter the default resolver address, or one for every member of the group.';
+    $all = fn (array $v, array $rows): array => array_column(uu_test_model_messages($v, $rows), 'message');
+    uu_check(
+        $t,
+        'a row for a gateway outside the group is refused',
+        in_array($notMember, $all($far + ['resolver' => '2001:db8:a::53'], [['gateway' => $gw429, 'address' => '2001:db8:a::54']]), true)
+            && !in_array($notMember, $all($far + ['resolver' => '2001:db8:a::53'], [$rowA]), true)
+    );
+    uu_check(
+        $t,
+        'two rows for one gateway are refused',
+        in_array($twice, $all($far + ['resolver' => '2001:db8:a::53'], [$rowB, $rowB]), true)
+            && !in_array($twice, $all($far + ['resolver' => '2001:db8:a::53'], [$rowB]), true)
+    );
+    uu_check(
+        $t,
+        'an empty Default needs a row for every member: one row refused, rows for both accepted, no rows refused',
+        in_array($needAll, $all($far, [$rowA]), true)
+            && !in_array($needAll, $all($far, [$rowA, $rowB]), true)
+            && in_array($needAll, $all($far, []), true)
+            && !in_array($needAll, $all($far + ['resolver' => '2001:db8:a::53'], []), true)
+            && !in_array('Enter the resolver address.', $all($far, []), true)
+    );
+    uu_check(
+        $t,
+        'the refusals of resolverProblems land on the Default and on a row\'s address',
+        in_array($v6Group, uu_test_model_field(uu_test_model_messages($far + ['resolver' => '192.0.2.53']), 'resolver'), true)
+            && in_array(
+                $v6Group,
+                uu_test_model_field(uu_test_model_messages($far + ['resolver' => '2001:db8:a::53'], [['gateway' => $gwA, 'address' => '192.0.2.54']]), 'address'),
+                true
+            )
+    );
+
+    $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    $row = $m->resolvers->resolver->add();
+    $row->setNodes(['gateway' => $gwA, 'address' => '2001:db8:a::53']);
+    $rows = $m->getNodes()['resolvers']['resolver'] ?? [];
+    $stored = '';
+    foreach ($rows as $entry) {
+        foreach ((array)($entry['gateway'] ?? []) as $key => $opt) {
+            if (!empty($opt['selected'])) {
+                $stored = (string)$key;
+            }
+        }
+    }
+    uu_check(
+        $t,
+        'a row\'s gateway stores the gateway\'s UUID, not its name',
+        $row->gateway->getValue() === $gwA && $row->gateway->getValue() !== 'wg-far-a-ipv6' && $stored === $gwA
+    );
+
+    require_once 'util.inc';
+    uu_check(
+        $t,
+        'the model\'s IPv6-allowed read equals is_ipv6_allowed()',
+        \OPNsense\UnboundUpstream\UnboundUpstream::ipv6Allowed() === is_ipv6_allowed()
     );
 
     $monitor = '';
