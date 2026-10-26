@@ -10,6 +10,11 @@ or "configctl macaliascache flush").
 Plugin Changelog
 ================
 
+1.1_2
+
+* The source moved to github.com/LegoTypes/plugins; no change to
+  the plugin.
+
 1.1_1
 
 * A flush keeps core's MAC alias cache at core's own mode (0640) instead of
