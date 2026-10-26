@@ -1,0 +1,6 @@
+@188 pass out route-to (vtnet1 203.0.113.1) inet from (vtnet1:1) to ! (vtnet1:network:1) flags S/SA keep state allow-opts label "dddddddddddddddddddddddddddddddd"
+@190 pass out route-to (vtnet2 198.51.100.254) inet from (vtnet2:1) to ! (vtnet2:network:1) flags S/SA keep state allow-opts label "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+@2310 pass in quick on vlan0.120 route-to (vtnet2 198.51.100.254) inet proto tcp from <b_first_hosts:2> to ! (self) flags S/SA keep state label "22222222-2222-4222-8222-222222222222"
+@2311 pass in quick on vlan0.120 route-to (vtnet2 198.51.100.254) inet proto udp from <b_first_hosts:2> to ! (self) keep state label "22222222-2222-4222-8222-222222222222"
+@2487 pass in quick on vlan0.130 inet proto udp from <test_host:1> to ! <test_networks:7> keep state label "11111111-1111-4111-8111-111111111111"
+@2490 pass in quick on vlan0.130 route-to { (vtnet1 203.0.113.1), (vtnet2 198.51.100.254) } round-robin inet proto tcp from any to any keep state label "55555555-5555-4555-8555-555555555555"

@@ -1,0 +1,11 @@
+<acl>
+    <page-system-gateways-wanfailover>
+        <name>System: Gateways: WAN Failover</name>
+        <patterns>
+            <pattern>ui/wanfailover/*</pattern>
+            <pattern>api/wanfailover/*</pattern>
+            <pattern>ui/diagnostics/log/core/wanfailover*</pattern>
+            <pattern>api/diagnostics/log/core/wanfailover*</pattern>
+        </patterns>
+    </page-system-gateways-wanfailover>
+</acl>

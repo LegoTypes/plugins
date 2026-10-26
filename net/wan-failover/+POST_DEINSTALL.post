@@ -1,0 +1,12 @@
+
+# A real removal: the plugin's runtime state, with the removal marker, its saved state and its trace go with its
+# files. An upgrade keeps them, so the new version resumes with the holds, judgements and pending failbacks.
+if [ -z "${PKG_UPGRADE:-}" ]; then
+    rm -rf /var/run/wanfailover /var/db/wanfailover /var/log/wanfailover/trace
+fi
+
+# Core's removal step does not regenerate cron, so the plugin's minute job would stay in crontab, calling an action
+# that is gone: cron is restarted once the plugin's files are gone, through configd when it answers OK within 30 s
+# (configctl exits 0 on an error reply too), else core's own command for it. It needs no guard: pkg does not run an
+# old package's post-deinstall on an upgrade, and a cron restart would do no harm there.
+/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart | grep -qx OK || /usr/local/sbin/pluginctl -s cron restart || true

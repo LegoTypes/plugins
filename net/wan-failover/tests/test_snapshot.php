@@ -1,0 +1,53 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Copyright (C) 2026 cayossarian
+ * All rights reserved.
+ * BSD 2-Clause License
+ *
+ * The snapshot's pure parsers (the live collectors need a box and are checked on the VM).
+ */
+
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parsers.php';
+
+wf_register_suite('snapshot', function (): int {
+    $t = ['fail' => 0, 'total' => 0];
+    $up = "vtnet2: flags=1008843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tinet 198.51.100.148 netmask 0xffffff00 broadcast 198.51.100.255\n\tmedia: Ethernet autoselect (1000baseT <full-duplex>)\n\tstatus: active\n";
+    $nc = "vtnet1: flags=8843<UP,BROADCAST> metric 0 mtu 1500\n\tmedia: Ethernet autoselect\n\tstatus: no carrier\n";
+    wf_check($t, 'ifconfig: active with an address', wf_parse_ifconfig($up) === ['carrier' => true, 'has_ipv4' => true]);
+    wf_check($t, 'ifconfig: no carrier, no address', wf_parse_ifconfig($nc) === ['carrier' => false, 'has_ipv4' => false]);
+    $wg = "wg9: flags=10080c1<UP,RUNNING,NOARP,MULTICAST,LOWER_UP> metric 0 mtu 1420\n\tinet 192.0.2.202 netmask 0xffffffff\n\tgroups: wg wireguard\n";
+    wf_check($t, 'ifconfig: an interface that prints no status line (wg, pppoe) is not taken for carrier loss', wf_parse_ifconfig($wg) === ['carrier' => true, 'has_ipv4' => true]);
+    wf_check($t, 'route get default', wf_parse_route_get("   route to: default\ndestination: default\n    gateway: 203.0.113.1\n  interface: vtnet1\n")
+        === ['destination' => 'default', 'gateway' => '203.0.113.1', 'interface' => 'vtnet1']);
+    wf_check($t, 'route get with no route', wf_parse_route_get("route: route has not been found\n") === ['destination' => null, 'gateway' => null, 'interface' => null]);
+    wf_check($t, 'route target of a route get', wf_route_get_target(['destination' => 'default', 'gateway' => '203.0.113.1', 'interface' => 'vtnet1']) === '203.0.113.1@vtnet1'
+        && wf_route_get_target(['destination' => null, 'gateway' => null, 'interface' => null]) === null);
+    wf_check($t, 'kern.boot_id from sysctl -x', wf_parse_boot_id("Format: Length:16 Dump:0x4c8609698ad1a11cdc00cf6eb7d954e1\n") === '4c8609698ad1a11cdc00cf6eb7d954e1');
+    wf_check($t, 'kern.boot_id unreadable is empty', wf_parse_boot_id('') === '' && wf_parse_boot_id("sysctl: unknown oid 'kern.boot_id'\n") === '');
+    $r = wf_resolve_uuids(['u1', 'u9', ''], ['u1' => 'WAN_A', 'u2' => 'WAN_B']);
+    wf_check($t, 'UUIDs resolve to names; unknown ones are reported; empty ignored', $r['names'] === ['WAN_A'] && $r['unresolved'] === ['u9']);
+    $rows = ['i1' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 100], 'i2' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 200],
+             'i3' => ['gateway' => 'ga', 'boot' => 'b400', 'since' => 150]];
+    $r = wf_resolve_records($rows, ['ga' => 'WAN_A', 'gb' => 'WAN_B']);
+    wf_check($t, '(o9) two records for one gateway keep the newer one; the other is a duplicate',
+        $r['holds'] === ['WAN_B' => ['boot' => 'b500', 'since' => 200], 'WAN_A' => ['boot' => 'b400', 'since' => 150]]
+        && $r['dupes'] === ['WAN_B'] && $r['stale'] === []);
+    $r = wf_resolve_records(['i2' => ['gateway' => 'gb', 'boot' => 'b500', 'since' => 100],
+                             'i1' => ['gateway' => 'gb', 'boot' => 'deadbeef', 'since' => 100]], ['gb' => 'WAN_B']);
+    wf_check($t, '(o9) records of one gateway with the same since keep the one with the greater item UUID',
+        $r['holds'] === ['WAN_B' => ['boot' => 'b500', 'since' => 100]] && $r['dupes'] === ['WAN_B']);
+    $r = wf_resolve_records(['i1' => ['gateway' => 'gone', 'boot' => 'b500', 'since' => 100],
+                             'i2' => ['gateway' => 'gx', 'boot' => 'b500', 'since' => 100],
+                             'i3' => ['gateway' => 'ga', 'boot' => 'b500', 'since' => 100]], ['gx' => "WAN;B\n", 'ga' => 'WAN_A']);
+    wf_check($t, 'a record naming no gateway, or a gateway whose name is not a plain token, is stale',
+        $r['holds'] === ['WAN_A' => ['boot' => 'b500', 'since' => 100]] && $r['stale'] === ['i1', 'i2'] && $r['dupes'] === []);
+    wf_check($t, 'ps pid/etimes output', wf_parse_ps_etimes("  77297    56\n 81140 3600\n") === [77297 => 56, 81140 => 3600]
+        && wf_parse_ps_etimes('') === []);
+    wf_check($t, 'core rank: position of each managed WAN in core\'s gateway order', wf_core_rank(['Null4', 'WAN_B', 'X', 'WAN_A'], ['WAN_A', 'WAN_B'])
+        === ['WAN_A' => 1, 'WAN_B' => 0]);
+    return wf_tally_report('snapshot', $t);
+});

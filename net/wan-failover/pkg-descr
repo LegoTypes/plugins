@@ -1,0 +1,95 @@
+WAN Failover Plugin
+
+Decides when an IPv4 WAN leaves service and when it comes back, moves
+connections to the right WAN both ways, and restarts Tailscale only when
+the default route actually changed.
+
+- A WAN whose dpinger loss exceeds the gateway's own threshold, or that is
+  hard down, is held with force_down while another WAN is usable; once
+  held it returns only when a settled window shows no loss at all
+- Never both: a hold needs a usable alternative and is released at once
+  on positive evidence that the alternative failed
+- A reboot releases the holds the plugin took before routing starts
+- A new hold kills that WAN's states; when a WAN recovers, flows that
+  prefer it move back once their rule and the default route point there
+- Ownership is a record of the boot that took each hold, saved with
+  force_down in one config write; only a hold its record proves is ever
+  released
+
+Plugin Changelog
+================
+
+1.4_2
+
+* Reinstalling the package after a removal brings its minute job back
+
+1.4_1
+
+* Removing the package also removes its minute job
+
+1.4
+
+* The list of gateways the plugin holds is no longer part of the settings,
+  so the settings API cannot change it. A hold is released only when the
+  plugin can prove it took it in this boot (or, at boot, the one before);
+  any other record, such as a backup's from another boot, is pruned and
+  logged, and its gateway stays forced down until a person unticks Force
+  down. On upgrade, the holds 1.3_1 took in this boot are carried over,
+  as the plugin's own state file proves them; an entry of 1.3_1's list
+  it does not prove, such as one a restored backup brings back, is
+  dropped and its gateway stays forced down
+* A hold's state kill selects the states routed via that WAN's gateway and
+  interface, by state id; two gateways sharing an address no longer lose
+  each other's connections, and the log reports each kill per gateway and
+  interface
+* Removing the package releases its holds and re-syncs routing; upgrades
+  keep them
+* A settings save or a restored configuration that moves force_down under
+  the plugin's feet aborts the plugin's write instead of overwriting it;
+  the next evaluation plans again
+* Runtime, state and trace files are root-only; the state file's shape is
+  checked when it is read, and gateway and interface names from the
+  configuration are checked where they are used
+* Status page text is decoded without an HTML parser, and the status
+  notice shows each note on its own line
+* The crash-test hook is a root-only flag file, not an environment
+  variable
+
+1.3_1
+
+* A young gateway monitor's lost probes are counted as whole probes:
+  dpinger prints loss rounded to 0.1 %, so a WAN that had lost exactly
+  the high-loss count (12 of 36 reads 33.3 %, 11.988 probes) was judged
+  bad only after it lost one more probe or the monitor settled
+
+1.3
+
+* A WAN whose link is down (no carrier or no IPv4 address) has no gateway
+  monitor, by design: core stops it with the address. That no longer
+  reads as core changing underneath the plugin, which blocked new holds
+  and, after 180 s, released every hold; with a flapping WAN released,
+  core kept electing it and installed no IPv4 default route at all.
+  Such a WAN is held as unavailable, and the hold stays while the link
+  is down
+* A DHCP WAN loses its gateway address with its link, and its hold ran
+  the state kill without an address (pfctl usage error, nothing killed):
+  connections stayed pinned to the dead WAN. The kill now uses the last
+  gateway address the WAN had, and is skipped and logged when none was
+  ever seen
+
+1.2
+
+* Failback delay (default 10 minutes): connections move back to a
+  recovered WAN only after it has read clean that long; any loss restarts
+  the wait, and a WAN held again never gets them back. Fail back now
+  (button or configctl wanfailover failback_now) ends the wait
+
+1.1
+
+* Failback recognises a gateway group rendered as a pool that names one
+  gateway several times (its weight); it was taken for a balanced rule,
+  so flows preferring that gateway never moved back
+
+1.0
+
+* Initial release
