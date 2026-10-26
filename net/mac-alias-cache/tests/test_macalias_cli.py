@@ -923,7 +923,12 @@ def test_flush_narrows_a_cache_an_earlier_flush_widened(env):  # (e2)
 def test_acquire_lock_creates_an_absent_core_lock_at_core_mode(env):  # (e3)
     cfg, tmp = env
     assert not os.path.lexists(cfg["lock_file"])
-    lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+    # os.open applies the umask to the creation mode; pin core's usual one
+    old_umask = os.umask(0o022)
+    try:
+        lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+    finally:
+        os.umask(old_umask)
     assert not isinstance(lock, dict) and lock is not None
     lock.close()
     assert stat.S_IMODE(os.lstat(cfg["lock_file"]).st_mode) == 0o640
