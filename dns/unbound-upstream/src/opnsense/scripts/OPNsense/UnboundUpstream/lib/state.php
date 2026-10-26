@@ -31,6 +31,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 
 const UU_STATE_VERSION = 5;
 
@@ -359,15 +360,15 @@ function uu_state_load(string $path): array
 
 /**
  * The plugin's footprint: the address the state records while the plugin's route or Unbound's live root may still
- * refer to it (so its block stays until a stop has really undone it), when that is an IPv4 address, else null. The
- * one definition the rendered rules, an evaluation's filter reload and the minute job share.
+ * refer to it (so its block stays until a stop has really undone it), in its canonical form when that is an IPv4 or
+ * IPv6 address, else null. The one definition the rendered rules, an evaluation's filter reload and the minute job share.
  *
  * @param array{resolver: ?string} $state
  */
 function uu_state_footprint(array $state): ?string
 {
     $address = $state['resolver'];
-    return $address !== null && filter_var($address, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $address : null;
+    return $address === null ? null : uu_ip_canonical($address);
 }
 
 /**

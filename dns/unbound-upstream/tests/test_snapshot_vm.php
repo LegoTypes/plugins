@@ -109,5 +109,19 @@ uu_register_suite('snapshot_vm', function (): int {
     $none = uu_snapshot(['group' => ''] + $settings, [], null, false);
     uu_check($t, 'no group set: group_found false', $none['contract_input']['group_found'] === false);
 
+    uu_check($t, '(t8) static routes: an address in a network of its own family, a bare address as a host, /0 everything',
+        uu_try_case(fn (): bool => uu_in_static('2001:db8:a::53', '2001:db8:a::/48')
+            && uu_in_static('10.2.0.1', '10.2.0.0/24') && !uu_in_static('10.2.1.1', '10.2.0.0/24')
+            && uu_in_static('10.2.0.1', '10.2.0.1') && uu_in_static('10.2.0.1', '0.0.0.0/0')
+            && !uu_in_static('10.2.0.1', '10.2.0.2/32') && uu_in_static('2001:db8:a::53', '2001:db8:a::53')
+            && !uu_in_static('2001:db8:a::53', '2001:db8:a::54') && !uu_in_static('2001:db8:b::53', '2001:db8:a::/48')));
+    uu_check($t, '(t8) static routes: a network of the other family or a malformed one never matches',
+        uu_try_case(fn (): bool => !uu_in_static('10.2.0.1', '2001:db8::/32')
+            && !uu_in_static('2001:db8:a::53', '10.2.0.0/24') && !uu_in_static('10.2.0.1', 'nonsense')
+            && !uu_in_static('10.2.0.1', '10.2.0.0/33') && !uu_in_static('2001:db8::1', '2001:db8::/129')
+            && !uu_in_static('', '10.2.0.0/24')));
+    uu_check($t, '(t8) static routes: the address is compared in canonical form',
+        uu_try_case(fn (): bool => uu_in_static('2001:DB8:A:0::53', '2001:db8:a::/48')));
+
     return uu_tally_report('snapshot_vm', $t);
 });

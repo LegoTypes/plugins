@@ -19,6 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/render.php';
 require_once __DIR__ . '/state.php';
 
@@ -69,8 +70,9 @@ function uu_pf_show_addresses(string $showOut): array
 {
     $addresses = [];
     foreach (preg_split('/\R/', $showOut) ?: [] as $line) {
-        if (trim($line) !== '') {
-            $addresses[] = trim($line);
+        $address = trim($line);
+        if ($address !== '') {
+            $addresses[] = uu_ip_canonical($address) ?? $address;
         }
     }
     return $addresses;
@@ -133,7 +135,7 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
                 $problems[] = $what . ': missing ' . $label;
             }
         }
-        if (!uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.])')) {
+        if (!uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.:])')) {
             $problems[] = $what . ': wrong target';
         }
     }
@@ -152,7 +154,7 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
 function uu_rules_verdict(string $vsrOut, string $resolver, array $members): array
 {
     $problems = [];
-    $address = preg_quote($resolver, '/');
+    $address = preg_quote(uu_ip_canonical($resolver) ?? $resolver, '/');
     foreach ($members as $member) {
         $lines = uu_rules_lines($vsrOut, uu_label_pass($member['interface']));
         if ($lines === []) {
@@ -181,7 +183,7 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
                 } elseif (!uu_rules_has($line, '\bon ' . preg_quote($member['if'], '/') . '(?![\w.])')) {
                     $problems[] = $member['name'] . ' pass: not on ' . $member['if'];
                 }
-                if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.])')) {
+                if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.:])')) {
                     $problems[] = $member['name'] . ' pass: wrong address';
                 }
                 if (!uu_rules_has($line, '\bport = (domain|53)\b')) {

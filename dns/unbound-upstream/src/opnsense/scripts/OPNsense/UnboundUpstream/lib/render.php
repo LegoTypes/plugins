@@ -29,6 +29,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/logline.php';
 require_once __DIR__ . '/state.php';
 
@@ -84,7 +85,8 @@ function uu_rule_confs(string $resolver, array $members, bool $counting, ?array 
     array_push($confs, ...uu_setting_blocks($resolver, $counting));
     if ($footprint !== null) {
         $confs[] = uu_block_conf($footprint['resolver'], uu_label_footprint(),
-            'Unbound upstream: the address the plugin last used never leaves by another interface');
+            'Unbound upstream: the address the plugin last used never leaves by another interface',
+            uu_ip_family($footprint['resolver']) ?? 'inet');
     }
     return $confs;
 }
@@ -125,45 +127,52 @@ function uu_setting_blocks(string $resolver, bool $counting): array
         return [];
     }
     $confs = [];
+    $family = uu_ip_family($resolver) ?? 'inet';
     if ($counting) {
         $confs[] = uu_block_conf('<' . UU_BLOCK_TABLE . '>', uu_label_block(),
-            'Unbound upstream: the resolver never leaves by another interface (counted)');
+            'Unbound upstream: the resolver never leaves by another interface (counted)', $family);
     }
     $confs[] = uu_block_conf($resolver, uu_label_backstop(),
-        'Unbound upstream: the resolver never leaves by another interface (backstop)');
+        'Unbound upstream: the resolver never leaves by another interface (backstop)', $family);
     return $confs;
 }
 
 /**
+ * A pass to an address, with the address's own protocol.
+ *
  * @return array<string, string|bool>
  */
 function uu_pass_conf(string $opt, string $to, string $label, string $descr): array
 {
     return [
-        'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt, 'ipprotocol' => 'inet',
+        'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt,
+        'ipprotocol' => uu_ip_family($to) ?? 'inet',
         'protocol' => 'tcp/udp', 'from' => $opt . 'ip', 'to' => $to, 'to_port' => '53',
         'disablereplyto' => true, 'label' => $label, 'descr' => $descr,
     ];
 }
 
 /**
+ * A block to an address or to the counting table, whose protocol is the resolver's, so $family is given.
+ *
+ * @param string $family 'inet' or 'inet6'
  * @return array<string, string|bool>
  */
-function uu_block_conf(string $to, string $label, string $descr): array
+function uu_block_conf(string $to, string $label, string $descr, string $family): array
 {
     return [
-        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
+        'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => $family,
         'to' => $to, 'label' => $label, 'descr' => $descr,
     ];
 }
 
 /**
- * The footprint: the address the state records, when it is IPv4 and not the address the setting's rules already go to
- * ($settingResolver, '' when they render none), with the friendly interface of the plugin's route. That interface is
- * the one of the gateway record on the route's device with the route's next hop, the first such record by name that has
+ * The footprint: the address the state records, when it is an IPv4 or IPv6 address and not the address the setting's
+ * rules already go to ($settingResolver, '' when they render none), with the friendly interface of the plugin's route.
+ * That interface is the one of the gateway record on the route's device with the route's next hop, the first such record by name that has
  * one; it is '' when the route is no member route or no record names it, and the footprint then has its block only,
- * since core renders an interface it does not know as a placeholder that breaks the ruleset. A recorded address that is
- * not IPv4 is no footprint but a problem, which never quotes the address.
+ * since core renders an interface it does not know as a placeholder that breaks the ruleset. A recorded address that
+ * is no address is no footprint but a problem, which never quotes the address.
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
@@ -208,7 +217,8 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
  * What to render. The state file at $statePath is read first, on its own; core's settings ($model) are read next, and
  * the gateway records ($records) only when the setting may render or the state records an address, so a disabled plugin
  * with no footprint reads no records. The setting renders when the settings and the records were both read and name it;
- * its rules go to the resolver only when that is IPv4, so a setting naming anything else leaves the footprint its own
+ * its rules go to the resolver only when that is an IPv4 or IPv6 address, in its canonical form, so a setting naming
+ * anything else leaves the footprint its own
  * rules. A failed settings read renders the footprint as if the setting rendered nothing (its pass and its block); a
  * failed records read leaves the footprint its block alone, which error then names: DNS to that address is blocked
  * until a reload can read the records. Each failed read is part of error, which is null when every read needed
@@ -251,14 +261,16 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
         $members[] = ['name' => (string)$name, 'interface' => (string)($recs[$name]['interface'] ?? ''),
             'if' => (string)($recs[$name]['if'] ?? '')];
     }
-    $setting = $enabled && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $resolver : '';
+    $canonical = $enabled ? uu_ip_canonical($resolver) : null;
+    $setting = $canonical ?? '';
     $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
     if ($recsFailed && $found['footprint'] !== null) {
-        /* the address passed uu_footprint_from_state()'s IPv4 check */
+        /* the address passed uu_footprint_from_state()'s address check */
         $errors[] = 'DNS to ' . $found['footprint']['resolver']
             . ' is blocked until a filter reload can read the gateway records';
     }
-    return ['enabled' => $enabled, 'resolver' => $resolver, 'members' => $members, 'footprint' => $found['footprint'],
+    return ['enabled' => $enabled, 'resolver' => $canonical ?? $resolver, 'members' => $members,
+        'footprint' => $found['footprint'],
         'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem'],
         'error' => $errors === [] ? null : implode('; ', $errors)];
 }
@@ -300,8 +312,9 @@ function uu_wanted_render(): array
 /**
  * The plugins_firewall hook body. Never throws. What each failure keeps:
  * - a settings or gateway records read that fails is one error, and the footprint still renders (uu_wanted_from());
- * - a setting resolver that is not IPv4 is one error, the setting renders nothing and the footprint still renders;
- * - a state file that cannot be read, or a recorded address that is not IPv4, is one warning for the render, and the
+ * - a setting resolver that is not an IPv4 or IPv6 address is one error, the setting renders nothing and the
+ *   footprint still renders;
+ * - a state file that cannot be read, or a recorded address that is no address, is one warning for the render, and the
  *   setting's rules still render: each filter reload is a process of its own, so the hook keeps nothing between
  *   renders;
  * - a table that cannot be registered costs only the counting block;
@@ -333,10 +346,9 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         }
         $resolver = '';
         if ($w['enabled']) {
-            if (filter_var($w['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-                $emit('rules for the resolver setting not rendered: resolver is not an IPv4 address', 'err');
-            } else {
-                $resolver = $w['resolver'];
+            $resolver = uu_ip_canonical($w['resolver']) ?? '';
+            if ($resolver === '') {
+                $emit('rules for the resolver setting not rendered: resolver is not an IPv4 or IPv6 address', 'err');
             }
         }
         if ($w['footprint_problem'] !== null) {

@@ -41,6 +41,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/verdict.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/state.php';
@@ -56,8 +57,8 @@ require_once __DIR__ . '/contract.php';
  */
 function uu_plan_route_via(array $route, array $m): bool
 {
-    return $route['present'] && $route['ours'] && !$route['reject'] && $route['gateway'] === $m['next_hop']
-        && $route['interface'] === $m['if'];
+    return $route['present'] && $route['ours'] && !$route['reject']
+        && uu_next_hop($route['gateway']) === uu_next_hop($m['next_hop']) && $route['interface'] === $m['if'];
 }
 
 /**

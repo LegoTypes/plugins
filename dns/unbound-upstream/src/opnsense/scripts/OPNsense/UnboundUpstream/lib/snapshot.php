@@ -16,6 +16,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/zone.php';
 require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/pfobserve.php';
@@ -33,9 +34,11 @@ function uu_load_core(): void
 }
 
 /**
- * `route -n get <resolver>`. Only a host route for the resolver itself counts: the answer's destination is the
- * address asked for and carries HOST. A default or other covering route (an answer for another destination) and
- * "not in table" are absent. A REJECT host route prints no gateway.
+ * `route -n get <family> <resolver>`. Only a host route for the resolver itself counts: the answer's destination is the
+ * address asked for and carries HOST. A default or other covering route (an answer for another destination) and the
+ * two texts route(8) prints for no route at all (IPv4: "writing to routing socket: No such process" and "not in
+ * table"; IPv6: "route has not been found"), neither of which has a destination, are absent. A REJECT host route
+ * prints no gateway.
  *
  * @return array{present: bool, gateway: string, interface: string, reject: bool}
  */
@@ -171,18 +174,18 @@ function uu_group_tiers(array $group): array
     return $tiers;
 }
 
-/** Whether an IPv4 address lies in an IPv4 network ("a.b.c.d/n", or a bare address as a /32); never for others. */
-function uu_ipv4_in_network(string $addr, string $network): bool
+/**
+ * Whether an address lies in a static route's network ("addr/n", or a bare address as a host), in the address's own
+ * family; never for another family or a malformed network. Core's own containment test, on the canonical address.
+ */
+function uu_in_static(string $addr, string $network): bool
 {
-    $parts = explode('/', $network);
-    $bits = isset($parts[1]) ? $parts[1] : '32';
-    $long = ip2long($addr);
-    $net = ip2long($parts[0]);
-    if ($long === false || $net === false || count($parts) > 2 || preg_match('/^\d{1,2}$/', $bits) !== 1 || (int)$bits > 32) {
+    $canonical = uu_ip_canonical($addr);
+    if ($canonical === null) {
         return false;
     }
-    $mask = (int)$bits === 0 ? 0 : (-1 << (32 - (int)$bits)) & 0xFFFFFFFF;
-    return ($long & $mask) === ($net & $mask);
+    $cidr = str_contains($network, '/') ? $network : $network . (str_contains($network, ':') ? '/128' : '/32');
+    return \OPNsense\Firewall\Util::isIPInCIDR($canonical, $cidr);
 }
 
 /**
@@ -221,7 +224,7 @@ function uu_route_ours(array $route, array $members): bool
         return false;
     }
     foreach ($members as $m) {
-        if ($m['next_hop'] === $route['gateway'] && $m['if'] === $route['interface']) {
+        if (uu_next_hop($m['next_hop']) === uu_next_hop($route['gateway']) && $m['if'] === $route['interface']) {
             return true;
         }
     }
@@ -390,7 +393,8 @@ function uu_route_adopt(array $s, ?array $installed): array
     $matches = $installed['kind'] === 'reject'
         ? $route['reject'] && $route['interface'] === $installed['if']
         : $installed['kind'] === 'member' && !$route['reject'] && $route['gateway'] !== ''
-            && $route['gateway'] === $installed['next_hop'] && $route['interface'] === $installed['if'];
+            && uu_next_hop($route['gateway']) === uu_next_hop($installed['next_hop'])
+            && $route['interface'] === $installed['if'];
     if (!$matches) {
         return $s;
     }
@@ -401,8 +405,9 @@ function uu_route_adopt(array $s, ?array $installed): array
 
 /**
  * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
- * model's masks. A resolver that is not IPv4 is '' (unset), a probe name outside UU_PROBE_NAME_MASK is '.', a
- * failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per
+ * model's masks. A resolver that is not an IPv4 or IPv6 address, or is one the model refuses (link-local, multicast,
+ * loopback, unspecified), is '' (unset) and any other is its canonical form, a probe name outside UU_PROBE_NAME_MASK
+ * is '.', a failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per
  * substitution; none quotes the value.
  *
  * @param array{resolver: string, probe_name: string, failback_delay: string, group_uuid: string} $raw
@@ -413,9 +418,15 @@ function uu_settings_clean(array $raw): array
 {
     $problems = [];
     $resolver = $raw['resolver'];
-    if ($resolver !== '' && filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
-        $problems[] = 'settings: resolver is not an IPv4 address; evaluating as unset';
-        $resolver = '';
+    if ($resolver !== '') {
+        $refused = uu_ip_problem($resolver);
+        if ($refused !== null) {
+            $problems[] = 'settings: the resolver is ' . ($refused === 'not an address' ? 'not an IPv4 or IPv6 address'
+                : $refused) . '; evaluating as unset';
+            $resolver = '';
+        } else {
+            $resolver = uu_ip_canonical($resolver) ?? '';
+        }
     }
     $probe = $raw['probe_name'];
     if (preg_match(UU_PROBE_NAME_MASK . 'D', $probe) !== 1) {
@@ -664,7 +675,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $all = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true);
     $resolverIsMonitor = [];
     foreach ($all as $name => $gw) {
-        if ($resolver !== '' && ($gw['monitor'] ?? '') === $resolver) {
+        if ($resolver !== '' && uu_ip_same((string)($gw['monitor'] ?? ''), $resolver)) {
             $resolverIsMonitor[] = (string)$name;
         }
     }
@@ -739,9 +750,10 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* the resolver's route */
     $route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
-    if (filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-        $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($resolver)
-            . ' 2>/dev/null'));
+    $family = uu_ip_family($resolver);
+    if ($family !== null) {
+        $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . uu_family_arg($family) . ' '
+            . escapeshellarg($resolver) . ' 2>/dev/null'));
     }
     $ours = uu_route_ours($route, $members);
     $fibSyncMs = uu_parse_sysctl_int((string)shell_exec('/sbin/sysctl -n net.route.algo.fib_max_sync_delay_ms 2>/dev/null'));
@@ -751,7 +763,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     if ($resolver !== '') {
         foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $r) {
             $network = $r->network->getValue();
-            if ($r->enabled->isEqual('1') && uu_ipv4_in_network($resolver, $network)) {
+            if ($r->enabled->isEqual('1') && uu_in_static($resolver, $network)) {
                 $inStatic[] = $network;
             }
         }

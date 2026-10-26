@@ -186,7 +186,7 @@ function uu_evaluate(?string $stop, array $named): int
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    /* the footprint as the rules and the minute job read it: a recorded value that is no IPv4 address is none, and
+    /* the footprint as the rules and the minute job read it: a recorded value that is no address is none, and
      * never reaches a route or unbound-control argument */
     $old = uu_state_footprint(uu_state_load(UU_STATE_PATH));
     if ($old !== null && $old !== $settings['resolver']) {
@@ -298,7 +298,7 @@ function uu_footprint_follow(?string $before, bool $enabled, ?string $stop): voi
  */
 function uu_block_table_fill(string $resolver): void
 {
-    if (filter_var($resolver, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false) {
+    if (uu_ip_family($resolver) === null) {
         return;
     }
     $out = [];
@@ -390,8 +390,10 @@ function uu_status_main(): int
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
         $st['resolver']);
-    $route = filter_var($settings['resolver'], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false ? ''
-        : (string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($settings['resolver']) . ' 2>/dev/null');
+    $family = uu_ip_family($settings['resolver']);
+    $route = $family === null ? ''
+        : (string)shell_exec('/sbin/route -n get ' . uu_family_arg($family) . ' ' . escapeshellarg($settings['resolver'])
+            . ' 2>/dev/null');
     $doc = uu_status_doc($s, $p, $table, $route);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
     return 0;

@@ -296,6 +296,13 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'footprint: the recorded address when it is IPv4; none when nothing is recorded or it is not IPv4',
         uu_try_case(fn (): bool => uu_state_footprint($recorded) === '192.0.2.1'
             && uu_state_footprint(uu_state_new()) === null && uu_state_footprint($named) === null));
+    $recorded6 = uu_state_new();
+    $recorded6['resolver'] = '2001:DB8:A:0::53';
+    $mapped = uu_state_new();
+    $mapped['resolver'] = '::ffff:192.0.2.1';
+    uu_check($t, 'footprint: a recorded IPv6 address is a footprint, in its canonical form; an IPv4-mapped one is not',
+        uu_try_case(fn (): bool => uu_state_footprint($recorded6) === '2001:db8:a::53'
+            && uu_state_footprint($mapped) === null));
     /* the minute job is there while the plugin is enabled or a footprint is recorded: disabled, it comes and goes
      * with the footprint */
     $cases = [

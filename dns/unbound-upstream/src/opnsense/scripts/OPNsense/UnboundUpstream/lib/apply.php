@@ -35,6 +35,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/planner.php';
@@ -625,7 +626,8 @@ final class UuApplyRun
             return false;
         }
         /* -ifp pins the device: members may share a next hop */
-        if (!$this->routeSet(['-host', $this->resolver, $m['next_hop'], '-ifp', $m['if']])) {
+        if (!$this->routeSet([$this->familyArg(), '-host', $this->resolver, uu_route_hop($m['next_hop'], $m['if']),
+                              '-ifp', $m['if']])) {
             $this->log("route: {$this->resolver} via $name ({$m['next_hop']} on {$m['if']}) failed", LOG_ERR);
             return false;
         }
@@ -646,7 +648,8 @@ final class UuApplyRun
         if ($this->route['present'] && $this->route['reject']) {
             return;
         }
-        if (!$this->routeSet(['-host', $this->resolver, '127.0.0.1', '-reject'])) {
+        if (!$this->routeSet([$this->familyArg(), '-host', $this->resolver,
+                              uu_ip_family($this->resolver) === 'inet6' ? '::1' : '127.0.0.1', '-reject'])) {
             $this->log("route: the reject route for {$this->resolver} failed", LOG_ERR);
             return;
         }
@@ -661,7 +664,7 @@ final class UuApplyRun
         if (!$this->route['present'] || !$this->route['ours']) {
             return;
         }
-        if (!($this->io['route'])('delete', ['-host', $this->resolver])) {
+        if (!($this->io['route'])('delete', [$this->familyArg(), '-host', $this->resolver])) {
             $this->log("route: deleting the route of {$this->resolver} failed", LOG_ERR);
             return;
         }
@@ -669,6 +672,12 @@ final class UuApplyRun
         $this->st['route_installed'] = null;
         $this->checkpoint();
         $this->log("route: {$this->resolver} deleted");
+    }
+
+    /** route(8)'s address-family argument for the resolver. */
+    private function familyArg(): string
+    {
+        return uu_family_arg(uu_ip_family($this->resolver) ?? 'inet');
     }
 
     /**

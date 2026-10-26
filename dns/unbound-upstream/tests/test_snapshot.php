@@ -36,6 +36,21 @@ uu_register_suite('snapshot', function (): int {
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_absent.txt'));
     uu_check($t, 'not in table: absent', $r['present'] === false && !$r['reject']);
     uu_check($t, 'empty output: absent', uu_parse_route_get('')['present'] === false);
+    $absent = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
+    uu_check($t, '(t4) IPv4 not in table, as route(8) prints it: absent',
+        uu_parse_route_get("route: writing to routing socket: No such process\n  not in table\n") === $absent);
+    uu_check($t, '(t4) IPv6 "route has not been found", as route(8) prints it (real output): absent',
+        uu_parse_route_get(uu_snapshot_fixture('route_get_absent6.txt')) === $absent
+        && uu_parse_route_get("route: route has not been found\n") === $absent);
+    uu_check($t, '(t4) any other route(8) complaint is absent too, never a route',
+        uu_parse_route_get("route: bad address: dns.example\n") === $absent);
+    $r = uu_parse_route_get(uu_snapshot_fixture('route_get_member6.txt'));
+    uu_check($t, '(t4) IPv6 route via a member: present, gateway and device as printed, no reject',
+        $r === ['present' => true, 'gateway' => 'fd00::3:2', 'interface' => 'wg3', 'reject' => false]);
+    $r = uu_parse_route_get(uu_snapshot_fixture('route_get_reject6.txt'));
+    uu_check($t, '(t4) IPv6 REJECT route (real output): present, no gateway, on lo0, reject, and ours',
+        $r === ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true]
+        && uu_route_ours($r, []));
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_default.txt'));
     uu_check($t, 'the default route (0.0.0.0/0) is not a route of the resolver: absent',
         $r['present'] === false && $r['gateway'] === '' && $r['interface'] === '');
@@ -91,14 +106,6 @@ uu_register_suite('snapshot', function (): int {
         uu_group_tiers(['tiers' => ['2' => ['wg-b'], '1' => ['wg-a']]]) === [['wg-a'], ['wg-b']]);
     uu_check($t, 'tiers: a group without tiers is no tiers', uu_group_tiers(['name' => 'x']) === []);
 
-    uu_check($t, 'network: inside /24, outside, /32 host, /0 everything',
-        uu_ipv4_in_network('10.2.0.1', '10.2.0.0/24') && !uu_ipv4_in_network('10.2.1.1', '10.2.0.0/24')
-        && uu_ipv4_in_network('10.2.0.1', '10.2.0.1') && uu_ipv4_in_network('10.2.0.1', '0.0.0.0/0')
-        && !uu_ipv4_in_network('10.2.0.1', '10.2.0.2/32'));
-    uu_check($t, 'network: IPv6 and malformed networks never match',
-        !uu_ipv4_in_network('10.2.0.1', '2001:db8::/32') && !uu_ipv4_in_network('10.2.0.1', 'nonsense')
-        && !uu_ipv4_in_network('10.2.0.1', '10.2.0.0/33'));
-
     uu_check($t, 'hook order: unbound before unboundupstream',
         uu_unbound_sorts_first(['core', 'unbound', 'unboundupstream', 'wireguard']));
     uu_check($t, 'hook order: unboundupstream not listed is a fault',
@@ -122,6 +129,16 @@ uu_register_suite('snapshot', function (): int {
         !uu_route_ours(['gateway' => '', 'interface' => 'wg1', 'reject' => true] + $via, $members));
     uu_check($t, 'ours: a route on lo0 without REJECT is not ours',
         !uu_route_ours(['gateway' => '127.0.0.1', 'interface' => 'lo0'] + $via, $members));
+    $gif = ['next_hop' => 'fe80::1', 'if' => 'gif0'] + $a;
+    $viaGif = ['present' => true, 'gateway' => 'fe80::1%gif0', 'interface' => 'gif0', 'reject' => false];
+    uu_check($t, '(t7) ours: a link-local gateway printed with its device scope is the member\'s next hop',
+        uu_try_case(fn (): bool => uu_route_ours($viaGif, ['wg-gif' => $gif])
+            && uu_route_ours(['gateway' => 'fe80::1'] + $viaGif, ['wg-gif' => $gif])
+            && !uu_route_ours(['gateway' => 'fe80::2%gif0'] + $viaGif, ['wg-gif' => $gif])
+            && !uu_route_ours(['interface' => 'gif1'] + $viaGif, ['wg-gif' => $gif])));
+    uu_check($t, '(t7) ours: a gateway written in capitals matches the next hop in its canonical form',
+        uu_try_case(fn (): bool => uu_route_ours(['gateway' => 'FD00:0::3:2', 'interface' => 'wg3'] + $via,
+            ['wg-a6' => ['next_hop' => 'fd00::3:2', 'if' => 'wg3'] + $a])));
     uu_check($t, 'ours: no route is not ours, and a connected route (no gateway) is not ours',
         !uu_route_ours(['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false], $members)
         && !uu_route_ours(['gateway' => ''] + $via, ['wg-a' => ['next_hop' => ''] + $a]));
@@ -296,7 +313,27 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
         uu_try_case(fn (): bool => $one(['resolver' => '192.0.2.1/32'], 'resolver', '')
             && $one(['resolver' => 'resolver.example'], 'resolver', '')
-            && $one(['resolver' => '2001:db8::1'], 'resolver', '')));
+            && $one(['resolver' => '::ffff:192.0.2.1'], 'resolver', '')));
+    uu_check($t, '(t10) settings_clean: an IPv6 resolver is kept in its canonical form with no problem',
+        uu_try_case(fn (): bool => $clean(['resolver' => '2001:DB8::53'])['settings']['resolver'] === '2001:db8::53'
+            && $clean(['resolver' => '2001:DB8::53'])['problems'] === []
+            && $clean(['resolver' => '2001:DB8:A:0::53'])['settings']['resolver'] === '2001:db8:a::53'
+            && $clean(['resolver' => '192.0.2.1'])['problems'] === []));
+    uu_check($t, '(t10) settings_clean: a link-local resolver is unset with one problem naming link-local, and a '
+        . 'value that is no address says so',
+        uu_try_case(function () use ($clean, $one): bool {
+            $linkLocal = $clean(['resolver' => 'fe80::1']);
+            $text = $clean(['resolver' => 'dns.example']);
+            return $one(['resolver' => 'fe80::1'], 'resolver', '')
+                && $linkLocal['problems'] === ['settings: the resolver is link-local; evaluating as unset']
+                && $text['problems'] === ['settings: the resolver is not an IPv4 or IPv6 address; evaluating as unset']
+                && $clean(['resolver' => '224.0.0.1'])['problems']
+                    === ['settings: the resolver is multicast; evaluating as unset']
+                && $clean(['resolver' => '::1'])['problems']
+                    === ['settings: the resolver is loopback; evaluating as unset']
+                && $clean(['resolver' => '0.0.0.0'])['problems']
+                    === ['settings: the resolver is unspecified; evaluating as unset'];
+        }));
     uu_check($t, 'settings_clean: a probe name with a space is the root, one problem',
         uu_try_case(fn (): bool => $one(['probe_name' => 'a b'], 'probe_name', '.')));
     uu_check($t, 'settings_clean: failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, one problem each',

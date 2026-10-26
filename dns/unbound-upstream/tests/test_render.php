@@ -108,6 +108,25 @@ uu_register_suite('render', function (): int {
         && uu_rule_confs('10.2.0.1', [], false, null) === [$nc[1]]);
     uu_check($t, 'priority is the constant', UU_RULE_PRIORITY === 99998);
 
+    $c6 = uu_rule_confs('2001:db8:a::53', [$a, $b], true, null);
+    uu_check($t, '(t9) an IPv6 resolver: every pass and block is inet6, to the address, the table block too',
+        uu_try_case(fn (): bool => count($c6) === 4 && array_column($c6, 'ipprotocol') === ['inet6', 'inet6', 'inet6', 'inet6']
+            && $c6[0]['to'] === '2001:db8:a::53' && $c6[1]['to'] === '2001:db8:a::53'
+            && $c6[2]['to'] === '<__unboundupstream_block>' && $c6[3]['to'] === '2001:db8:a::53'
+            && $c6[0]['from'] === 'opt14ip' && $c6[0]['label'] === md5('uu-pass-opt14')
+            && array_column($c6, 'label') === [md5('uu-pass-opt14'), md5('uu-pass-opt15'), md5('uu-block'),
+                md5('uu-backstop')]));
+    $mixed = uu_rule_confs('192.0.2.9', [$a], true, ['resolver' => '2001:db8:b::53', 'interface' => 'opt14']);
+    uu_check($t, '(t9) an IPv6 footprint beside an IPv4 setting: each rule has the protocol of its own address',
+        uu_try_case(fn (): bool => array_column($mixed, 'ipprotocol') === ['inet', 'inet6', 'inet', 'inet', 'inet6']
+            && $mixed[1]['to'] === '2001:db8:b::53' && $mixed[4]['to'] === '2001:db8:b::53'));
+    $fw = uu_test_fw();
+    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '2001:DB8:A:0::0053', 'members' => [$a],
+        'footprint' => null, 'footprint_problem' => null, 'error' => null]);
+    uu_check($t, '(t9) a resolver typed in a non-canonical form renders in its canonical form',
+        uu_try_case(fn (): bool => count($fw->rules) === 3 && $fw->rules[0][1]['to'] === '2001:db8:a::53'
+            && $fw->rules[2][1]['to'] === '2001:db8:a::53' && $fw->rules[0][1]['ipprotocol'] === 'inet6'));
+
     $wanted = function () use ($a, $b): array {
         return ['enabled' => true, 'resolver' => '10.2.0.1', 'members' => [$a, $b], 'footprint' => null,
                 'footprint_problem' => null, 'error' => null];
@@ -262,6 +281,28 @@ uu_register_suite('render', function (): int {
                 < array_search(md5('uu-block'), $labels, true)
                 && $lastPass < $firstBlock && count($c) === 6;
         }));
+    uu_check($t, '(t9) a recorded IPv6 address is a footprint: its pass and block are inet6, on the route\'s device',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $off): bool {
+            $recs = ['wg-a6' => ['interface' => 'opt14', 'if' => 'wg3', 'gateway' => 'fd00::3:2']];
+            uu_state_save($dir . '/state.json', $stateOf('2001:db8:a::53', ['kind' => 'member', 'next_hop' => 'fd00::3:2',
+                'if' => 'wg3']));
+            $r = $render($dir . '/state.json', $off, $recs);
+            $confs = array_map(fn (array $rule): array => $rule[1], $r['rules']);
+            return count($confs) === 2 && array_column($confs, 'ipprotocol') === ['inet6', 'inet6']
+                && array_column($confs, 'to') === ['2001:db8:a::53', '2001:db8:a::53']
+                && array_column($confs, 'label') === [md5('uu-footprint-pass-opt14'), md5('uu-footprint')]
+                && $r['logged'] === [];
+        }));
+    uu_check($t, '(t9) a footprint equal to the setting in another spelling renders nothing extra',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf): bool {
+            $recs = ['wg-a6' => ['interface' => 'opt14', 'if' => 'wg3', 'gateway' => 'fd00::3:2']];
+            uu_state_save($dir . '/state.json', $stateOf('2001:db8:a::53', ['kind' => 'member', 'next_hop' => 'fd00::3:2',
+                'if' => 'wg3']));
+            $r = $render($dir . '/state.json', ['resolver' => '2001:DB8:A::53', 'gateways' => ['wg-a6']], $recs);
+            $labels = array_map(fn (array $rule): string => (string)$rule[1]['label'], $r['rules']);
+            return !in_array(md5('uu-footprint'), $labels, true) && !in_array(md5('uu-footprint-pass-opt14'), $labels, true)
+                && count($labels) === 3 && $r['logged'] === [];
+        }));
     uu_check($t, '(r4) a footprint equal to the resolver renders nothing extra: today\'s rules exactly',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $on, $at, $today): bool {
             uu_state_save($dir . '/state.json', $stateOf('192.0.2.9', $onWg1));
@@ -291,7 +332,7 @@ uu_register_suite('render', function (): int {
             $r = $render($dir . '/state.json', $on('x'), $records);
             return $r['rules'] === $at([$fpPass, $fpBlock]) && $r['tables'] === []
                 && count($r['logged']) === 1 && $r['logged'][0][0] === 'err'
-                && str_contains($r['logged'][0][1], 'resolver is not an IPv4 address');
+                && str_contains($r['logged'][0][1], 'resolver is not an IPv4 or IPv6 address');
         }));
     uu_check($t, '(r8) no state file: today\'s rules and no line',
         uu_scratch_case(function (string $dir) use ($render, $records, $on, $at, $today): bool {
@@ -379,10 +420,12 @@ uu_register_suite('render', function (): int {
                 === ['footprint' => null, 'problem' => null]
             && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.9')['footprint']
                 === ['resolver' => '192.0.2.1', 'interface' => 'opt14']));
-    uu_check($t, 'footprint: a recorded address that is not IPv4 (an IPv6 one too) is a problem, not a footprint',
+    uu_check($t, 'footprint: a recorded value that is no address (a host name, an IPv4-mapped one) is a problem, not a footprint',
         uu_try_case(fn (): bool
-            => uu_footprint_from_state($stateOf('2001:db8::1', $onWg1), $records, '')['footprint'] === null
-            && is_string(uu_footprint_from_state($stateOf('2001:db8::1', $onWg1), $records, '')['problem'])));
+            => uu_footprint_from_state($stateOf('resolver.example', $onWg1), $records, '')['footprint'] === null
+            && is_string(uu_footprint_from_state($stateOf('resolver.example', $onWg1), $records, '')['problem'])
+            && uu_footprint_from_state($stateOf('::ffff:192.0.2.1', $onWg1), $records, '')['footprint'] === null
+            && is_string(uu_footprint_from_state($stateOf('::ffff:192.0.2.1', $onWg1), $records, '')['problem'])));
     uu_check($t, 'wanted: a setting with an address that is not IPv4 covers no footprint, and its members come from '
         . 'the records',
         uu_scratch_case(function (string $dir) use ($stateOf, $onWg1, $records, $on): bool {

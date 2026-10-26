@@ -1,0 +1,8 @@
+   route to: 2001:db8:a::53
+destination: 2001:db8:a::53
+    gateway: fd00::3:2
+        fib: 0
+  interface: wg3
+      flags: <UP,GATEWAY,HOST,DONE,STATIC>
+ recvpipe  sendpipe  ssthresh  rtt,msec    mtu        weight    expire
+       0         0         0         0      1420         1         0 

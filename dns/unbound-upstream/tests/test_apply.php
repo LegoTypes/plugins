@@ -266,14 +266,14 @@ uu_register_suite('apply', function (): int {
     $now = 10000;
     $usable = ['wg-a' => uu_test_timer(500, null, $now - 60), 'wg-b' => uu_test_timer(500, null, $now - 60)];
     $wait = 'sleep ' . (1000 + UU_FIB_SYNC_MARGIN_MS);
-    $toWgA = 'route add -host 10.2.0.1 10.2.0.2 -ifp wg1';
-    $changeToWgA = 'route change -host 10.2.0.1 10.2.0.2 -ifp wg1';
-    $changeToWgB = 'route change -host 10.2.0.1 10.2.0.6 -ifp wg2';
+    $toWgA = 'route add -inet -host 10.2.0.1 10.2.0.2 -ifp wg1';
+    $changeToWgA = 'route change -inet -host 10.2.0.1 10.2.0.2 -ifp wg1';
+    $changeToWgB = 'route change -inet -host 10.2.0.1 10.2.0.6 -ifp wg2';
     $probe = 'probe_direct 10.2.0.1 .';
     $through = ['uc flush_type . SOA', 'probe_unbound .'];
     $toResolver = 'uc forward_add . 10.2.0.1';
     $restoreDot = 'uc forward_add +t . 192.0.2.53@853#dns.example 2001:db8::53@853#dns.example';
-    $reject = 'route change -host 10.2.0.1 127.0.0.1 -reject';
+    $reject = 'route change -inet -host 10.2.0.1 127.0.0.1 -reject';
     $flushReq = 'uc flush_requestlist';
     $drain = 'sleep ' . (1000 + UU_FIB_SYNC_MARGIN_MS + UU_STOP_DRAIN_SECONDS * 1000);
     $settledDown = uu_test_probe('down', '100.0 %', 300);
@@ -299,6 +299,76 @@ uu_register_suite('apply', function (): int {
         && uu_test_logged($r['calls'], LOG_NOTICE, 'fallback', 'wg-a'));
     uu_check($t, 'entering: the state records the resolver its route and forwarders refer to',
         $st['resolver'] === '10.2.0.1' && $r['saved']['state']['resolver'] === '10.2.0.1');
+
+    // (t6) One IPv6 resolver on an IPv6 member: the route, the forwarder and the checks follow the address's family.
+    $v6 = '2001:db8:a::53';
+    $v6Snapshot = function (string $hop, string $dev) use ($v6): array {
+        $s6 = uu_test_apply_snapshot();
+        $s6['settings']['resolver'] = $v6;
+        $s6['tiers'] = [['wg-a6']];
+        $s6['members'] = ['wg-a6' => ['name' => 'wg-a6', 'interface' => 'opt3', 'if' => $dev, 'next_hop' => $hop]
+            + $s6['members']['wg-a']];
+        $s6['probes'] = ['wg-a6' => $s6['probes']['wg-a']];
+        $s6['block_table']['addresses'] = [$v6];
+        return $s6;
+    };
+    $usable6 = ['wg-a6' => uu_test_timer(500, null, $now - 60)];
+    $s6 = $v6Snapshot('fd00::3:2', 'wg3');
+    $p = uu_plan($s6, uu_test_plan_state(null, $usable6));
+    $r = uu_test_io($s6, $all);
+    $st = uu_apply($p, $s6, $r['io']);
+    uu_check($t, '(t6) entering on an IPv6 resolver: route add -inet6, sleep, probe, forward_add, flush_infra, forward',
+        $p['action'] === 'tunnel' && $p['candidates'] === ['wg-a6']
+        && uu_test_acts($r['calls']) === array_merge(['route add -inet6 -host ' . $v6 . ' fd00::3:2 -ifp wg3', $wait,
+            'probe_direct ' . $v6 . ' .', 'uc forward_add . ' . $v6, 'uc flush_infra ' . $v6, 'uc forward'], $through)
+        && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a6' && $st['resolver'] === $v6
+        && $st['route_installed'] === ['kind' => 'member', 'next_hop' => 'fd00::3:2', 'if' => 'wg3']
+        && uu_test_logged($r['calls'], LOG_NOTICE, 'route: ' . $v6 . ' via wg-a6 (fd00::3:2 on wg3)')
+        && uu_test_logged($r['calls'], LOG_NOTICE, 'forwarders: . -> ' . $v6 . ', plain DNS inside the tunnel (no +t)'));
+    $reject6 = 'route change -inet6 -host ' . $v6 . ' ::1 -reject';
+    $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
+    $s6['members']['wg-a6']['force_down'] = true;
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $r = uu_test_io($s6, $all);
+    $st = uu_apply($p, $s6, $r['io']);
+    uu_check($t, '(t6) fallback on an IPv6 resolver: the reject route is ::1 on -inet6, changed in place',
+        $p['action'] === 'fallback' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject6]
+        && $st['mode'] === 'fallback' && $st['route_installed'] === ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0']
+        && uu_test_logged($r['calls'], LOG_NOTICE, 'route: ' . $v6 . ' rejected locally'));
+    $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
+    $s6['settings']['enabled'] = false;
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $r = uu_test_io($s6, $all);
+    $st = uu_apply($p, $s6, $r['io']);
+    uu_check($t, '(t6) stop on an IPv6 resolver ends in route delete -inet6 -host, and the record is cleared',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject6, $flushReq, $drain,
+            'route delete -inet6 -host ' . $v6]
+        && $st['resolver'] === null && $st['route_installed'] === null
+        && uu_test_logged($r['calls'], LOG_NOTICE, 'route: ' . $v6 . ' deleted'));
+
+    // (t7) A link-local next hop: route(8) gets it scoped to the device, and the route read back matches it.
+    $s6 = $v6Snapshot('fe80::1', 'gif0');
+    $p = uu_plan($s6, uu_test_plan_state(null, $usable6));
+    $r = uu_test_io($s6, $all);
+    $st = uu_apply($p, $s6, $r['io']);
+    uu_check($t, '(t7) a link-local next hop is passed as fe80::1%gif0, and recorded as the member\'s own next hop',
+        uu_test_acts($r['calls'])[0] === 'route add -inet6 -host ' . $v6 . ' fe80::1%gif0 -ifp gif0'
+        && $st['route_installed'] === ['kind' => 'member', 'next_hop' => 'fe80::1', 'if' => 'gif0']
+        && uu_test_logged($r['calls'], LOG_NOTICE, 'route: ' . $v6 . ' via wg-a6 (fe80::1 on gif0)'));
+    $viaGif = ['present' => true, 'gateway' => 'fe80::1%gif0', 'interface' => 'gif0', 'reject' => false, 'ours' => true];
+    uu_check($t, '(t7) the route read back with its scope is the member\'s route; another next hop or device is not',
+        uu_try_case(fn (): bool => uu_plan_route_via($viaGif, $s6['members']['wg-a6'])
+            && uu_plan_route_via(['gateway' => 'FE80:0::1%gif0'] + $viaGif, $s6['members']['wg-a6'])
+            && !uu_plan_route_via(['gateway' => 'fe80::2%gif0'] + $viaGif, $s6['members']['wg-a6'])
+            && !uu_plan_route_via(['interface' => 'gif1'] + $viaGif, $s6['members']['wg-a6'])));
+    $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
+    $s6['route']['gateway'] = 'FD00:0::3:2';
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $r = uu_test_io($s6, $all);
+    uu_apply($p, $s6, $r['io']);
+    uu_check($t, '(t7) a route whose next hop is the member\'s in another spelling is left alone: no route call',
+        $p['action'] === 'none' && !$p['route_repair']
+        && array_filter(uu_test_acts($r['calls']), fn (string $c): bool => str_starts_with($c, 'route ')) === []);
 
     // Changing member: the live root is already the resolver.
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
@@ -359,7 +429,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'route present → change, absent → add; never delete then add',
         uu_test_acts($r['calls'])[0] === $changeToWgB
-        && uu_test_acts($r['calls'])[1] === 'route add -host 10.2.0.1 10.2.0.6 -ifp wg2'
+        && uu_test_acts($r['calls'])[1] === 'route add -inet -host 10.2.0.1 10.2.0.6 -ifp wg2'
         && uu_test_acts($r['calls'])[2] === $wait && $st['member'] === 'wg-b');
 
     // Stop.
@@ -370,7 +440,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'stop with live root the resolver → forward_add +t then route delete; never a restart',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['member'] === null && $st['last_switch'] !== null
         && $st['last_switch']['to'] === 'fallback');
     uu_check($t, 'a finished stop clears the recorded resolver: nothing refers to it any more',
@@ -391,7 +461,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all, ['route_fail' => ['change', 'add']]);
     $st = uu_apply(uu_plan($s, $recordedWgA), $s, $r['io']);
     uu_check($t, 'stop whose reject route fails → the member route stays, never deleted, its record kept, logged',
-        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, 'route add -host 10.2.0.1 127.0.0.1 -reject']
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, 'route add -inet -host 10.2.0.1 127.0.0.1 -reject']
         && $st['mode'] === 'fallback' && $st['route_installed'] === $wgARecord
         && uu_test_logged($r['calls'], LOG_ERR, 'no reject route'));
 
@@ -403,8 +473,8 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $gap, $r['io']);
     uu_check($t, 'stop in tunnel mode with the route missing (a route-loss window) → reject route added, flush, drain, delete',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route add -host 10.2.0.1 127.0.0.1 -reject',
-            $flushReq, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', 'route add -inet -host 10.2.0.1 127.0.0.1 -reject',
+            $flushReq, $drain, 'route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null);
 
     $s = uu_test_apply_snapshot();
@@ -422,7 +492,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'stop in fallback → flush_requestlist (a recent fallback leaves retries), drain, our reject route deleted; forwarders untouched',
-        uu_test_acts($r['calls']) === [$flushReq, $drain, 'route delete -host 10.2.0.1'] && $st['mode'] === 'fallback');
+        uu_test_acts($r['calls']) === [$flushReq, $drain, 'route delete -inet -host 10.2.0.1'] && $st['mode'] === 'fallback');
 
     /* a route record that outlived its route (the kernel deleted it) must not pin the address */
     $s = uu_test_apply_snapshot();
@@ -442,7 +512,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'Unbound not running in tunnel mode → route deleted, no unbound-control call, fallback',
-        $p['action'] === 'stop' && uu_test_acts($r['calls']) === ['route delete -host 10.2.0.1']
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === ['route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['member'] === null
         && uu_test_logged($r['calls'], LOG_NOTICE, 'Unbound not running'));
 
@@ -468,7 +538,7 @@ uu_register_suite('apply', function (): int {
     }
     uu_check($t, 'dry run → only log calls',
         $p['action'] === 'tunnel' && $dryOnly && $st === $p['state']
-        && uu_test_logged($r['calls'], LOG_NOTICE, '[dry]', 'route -n add -host 10.2.0.1 10.2.0.2 -ifp wg1')
+        && uu_test_logged($r['calls'], LOG_NOTICE, '[dry]', 'route -n add -inet -host 10.2.0.1 10.2.0.2 -ifp wg1')
         && uu_test_logged($r['calls'], LOG_NOTICE, '[dry]', 'forward_add . 10.2.0.1'));
 
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
@@ -477,7 +547,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'dry run turned on in tunnel mode → the plugin\'s live changes are undone for real (stop)',
-        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
+        uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && uu_test_logged($r['calls'], LOG_NOTICE, 'dry run'));
 
     // Carry-forward obligations.
@@ -531,7 +601,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'the action decides, not the candidates: a contract failure in fallback with candidates → only the reject route',
         $p['action'] === 'none' && $p['candidates'] !== [] && $p['route_repair']
-        && uu_test_acts($r['calls']) === ['route add -host 10.2.0.1 127.0.0.1 -reject'] && $st['mode'] === 'fallback');
+        && uu_test_acts($r['calls']) === ['route add -inet -host 10.2.0.1 127.0.0.1 -reject'] && $st['mode'] === 'fallback');
 
     $s = uu_test_apply_snapshot();
     $p = uu_plan($s, uu_test_plan_state(null, $usable));
@@ -539,7 +609,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'entry forward_add refused → no other candidate, fallback restores (the add may have landed), reject',
         uu_test_acts($r['calls']) === [$toWgA, $wait, $probe, $toResolver, $restoreDot, 'uc forward',
-            'route change -host 10.2.0.1 127.0.0.1 -reject']
+            'route change -inet -host 10.2.0.1 127.0.0.1 -reject']
         && $st['mode'] === 'fallback' && $st['timers']['wg-a']['resolver_failed_until'] === null);
 
     // The route the plugin installed: recognised by the state's record when no member matches.
@@ -592,7 +662,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $off, $r['io']);
     uu_check($t, 'group deleted in tunnel mode, then stop → our recorded route deleted',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null);
 
     $other = $memberRecord;
@@ -704,7 +774,7 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'fallback, no candidate, route absent → reject route added, nothing else',
-        $p['action'] === 'none' && uu_test_acts($r['calls']) === ['route add -host 10.2.0.1 127.0.0.1 -reject']
+        $p['action'] === 'none' && uu_test_acts($r['calls']) === ['route add -inet -host 10.2.0.1 127.0.0.1 -reject']
         && $st['mode'] === 'fallback');
 
     // Root-zone shapes.
@@ -805,7 +875,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $silentStop, $r['io']);
     uu_check($t, 'stop in tunnel mode with a silent channel at the bound → restart, the configured root confirmed, then reject, drain, delete',
         $p['action'] === 'stop'
-        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain, 'route delete -host 10.2.0.1']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain, 'route delete -inet -host 10.2.0.1']
         && $st['mode'] === 'fallback' && $st['route_installed'] === null
         && uu_test_logged($r['calls'], LOG_WARNING, 'restart'));
     $r = uu_test_io($silentStop, $all, ['silent' => true, 'restarts' => true]);
@@ -846,7 +916,7 @@ uu_register_suite('apply', function (): int {
     // Only a requested stop and the removal restart at once for a silent channel; every other stop waits
     // for the bound, the undo of a replaced address included.
     $silentTail = [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain,
-        'route delete -host ' . $silentTunnel['settings']['resolver']];
+        'route delete -inet -host ' . $silentTunnel['settings']['resolver']];
     $silentRoot = ['192.0.2.53', '2001:db8::53'];
     /* disabled, footprint A, setting B: each tick first undoes A, as UU_STOP_RESOLVER, on the same counter */
     $undo = $silentStop;
@@ -926,8 +996,8 @@ uu_register_suite('apply', function (): int {
     $fp['settings']['resolver'] = '192.0.2.1';
     $fp = uu_test_in_tunnel($fp, 'wg-a');
     $fpRoot = ['192.0.2.53', '2001:db8::53'];
-    $fpReject = 'route change -host 192.0.2.1 127.0.0.1 -reject';
-    $fpTail = [$fpReject, $flushReq, $drain, 'route delete -host 192.0.2.1'];
+    $fpReject = 'route change -inet -host 192.0.2.1 127.0.0.1 -reject';
+    $fpTail = [$fpReject, $flushReq, $drain, 'route delete -inet -host 192.0.2.1'];
     $fpRefused = ['uc_fail' => ['forward_add'], 'restart_live' => $fpRoot];
     $stopAs = function (array $s, ?string $cause, array $o) use ($all, $usable): array {
         $s['stop'] = $cause;
@@ -939,7 +1009,7 @@ uu_register_suite('apply', function (): int {
     };
     $cleared = fn (array $st): bool => $st['mode'] === 'fallback' && $st['member'] === null
         && $st['resolver'] === null && $st['route_installed'] === null;
-    $lastResort = fn (array $run): bool => !in_array('route delete -host 192.0.2.1', $run['acts'], true)
+    $lastResort = fn (array $run): bool => !in_array('route delete -inet -host 192.0.2.1', $run['acts'], true)
         && $run['st']['resolver'] === '192.0.2.1' && $run['saved']['state']['resolver'] === '192.0.2.1'
         && $run['st']['route_installed'] === $rejectRecord
         && uu_test_logged($run['calls'], LOG_ERR, 'being removed', '192.0.2.1', 'rejected locally',
@@ -1013,9 +1083,9 @@ uu_register_suite('apply', function (): int {
     $fpGap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
     $run = $stopAs($fpGap, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
     uu_check($t, '(a5) the same with the route missing (a route-loss window) → the reject route added',
-        $run['acts'] === [$restoreDot, 'restart', 'route add -host 192.0.2.1 127.0.0.1 -reject'] && $lastResort($run));
+        $run['acts'] === [$restoreDot, 'restart', 'route add -inet -host 192.0.2.1 127.0.0.1 -reject'] && $lastResort($run));
     /* nothing changed, so nothing was saved mid-run: the returned state is what evaluate.php saves */
-    $noReject = fn (array $run): bool => !in_array('route delete -host 192.0.2.1', $run['acts'], true)
+    $noReject = fn (array $run): bool => !in_array('route delete -inet -host 192.0.2.1', $run['acts'], true)
         && $run['st']['resolver'] === '192.0.2.1' && $run['st']['route_installed'] !== $rejectRecord
         && !uu_test_logged($run['calls'], LOG_ERR, 'rejected locally')
         && uu_test_logged($run['calls'], LOG_ERR, 'being removed', '192.0.2.1', 'could not be made a reject route',
@@ -1023,7 +1093,7 @@ uu_register_suite('apply', function (): int {
     $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false,
                                          'route_fail' => ['change', 'add'], 'restarts' => true]);
     uu_check($t, '(a5) removal whose restart fails and whose reject route cannot be made → the member route kept, never deleted, the resolver recorded, an error naming the removal and the remedy',
-        $run['acts'] === [$restoreDot, 'restart', $fpReject, 'route add -host 192.0.2.1 127.0.0.1 -reject']
+        $run['acts'] === [$restoreDot, 'restart', $fpReject, 'route add -inet -host 192.0.2.1 127.0.0.1 -reject']
         && $noReject($run));
     $fpForeign = $fp;
     $fpForeign['route'] = ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0', 'reject' => false,
@@ -1454,7 +1524,7 @@ uu_register_suite('apply', function (): int {
         $ok && $composed !== null && in_array('restart', $composed['calls'], true) && $restarted === []
         && uu_test_logged(new ArrayObject($composed['calls']), LOG_ERR, 'unbound restart failed', 'exited 1')
         && in_array($fpReject, $composed['calls'], true)
-        && !in_array('route delete -host 192.0.2.1', $composed['calls'], true)
+        && !in_array('route delete -inet -host 192.0.2.1', $composed['calls'], true)
         && uu_test_logged(new ArrayObject($composed['calls']), LOG_ERR, 'being removed', 'rejected locally'));
 
     // The footprint's filter reload: queued only when configctl -d answers with a job id, else core's reload.

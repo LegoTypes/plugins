@@ -64,5 +64,27 @@ uu_register_suite('render_vm', function (): int {
     uu_check($t, '(r10) no table and no unresolved ## placeholder',
         !str_contains($text, UU_BLOCK_TABLE) && !str_contains($text, '##') && trim($fw->tablesToText()) === '');
     printf("%s", preg_replace('/^/m', '    | ', $text));
+
+    /* (t9) an IPv6 resolver: core renders the passes and blocks as inet6 (core's address map is built once per
+     * process, so this uses the interface the first render did) */
+    $fw = new \OPNsense\Firewall\Plugin();
+    $mapping6 = [
+        'opt1' => ['if' => 'wg1', 'descr' => 'WG_TEST_A', 'ifconfig' => ['ipv6' => [['ipaddr' => 'fd00::1:1', 'subnetbits' => 128]]]],
+    ];
+    $fw->setInterfaceMapping($mapping6);
+    $c = uu_test_member();
+    $c['name'] = 'wg-a6';
+    $c['interface'] = 'opt1';
+    $c['if'] = 'wg1';
+    uu_render_firewall($fw, fn (): array => ['enabled' => true, 'resolver' => '2001:db8:a::53', 'members' => [$c],
+        'footprint' => null, 'footprint_problem' => null, 'error' => null]);
+    $text = $fw->outputFilterRules();
+    uu_check($t, '(t9) the IPv6 pass renders on wg1 as inet6, from the interface address, to the resolver, port 53',
+        str_contains($text, 'on wg1 inet6 proto {tcp udp} from {(wg1)} to {2001:db8:a::53} port {53}'));
+    uu_check($t, '(t9) the IPv6 backstop and counting blocks render as inet6',
+        str_contains($text, 'block out log quick inet6 from {any} to {2001:db8:a::53}')
+        && str_contains($text, 'block out log quick inet6 from {any} to {<__unboundupstream_block>}'));
+    uu_check($t, '(t9) no unresolved ## placeholder in the IPv6 rules', !str_contains($text, '##'));
+    printf("%s", preg_replace('/^/m', '    | ', $text));
     return uu_tally_report('render_vm', $t);
 });
