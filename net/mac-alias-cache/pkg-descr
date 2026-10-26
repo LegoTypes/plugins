@@ -10,6 +10,11 @@ or "configctl macaliascache flush").
 Plugin Changelog
 ================
 
+1.1_1
+
+* A flush keeps core's MAC alias cache at core's own mode (0640) instead of
+  making it world-readable, and narrows one an earlier flush widened
+
 1.1
 
 * State and lock files move out of /tmp into a root-owned directory; files are

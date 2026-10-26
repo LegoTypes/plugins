@@ -45,6 +45,8 @@ _SAMPLE_LENGTH = 60
 # plugin's defaults and the contract below both take them from here
 CACHE_FILE = "/tmp/alias_filter_arp.cache"
 UPDATE_LOCK = "/tmp/filter_update_tables.lock"
+# core creates both files root:wheel 0640; the plugin writes and creates them with that mode too
+CORE_FILE_MODE = 0o640
 ALIASTABLES_DIR = "/var/db/aliastables"
 
 _CORE = "/usr/local/opnsense/"

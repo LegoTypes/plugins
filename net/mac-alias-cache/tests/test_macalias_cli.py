@@ -320,8 +320,8 @@ def test_write_json_atomic_replaces_and_leaves_no_temp(tmp_path):
     macalias._write_json_atomic(str(target), {"a": 1})
     assert json.loads(target.read_text()) == {"a": 1}
     assert [p.name for p in tmp_path.iterdir()] == ["out.json"]
-    # same mode a plain open() gives under the usual 022 umask, not mkstemp's 0600
-    assert stat.S_IMODE(os.stat(target).st_mode) == 0o644
+    # core's creation mode for its files, not mkstemp's 0600
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o640
 
 
 def test_write_json_atomic_failure_keeps_original(tmp_path):
@@ -904,14 +904,39 @@ def test_acquire_lock_refuses_symlink_lock_path(env):
     assert target.read_text() == ""
 
 
+def test_flush_writes_a_fresh_cache_at_core_mode(env):  # (e1)
+    cfg, tmp = env
+    (tmp / "arp.cache").unlink()
+    out = _flush(cfg)
+    assert "error" not in out
+    assert stat.S_IMODE(os.lstat(tmp / "arp.cache").st_mode) == 0o640
+
+
+def test_flush_narrows_a_cache_an_earlier_flush_widened(env):  # (e2)
+    cfg, tmp = env
+    (tmp / "arp.cache").chmod(0o644)
+    out = _flush(cfg)
+    assert "error" not in out
+    assert stat.S_IMODE(os.lstat(tmp / "arp.cache").st_mode) == 0o640
+
+
+def test_acquire_lock_creates_an_absent_core_lock_at_core_mode(env):  # (e3)
+    cfg, tmp = env
+    assert not os.path.lexists(cfg["lock_file"])
+    lock = macalias.acquire_lock(cfg, sleep=lambda s: None)
+    assert not isinstance(lock, dict) and lock is not None
+    lock.close()
+    assert stat.S_IMODE(os.lstat(cfg["lock_file"]).st_mode) == 0o640
+
+
 def test_write_json_atomic_sets_mode_0600_under_state_dir(env):
     cfg, tmp = env
     out = _flush(cfg)
     assert "error" not in out
     modes = {p.name: stat.S_IMODE(os.lstat(p).st_mode) for p in pathlib.Path(cfg["state_dir"]).iterdir()}
     assert "last.json" in modes and set(modes.values()) == {0o600}
-    # core's cache file keeps the 0644 core creates it with
-    assert stat.S_IMODE(os.lstat(tmp / "arp.cache").st_mode) == 0o644
+    # core's cache file keeps the 0640 core creates it with
+    assert stat.S_IMODE(os.lstat(tmp / "arp.cache").st_mode) == 0o640
     target = pathlib.Path(cfg["state_dir"]) / "other.json"
     macalias._write_json_atomic(str(target), {"a": 1}, mode=0o600)
     assert stat.S_IMODE(os.lstat(target).st_mode) == 0o600

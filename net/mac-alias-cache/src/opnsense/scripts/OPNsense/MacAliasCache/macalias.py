@@ -328,9 +328,10 @@ def read_core_texts(cfg):
     return texts
 
 
-def _write_json_atomic(path, obj, mode=0o644):
+def _write_json_atomic(path, obj, mode=lib.CORE_FILE_MODE):
     """ write obj as JSON to a temp file beside path, then rename it over path; the default
-    mode is the one core gives its cache file, the plugin's own files pass 0600
+    mode is the one core creates its cache file with (fixed, so a wider one is narrowed), the
+    plugin's own files pass 0600
     """
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".", prefix=".%s." % os.path.basename(path), suffix=".tmp")
     try:
@@ -427,7 +428,7 @@ def acquire_lock(cfg, sleep):
     the plugin can open safely. Core's own flock(1) wrappers would follow a symlink there; the plugin does not.
     """
     path = cfg["lock_file"]
-    fd = _open_lock(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o644)
+    fd = _open_lock(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, lib.CORE_FILE_MODE)
     if fd is None:
         return {"error": "lock_unusable",
                 "detail": "core's alias update lock at %s is not a regular file with one link "
