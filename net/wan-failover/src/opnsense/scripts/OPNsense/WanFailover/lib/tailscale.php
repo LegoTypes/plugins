@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Tailscale restart decision (spec 2026-10-05 section 3.6). Pure. tailscaled
+ * Tailscale restart decision. Pure. tailscaled
  * restarts only when the IPv4 default gateway it runs on has changed and the
  * change is stable (or was caused by our own plan), or after the default was
  * lost and came back stable. Unmet conditions defer; nothing is skipped.

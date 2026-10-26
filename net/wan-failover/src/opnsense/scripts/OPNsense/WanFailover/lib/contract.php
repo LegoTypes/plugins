@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core contract (spec 2026-10-05 section 3.12). Judging dependencies: without them no WAN can be read,
+ * Core contract. Judging dependencies: without them no WAN can be read,
  * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
  * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
  * fallbacks for core's routing reconfigure and cron restart when configd does not answer; a drift there blocks

@@ -5,7 +5,7 @@
 # BSD 2-Clause License
 #
 # Config-change hook: a config revert or restore can change force_down or the plugin's hold records
-# without reconfiguring routing; an evaluation notices and re-syncs (spec 3.8). Detached and
+# without reconfiguring routing; an evaluation notices and re-syncs. Detached and
 # idempotent, so the plugin's own saves do not loop.
 
 /usr/local/sbin/configctl -d wanfailover evaluate > /dev/null 2>&1

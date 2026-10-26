@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Hold planning (spec 2026-10-05 section 3.3). Pure. Releases are decided
+ * Hold planning. Pure. Releases are decided
  * before starts, starts use the post-release held set, and a hold needs a
  * fresh usable alternative -- so no tick can ever leave two holds.
  */

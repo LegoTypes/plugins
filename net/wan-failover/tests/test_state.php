@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state, held reconciliation and boot reset, spec 3.8 and 3.11; the plugin's files: root's alone, read as
+ * Runtime state, held reconciliation and boot reset; the plugin's files: root's alone, read as
  * regular files only, the state's shape checked on load, and the crash-test flag.
  */
 
@@ -86,7 +86,7 @@ wf_register_suite('state', function (): int {
     wf_check($t, '(o1) a record of the live boot whose gateway reads force_down 1 is owned',
         $r['owned'] === ['WAN_B'] && $r['foreign_records'] === [] && $r['unproven'] === [] && $r['manual_released'] === []);
     $r = wf_reconcile($rec('deadbeef', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500');
-    wf_check($t, '(o2) a record of another boot is foreign: not owned, not released by hand, logged with the spec\'s line',
+    wf_check($t, '(o2) a record of another boot is foreign: not owned, not released by hand, logged as a foreign record',
         $r['foreign_records'] === ['WAN_B'] && $r['owned'] === [] && $r['manual_released'] === []
         && $r['log'] === [$foreignLine]);
     $r = wf_reconcile($rec('b400', 'WAN_B'), $fdB, [], ['WAN_B'], 'b500');

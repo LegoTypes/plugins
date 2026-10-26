@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Paths, and the timings of spec 2026-10-05 section 3.10. Constants, not settings: none has a demonstrated need
+ * Paths and timings. Constants, not settings: none has a demonstrated need
  * to vary. Every file the plugin keeps is root's alone, in a 0700 directory and 0600 itself, and what the plugin
  * reads back it reads as a regular file only, at most WF_FILE_MAX_BYTES.
  */

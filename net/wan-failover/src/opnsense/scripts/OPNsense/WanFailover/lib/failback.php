@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Failback (spec 2026-10-05 section 3.5). Pure. A flow's preferred WAN is
+ * Failback. Pure. A flow's preferred WAN is
  * its rule's gateway (tier 1 of a group), else the live default route. A
  * pending failback for WAN R kills flows that prefer R but sit elsewhere --
  * only once every rendering of their rule routes to R, and, when R is the

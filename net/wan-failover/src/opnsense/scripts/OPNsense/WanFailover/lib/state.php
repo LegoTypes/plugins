@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Runtime state (spec 2026-10-05 section 3.8): what does not belong in config. Ownership itself -- the
+ * Runtime state: what does not belong in config. Ownership itself -- the
  * hold records -- is in the plugin's Holds model, saved with force_down, and a record proves a hold by the boot id it
  * carries (wf_reconcile()); this file only resumes an apply a crash interrupted, notices held changes the engine did
  * not make, knows the boot before, which the early hook releases, and proves which entries of 1.3_1's held list were
@@ -739,7 +739,7 @@ function wf_legacy_import_plan(?string $csv, array $nameByUuid, string $bootId, 
 }
 
 /**
- * Discard everything measured before a reboot (spec 3.11). Ownership in config is released by the
+ * Discard everything measured before a reboot. Ownership in config is released by the
  * caller (boot.php, or evaluate's own boot detector); this resets the runtime side only. The foreign records pruned
  * within the hour stay, for the page, while their gateways stay forced down.
  *

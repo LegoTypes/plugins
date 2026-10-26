@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Core-contract checks, spec section 3.12. The texts are minimal copies of the core sections the
+ * Core-contract checks. The texts are minimal copies of the core sections the
  * plugin depends on.
  */
 

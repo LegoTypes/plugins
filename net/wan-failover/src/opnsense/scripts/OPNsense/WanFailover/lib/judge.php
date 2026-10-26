@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Readings and judgements (spec 2026-10-05 section 3.2). Pure.
+ * Readings and judgements. Pure.
  *
  * A reading classifies one tick's evidence for one WAN; a judgement is the
  * persisted view that survives routine dpinger restarts (unknown readings keep

@@ -8,7 +8,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * wan-failover entry point (spec 2026-10-05 section 3.9):
+ * wan-failover entry point:
  *   evaluate.php                       one evaluation (cron, configd, syshooks)
  *   evaluate.php --dry                 snapshot + plan as JSON; writes nothing
  *   evaluate.php --snapshot FILE       write the live snapshot (with pf) to FILE

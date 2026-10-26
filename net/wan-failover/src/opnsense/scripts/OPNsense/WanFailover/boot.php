@@ -8,7 +8,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Early-boot release (spec 2026-10-05 section 3.11). Nobody knows how long the firewall was down or
+ * Early-boot release. Nobody knows how long the firewall was down or
  * whether the modems rebooted too, so every hold the plugin took is released before routing starts, in one
  * config save without a backup. A record proves the plugin took it only by carrying the boot before's id, the one
  * the state file names; every other record is pruned in the same save, its gateway's force_down left as it is. 1.3_1's

@@ -19,6 +19,11 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.4_3
+
+* The source moved to github.com/LegoTypes/plugins; no change to
+  the plugin.
+
 1.4_2
 
 * Reinstalling the package after a removal brings its minute job back

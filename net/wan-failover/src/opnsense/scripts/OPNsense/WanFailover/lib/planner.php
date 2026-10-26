@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * The planner (spec 2026-10-05). Pure: (snapshot, runtime state) -> plan and new state. Ownership comes
+ * The planner. Pure: (snapshot, runtime state) -> plan and new state. Ownership comes
  * from the snapshot's hold records (the Holds model), each proved by the boot id it carries (wf_reconcile()): a
  * record the plugin did not take is pruned and its gateway left as it is, never released. The plan's records_after
  * is what apply writes back, with force_down, in one config save; expected is the force_down the snapshot read for

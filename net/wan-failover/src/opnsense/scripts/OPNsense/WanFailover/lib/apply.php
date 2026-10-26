@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Apply a plan in the order of spec 2026-10-05 section 3.7, through injected I/O so order and failure
+ * Apply a plan in the planned order, through injected I/O so order and failure
  * handling are testable. wf_live_io() binds the real I/O: configd for every reconfigure, kill and restart
  * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the evaluation's config writer, which
  * saves force_down and exactly the plan's hold records together without a config backup (the owner's decision), and

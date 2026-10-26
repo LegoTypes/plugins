@@ -7,7 +7,7 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Planner scenarios: spec 2026-10-05 section 6, then the cases each later fix added.
+ * Planner scenarios: the specified cases, then the cases each later fix added.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';

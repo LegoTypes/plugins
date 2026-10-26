@@ -8,7 +8,7 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Parsers for `pfctl -vvss` and `pfctl -vvsr`, and flow pairing for
- * failback (spec 2026-10-05 section 3.5). Pure.
+ * failback. Pure.
  *
  * Failback pairs floating states ("all") only. An outgoing state ("->") whose route-to is a
  * WAN gateway is a flow's anchor; its partner is the incoming state ("<-")
@@ -178,7 +178,7 @@ function wf_flows(array $states, array $wanTargets): array
 }
 
 /**
- * pf output format drift check (spec 3.12). A live firewall always has states (dpinger's own probes at
+ * pf output format drift check. A live firewall always has states (dpinger's own probes at
  * least), every rule-created state carries an rlabel and every state an id, so any of these coming back
  * empty means pfctl failed or its format moved, not that there is nothing to do. Every route target pf
  * printed must parse: one token form that moved while another still parses would leave a hold's kill, or
