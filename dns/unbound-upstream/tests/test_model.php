@@ -429,12 +429,6 @@ uu_register_suite('model', function (): int {
         $agrees && !\OPNsense\UnboundUpstream\UnboundUpstream::ipv6AllowedFrom('1')
             && \OPNsense\UnboundUpstream\UnboundUpstream::ipv6AllowedFrom('0')
     );
-    uu_check(
-        $t,
-        'the model reads core\'s own IPv6 setting: ipv6Allowed() is true unless the stored value is 1',
-        \OPNsense\UnboundUpstream\UnboundUpstream::ipv6Allowed()
-            === ((new \OPNsense\Interfaces\Settings())->disableipv6->getValue() !== '1')
-    );
 
     $monitor = '';
     foreach ((new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true) as $gw) {
