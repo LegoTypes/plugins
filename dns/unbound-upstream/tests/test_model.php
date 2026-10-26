@@ -193,6 +193,14 @@ uu_register_suite('model', function (): int {
         in_array('gateway_group', uu_test_model_refused(['enabled' => '1', 'gateway_group' => $uuid, 'resolver' => '10.2.0.1']), true)
     );
 
+    $gf = fn (array $protos): ?string => \OPNsense\UnboundUpstream\UnboundUpstream::groupFamily($protos);
+    uu_check(
+        $t,
+        'groupFamily: all IPv4 is inet, all IPv6 is inet6, both families and no members are null, unknown protocols skipped',
+        $gf(['inet', 'inet']) === 'inet' && $gf(['inet6']) === 'inet6' && $gf(['inet', 'inet6']) === null
+            && $gf(['inet6', 'inet']) === null && $gf([]) === null && $gf(['', 'inet6', 'x', 'inet6']) === 'inet6'
+            && $gf(['', 'inet6', 'inet']) === null && $gf(['', 'x']) === null
+    );
 
     $v4 = uu_test_model_group_uuid('proton_test_grp');
     $v6 = uu_test_model_group_uuid('uu_far6_grp');
@@ -203,15 +211,10 @@ uu_register_suite('model', function (): int {
         uu_check($t, 'model: the Proton and far-end groups and gateways are not on this box (base missing)', false);
         return uu_tally_report('model', $t);
     }
-    $resolverMsgs = fn (array $msgs): array => array_merge(
-        uu_test_model_field($msgs, 'resolver'),
-        uu_test_model_field($msgs, 'address'),
-        uu_test_model_field($msgs, 'gateway')
-    );
     uu_check(
         $t,
         'enabled on the IPv4 group with Default 10.2.0.1 and no rows: nothing about the resolver (1.3 settings mean the same)',
-        $resolverMsgs(uu_test_model_messages(['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1'])) === []
+        uu_test_model_messages(['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1']) === []
     );
     $problems = fn (string $addr, string $group, string $family, bool $v6, array $mon, array $nets): array =>
         \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems($addr, $group, $family, $v6, $mon, $nets);
@@ -228,7 +231,8 @@ uu_register_suite('model', function (): int {
             && $problems('2001:db8:a::53', 'proton_test_grp', 'inet', true, [], []) === [$v4Group]
     );
     $bad = ['fe80::1' => 'inet6', '169.254.0.1' => 'inet', 'ff02::1' => 'inet6', '224.0.0.251' => 'inet', '::' => 'inet6',
-        '0.0.0.0' => 'inet', '::1' => 'inet6', '127.0.0.53' => 'inet', '::ffff:192.0.2.1' => 'inet6'];
+        '0.0.0.0' => 'inet', '::1' => 'inet6', '127.0.0.53' => 'inet', '::ffff:192.0.2.1' => 'inet6',
+        '239.255.255.255' => 'inet'];
     $bad_ok = true;
     foreach ($bad as $addr => $family) {
         $bad_ok = $bad_ok && $problems($addr, 'g', $family, true, [], []) === [$linkLocal];
@@ -237,6 +241,12 @@ uu_register_suite('model', function (): int {
         $t,
         'resolverProblems: link-local, multicast, unspecified, loopback and IPv4-mapped addresses give the not-link-local message alone',
         $bad_ok
+    );
+    uu_check(
+        $t,
+        'resolverProblems: multicast is exactly 224.0.0.0/4; 240.0.0.1 is left to the other checks',
+        $problems('240.0.0.1', 'proton_test_grp', 'inet', true, [], []) === []
+            && $problems('223.255.255.255', 'proton_test_grp', 'inet', true, [], []) === []
     );
     uu_check(
         $t,
@@ -252,6 +262,10 @@ uu_register_suite('model', function (): int {
             === ['Resolver 2001:db8:a::53 is the monitor address of gateway g.']
             && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, ['g' => '10.2.0.1'], [])
             === ['Resolver 10.2.0.1 is the monitor address of gateway g.']
+            && $problems('2001:DB8:A:0::53', 'uu_far6_grp', 'inet6', true, ['g' => '2001:db8:a::53'], [])
+            === ['Resolver 2001:db8:a::53 is the monitor address of gateway g.']
+            && $problems('2001:0db8:a::0053', 'uu_far6_grp', 'inet6', true, ['g' => '2001:DB8:A:0::53'], [])
+            === ['Resolver 2001:db8:a::53 is the monitor address of gateway g.']
             && $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, ['g' => '2001:db8:a::54'], []) === []
     );
     uu_check(
@@ -261,6 +275,8 @@ uu_register_suite('model', function (): int {
             === ['Resolver 2001:db8:a::53 lies inside the static route 2001:db8:a::/48.']
             && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, [], ['10.2.0.0/24'])
             === ['Resolver 10.2.0.1 lies inside the static route 10.2.0.0/24.']
+            && $problems('2001:0db8:a::0053', 'uu_far6_grp', 'inet6', true, [], ['2001:db8:a::/48'])
+            === ['Resolver 2001:db8:a::53 lies inside the static route 2001:db8:a::/48.']
             && $problems('2001:db8:a::53', 'uu_far6_grp', 'inet6', true, [], ['10.2.0.0/24']) === []
             && $problems('10.2.0.1', 'proton_test_grp', 'inet', true, [], ['2001:db8:a::/48']) === []
     );
@@ -276,7 +292,17 @@ uu_register_suite('model', function (): int {
         $t,
         'a row for a gateway outside the group is refused',
         in_array($notMember, $all($far + ['resolver' => '2001:db8:a::53'], [['gateway' => $gw429, 'address' => '2001:db8:a::54']]), true)
-            && !in_array($notMember, $all($far + ['resolver' => '2001:db8:a::53'], [$rowA]), true)
+            && uu_test_model_messages($far + ['resolver' => '2001:db8:a::53'], [$rowA]) === []
+    );
+    $gone = '00000000-0000-0000-0000-00000000dead';
+    uu_check(
+        $t,
+        'a row whose gateway no longer exists is refused as a non-member, naming the UUID',
+        in_array(
+            'Gateway ' . $gone . ' is not a member of the selected group.',
+            $all($far + ['resolver' => '2001:db8:a::53'], [['gateway' => $gone, 'address' => '2001:db8:a::54']]),
+            true
+        )
     );
     uu_check(
         $t,
@@ -288,7 +314,7 @@ uu_register_suite('model', function (): int {
         $t,
         'an empty Default needs a row for every member: one row refused, rows for both accepted, no rows refused',
         in_array($needAll, $all($far, [$rowA]), true)
-            && !in_array($needAll, $all($far, [$rowA, $rowB]), true)
+            && uu_test_model_messages($far, [$rowA, $rowB]) === []
             && in_array($needAll, $all($far, []), true)
             && !in_array($needAll, $all($far + ['resolver' => '2001:db8:a::53'], []), true)
             && !in_array('Enter the resolver address.', $all($far, []), true)
@@ -302,6 +328,24 @@ uu_register_suite('model', function (): int {
                 uu_test_model_field(uu_test_model_messages($far + ['resolver' => '2001:db8:a::53'], [['gateway' => $gwA, 'address' => '192.0.2.54']]), 'address'),
                 true
             )
+    );
+
+    $core = new \OPNsense\Interfaces\Settings();
+    $storedV6 = $core->disableipv6->getValue();
+    $refusedV6 = [];
+    try {
+        $core->disableipv6 = '1';
+        $core->serializeToConfig(false, true);
+        $refusedV6 = uu_test_model_field(uu_test_model_messages($far + ['resolver' => '2001:db8:a::53']), 'resolver');
+    } finally {
+        $core->disableipv6 = $storedV6;
+        $core->serializeToConfig(false, true);
+    }
+    uu_check(
+        $t,
+        'Save refuses an IPv6 resolver while core has IPv6 disabled (set in memory, restored in the case)',
+        in_array('Unbound does not use IPv6 while IPv6 is not allowed.', $refusedV6, true)
+            && \OPNsense\UnboundUpstream\UnboundUpstream::ipv6Allowed() === ($storedV6 !== '1')
     );
 
     $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
@@ -323,10 +367,24 @@ uu_register_suite('model', function (): int {
     );
 
     require_once 'util.inc';
+    $kept = $GLOBALS['config'] ?? null;
+    $agrees = true;
+    foreach (['0', '1', ''] as $stored) {
+        $GLOBALS['config'] = ['OPNsense' => ['Interfaces' => ['settings' => ['disableipv6' => $stored]]]];
+        $agrees = $agrees && \OPNsense\UnboundUpstream\UnboundUpstream::ipv6AllowedFrom($stored) === is_ipv6_allowed();
+    }
+    $GLOBALS['config'] = $kept;
     uu_check(
         $t,
-        'the model\'s IPv6-allowed read equals is_ipv6_allowed()',
-        \OPNsense\UnboundUpstream\UnboundUpstream::ipv6Allowed() === is_ipv6_allowed()
+        'ipv6AllowedFrom agrees with is_ipv6_allowed() for "0", "1" and unset, and reads false for "1"',
+        $agrees && !\OPNsense\UnboundUpstream\UnboundUpstream::ipv6AllowedFrom('1')
+            && \OPNsense\UnboundUpstream\UnboundUpstream::ipv6AllowedFrom('0')
+    );
+    uu_check(
+        $t,
+        'the model reads core\'s own IPv6 setting: ipv6Allowed() is true unless the stored value is 1',
+        \OPNsense\UnboundUpstream\UnboundUpstream::ipv6Allowed()
+            === ((new \OPNsense\Interfaces\Settings())->disableipv6->getValue() !== '1')
     );
 
     $monitor = '';

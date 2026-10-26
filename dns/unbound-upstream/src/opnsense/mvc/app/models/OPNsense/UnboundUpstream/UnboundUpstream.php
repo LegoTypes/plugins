@@ -30,7 +30,7 @@ namespace OPNsense\UnboundUpstream;
 
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
-use OPNsense\Core\Config;
+use OPNsense\Interfaces\Settings;
 use OPNsense\Firewall\Util;
 use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
@@ -55,21 +55,23 @@ class UnboundUpstream extends BaseModel
         if (!$this->enabled->isEqual('1')) {
             return $messages;
         }
+        $gateways = new Gateways();
         if ($this->gateway_group->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Select a gateway group.'), $this->gateway_group->__reference));
         } else {
-            $this->checkGroup($messages);
+            $this->checkGroup($messages, $gateways);
         }
-        $this->checkResolvers($messages);
+        $this->checkResolvers($messages, $gateways);
         return $messages;
     }
 
     /**
-     * Group members by gateway name, from the group the UUID names.
+     * The group the UUID names: its name and its members by gateway name, in tier order.
      *
-     * @return array<string, string>|null member names keyed by themselves, null when the group is gone
+     * @return array{name: string, members: array<string, string>}|null members keyed by themselves, null when the
+     *         group is gone
      */
-    private function groupMembers(): ?array
+    private function findGroup(): ?array
     {
         $uuid = $this->gateway_group->getValue();
         foreach ((new GatewayGroups())->gateway_group->iterateItems() as $key => $group) {
@@ -85,20 +87,20 @@ class UnboundUpstream extends BaseModel
                     }
                 }
             }
-            return $members;
+            return ['name' => $group->name->getValue(), 'members' => $members];
         }
         return null;
     }
 
-    private function checkGroup(object $messages): void
+    private function checkGroup(object $messages, Gateways $model): void
     {
         $field = $this->gateway_group->__reference;
-        $members = $this->groupMembers();
+        $members = $this->findGroup()['members'] ?? null;
         if ($members === null || $members === []) {
             $messages->appendMessage(new Message(gettext('The selected gateway group has no members.'), $field));
             return;
         }
-        $gateways = (new Gateways())->gatewaysIndexedByName(true);
+        $gateways = $model->gatewaysIndexedByName(true);
         $longest = 0;
         foreach ($members as $name) {
             $gw = $gateways[$name] ?? null;
@@ -127,33 +129,30 @@ class UnboundUpstream extends BaseModel
     /**
      * The Default resolver and the per-member rows, against the selected group.
      */
-    private function checkResolvers(object $messages): void
+    private function checkResolvers(object $messages, Gateways $model): void
     {
-        $members = $this->gateway_group->isEmpty() ? null : $this->groupMembers();
-        $gateways = (new Gateways())->gatewaysIndexedByName(true);
-        $family = null;
-        $mixed = false;
-        $names = [];
+        $found = $this->gateway_group->isEmpty() ? null : $this->findGroup();
+        $members = $found['members'] ?? null;
+        $group = $found['name'] ?? '';
+        $gateways = $model->gatewaysIndexedByName(true);
+        $protos = [];
         foreach (array_keys($members ?? []) as $name) {
-            $proto = (string)($gateways[$name]['ipprotocol'] ?? '');
-            if ($proto !== 'inet' && $proto !== 'inet6') {
-                continue;
-            }
-            $family ??= $proto;
-            $mixed = $mixed || $proto !== $family;
+            $protos[] = (string)($gateways[$name]['ipprotocol'] ?? '');
         }
-        if ($mixed) {
+        $family = self::groupFamily($protos);
+        if ($family === null && array_filter($protos, fn (string $p): bool => $p === 'inet' || $p === 'inet6') !== []) {
             $messages->appendMessage(new Message(
                 sprintf(
                     gettext('The gateway group %s has IPv4 and IPv6 members; use a group of one address family.'),
-                    $this->groupName()
+                    $group
                 ),
                 $this->gateway_group->__reference
             ));
         }
+        $family ??= '';
 
         $uuidNames = [];
-        foreach ((new Gateways())->gateway_item->iterateItems() as $key => $item) {
+        foreach ($model->gateway_item->iterateItems() as $key => $item) {
             $uuidNames[(string)$key] = $item->name->getValue();
         }
         $monitors = [];
@@ -169,16 +168,12 @@ class UnboundUpstream extends BaseModel
             }
         }
         $v6 = self::ipv6Allowed();
-        $group = $this->groupName();
-        $family = $mixed ? null : $family;
 
         $covered = [];
         $seen = [];
         foreach ($this->resolvers->resolver->iterateItems() as $row) {
-            $name = $uuidNames[$row->gateway->getValue()] ?? '';
-            if ($name === '') {
-                continue; /* the relation field reports an unknown gateway */
-            }
+            /* a gateway deleted since the row was saved is no member either: the UUID stands in for its name */
+            $name = $uuidNames[$row->gateway->getValue()] ?? $row->gateway->getValue();
             if ($members !== null && !isset($members[$name])) {
                 $messages->appendMessage(new Message(
                     sprintf(gettext('Gateway %s is not a member of the selected group.'), $name),
@@ -240,34 +235,49 @@ class UnboundUpstream extends BaseModel
         string $addr,
         string $field,
         string $group,
-        ?string $family,
+        string $family,
         bool $v6,
         array $monitors,
         array $networks
     ): void {
-        foreach (self::resolverProblems($addr, $group, $family ?? '', $v6, $monitors, $networks) as $problem) {
+        foreach (self::resolverProblems($addr, $group, $family, $v6, $monitors, $networks) as $problem) {
             $messages->appendMessage(new Message($problem, $field));
         }
     }
 
-    private function groupName(): string
+    /**
+     * The address family of a group, from its members' protocols in tier order.
+     *
+     * @param list<string> $protocols each member's ipprotocol; anything but 'inet' and 'inet6' is skipped
+     * @return string|null 'inet' or 'inet6', null for a group with no usable member or with both families
+     */
+    public static function groupFamily(array $protocols): ?string
     {
-        $uuid = $this->gateway_group->getValue();
-        foreach ((new GatewayGroups())->gateway_group->iterateItems() as $key => $group) {
-            if ($key === $uuid) {
-                return $group->name->getValue();
+        $family = null;
+        foreach ($protocols as $proto) {
+            if ($proto !== 'inet' && $proto !== 'inet6') {
+                continue;
+            }
+            $family ??= $proto;
+            if ($proto !== $family) {
+                return null;
             }
         }
-        return '';
+        return $family;
     }
 
     /**
-     * Whether core lets Unbound use IPv6: the same setting is_ipv6_allowed() reads, which is stored negated and
-     * counts "0" as unset.
+     * Whether core lets Unbound use IPv6, from the stored System: Settings: General value, which says "disabled".
+     * Core's is_ipv6_allowed() reads the same field and counts any value but "1" as allowed.
      */
+    public static function ipv6AllowedFrom(string $disableIpv6): bool
+    {
+        return $disableIpv6 !== '1';
+    }
+
     public static function ipv6Allowed(): bool
     {
-        return empty((string)Config::getInstance()->object()->OPNsense->Interfaces->settings->disableipv6);
+        return self::ipv6AllowedFrom((new Settings())->disableipv6->getValue());
     }
 
     /**
@@ -330,7 +340,7 @@ class UnboundUpstream extends BaseModel
     {
         if (strlen($packed) === 4) {
             $first = ord($packed[0]);
-            return $first === 127 || $first >= 224 || $packed === "\0\0\0\0"
+            return $first === 127 || ($first >= 224 && $first <= 239) || $packed === "\0\0\0\0"
                 || ($first === 169 && ord($packed[1]) === 254);
         }
         return $packed === str_repeat("\0", 16) || $packed === str_repeat("\0", 15) . "\x01"
