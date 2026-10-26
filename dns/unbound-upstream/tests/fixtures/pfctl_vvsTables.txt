@@ -1,0 +1,143 @@
+-pa----	__lan_network
+	Addresses:   1
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__lo0_network
+	Addresses:   2
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__opt1_network
+	Addresses:   1
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__opt2_network
+	Addresses:   1
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__opt3_network
+	Addresses:   0
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+--a-r--	__unboundupstream_block
+	Addresses:   1
+	Cleared:     Mon Oct 19 08:38:04 2026
+	References:  [ Anchors: 0                  Rules: 1                  ]
+	Evaluations: [ NoMatch: 39                 Match: 6                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 6                  Bytes: 270                ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__wan_network
+	Addresses:   1
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa----	__wireguard_network
+	Addresses:   1
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 0                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa-r--	bogons
+	Addresses:   10
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 1                  ]
+	Evaluations: [ NoMatch: 1                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa-r--	bogonsv6
+	Addresses:   83
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 1                  ]
+	Evaluations: [ NoMatch: 0                  Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa-r--	sshlockout
+	Addresses:   0
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 2                  ]
+	Evaluations: [ NoMatch: 24                 Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa-r--	uu_test_block
+	Addresses:   0
+	Cleared:     Mon Oct 19 08:38:03 2026
+	References:  [ Anchors: 0                  Rules: 3                  ]
+	Evaluations: [ NoMatch: 39                 Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
+-pa-r--	virusprot
+	Addresses:   0
+	Cleared:     Sat Oct 17 23:19:07 2026
+	References:  [ Anchors: 0                  Rules: 1                  ]
+	Evaluations: [ NoMatch: 43                 Match: 0                  ]
+	In/Block:    [ Packets: 0                  Bytes: 0                  ]
+	In/Pass:     [ Packets: 0                  Bytes: 0                  ]
+	In/XPass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/Block:   [ Packets: 0                  Bytes: 0                  ]
+	Out/Pass:    [ Packets: 0                  Bytes: 0                  ]
+	Out/XPass:   [ Packets: 0                  Bytes: 0                  ]
