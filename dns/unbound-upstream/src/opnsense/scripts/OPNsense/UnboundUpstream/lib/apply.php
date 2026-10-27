@@ -34,10 +34,13 @@ declare(strict_types=1);
  *   - a switch to a member with another resolver changes every other address the map holds to its reject route once
  *     the live root is confirmed as the new one; an address that is no member's resolver any more (an orphan) is
  *     released then, and deleted only by a drain at least UU_OLD_ADDRESS_HOLD later: one flush_requestlist, one drain,
- *     then each delete, nothing deleted when the flush failed. An address that is still a member's resolver keeps its
- *     reject route while it is not in use;
+ *     then each delete, nothing deleted when the flush failed. An orphan that Unbound's own configured root zone names
+ *     is drained and deleted at once, behind its reject route (uu_plan_configured_orphan()): the owner's forwarder wins
+ *     over the hold. An address that is still a member's resolver keeps its reject route while it is not in use,
+ *     whatever the configured zone names;
  *   - a stop undoes every address, ignoring the hold: one restore, every reject route, one flush_requestlist, one
- *     drain, every delete; an address Unbound's restored root still names keeps its route;
+ *     drain, every delete; an address Unbound's restored root still names keeps its route, but for an orphan on its
+ *     reject route, which is drained and deleted with the others;
  *   - an address the run had to leave and could not (its reject route, its delete, the flush_requestlist before it or
  *     the restore that had to take Unbound off it failed) has an error line naming it (the one-address lines read as
  *     they always did) and keeps its entry, its route record and its hold, so the next evaluation tries again;
@@ -80,8 +83,9 @@ function uu_drill_passed(string $out): bool
  * (the live root names an address of the plugin's and is not Unbound's configured root zone, uu_plan_restore_due(), or
  * with the live root unknown, one of them is recorded forwarded), or a route of the plugin's on an address Unbound no
  * longer forwards to, as the snapshot's read says (uu_state_forwarded()). A route the stop keeps by design, on an
- * address Unbound's configured root zone names, is nothing to undo, and a stopped Unbound needs no restore. The one
- * test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
+ * address Unbound's configured root zone names, is nothing to undo, and a stopped Unbound needs no restore; an
+ * orphan's reject route among them is released by the drain that follows every run (uu_plan_configured_orphan()).
+ * The one test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
  * route.
  *
  * @param array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
@@ -189,6 +193,13 @@ final class UuApplyRun
     private array $fibPending = [];
     /** @var list<string> the planner's addresses (uu_plan_addresses()): every member's resolver, or the Default */
     private array $kept;
+    /**
+     * @var list<string> the addresses the state's map held when the run started: a checkpoint between two reject routes
+     *     must not drop a later one from step 5 (footprint() prunes a route-less entry Unbound no longer forwards to)
+     */
+    private array $recorded;
+    /** @var array<string, ?int> each recorded address's released_at as the run started: its hold if pruned and back */
+    private array $releasedAtStart = [];
     /** an unbound-control call of this run got no answer (timeout or no channel) */
     private bool $silent = false;
     private bool $reasonsLogged = false;
@@ -234,6 +245,10 @@ final class UuApplyRun
         $this->st = $p['state'];
         $this->probe = $s['settings']['probe_name'];
         $this->kept = uu_plan_addresses($s);
+        $this->recorded = array_map('strval', array_keys($this->st['addresses']));
+        foreach ($this->st['addresses'] as $address => $entry) {
+            $this->releasedAtStart[(string)$address] = $entry['released_at'];
+        }
         /* each address is forwarded again as the live root read for this snapshot says, before any route call; a root
          * that could not be read leaves the record as it was, but Unbound that is not running forwards to nothing (it
          * restarts on its configured root), which counts as a read of the empty root */
@@ -298,6 +313,15 @@ final class UuApplyRun
     private function ours(string $address): bool
     {
         return $this->route($address)['present'] && $this->route($address)['ours'];
+    }
+
+    /**
+     * Whether the address is an orphan Unbound's own configured root zone names, as this run last read or set the live
+     * root (uu_plan_configured_orphan()): released at once, never held on its reject route.
+     */
+    private function configuredOrphan(string $address): bool
+    {
+        return uu_plan_configured_orphan($this->live, $this->s['zone'], $address, $this->kept);
     }
 
     /**
@@ -517,8 +541,10 @@ final class UuApplyRun
      * cache is untouched), and the reject routes are held for one drain before the deletes. A reject route that failed
      * keeps that address's route, and a flush that failed keeps every route: Unbound may still retry them. An address
      * the restored root still names (Unbound's configured root zone names it) keeps its route, never rejected or
-     * deleted, and a warning names each such route, with the delete to run once the package is removed in a removal. A
-     * stopped Unbound has nothing in flight; a route that is not ours is never touched.
+     * deleted, and a warning says which route stays and what that means, with the delete to run once the package is
+     * removed in a removal; except an orphan on its reject route, which is released with the others
+     * (uu_plan_configured_orphan()). A stopped Unbound has nothing in flight; a route that is not ours is never
+     * touched.
      *
      * @param array<string, bool> $was the addresses Unbound was, or may have been, on when the run started
      */
@@ -526,15 +552,21 @@ final class UuApplyRun
     {
         $pid = $this->s['unbound']['pid_alive'];
         $rejected = [];
-        $named = [];
+        /* the routes kept because the restored root names their address: member routes, and reject routes of a
+         * planner address (it stays closed) */
+        $named = ['member' => [], 'reject' => []];
         foreach ($this->addresses() as $address) {
             $gap = !$this->route($address)['present'] && ($was[$address] ?? false);
             if (!$pid || !($this->ours($address) || $gap)) {
                 continue;
             }
             if ($this->forwarded[$address]) {
-                if ($this->ours($address)) {
-                    $named[] = $address;
+                $reject = $this->route($address)['reject'];
+                if ($this->ours($address) && $reject && $this->configuredOrphan($address)) {
+                    /* an orphan Unbound's configured zone names: released behind its reject route */
+                    $rejected[] = $address;
+                } elseif ($this->ours($address)) {
+                    $named[$reject ? 'reject' : 'member'][] = $address;
                 }
                 continue;
             }
@@ -546,13 +578,19 @@ final class UuApplyRun
             }
             $rejected[] = $address;
         }
-        if ($named !== []) {
-            /* after a removal nothing deletes it: the remedy is named */
-            $remedy = $this->s['stop'] !== UU_STOP_REMOVE ? '' : '; once the package is removed, run '
-                . implode('; ', array_map('uu_route_delete_text', $named)) . " when Unbound's configured root zone no "
-                . 'longer names ' . (count($named) === 1 ? 'it' : 'them');
-            $this->log("stop: Unbound's configured root zone names " . implode(', ', $named) . ', so its route stays '
-                . '(without it the queries would follow the default route)' . $remedy, LOG_WARNING);
+        /* after a removal nothing deletes a kept route: the remedy is named */
+        $remedy = fn (array $kept): string => $this->s['stop'] !== UU_STOP_REMOVE ? ''
+            : '; once the package is removed, run ' . implode('; ', array_map('uu_route_delete_text', $kept))
+                . " when Unbound's configured root zone no longer names " . (count($kept) === 1 ? 'it' : 'them');
+        if ($named['member'] !== []) {
+            $this->log("stop: Unbound's configured root zone names " . implode(', ', $named['member']) . ', so its '
+                . 'route stays (without it the queries would follow the default route)' . $remedy($named['member']),
+                LOG_WARNING);
+        }
+        if ($named['reject'] !== []) {
+            $this->log("stop: Unbound's configured root zone names " . implode(', ', $named['reject']) . ', which '
+                . "stays closed as a member's resolver: its reject route stays, and Unbound's queries to it are "
+                . 'rejected locally' . $remedy($named['reject']), LOG_WARNING);
         }
         if ($rejected !== []) {
             if (!$this->ucOk(['flush_requestlist'])) {
@@ -572,19 +610,29 @@ final class UuApplyRun
     }
 
     /**
-     * The orphans the planner found due (released at least UU_OLD_ADDRESS_HOLD ago, no member's resolver, not
-     * forwarded to): each that is still on its reject route and that Unbound still does not forward to, as this run
-     * knows it, is drained as a stop drains, then deleted. One flush_requestlist for them all, then one drain; a flush
-     * that failed keeps every reject route and hold, with one error naming them, and the next evaluation drains them
-     * again. An orphan still on a member route (its reject route failed) waits for the route repair that puts the
-     * reject route on first.
+     * The orphans the planner found due (uu_plan_drain()), and every orphan of the run (in the map, or on a route of
+     * the plugin's after a lost state) that Unbound's own configured root zone names as this run last read the live
+     * root (configuredOrphan(): the restore may have just put it there): each that is still on its reject route, and
+     * that Unbound does not forward to or forwards to only through its configured zone, is drained as a stop drains,
+     * then deleted. One flush_requestlist for them all, then one drain; a flush that failed keeps every reject route
+     * and hold, with one error naming them, and the next evaluation drains them again. An orphan still on a member
+     * route (its reject route failed) waits for the route repair that puts the reject route on first; one Unbound
+     * forwards to through its configured zone keeps it, its queries in the tunnel.
      *
      * @param list<string> $due the plan's drain
      */
     private function drainOrphans(array $due): void
     {
-        $held = array_values(array_filter($due, fn (string $a): bool => !($this->forwarded[$a] ?? true)
-            && $this->ours($a) && $this->route($a)['reject']));
+        foreach ($this->addresses() as $address) {
+            if ($this->configuredOrphan($address)) {
+                $due[] = $address;
+            }
+        }
+        $due = array_values(array_unique($due));
+        sort($due, SORT_STRING);
+        $held = array_values(array_filter($due, fn (string $a): bool
+            => (!($this->forwarded[$a] ?? true) || $this->configuredOrphan($a)) && $this->ours($a)
+            && $this->route($a)['reject']));
         if ($held === []) {
             return;
         }
@@ -830,16 +878,17 @@ final class UuApplyRun
     }
 
     /**
-     * Step 5: every other address the map holds, or that has a route of the plugin's, gets its reject route, changed in
-     * place, or added when its route is gone, once this run's read says Unbound no longer forwards to it
-     * (routeReject()); an entry whose route is gone keeps its entry and hold that way until the drain. One Unbound was
-     * on when the run started is the previous member's resolver, and its line says so. An orphan among them is released
-     * at the next checkpoint (footprint()).
+     * Step 5: every other address the map holds or held when the run started, or that has a route of the plugin's,
+     * gets its reject route, changed in place, or added when its route is gone, once this run's read says Unbound no
+     * longer forwards to it (routeReject()); an entry whose route is gone keeps its entry and hold that way until the
+     * drain. One Unbound was on when the run started is the previous member's resolver, and its line says so. An orphan
+     * among them is released at the next checkpoint (footprint()).
      */
     private function rejectOthers(string $active): void
     {
         foreach ($this->addresses() as $address) {
-            if ($address !== $active && (isset($this->st['addresses'][$address]) || $this->ours($address))) {
+            if ($address !== $active && (in_array($address, $this->recorded, true)
+                || isset($this->st['addresses'][$address]) || $this->ours($address))) {
                 $this->routeReject($address, $this->forwardedAtStart[$address] ? "previous member's resolver" : '');
             }
         }
@@ -1097,8 +1146,10 @@ final class UuApplyRun
      * the record: a record can outlive a route the kernel deleted (device recreation), and it must not pin an address
      * nothing refers to. Tunnel mode is on its member's resolver by definition. An address that is no planner address
      * (no member's resolver) and that Unbound no longer forwards to is released: released_at is the first such
-     * checkpoint's time, kept until the drain deletes it, and cleared once it is a member's resolver again. The map is
-     * kept sorted by address.
+     * checkpoint's time (or the one the run started with, for an entry an earlier checkpoint pruned and a reject route
+     * brought back), kept until the drain deletes it, and cleared once it is a member's resolver again. An orphan
+     * Unbound forwards to only through its own configured root zone (configuredOrphan()) keeps its entry only while
+     * its route is the plugin's. The map is kept sorted by address.
      */
     private function footprint(): void
     {
@@ -1112,10 +1163,12 @@ final class UuApplyRun
             $entry = $this->st['addresses'][$address] ?? null;
             $forwarded = $address === $active || $this->forwarded[$address];
             $keep = ($this->unknown[$address] ?? false) && $entry !== null;
-            if (!$this->ours($address) && !$forwarded && !$keep) {
+            /* an orphan forwarded to only through Unbound's own configured zone is the owner's: no claim on the map */
+            $claim = $forwarded && !($address !== $active && $this->configuredOrphan($address));
+            if (!$this->ours($address) && !$claim && !$keep) {
                 continue;
             }
-            $released = $entry['released_at'] ?? null;
+            $released = $entry['released_at'] ?? $this->releasedAtStart[$address] ?? null;
             if (in_array($address, $this->kept, true)) {
                 $released = null;
             } elseif ($released === null && !$forwarded) {

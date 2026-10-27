@@ -1940,10 +1940,10 @@ uu_register_suite('apply', function (): int {
     $families = [
         'IPv6' => ['a' => '2001:db8:a::53', 'b' => '2001:db8:b::53', 'c' => '2001:db8:c::53', 'typo' => '2001:db8:a::5',
                    'hop_a' => 'fd00::3:2', 'if_a' => 'wg3', 'hop_b' => 'fd00::4:2', 'if_b' => 'wg4', 'arg' => '-inet6',
-                   'lo' => '::1', 'hop_c' => 'fd00::5:2', 'if_c' => 'wg5'],
+                   'lo' => '::1', 'hop_c' => 'fd00::5:2', 'if_c' => 'wg5', 'first' => '2001:db8:9::53'],
         'IPv4' => ['a' => '198.51.100.10', 'b' => '198.51.100.20', 'c' => '198.51.100.30', 'typo' => '198.51.100.1',
                    'hop_a' => '10.2.0.2', 'if_a' => 'wg1', 'hop_b' => '10.2.0.6', 'if_b' => 'wg2', 'arg' => '-inet',
-                   'lo' => '127.0.0.1', 'hop_c' => '10.2.0.10', 'if_c' => 'wg5'],
+                   'lo' => '127.0.0.1', 'hop_c' => '10.2.0.10', 'if_c' => 'wg5', 'first' => '192.0.2.30'],
     ];
     /* the apply snapshot in the family: wg-a's resolver $wgA (the Default), wg-b's $wgB (its own row when it
      * differs) */
@@ -2627,6 +2627,216 @@ uu_register_suite('apply', function (): int {
             && $runs[1]['p']['action'] === 'none' && !$runs[1]['p']['reassert']
             && $runs[1]['acts'] === array_merge(["probe_direct $a ."], $through)
             && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch']));
+
+        /* (a26) tunnel mode's route repair reaching rejectOthers() with no checkpoint before it: wg-a's own resolver F,
+         * which sorts first, on a member route of the plugin's but not in the map (a lost state), and A in the map with
+         * its route gone; F's reject route saves the state, and A is still rejected after it, its hold kept */
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, $now, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $f['first'], $b), 'wg-b');
+            $s['members']['wg-a']['force_down'] = true;
+            $s = uu_test_route($s, $via($f, 'wg-a'), $f['first']);
+            $s = uu_test_route($s, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                    'ours' => false], $a);
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false, $now - 10), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st);
+            return true;
+        });
+        uu_check($t, "(a26) $family, route repair with an unrecorded routed resolver sorting first and a route-less "
+            . 'orphan: both get their reject route, the orphan keeps its hold',
+            $ok && $run !== null && $run['p']['action'] === 'none' && $run['p']['route_repair']
+            && $run['acts'] === array_merge([$rejectOf($f, $f['first']),
+                "route add {$f['arg']} -host $a {$f['lo']} -reject", "probe_direct $b ."], $through)
+            && $run['st']['addresses'] === [$f['first'] => $entry($rejectRecord, false),
+                $a => $entry($rejectRecord, false, $now - 10), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+
+        /* (a27) a switch whose route change saves the state while a route-less orphan is in the map: the orphan still
+         * gets its reject route and keeps its hold */
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $c, $usable, $applyRun, $with, $entry, $rejected,
+                                           $rejectRecord, $viaRecord, $now, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-a');
+            $s['members']['wg-a']['force_down'] = true;
+            $s = uu_test_route($s, $rejected, $b);
+            $st = $with(uu_test_plan_state('wg-a', $usable, 0, null, $a, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), true), $b => $entry($rejectRecord, false),
+                 $c => $entry($viaRecord($f, 'wg-a'), false, $now - 10)]);
+            $run = $applyRun($s, $st);
+            return true;
+        });
+        uu_check($t, "(a27) $family, a switch to wg-b whose route change saves the state, with a route-less orphan C "
+            . 'in the map: C gets its reject route after A, its hold kept',
+            $ok && $run !== null && $run['st']['member'] === 'wg-b'
+            && $run['acts'][0] === "route change {$f['arg']} -host $b {$f['hop_b']} -ifp {$f['if_b']}"
+            && in_array("route add {$f['arg']} -host $c {$f['lo']} -reject", $run['acts'], true)
+            && $run['st']['addresses'] === [$a => $entry($rejectRecord, false),
+                $b => $entry($viaRecord($f, 'wg-b'), true), $c => $entry($rejectRecord, false, $now - 10)]);
+
+        /* (c1)-(c4) an orphan that Unbound's own configured root zone names: the owner's forwarder wins over the
+         * hold */
+        $configuredOrphan = function (bool $enabled, bool $fromTunnel) use ($perMember, $f, $a, $c, $settledDown,
+                                                                            $zoneOf, $via, $rejected): array {
+            $s = $perMember($f, $c, $c);
+            $s['zone'] = $zoneOf([$a]);
+            $s['contract_input']['zone'] = $s['zone'];
+            $s = uu_test_route($s, $rejected, $a);
+            $s = uu_test_route($s, $fromTunnel ? $via($f, 'wg-b') : $rejected, $c);
+            $s['unbound']['live_root'] = $fromTunnel ? [$c] : [$a];
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $s['settings']['enabled'] = $enabled;
+            return $s;
+        };
+        /* the snapshot of the run after: Unbound on [A], A's route as given, C on its reject route */
+        $after = function (array $s, bool $aRouted) use ($a, $c, $rejected): array {
+            $s['unbound']['live_root'] = [$a];
+            $s = uu_test_route($s, $aRouted ? $rejected : ['present' => false, 'gateway' => '', 'interface' => '',
+                'reject' => false, 'ours' => false], $a);
+            return uu_test_route($s, $rejected, $c);
+        };
+        $onB = fn (array $s): array => $with(uu_test_plan_state('wg-b', $usable, 0, null, $c, $s),
+            [$a => $entry($rejectRecord, false, $now - 10), $c => $entry($viaRecord($f, 'wg-b'), true)]);
+        $runs = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $after, $onB, $applyRun, &$runs): bool {
+            $s = $configuredOrphan(true, true);
+            $first = $applyRun($s, $onB($s));
+            $runs = [$first, $applyRun($after($s, false), $first['st'])];
+            return true;
+        });
+        uu_check($t, "(c1) $family, configured root [A], A an orphan in its hold after a switch to C, both members "
+            . 'down: the restore puts Unbound on [A], then A is drained and deleted in the same run, C rejected; the '
+            . 'next tick is silent',
+            $ok && $runs !== null && $runs[0]['p']['action'] === 'fallback'
+            && $runs[0]['acts'] === ["uc forward_add . $a", 'uc forward', $rejectOf($f, $c), $flushReq, $drain,
+                $deleteOf($f, $a)]
+            && $runs[0]['st']['addresses'] === [$c => $entry($rejectRecord, false)] && $errorsOf($runs[0]) === []
+            && !uu_test_logged($runs[0]['calls'], LOG_WARNING, 'stays')
+            && $runs[1]['calls']->getArrayCopy() === []);
+        $runs = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $after, $onB, $applyRun, $with, $entry, $rejectRecord,
+                                           $usable, $a, $c, $now, &$runs): bool {
+            $s = $configuredOrphan(false, true);
+            $first = $applyRun($s, $onB($s));
+            /* a disabled plugin's tick that finds A on its reject route under the configured zone, in fallback */
+            $quiet = $configuredOrphan(false, false);
+            $fallback = $with(uu_test_plan_state(null, $usable), [$a => $entry($rejectRecord, false, $now - 10),
+                $c => $entry($rejectRecord, false)]);
+            $tick = $applyRun($quiet, $fallback);
+            /* the stop deleted both routes */
+            $next = uu_test_route($after($s, false), ['present' => false, 'gateway' => '', 'interface' => '',
+                'reject' => false, 'ours' => false], $c);
+            $runs = [$first, $applyRun($next, $first['st']), $tick];
+            return true;
+        });
+        uu_check($t, "(c2) $family, the same with the plugin disabled: the stop restores [A], releases A behind its "
+            . 'reject route with C (one flush, one drain), the map empties, no line says a route stays; the next tick '
+            . 'is silent; a disabled tick in fallback that finds A so releases it too',
+            $ok && $runs !== null && $runs[0]['p']['action'] === 'stop'
+            && $runs[0]['acts'] === ["uc forward_add . $a", 'uc forward', $rejectOf($f, $c), $flushReq, $drain,
+                $deleteOf($f, $a), $deleteOf($f, $c)]
+            && $runs[0]['st']['addresses'] === [] && !uu_test_logged($runs[0]['calls'], LOG_WARNING, 'stays')
+            && $runs[1]['calls']->getArrayCopy() === []
+            && $runs[2]['acts'] === [$flushReq, $drain, $deleteOf($f, $a), $deleteOf($f, $c)]
+            && $runs[2]['st']['addresses'] === []);
+        $runs = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $after, $onB, $applyRun, &$runs): bool {
+            $s = $configuredOrphan(true, true);
+            $first = $applyRun($s, $onB($s), ['uc_fail' => ['flush_requestlist']]);
+            $runs = [$first, $applyRun($after($s, true), $first['st'])];
+            return true;
+        });
+        uu_check($t, "(c3) $family, the same with the flush failing: A keeps its reject route, record and hold, one "
+            . 'error names it; the next run drains and deletes it',
+            $ok && $runs !== null
+            && $runs[0]['acts'] === ["uc forward_add . $a", 'uc forward', $rejectOf($f, $c), $flushReq]
+            && $runs[0]['st']['addresses'] === [$a => $entry($rejectRecord, true, $now - 10),
+                $c => $entry($rejectRecord, false)]
+            && $errorsOf($runs[0]) === ['log ' . LOG_ERR . " route: draining $a failed (unbound-control "
+                . 'flush_requestlist), so its reject route stays']
+            && $runs[1]['p']['drain'] === [$a] && $runs[1]['acts'] === [$flushReq, $drain, $deleteOf($f, $a)]
+            && $runs[1]['st']['addresses'] === [$c => $entry($rejectRecord, false)]);
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $rejected,
+                                           $rejectRecord, $viaRecord, $zoneOf, $settledDown, &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-b');
+            $s['zone'] = $zoneOf([$a]);
+            $s['contract_input']['zone'] = $s['zone'];
+            $s = uu_test_route($s, $rejected, $a);
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $s['settings']['enabled'] = false;
+            $first = $applyRun($s, $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($rejectRecord, false), $b => $entry($viaRecord($f, 'wg-b'), true)]));
+            $next = uu_test_route($s, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                       'ours' => false], $b);
+            $next['unbound']['live_root'] = [$a];
+            /* enabled, with wg-b's idle resolver on its reject route as fallback leaves it */
+            $enabled = uu_test_route($next, $rejected, $b);
+            $enabled['settings']['enabled'] = true;
+            $runs = [$first, $applyRun($next, $first['st']), $applyRun($enabled, $first['st'])];
+            return true;
+        });
+        uu_check($t, "(c4) $family, wg-a's own resolver A under the configured root [A]: a disabled stop restores [A], "
+            . 'releases B, keeps A on its reject route and says what is true; neither the next disabled tick nor an '
+            . 'enabled one with no candidate releases A, and both are silent',
+            $ok && $runs !== null
+            && $runs[0]['acts'] === ["uc forward_add . $a", 'uc forward', $rejectOf($f, $b), $flushReq, $drain,
+                $deleteOf($f, $b)]
+            && $runs[0]['st']['addresses'] === [$a => $entry($rejectRecord, true)]
+            && uu_test_logged($runs[0]['calls'], LOG_WARNING, "stop: Unbound's configured root zone names $a, which "
+                . "stays closed as a member's resolver: its reject route stays, and Unbound's queries to it are "
+                . 'rejected locally')
+            && !uu_test_logged($runs[0]['calls'], LOG_WARNING, 'default route')
+            && $runs[1]['calls']->getArrayCopy() === [] && $runs[2]['calls']->getArrayCopy() === []
+            && $runs[2]['p']['drain'] === [] && $runs[2]['st']['addresses'][$a] === $entry($rejectRecord, true));
+        /* (c6) a disabled plugin's tick in fallback with only the orphan left, on its reject route under the configured
+         * root [A]: the stop releases it */
+        $run = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $applyRun, $with, $entry, $rejectRecord, $usable, $a, $c,
+                                           $now, &$run): bool {
+            $s = uu_test_route($configuredOrphan(false, false), ['present' => false, 'gateway' => '', 'interface' => '',
+                'reject' => false, 'ours' => false], $c);
+            $run = $applyRun($s, $with(uu_test_plan_state(null, $usable),
+                [$a => $entry($rejectRecord, true, $now - 10)]));
+            return true;
+        });
+        uu_check($t, "(c6) $family, a disabled tick in fallback with only the orphan A on its reject route under the "
+            . 'configured root [A]: the stop drains and deletes it, the map empties',
+            $ok && $run !== null && $run['p']['action'] === 'stop'
+            && $run['acts'] === [$flushReq, $drain, $deleteOf($f, $a)] && $run['st']['addresses'] === []);
+        /* (c7) an orphan the configured root [A] names but on a member route (its queries in the tunnel): neither the
+         * plan nor apply drains it, and nothing repeats */
+        $runs = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $applyRun, $with, $entry, $rejectRecord, $viaRecord, $via,
+                                           $usable, $f, $a, $c, &$runs): bool {
+            $s = uu_test_route($configuredOrphan(true, false), $via($f, 'wg-a'), $a);
+            $st = $with(uu_test_plan_state(null, $usable), [$a => $entry($viaRecord($f, 'wg-a'), true),
+                $c => $entry($rejectRecord, false)]);
+            $first = $applyRun($s, $st);
+            $runs = [$first, $applyRun($s, $first['st'])];
+            return true;
+        });
+        uu_check($t, "(c7) $family, an orphan the configured root [A] names on a member route: no drain planned, no "
+            . 'call, its route and entry kept, on both ticks',
+            $ok && $runs !== null && $runs[0]['p']['drain'] === [] && $runs[0]['calls']->getArrayCopy() === []
+            && $runs[1]['calls']->getArrayCopy() === []
+            && $runs[1]['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), true));
+
+        /* (c5) the same release after a lost state: A on a reject route of the plugin's under the configured root [A],
+         * no entry for it; the plan lists it, and it is drained and deleted in that run */
+        $run = null;
+        $ok = uu_try_case(function () use ($configuredOrphan, $applyRun, $usable, &$run): bool {
+            $s = $configuredOrphan(true, false);
+            $run = $applyRun($s, uu_test_plan_state(null, $usable));
+            return true;
+        });
+        uu_check($t, "(c5) $family, configured root [A] after a lost state, A on a reject route of the plugin's: the "
+            . 'plan drains it, and it is drained and deleted in that run; C stays on its reject route',
+            $ok && $run !== null && $run['p']['action'] === 'none' && $run['p']['drain'] === [$a]
+            && $run['acts'] === [$flushReq, $drain, $deleteOf($f, $a)]
+            && $run['st']['addresses'] === [$c => $entry(null, false)]);
     }
 
     // Never planned, across every case above; flush_requestlist only behind reject routes.

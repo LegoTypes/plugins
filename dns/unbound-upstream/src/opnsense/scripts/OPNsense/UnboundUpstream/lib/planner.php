@@ -337,12 +337,34 @@ function uu_plan_needs_reject(array $route, ?array $entry, ?array $read, string 
 }
 
 /**
- * The orphans due for their drain: map entries outside the planner's addresses (uu_plan_addresses()), that Unbound
- * no longer forwards to as this run's read settles it (uu_state_forwarded()), released at least UU_OLD_ADDRESS_HOLD
- * seconds ago, and whose live route is not one the plugin did not make (the drain deletes only its own). Sorted.
+ * Whether an address is an orphan Unbound's own configured root zone names: outside the planner's addresses ($kept,
+ * uu_plan_addresses()), and named by a live root that is exactly the configured zone (uu_plan_live_configured()). The
+ * owner's own forwarder then wins over the plugin's hold: Unbound forwards to it, so its reject route would leave every
+ * lookup black, and no member will route it again. Such an orphan is released at once: drained behind its reject route
+ * and deleted, its entry and block gone, as 1.3_2's stop did for its one address. The one exception to a drain needing
+ * forwarded false; never a planner address, so the Default and every member's resolver stay fail-closed.
+ *
+ * @param ?list<string> $live
+ * @param array{shape: string, addrs: list<string>, tls: bool, problems: list<string>} $zone
+ * @param list<string> $kept
+ */
+function uu_plan_configured_orphan(?array $live, array $zone, string $address, array $kept): bool
+{
+    return !in_array($address, $kept, true) && uu_plan_live_configured($live, $zone)
+        && uu_state_forwarded($live, $address, false);
+}
+
+/**
+ * The orphans due for their drain: addresses outside the planner's addresses (uu_plan_addresses()) whose live route
+ * is not one the plugin did not make (the drain deletes only its own), and either map entries released at least
+ * UU_OLD_ADDRESS_HOLD seconds ago while Unbound no longer forwards to them as this run's read settles it
+ * (uu_state_forwarded()), or named by Unbound's own configured root zone (uu_plan_configured_orphan()) and on its
+ * reject route, in the map or not (a lost state can leave the route alone): one on a member route keeps it, its
+ * queries in the tunnel. Sorted.
  *
  * @param array{now: int, settings: array{default: string}, members: array<string, array{resolver: string}>,
- *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}>} $s
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}>,
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}} $s
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses the state's map
  * @param ?list<string> $read the snapshot's live root read (uu_state_snapshot_read())
@@ -352,13 +374,17 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
 {
     $kept = uu_plan_addresses($s);
     $drain = [];
-    foreach ($addresses as $address => $entry) {
-        $address = (string)$address;
-        $released = $entry['released_at'];
+    $candidates = array_unique(array_merge(array_map('strval', array_keys($addresses)),
+        array_map('strval', array_keys($s['routes']))));
+    foreach ($candidates as $address) {
+        $entry = $addresses[$address] ?? null;
         $route = uu_plan_route($s, $address);
-        if ($released !== null && $s['now'] - $released >= UU_OLD_ADDRESS_HOLD
-            && !uu_state_forwarded($read, $address, $entry['forwarded']) && !in_array($address, $kept, true)
-            && !($route['present'] && !$route['ours'])) {
+        $released = $entry['released_at'] ?? null;
+        $held = $entry !== null && $released !== null && $s['now'] - $released >= UU_OLD_ADDRESS_HOLD
+            && !uu_state_forwarded($read, $address, $entry['forwarded']);
+        $named = $route['present'] && $route['ours'] && $route['reject']
+            && uu_plan_configured_orphan($read, $s['zone'], $address, $kept);
+        if (($held || $named) && !in_array($address, $kept, true) && !($route['present'] && !$route['ours'])) {
             $drain[] = $address;
         }
     }
