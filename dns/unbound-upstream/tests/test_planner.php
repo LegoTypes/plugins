@@ -19,26 +19,31 @@ require_once __DIR__ . '/test_contract.php';
 require_once __DIR__ . '/scratch.php';
 
 /**
- * Two members, wg-a tier 1 and wg-b tier 2, both settled with no loss; Unbound running on the configured DoT
- * root; no resolver route; the rules verified loaded and the counting table holding the resolver. Cases override
- * fields directly.
+ * Two IPv4 members, wg-a tier 1 and wg-b tier 2, both settled with no loss and both on the Default resolver 10.2.0.1
+ * (no per-member row); Unbound running on the configured DoT root; no resolver route; the rules verified loaded and
+ * the counting table holding the resolver. Cases override fields directly; a route goes through uu_test_route() and
+ * a member's resolver through uu_test_resolver(), so the snapshot's copies agree.
  *
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
@@ -49,7 +54,11 @@ function uu_test_snapshot(): array
 {
     $a = uu_test_member();
     $a['monitor'] = '192.0.2.1';
+    $a['ipprotocol'] = 'inet';
+    $a['resolver'] = '10.2.0.1';
     $b = uu_test_member();
+    $b['ipprotocol'] = 'inet';
+    $b['resolver'] = '10.2.0.1';
     $b['name'] = 'wg-b';
     $b['interface'] = 'opt2';
     $b['if'] = 'wg2';
@@ -63,9 +72,10 @@ function uu_test_snapshot(): array
         'now' => 10000,
         'wall' => 1792400000,
         'settings' => ['enabled' => true, 'dry_run' => false, 'group' => 'grp_test', 'resolver' => '10.2.0.1',
-                       'failback_delay' => 120, 'probe_name' => '.'],
+                       'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'],
         'trigger' => 'downloss',
         'tiers' => [['wg-a'], ['wg-b']],
+        'family' => 'inet',
         'members' => ['wg-a' => $a, 'wg-b' => $b],
         'probes' => ['wg-a' => uu_test_probe('none', '0.0 %', 300), 'wg-b' => uu_test_probe('none', '0.0 %', 300)],
         'named' => [],
@@ -73,6 +83,8 @@ function uu_test_snapshot(): array
         'unbound' => ['enabled' => true, 'pid_alive' => true, 'control_ok' => true, 'live_root' => $zone['addrs']],
         'zone' => $zone,
         'route' => ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false],
+        'routes' => ['10.2.0.1' => ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                    'ours' => false]],
         'fib_sync_ms' => 1000,
         'contract_input' => $contract,
         'rules' => ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000, 'record' => null],
@@ -82,46 +94,54 @@ function uu_test_snapshot(): array
 }
 
 /**
- * The snapshot as tunnel mode through a member leaves it: the resolver is the live root and our route points at
- * the member.
+ * The snapshot as tunnel mode through a member leaves it: the member's resolver is the live root and our route to
+ * it points at the member.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
@@ -130,9 +150,215 @@ function uu_test_snapshot(): array
  */
 function uu_test_in_tunnel(array $s, string $member): array
 {
-    $s['unbound']['live_root'] = [$s['settings']['resolver']];
-    $s['route'] = ['present' => true, 'gateway' => $s['members'][$member]['next_hop'],
-                   'interface' => $s['members'][$member]['if'], 'reject' => false, 'ours' => true];
+    $resolver = $s['members'][$member]['resolver'] ?? $s['settings']['resolver'];
+    $s['unbound']['live_root'] = [$resolver];
+    return uu_test_route($s, ['present' => true, 'gateway' => $s['members'][$member]['next_hop'],
+                              'interface' => $s['members'][$member]['if'], 'reject' => false, 'ours' => true],
+        $resolver);
+}
+
+/**
+ * The snapshot with the route of an address (the Default's unless named) as given, in routes and, for the Default,
+ * in route too, as the snapshot reads them.
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ * @param array{present: bool, gateway: string, interface: string, reject: bool, ours: bool} $route
+ * @return array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
+ */
+function uu_test_route(array $s, array $route, ?string $address = null): array
+{
+    $key = uu_ip_canonical($address ?? $s['settings']['resolver']) ?? '';
+    $s['routes'][$key] = $route;
+    if ($key === uu_ip_canonical($s['settings']['resolver'])) {
+        $s['route'] = $route;
+    }
+    return $s;
+}
+
+/**
+ * The snapshot with a member's effective resolver set where the snapshot carries it (the member and the contract's
+ * input), and the address's route read (absent) when the snapshot had none.
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ * @return array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
+ */
+function uu_test_resolver(array $s, string $member, string $address): array
+{
+    $s['members'][$member]['resolver'] = $address;
+    $s['contract_input']['member_resolvers'][$member] = $address;
+    $key = uu_ip_canonical($address);
+    if ($key !== null && !isset($s['routes'][$key])) {
+        $s['routes'][$key] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                              'ours' => false];
+    }
+    return $s;
+}
+
+/**
+ * The snapshot with another Default resolver and no per-member row: the setting, every member's resolver and family
+ * and the contract's input name it, and routes holds the route (the Default's) under it alone, as the snapshot reads a
+ * fresh state's addresses.
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ * @return array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
+ */
+function uu_test_default(array $s, string $address): array
+{
+    $family = uu_ip_family($address) ?? '';
+    $s['settings']['resolver'] = $address;
+    $s['settings']['default'] = $address;
+    $s['family'] = $family;
+    $s['contract_input']['member_resolvers'] = [];
+    foreach (array_keys($s['members']) as $name) {
+        $s['members'][$name]['resolver'] = $address;
+        $s['members'][$name]['ipprotocol'] = $family;
+        $s['contract_input']['member_resolvers'][$name] = $address;
+    }
+    $s['routes'] = [uu_ip_canonical($address) ?? $address => $s['route']];
     return $s;
 }
 
@@ -215,8 +441,8 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'fallback, wg-a settled 119 s → none, no candidates; reject route planned (route absent)',
         $p['action'] === 'none' && $p['candidates'] === [] && $p['route_repair'] && !$p['reassert']);
     $s2 = $s;
-    $s2['route'] = ['present' => true, 'gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true,
-                    'ours' => true];
+    $s2 = uu_test_route($s2, ['present' => true, 'gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true,
+                              'ours' => true]);
     $p = uu_plan($s2, uu_test_plan_state(null));
     uu_check($t, 'fallback with our reject route → none, no route repair',
         $p['action'] === 'none' && !$p['route_repair'] && $p['state']['mode'] === 'fallback');
@@ -281,7 +507,7 @@ uu_register_suite('planner', function (): int {
         && $p['state']['member'] === 'wg-a');
 
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
-    $s['route']['reject'] = true;
+    $s = uu_test_route($s, ['reject' => true] + $s['route']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     uu_check($t, 'tunnel on wg-a, our route carries reject → none + route_repair',
         $p['action'] === 'none' && $p['route_repair']);
@@ -290,7 +516,7 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'tunnel on wg-a, our route points at wg-b → none + route_repair',
         $p['action'] === 'none' && $p['route_repair']);
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
-    $s['route']['interface'] = 'wg2';
+    $s = uu_test_route($s, ['interface' => 'wg2'] + $s['route']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     uu_check($t, 'tunnel on wg-a, our route has wg-a\'s next hop on another device → route_repair',
         $p['action'] === 'none' && $p['route_repair']);
@@ -352,9 +578,9 @@ uu_register_suite('planner', function (): int {
         && uu_test_reason_has($plans[1]['reasons'], 'configuration unreadable'));
 
     $s = uu_test_snapshot();
-    $s['route'] = ['present' => true, 'gateway' => '192.168.1.254', 'interface' => 'igc0', 'reject' => false,
-                   'ours' => false];
-    $s['contract_input']['foreign_route'] = true;
+    $s = uu_test_route($s, ['present' => true, 'gateway' => '192.168.1.254', 'interface' => 'igc0', 'reject' => false,
+                            'ours' => false]);
+    $s['contract_input']['foreign'] = ['10.2.0.1'];
     $p = uu_plan($s, uu_test_plan_state(null, $usable));
     uu_check($t, 'a route the plugin did not make → none, never repaired',
         $p['action'] === 'none' && !$p['route_repair'] && uu_test_reason_has($p['reasons'], 'resolver route not ours'));
@@ -417,8 +643,8 @@ uu_register_suite('planner', function (): int {
     $s = uu_test_snapshot();
     $s['unbound']['control_ok'] = false;
     $s['unbound']['live_root'] = null;
-    $s['route'] = ['present' => true, 'gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true,
-                   'ours' => true];
+    $s = uu_test_route($s, ['present' => true, 'gateway' => '127.0.0.1', 'interface' => 'lo0', 'reject' => true,
+                            'ours' => true]);
     $p = uu_plan($s, uu_test_plan_state(null, $usable, UU_ESCALATE_EVALUATIONS, $now - UU_ESCALATE_MIN_SECONDS));
     uu_check($t, 'fallback, control silent, our reject route → stays fallback, never escalates',
         $p['action'] === 'skip' && $p['state']['mode'] === 'fallback' && $p['state']['member'] === null
@@ -664,7 +890,7 @@ uu_register_suite('planner', function (): int {
         $warnings = [];
         $upgraded = null;
         $replayed = uu_try_case(function () use ($old, &$upgraded): bool {
-            $upgraded = uu_snapshot_recorded($old);
+            $upgraded = uu_snapshot_recorded($old, 'recording.json');
             return uu_plan($upgraded, uu_state_new()) === uu_plan(uu_test_snapshot(), uu_state_new());
         });
     } finally {
@@ -680,7 +906,7 @@ uu_register_suite('planner', function (): int {
         uu_try_case(function (): bool {
             $s = uu_test_snapshot();
             $s['contract_input']['core_commands'] = ['cron restart'];
-            return uu_snapshot_recorded($s) === $s;
+            return uu_snapshot_recorded($s, 'recording.json') === $s;
         }));
 
     // Mode recovery.
@@ -696,6 +922,398 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'state lost, live root is the resolver, no route of ours to a member → fallback',
         $p['action'] === 'fallback' && $p['candidates'] === [] && $p['state']['mode'] === 'tunnel'
         && $p['state']['member'] === null);
+
+    // One resolver per member. (p3) pins the shared address's reasons as 1.3_2 prints them; the rest use wg-a on
+    // 2001:db8:a::53 (the Default) and wg-b on 2001:db8:b::53 (its own row), an IPv6 group.
+    $reasonsOf = function (array $s, array $st): ?array {
+        $p = null;
+        uu_try_case(function () use ($s, $st, &$p): bool {
+            $p = uu_plan($s, $st);
+            return true;
+        });
+        return $p === null ? null : $p['reasons'];
+    };
+    $shared = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+    $leaving = $shared;
+    $leaving['probes']['wg-a'] = $settledDown;
+    $bothDown = $leaving;
+    $bothDown['probes']['wg-b'] = $settledDown;
+    $restarted = $shared;
+    $restarted['unbound']['live_root'] = $restarted['zone']['addrs'];
+    $routeLost = uu_test_route($shared, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                         'ours' => false]);
+    $silentWgA = $shared;
+    $silentWgA['unbound']['control_ok'] = false;
+    $silentWgA['unbound']['live_root'] = null;
+    $noRoute = uu_test_snapshot();
+    $noRoute['unbound']['live_root'] = ['10.2.0.1'];
+    $groupGone = $shared;
+    $groupGone['contract_input']['group_found'] = false;
+    $pins = [
+        'leave' => [$leaving, uu_test_plan_state('wg-a', $usable),
+            ['leave wg-a for wg-b: wg-a down: settled down; wg-b usable and settled 560 s (trigger downloss)']],
+        'no candidate' => [$bothDown, uu_test_plan_state('wg-a', $usable),
+            ['no candidate, fallback: wg-a down: settled down; wg-b down: settled down (trigger downloss)']],
+        'enter' => [uu_test_snapshot(), uu_test_plan_state(null, ['wg-a' => uu_test_timer(60, null, $now - 60)]),
+            ['enter tunnel via wg-a: wg-a usable and settled 120 s (trigger downloss)']],
+        'reassert' => [$restarted, uu_test_plan_state('wg-a', $usable),
+            ['live root is not the resolver: reassert 10.2.0.1 via wg-a']],
+        'route repair' => [$routeLost, uu_test_plan_state('wg-a', $usable),
+            ['resolver route missing, elsewhere or reject: route via wg-a']],
+        'inferred member' => [uu_test_in_tunnel(uu_test_snapshot(), 'wg-b'), uu_state_new(),
+            ['live root is the resolver and our route is via wg-b: tunnel mode on wg-b']],
+        'inferred, no member' => [$noRoute, uu_state_new(),
+            ['live root is the resolver but our route is via no member: tunnel mode with no member',
+             'no candidate, fallback: wg-a usable and settled 0 s; wg-b usable and settled 0 s (trigger downloss)']],
+        'inferred, root unknown' => [$silentWgA, uu_state_new(),
+            ['live root unknown and our route is via wg-a: tunnel mode on wg-a',
+             'Unbound control channel silent (1 evaluations, 0 s)']],
+        'contract' => [$groupGone, uu_test_plan_state('wg-a', $usable), ['contract: group not found (grp_test)']],
+    ];
+    foreach ($pins as $what => [$s, $st, $want]) {
+        $got = $reasonsOf($s, $st);
+        if ($got !== $want) {
+            printf("  %s: %s\n", $what, json_encode($got));
+        }
+        uu_check($t, "(p3) shared address, $what: the reasons exactly as 1.3_2 prints them", $got === $want);
+    }
+    uu_check($t, '(p3) shared address, wg-a down in tunnel mode → tunnel [wg-b]',
+        uu_try_case(function () use ($leaving, $usable): bool {
+            $p = uu_plan($leaving, uu_test_plan_state('wg-a', $usable));
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b'] && $p['drain'] === [];
+        }));
+
+    $a6 = '2001:db8:a::53';
+    $b6 = '2001:db8:b::53';
+    $perMember = function () use ($a6, $b6): array {
+        $s = uu_test_default(uu_test_snapshot(), $a6);
+        $s['members']['wg-a']['next_hop'] = 'fd00::3:2';
+        $s['members']['wg-a']['if'] = 'wg3';
+        $s['members']['wg-b']['next_hop'] = 'fd00::4:2';
+        $s['members']['wg-b']['if'] = 'wg4';
+        $s['settings']['rows'] = ['0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6b' => $b6];
+        return uu_test_resolver($s, 'wg-b', $b6);
+    };
+    $onA = fn (array $s, array $timers = []): array
+        => uu_test_plan_state('wg-a', $timers === [] ? $usable : $timers, 0, null, $a6, $s);
+    $routeVia = fn (array $s, string $member): array => ['present' => true,
+        'gateway' => $s['members'][$member]['next_hop'], 'interface' => $s['members'][$member]['if'],
+        'reject' => false, 'ours' => true];
+    $rejectRoute = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
+    $mapEntry = fn (?array $route, bool $forwarded, ?int $released = null): array
+        => ['route' => $route, 'forwarded' => $forwarded, 'released_at' => $released];
+
+    uu_check($t, '(p4) per member: tunnel on wg-a (live root its own resolver), wg-a down → tunnel [wg-b]',
+        uu_try_case(function () use ($perMember, $onA, $settledDown): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s['probes']['wg-a'] = $settledDown;
+            $p = uu_plan($s, $onA($s));
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b'] && $p['state']['member'] === 'wg-a'
+                && uu_test_reason_has($p['reasons'], 'leave wg-a for wg-b');
+        }));
+
+    uu_check($t, '(p5) inference, fresh state: the live root is wg-b\'s resolver and our route to it is via wg-b → '
+        . 'tunnel on wg-b, with 1.3\'s reason',
+        uu_try_case(function () use ($perMember): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-b');
+            $p = uu_plan($s, uu_state_new());
+            return $p['state']['mode'] === 'tunnel' && $p['state']['member'] === 'wg-b' && $p['action'] === 'none'
+                && !$p['reassert'] && !$p['route_repair']
+                && $p['reasons'] === ['live root is the resolver and our route is via wg-b: tunnel mode on wg-b'];
+        }));
+    uu_check($t, '(p5) inference, fresh state: the live root is wg-b\'s resolver with no member route to it (a route '
+        . 'via wg-a to it is not wg-a\'s own) → tunnel with no member',
+        uu_try_case(function () use ($perMember, $routeVia, $b6): bool {
+            $s = $perMember();
+            $s['unbound']['live_root'] = [$b6];
+            $none = uu_plan($s, uu_state_new());
+            $s = uu_test_route($s, $routeVia($s, 'wg-a'), $b6);
+            $other = uu_plan($s, uu_state_new());
+            $want = 'live root is the resolver but our route is via no member: tunnel mode with no member';
+            return $none['state']['mode'] === 'tunnel' && $none['state']['member'] === null
+                && ($none['reasons'][0] ?? '') === $want
+                && $other['state']['mode'] === 'tunnel' && $other['state']['member'] === null
+                && ($other['reasons'][0] ?? '') === $want;
+        }));
+    uu_check($t, '(p5) inference, fresh state: with both members routed to their own resolvers, the live root naming '
+        . 'wg-b\'s → tunnel on wg-b, not the first member in tier order',
+        uu_try_case(function () use ($perMember, $routeVia, $a6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-b');
+            $s = uu_test_route($s, $routeVia($s, 'wg-a'), $a6);
+            $p = uu_plan($s, uu_state_new());
+            return $p['state']['member'] === 'wg-b' && $p['action'] === 'none' && !$p['reassert']
+                && !$p['route_repair'];
+        }));
+    uu_check($t, '(p5) inference, live root unknown: the first member in tier order whose own resolver\'s route is via '
+        . 'it',
+        uu_try_case(function () use ($perMember, $routeVia, $a6, $b6): bool {
+            $s = $perMember();
+            $s['unbound']['control_ok'] = false;
+            $s['unbound']['live_root'] = null;
+            $s = uu_test_route($s, $routeVia($s, 'wg-b'), $a6);
+            $notOwn = uu_plan($s, uu_state_new());
+            $s = uu_test_route($s, $routeVia($s, 'wg-b'), $b6);
+            $onB = uu_plan($s, uu_state_new());
+            $s = uu_test_route($s, $routeVia($s, 'wg-a'), $a6);
+            $onA = uu_plan($s, uu_state_new());
+            return $notOwn['state']['member'] === null && $notOwn['state']['mode'] === 'fallback'
+                && $onB['state']['member'] === 'wg-b' && $onB['state']['mode'] === 'tunnel'
+                && ($onB['reasons'][0] ?? '') === 'live root unknown and our route is via wg-b: tunnel mode on wg-b'
+                && $onA['state']['member'] === 'wg-a';
+        }));
+
+    uu_check($t, '(p6) the current member\'s resolver changed (a Save): a switch in place to the same member, not a '
+        . 'stop',
+        uu_try_case(function () use ($perMember, $onA, $a6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_resolver($s, 'wg-a', '2001:db8:c::53');
+            $p = uu_plan($s, $onA($s));
+            return $p['action'] === 'tunnel' && ($p['candidates'][0] ?? '') === 'wg-a'
+                && $p['candidates'] === ['wg-a', 'wg-b'] && $p['state']['mode'] === 'tunnel'
+                && $p['state']['member'] === 'wg-a' && !$p['reassert'] && !$p['route_repair']
+                && $p['reasons'] === ["resolver of wg-a changed from $a6 to 2001:db8:c::53: switching in place"];
+        }));
+    uu_check($t, '(p7) tunnel on wg-a, live root the configured DoT list (Unbound restarted) → none, reassert its own '
+        . 'resolver, 1.3\'s reason',
+        uu_try_case(function () use ($perMember, $onA, $a6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s['unbound']['live_root'] = $s['zone']['addrs'];
+            $p = uu_plan($s, $onA($s));
+            return $p['action'] === 'none' && $p['reassert'] && !$p['route_repair']
+                && $p['reasons'] === ["live root is not the resolver: reassert $a6 via wg-a"];
+        }));
+
+    uu_check($t, '(p8) a member with no resolver is never a candidate, even in tier 1 and settled past the delay',
+        uu_try_case(function () use ($perMember, $usable): bool {
+            $s = uu_test_resolver($perMember(), 'wg-a', '');
+            $p = uu_plan($s, uu_test_plan_state(null, $usable));
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b']
+                && uu_test_reason_has($p['reasons'], 'enter tunnel via wg-b');
+        }));
+    uu_check($t, '(p8) in tunnel on wg-a when it is left with no resolver → leave it for wg-b at once (its tier kept), '
+        . 'saying it is no candidate',
+        uu_try_case(function () use ($perMember, $onA): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $st = $onA($s, ['wg-a' => uu_test_timer(500, null, 9940), 'wg-b' => uu_test_timer(0, null, 9940)]);
+            $s = uu_test_resolver($s, 'wg-a', '');
+            $p = uu_plan($s, $st);
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b']
+                && uu_test_reason_has($p['reasons'], 'leave wg-a for wg-b: wg-a not a candidate');
+        }));
+    uu_check($t, '(p8) no member with a resolver → none in fallback, every note in the no-candidate line from tunnel',
+        uu_try_case(function () use ($perMember, $onA, $usable): bool {
+            $s = uu_test_resolver(uu_test_resolver($perMember(), 'wg-a', ''), 'wg-b', '');
+            $fb = uu_plan($s, uu_test_plan_state(null, $usable));
+            $tun = uu_plan(uu_test_in_tunnel($s, 'wg-a'), $onA($s));
+            return $fb['action'] === 'none' && $fb['candidates'] === []
+                && $tun['action'] === 'fallback'
+                && uu_test_reason_has($tun['reasons'], 'no candidate, fallback: wg-a not a candidate',
+                    'wg-b not a candidate');
+        }));
+
+    uu_check($t, '(p9) per address: wg-a\'s resolver is wg-b\'s monitor → wg-a excluded with its note, wg-b (another '
+        . 'address) the candidate',
+        uu_try_case(function () use ($perMember, $usable, $a6): bool {
+            $s = $perMember();
+            $s['contract_input']['monitors'] = [$a6 => ['wg-b']];
+            $p = uu_plan($s, uu_test_plan_state(null, $usable));
+            $c = uu_contract($s['contract_input']);
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b'] && $c['ok']
+                && $c['excluded'] === ['wg-a'] && $c['notes'] === ['wg-a excluded: resolver is the monitor of wg-b'];
+        }));
+    uu_check($t, '(p9) one shared address that is a monitor → 1.3\'s failure exactly, as the reason, and no note',
+        uu_try_case(function () use ($usable): bool {
+            $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+            $s['contract_input']['monitors'] = ['10.2.0.1' => ['wg-b']];
+            $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+            return $p['action'] === 'fallback' && $p['reasons'] === ['contract: resolver is the monitor of wg-b']
+                && uu_contract($s['contract_input'])['notes'] === [];
+        }));
+
+    uu_check($t, '(p10) the planner follows each member\'s resolver: a mark about wg-a\'s old address no longer keeps '
+        . 'it out; one about its current address does',
+        uu_try_case(function () use ($perMember, $now, $a6): bool {
+            $marked = ['resolver' => '2001:db8:c::53'] + uu_test_timer(500, $now + 30, $now - 60);
+            $s = $perMember();
+            $moved = uu_plan($s, uu_test_plan_state(null, ['wg-a' => $marked]));
+            $same = uu_plan($s, uu_test_plan_state(null, ['wg-a' => ['resolver' => $a6] + $marked]));
+            return $moved['candidates'] === ['wg-a'] && $moved['state']['timers']['wg-a']['resolver'] === $a6
+                && $moved['state']['timers']['wg-a']['resolver_failed_until'] === null
+                && $same['candidates'] === []
+                && $same['state']['timers']['wg-a']['resolver_failed_until'] === $now + 30;
+        }));
+
+    uu_check($t, '(p11) drain: an orphan released UU_OLD_ADDRESS_HOLD (60) s ago is due; one released 59 s ago is not',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $now): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, $rejectRoute, '2001:db8:c::53');
+            $s = uu_test_route($s, $rejectRoute, '2001:db8:d::53');
+            $st = $onA($s);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'],
+                false, $now - 60);
+            $st['addresses']['2001:db8:d::53'] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'],
+                false, $now - 59);
+            $p = uu_plan($s, $st);
+            return UU_OLD_ADDRESS_HOLD === 60 && $p['action'] === 'none' && $p['drain'] === ['2001:db8:c::53']
+                && !$p['route_repair'];
+        }));
+    uu_check($t, '(p11) drain: an entry that is some member\'s effective resolver again is never due, whatever its '
+        . 'released_at; nor one Unbound is recorded forwarding to',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $now, $b6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, $rejectRoute, $b6);
+            $st = $onA($s);
+            $st['addresses'][$b6] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'], false, $now - 900);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry(null, true, $now - 900);
+            $p = uu_plan($s, $st);
+            return $p['drain'] === [];
+        }));
+    uu_check($t, '(p11) drain: a stop and a skip list none; fallback and none do',
+        uu_try_case(function () use ($perMember, $mapEntry, $rejectRoute, $now, $usable): bool {
+            $s = $perMember();
+            $s = uu_test_route($s, $rejectRoute, '2001:db8:c::53');
+            $st = uu_test_plan_state(null, $usable);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'],
+                false, $now - 600);
+            $stop = $s;
+            $stop['settings']['enabled'] = false;
+            $skip = $s;
+            $skip['unbound']['control_ok'] = false;
+            $skip['unbound']['live_root'] = null;
+            $s['probes']['wg-a'] = uu_test_probe('down', '100.0 %', 300);
+            $s['probes']['wg-b'] = uu_test_probe('down', '100.0 %', 300);
+            return uu_plan($stop, $st)['drain'] === [] && uu_plan($skip, $st)['drain'] === []
+                && uu_plan($s, $st)['drain'] === ['2001:db8:c::53'];
+        }));
+
+    uu_check($t, '(p12) route repair: tunnel on wg-a, wg-b\'s address still on its member route while the live root '
+        . 'names only wg-a\'s → route_repair (reject it), whether its entry says forwarded false, or still true from '
+        . 'an earlier run (this run\'s read settles it)',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $routeVia, $b6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, $routeVia($s, 'wg-b'), $b6);
+            $record = ['kind' => 'member', 'next_hop' => 'fd00::4:2', 'if' => 'wg4'];
+            $off = $onA($s);
+            $off['addresses'][$b6] = $mapEntry($record, false);
+            $stale = $onA($s);
+            $stale['addresses'][$b6] = $mapEntry($record, true);
+            $p = uu_plan($s, $off);
+            $q = uu_plan($s, $stale);
+            $line = "route of $b6 is missing or not its reject route: reject $b6 locally";
+            return $p['action'] === 'none' && $p['route_repair'] && !$p['reassert'] && $p['reasons'] === [$line]
+                && $q['route_repair'] && $q['reasons'] === [$line];
+        }));
+    uu_check($t, '(p12) route repair: the same while the live root still names wg-b\'s address (forwarded) → no reject '
+        . 'route over it; with its reject route in place → nothing to repair',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $routeVia, $rejectRoute, $a6, $b6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, $routeVia($s, 'wg-b'), $b6);
+            $s['unbound']['live_root'] = [$a6, $b6];
+            $st = $onA($s);
+            $st['addresses'][$b6] = $mapEntry(['kind' => 'member', 'next_hop' => 'fd00::4:2', 'if' => 'wg4'], true);
+            $p = uu_plan($s, $st);
+            $r = uu_test_in_tunnel($perMember(), 'wg-a');
+            $r = uu_test_route($r, $rejectRoute, $b6);
+            $rst = $onA($r);
+            $rst['addresses'][$b6] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'], false);
+            $q = uu_plan($r, $rst);
+            return $p['action'] === 'none' && $p['reassert'] && !$p['route_repair']
+                && $q['action'] === 'none' && !$q['route_repair'] && !$q['reassert'];
+        }));
+    uu_check($t, '(p12) route repair outside tunnel mode: every address the setting names or the map holds needs its '
+        . 'reject route, not one Unbound still forwards to nor one whose route is not the plugin\'s',
+        uu_try_case(function () use ($perMember, $mapEntry, $rejectRoute, $usable, $a6, $b6): bool {
+            $s = $perMember();
+            $s = uu_test_route($s, $rejectRoute, $a6);
+            $st = uu_test_plan_state(null, ['wg-a' => uu_test_timer(0), 'wg-b' => uu_test_timer(0)]);
+            $st['addresses'][$a6] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'], false);
+            $missing = uu_plan($s, $st);
+            $s = uu_test_route($s, $rejectRoute, $b6);
+            $s = uu_test_route($s, $rejectRoute, '2001:db8:c::53');
+            $orphan = $st;
+            $orphan['addresses']['2001:db8:c::53'] = $mapEntry(null, false, 9000);
+            $placed = uu_plan($s, $orphan);
+            $gone = uu_test_route($s, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                       'ours' => false], '2001:db8:c::53');
+            $orphanGone = uu_plan($gone, $orphan);
+            $foreign = uu_test_route($gone, ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0',
+                                             'reject' => false, 'ours' => false], '2001:db8:c::53');
+            $notOurs = uu_plan($foreign, $orphan);
+            $live = $gone;
+            $live['unbound']['live_root'] = ['2001:db8:c::53', '2001:db8:d::53'];
+            $stillForwarded = $orphan;
+            $stillForwarded['addresses']['2001:db8:c::53']['forwarded'] = true;
+            $forwarded = uu_plan($live, $stillForwarded);
+            return $missing['action'] === 'none' && $missing['route_repair']
+                && $placed['action'] === 'none' && !$placed['route_repair']
+                && $orphanGone['route_repair'] && !$notOurs['route_repair']
+                && $forwarded['state']['mode'] === 'fallback' && !$forwarded['route_repair'];
+        }));
+
+    uu_check($t, '(p14) a Default stored as 2001:DB8:A:0::53 while Unbound prints 2001:db8:a::53: the settings, the '
+        . 'member\'s resolver and the plan agree, no reassert and no route repair',
+        uu_try_case(function () use ($perMember, $onA, $a6): bool {
+            $clean = uu_settings_clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [], 'probe_name' => '.',
+                'failback_delay' => '120', 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60']);
+            $default = $clean['settings']['default'];
+            $members = uu_member_resolvers(['wg-a', 'wg-b'], [], [], $default)['resolvers'];
+            $s = $perMember();
+            $s['settings']['resolver'] = $default;
+            $s['settings']['default'] = $default;
+            $s = uu_test_resolver(uu_test_resolver($s, 'wg-a', $members['wg-a']), 'wg-b', $members['wg-b']);
+            $s = uu_test_in_tunnel($s, 'wg-a');
+            $s['unbound']['live_root'] = ['2001:db8:a::53'];
+            $p = uu_plan($s, $onA($s));
+            /* the planner compares in canonical form even when handed the stored spelling */
+            $raw = uu_test_in_tunnel(uu_test_resolver($perMember(), 'wg-a', '2001:DB8:A:0::53'), 'wg-a');
+            $raw['unbound']['live_root'] = ['2001:db8:a::53'];
+            $q = uu_plan($raw, $onA($raw));
+            /* and a live root in another spelling is the same address */
+            $spelled = $s;
+            $spelled['unbound']['live_root'] = ['2001:0DB8:A:0::0053'];
+            $r = uu_plan($spelled, $onA($spelled));
+            return $default === $a6 && $members['wg-a'] === $a6 && $p['action'] === 'none' && !$p['reassert']
+                && !$p['route_repair'] && $p['reasons'] === []
+                && $q['action'] === 'none' && !$q['reassert'] && !$q['route_repair']
+                && $r['action'] === 'none' && !$r['reassert'] && $r['reasons'] === [];
+        }));
+
+    uu_check($t, '(p15) a member whose gateway record has no next hop (\'\' or dynamic) is never a candidate, with its '
+        . 'note; the other member still runs',
+        uu_try_case(function () use ($perMember, $usable): bool {
+            $ok = true;
+            foreach (['', 'dynamic'] as $hop) {
+                $s = $perMember();
+                $s['members']['wg-b']['next_hop'] = $hop;
+                $s['contract_input']['no_next_hop'] = ['wg-b'];
+                $p = uu_plan($s, uu_test_plan_state(null, $usable));
+                $c = uu_contract($s['contract_input']);
+                $ok = $ok && $p['action'] === 'tunnel' && $p['candidates'] === ['wg-a'] && $c['ok']
+                    && $c['notes'] === ['wg-b has no next hop: not a candidate'] && $c['excluded'] === ['wg-b'];
+            }
+            return $ok;
+        }));
+
+    uu_check($t, '(p16) the setting\'s addresses: enabled with the group found, every effective resolver once, sorted',
+        uu_try_case(function () use ($perMember, $a6, $b6): bool {
+            $s = $perMember();
+            $three = uu_test_resolver($s, 'wg-a', $b6);
+            $three['members']['wg-c'] = ['name' => 'wg-c', 'resolver' => '2001:DB8:0::53'] + $s['members']['wg-a'];
+            return uu_setting_addresses($s) === [$a6, $b6] && uu_setting_addresses($three) === ['2001:db8::53', $b6]
+                && uu_setting_addresses(uu_test_snapshot()) === ['10.2.0.1'];
+        }));
+    uu_check($t, '(p16) the setting\'s addresses: none while disabled or with the group not found, while each '
+        . 'member\'s own resolver is still filled; none from members with no resolver',
+        uu_try_case(function () use ($perMember, $a6, $b6): bool {
+            $off = $perMember();
+            $off['settings']['enabled'] = false;
+            $lost = $perMember();
+            $lost['contract_input']['group_found'] = false;
+            $empty = uu_test_resolver(uu_test_resolver($perMember(), 'wg-a', ''), 'wg-b', '');
+            return uu_setting_addresses($off) === [] && uu_setting_addresses($lost) === []
+                && uu_setting_addresses($empty) === []
+                && $off['members']['wg-a']['resolver'] === $a6 && $lost['members']['wg-b']['resolver'] === $b6;
+        }));
 
     return uu_tally_report('planner', $t);
 });

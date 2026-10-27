@@ -136,11 +136,12 @@ uu_register_suite('snapshot', function (): int {
             && uu_resolver_monitors($records, '10.2.0.1') === ['gw-b'] && uu_resolver_monitors($records, '') === []
             && uu_resolver_monitors($records, '2001:db8:a::54') === []));
     $adopt = function (string $gateway, string $dev, string $hop, string $if): bool {
-        $s = ['route' => ['present' => true, 'gateway' => $gateway, 'interface' => $dev, 'reject' => false,
-                          'ours' => false],
-              'contract_input' => ['foreign_route' => true]];
-        $r = uu_route_adopt($s, ['kind' => 'member', 'next_hop' => $hop, 'if' => $if]);
-        return $r['route']['ours'] === true && $r['contract_input']['foreign_route'] === false;
+        $route = ['present' => true, 'gateway' => $gateway, 'interface' => $dev, 'reject' => false, 'ours' => false];
+        $s = ['settings' => ['resolver' => '192.0.2.1'], 'route' => $route, 'routes' => ['192.0.2.1' => $route],
+              'contract_input' => ['foreign' => ['192.0.2.1']]];
+        $r = uu_route_adopt($s, ['192.0.2.1' => ['route' => ['kind' => 'member', 'next_hop' => $hop, 'if' => $if],
+                                                 'forwarded' => true, 'released_at' => null]]);
+        return $r['route']['ours'] === true && $r['contract_input']['foreign'] === [];
     };
     uu_check($t, '(t7) adopt: a recorded member route is ours again when route(8) prints the next hop scoped or in '
         . 'another spelling, and not when it is another hop',
@@ -316,7 +317,7 @@ uu_register_suite('snapshot', function (): int {
         $o['rules'] === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null,
                          'record' => null] && !in_array('-vsr', $calls, true));
 
-    $good = ['resolver' => '192.0.2.1', 'probe_name' => '.', 'failback_delay' => '120',
+    $good = ['resolver' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => '120',
              'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'];
     $clean = fn (array $over): array => uu_settings_clean($over + $good);
     $one = function (array $over, string $key, string|int $want) use ($clean): bool {
@@ -326,8 +327,8 @@ uu_register_suite('snapshot', function (): int {
     /* each settings_clean case runs inside uu_try_case(), so on a version without it each fails on its own */
     uu_check($t, 'settings_clean: the defaults pass unchanged with no problem',
         uu_try_case(fn (): bool => uu_settings_clean($good) === ['settings' => ['resolver' => '192.0.2.1',
-            'probe_name' => '.', 'failback_delay' => 120, 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'],
-            'problems' => []]));
+            'default' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => 120,
+            'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'], 'problems' => []]));
     uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
         uu_try_case(fn (): bool => $one(['resolver' => '192.0.2.1/32'], 'resolver', '')
             && $one(['resolver' => 'resolver.example'], 'resolver', '')
@@ -375,6 +376,54 @@ uu_register_suite('snapshot', function (): int {
         uu_try_case(function () use ($clean): bool {
             $r = $clean(['resolver' => 'secret.example', 'probe_name' => 'a b secret']);
             return count($r['problems']) === 2 && !str_contains(implode(' ', $r['problems']), 'secret');
+        }));
+
+    // The per-member rows, cleaned as the Default is.
+    $gwA = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6a';
+    $gwB = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6b';
+    $badRow = 'settings: a per-member resolver row is not a gateway id and an IPv4 or IPv6 address; ignored';
+    uu_check($t, 'settings_clean: the rows keyed by gateway id, each address canonical, the Default beside them',
+        uu_try_case(function () use ($clean, $gwA, $gwB): bool {
+            $r = $clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [
+                ['gateway' => $gwA, 'address' => '2001:0DB8:B::0053'], ['gateway' => $gwB, 'address' => '192.0.2.9']]]);
+            return $r['problems'] === [] && $r['settings']['default'] === '2001:db8:a::53'
+                && $r['settings']['resolver'] === '2001:db8:a::53'
+                && $r['settings']['rows'] === [$gwA => '2001:db8:b::53', $gwB => '192.0.2.9'];
+        }));
+    uu_check($t, 'settings_clean: a row whose gateway is no id, or whose address is no address or one the model '
+        . 'refuses, is dropped with one problem each, the value never quoted',
+        uu_try_case(function () use ($clean, $gwA, $badRow): bool {
+            $r = $clean(['rows' => [['gateway' => 'wg-secret', 'address' => '192.0.2.9'],
+                ['gateway' => $gwA, 'address' => 'secret.example'], ['gateway' => $gwA, 'address' => 'fe80::1'],
+                ['gateway' => $gwA, 'address' => '192.0.2.0/24'], ['gateway' => '', 'address' => '192.0.2.9']]]);
+            return $r['settings']['rows'] === [] && $r['problems'] === array_fill(0, 5, $badRow)
+                && !str_contains(implode(' ', $r['problems']), 'secret');
+        }));
+    uu_check($t, 'settings_clean: a second row for one gateway is dropped with its problem, the first kept; a bad row '
+        . 'before it does not count as the first',
+        uu_try_case(function () use ($clean, $gwA, $badRow): bool {
+            $r = $clean(['rows' => [['gateway' => $gwA, 'address' => 'nonsense'],
+                ['gateway' => $gwA, 'address' => '192.0.2.9'], ['gateway' => $gwA, 'address' => '192.0.2.10']]]);
+            return $r['settings']['rows'] === [$gwA => '192.0.2.9'] && $r['problems'] === [$badRow,
+                'settings: two per-member resolver rows name one gateway; the second is ignored'];
+        }));
+
+    // A recording made before 1.4 is refused by name; this version's passes through.
+    uu_check($t, '(p17) recorded: a recording with a route and no routes (made before 1.4) is refused, naming it',
+        uu_try_case(function (): bool {
+            try {
+                uu_snapshot_recorded(['route' => ['present' => false], 'contract_input' => ['core_commands' => []]],
+                    '/root/old.json');
+            } catch (\RuntimeException $e) {
+                return $e->getMessage() === '/root/old.json was recorded before 1.4: record it again';
+            }
+            return false;
+        }));
+    uu_check($t, '(p17) recorded: a recording with routes passes through unchanged',
+        uu_try_case(function (): bool {
+            $rec = ['route' => ['present' => false], 'routes' => [],
+                    'contract_input' => ['core_commands' => ['cron restart']]];
+            return uu_snapshot_recorded($rec, '/root/new.json') === $rec;
         }));
 
     return uu_tally_report('snapshot', $t);

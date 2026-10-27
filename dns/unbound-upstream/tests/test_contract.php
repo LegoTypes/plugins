@@ -20,11 +20,13 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/sn
 require_once __DIR__ . '/scratch.php';
 
 /**
- * A contract input that passes, with a restorable single root zone.
+ * A contract input that passes, with a restorable single root zone; both members use the one resolver 10.2.0.1.
  *
  * @return array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *     unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *     status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *     unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *     resolver_notes: list<string>, no_next_hop: list<string>,
+ *     rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>}
  */
@@ -35,10 +37,13 @@ function uu_test_contract_input(): array
         'unbound_sorts_first' => true,
         'groups_have_tiers' => true,
         'status_fields' => true,
-        'resolver_is_monitor' => [],
-        'resolver_in_static' => [],
+        'monitors' => [],
+        'statics' => [],
         'unmonitored_members' => [],
-        'foreign_route' => false,
+        'foreign' => [],
+        'member_resolvers' => ['wg-a' => '10.2.0.1', 'wg-b' => '10.2.0.1'],
+        'resolver_notes' => [],
+        'no_next_hop' => [],
         'rules' => ['state' => 'loaded', 'problems' => []],
         'zone' => ['shape' => 'one', 'addrs' => ['192.0.2.53@853#dns.example'], 'tls' => true, 'problems' => []],
         'fib_sync_ms' => 100,
@@ -72,7 +77,7 @@ uu_register_suite('contract', function (): int {
         ['unbound_sorts_first', false, 'unbound.inc no longer sorts before unboundupstream.inc'],
         ['groups_have_tiers', false, 'gateway groups lack tiers'],
         ['status_fields', false, 'gateway status lacks expected fields'],
-        ['foreign_route', true, 'resolver route not ours'],
+        ['foreign', ['10.2.0.1'], 'resolver route not ours'],
         ['fib_sync_ms', null, 'fib sync delay unreadable'],
         ['group_found', false, 'group not found'],
         ['members', 0, 'group has no members'],
@@ -105,13 +110,13 @@ uu_register_suite('contract', function (): int {
         && $c['notes'] === ['firewall rules are being verified (the ruleset changed)']);
 
     $in = uu_test_contract_input();
-    $in['resolver_is_monitor'] = ['wg-a', 'wg-b'];
+    $in['monitors'] = ['10.2.0.1' => ['wg-a', 'wg-b']];
     $c = uu_contract($in);
     uu_check($t, 'resolver is the monitor: one failure per gateway',
         !$c['ok'] && $c['failures'] === ['resolver is the monitor of wg-a', 'resolver is the monitor of wg-b']);
 
     $in = uu_test_contract_input();
-    $in['resolver_in_static'] = ['10.2.0.0/24', '10.0.0.0/8'];
+    $in['statics'] = ['10.2.0.1' => ['10.2.0.0/24', '10.0.0.0/8']];
     $c = uu_contract($in);
     uu_check($t, 'resolver inside static routes: one failure per route',
         !$c['ok'] && $c['failures'] === ['resolver is inside static route 10.2.0.0/24',
@@ -164,7 +169,7 @@ uu_register_suite('contract', function (): int {
         $c['ok'] && $c['failures'] === [] && $c['notes'] === ['cacheflush on: restart escalation disabled']);
 
     $in = uu_test_contract_input();
-    $in['foreign_route'] = true;
+    $in['foreign'] = ['10.2.0.1'];
     $in['group_found'] = false;
     $in['fib_sync_ms'] = null;
     $c = uu_contract($in);
@@ -263,6 +268,81 @@ uu_register_suite('contract', function (): int {
             $text !== null && $text !== '' && preg_match('/^[\t\n\x20-\x7e]*\z/', $text) === 1
             && str_ends_with($text, "\n"));
     }
+
+    // Address-scoped failures exclude the members that use the address; covering every member, they refuse.
+    $two = uu_test_contract_input();
+    $two['member_resolvers'] = ['wg-a' => '2001:db8:a::53', 'wg-b' => '2001:db8:b::53'];
+    uu_check($t, '(p13) two addresses, one foreign: its members are excluded with a note each, the contract ok',
+        uu_try_case(function () use ($two): bool {
+            $in = $two;
+            $in['foreign'] = ['2001:db8:a::53'];
+            $c = uu_contract($in);
+            return $c === ['ok' => true, 'failures' => [], 'notes' => ['wg-a excluded: resolver route not ours'],
+                           'excluded' => ['wg-a']];
+        }));
+    uu_check($t, '(p13) two addresses, one a monitor and in a static route: one note per failure for each of its '
+        . 'members, in member order, the other address\'s member still a candidate',
+        uu_try_case(function () use ($two): bool {
+            $in = $two;
+            $in['member_resolvers']['wg-c'] = '2001:db8:b::53';
+            $in['monitors'] = ['2001:db8:b::53' => ['wg-x']];
+            $in['statics'] = ['2001:db8:b::53' => ['2001:db8::/32']];
+            $c = uu_contract($in);
+            return $c['ok'] && $c['failures'] === [] && $c['excluded'] === ['wg-b', 'wg-c']
+                && $c['notes'] === ['wg-b excluded: resolver is the monitor of wg-x',
+                    'wg-b excluded: resolver is inside static route 2001:db8::/32',
+                    'wg-c excluded: resolver is the monitor of wg-x',
+                    'wg-c excluded: resolver is inside static route 2001:db8::/32'];
+        }));
+    uu_check($t, '(p13) two addresses whose failures between them exclude every member: each a failure in 1.3\'s words '
+        . 'with its address, monitors and statics before the unmonitored members, foreign routes after, no note',
+        uu_try_case(function () use ($two): bool {
+            $in = $two;
+            $in['foreign'] = ['2001:db8:a::53'];
+            $in['monitors'] = ['2001:db8:b::53' => ['wg-x']];
+            $in['unmonitored_members'] = ['wg-y'];
+            $c = uu_contract($in);
+            return !$c['ok'] && $c['notes'] === [] && $c['excluded'] === []
+                && $c['failures'] === ['resolver is the monitor of wg-x (2001:db8:b::53)',
+                    'member wg-y is not monitored', 'resolver route not ours (2001:db8:a::53)'];
+        }));
+    uu_check($t, '(p9) one shared address that is a monitor: 1.3\'s failure string exactly, no address, no note',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['monitors'] = ['10.2.0.1' => ['wg-b']];
+            $c = uu_contract($in);
+            return $c === ['ok' => false, 'failures' => ['resolver is the monitor of wg-b'], 'notes' => [],
+                           'excluded' => []];
+        }));
+    uu_check($t, '(p13) a foreign route of an address no member uses (one the state still holds) excludes nobody and '
+        . 'refuses nothing',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['foreign'] = ['192.0.2.77'];
+            return uu_contract($in) === ['ok' => true, 'failures' => [], 'notes' => [], 'excluded' => []];
+        }));
+    uu_check($t, '(p8) a member with no resolver is excluded (uu_member_resolvers() wrote its note), and an address '
+        . 'failure covering every member that has one still refuses in 1.3\'s words',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['member_resolvers'] = ['wg-a' => '', 'wg-b' => '10.2.0.1'];
+            $in['resolver_notes'] = ['wg-a has no resolver: not a candidate'];
+            $ok = uu_contract($in);
+            $in['foreign'] = ['10.2.0.1'];
+            $refused = uu_contract($in);
+            return $ok === ['ok' => true, 'failures' => [], 'notes' => ['wg-a has no resolver: not a candidate'],
+                            'excluded' => ['wg-a']]
+                && $refused['failures'] === ['resolver route not ours'] && !$refused['ok'];
+        }));
+    uu_check($t, '(p15) a member with no next hop is excluded with its note; the rows\' notes are carried as they are',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['no_next_hop'] = ['wg-b'];
+            $in['resolver_notes'] = ['row for wg-c ignored: not a member of the group'];
+            return uu_contract($in) === ['ok' => true, 'failures' => [],
+                'notes' => ['row for wg-c ignored: not a member of the group', 'wg-b has no next hop: not a candidate'],
+                'excluded' => ['wg-b']];
+        }));
 
     return uu_tally_report('contract', $t);
 });

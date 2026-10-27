@@ -621,6 +621,83 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'evaluate.php replay of a recording without contract_input.core_commands (the shape before 1.3) plans, exits 0 and prints no PHP warning',
         $m3 !== null && $m3['rc'] === 0 && !$m3Warned && str_contains($m3['out'], '"plan"'));
 
+    /* (p17) A recording made before 1.4 (a route and no routes) is refused by name, never planned from: this box's own
+     * recording with routes taken out, in a scratch directory that is removed */
+    $p17 = null;
+    $p17Dir = uu_scratch_dir();
+    try {
+        $rec = "$p17Dir/recording.json";
+        $out = [];
+        $rc = 0;
+        exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec) . ' > /dev/null 2>&1',
+            $out, $rc);
+        $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+        if (is_array($doc) && is_array($doc['snapshot'] ?? null)) {
+            unset($doc['snapshot']['routes'], $doc['snapshot']['family']);
+            file_put_contents($rec, json_encode($doc, JSON_THROW_ON_ERROR));
+            $out = [];
+            exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' replay ' . escapeshellarg($rec) . ' 2>&1',
+                $out, $rc);
+            $p17 = ['rc' => $rc, 'out' => implode("\n", $out), 'rec' => $rec];
+        } else {
+            printf("  record exited %d and wrote no snapshot\n", $rc);
+        }
+    } finally {
+        uu_scratch_remove($p17Dir);
+    }
+    $p17Refused = $p17 !== null && $p17['rc'] !== 0
+        && str_contains($p17['out'], $p17['rec'] . ' was recorded before 1.4: record it again')
+        && !str_contains($p17['out'], '"plan"');
+    if ($p17 !== null && !$p17Refused) {
+        printf("  replay exited %d:\n%s\n", $p17['rc'], $p17['out']);
+    }
+    uu_check($t, '(p17) evaluate.php replay of a recording made before 1.4 (no routes) is refused, naming the file, '
+        . 'and plans nothing', $p17Refused);
+
+    /* (p18) record reads the route of every address the saved state holds, beside the effective resolvers: a state
+     * holding an address no member uses is placed under the evaluate lock (record takes none, and no evaluation
+     * acts on the placed state) and put back */
+    $p18 = null;
+    $p18Dir = uu_scratch_dir();
+    $p18Lock = false;
+    try {
+        uu_run_dir();
+        $p18Lock = uu_test_evaluate_lock();
+        if ($p18Lock === false) {
+            throw new RuntimeException('an evaluation held the evaluate lock for 60 s');
+        }
+        uu_test_state_aside(UU_STATE_PATH, UU_STATE_PATH . '.p18',
+            function (callable $place) use (&$p18, $p18Dir, $script): void {
+                $placed = uu_state_new();
+                $placed['addresses'] = ['198.51.100.77' => ['route' => null, 'forwarded' => false,
+                                                            'released_at' => null]];
+                $place($placed);
+                $rec = "$p18Dir/recording.json";
+                $out = [];
+                $rc = 0;
+                exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec)
+                    . ' > /dev/null 2>&1', $out, $rc);
+                $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+                $p18 = is_array($doc) ? $doc : null;
+            }, 'rename');
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        if ($p18Lock !== false) {
+            fclose($p18Lock);
+        }
+        uu_scratch_remove($p18Dir);
+    }
+    $p18Routes = $p18['snapshot']['routes'] ?? null;
+    if (!is_array($p18Routes) || !array_key_exists('198.51.100.77', $p18Routes)) {
+        printf("  recorded routes: %s\n", json_encode($p18Routes));
+    }
+    uu_check($t, '(p18) evaluate.php record reads the route of an address the saved state holds and no member uses, '
+        . 'and records that state',
+        is_array($p18Routes) && ($p18Routes['198.51.100.77'] ?? null) === ['present' => false, 'gateway' => '',
+            'interface' => '', 'reject' => false, 'ours' => false]
+        && array_keys($p18['state']['addresses'] ?? []) === ['198.51.100.77']);
+
     /* A disabled plugin whose resolver has a member route that no member explains: only the state's record makes
      * that route the plugin's own, so the replay plans its delete. The recording is this box's own, rewritten in a
      * scratch directory and removed. */
@@ -637,6 +714,8 @@ uu_register_suite('wiring', function (): int {
             $hop = ['kind' => 'member', 'next_hop' => '198.51.100.9', 'if' => 'wg9'];
             $doc['snapshot']['settings']['enabled'] = false;
             $doc['snapshot']['settings']['resolver'] = '192.0.2.1';
+            $doc['snapshot']['settings']['default'] = '192.0.2.1';
+            $doc['snapshot']['settings']['rows'] = [];
             $doc['snapshot']['stop'] = null;
             $doc['snapshot']['members'] = [];
             $doc['snapshot']['tiers'] = [];
@@ -644,6 +723,7 @@ uu_register_suite('wiring', function (): int {
                 'live_root' => ['192.0.2.53']];
             $doc['snapshot']['route'] = ['present' => true, 'gateway' => '198.51.100.9', 'interface' => 'wg9',
                 'reject' => false, 'ours' => false];
+            $doc['snapshot']['routes'] = ['192.0.2.1' => $doc['snapshot']['route']];
             $doc['state'] = ['version' => 6, 'mode' => 'fallback', 'member' => null, 'timers' => [],
                 'control_failures' => 0, 'control_silent_since' => null, 'last_switch' => null,
                 'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => null, 'blocked' => null,

@@ -127,5 +127,34 @@ uu_register_suite('choose', function (): int {
         && uu_probe_outcome(false, false, false) === 'fail' && uu_probe_outcome(false, null, false) === 'fail');
     uu_check($t, 'probe table: direct only (no through check) passes', uu_probe_outcome(true, null, false) === 'ok');
 
+    // A timer follows its member's resolver.
+    $failed = ['resolver' => '10.2.0.1', 'probe_failures' => 1] + uu_test_timer(300, 10100, 9940);
+    $reset = $failed;
+    $reset['resolver'] = '10.2.0.9';
+    $reset['resolver_failed_until'] = null;
+    $reset['probe_failures'] = 0;
+    uu_check($t, '(p10) a timer whose member\'s resolver is now another address: its resolver-failed mark and probe '
+        . 'failures reset, the rest kept, the new address recorded',
+        uu_try_case(fn (): bool => uu_timers_follow_resolvers(['wg-a' => $failed], ['wg-a' => '10.2.0.9'])
+            === ['wg-a' => $reset]));
+    uu_check($t, '(p10) a timer that follows its own address keeps its mark and failures',
+        uu_try_case(fn (): bool => uu_timers_follow_resolvers(['wg-a' => $failed], ['wg-a' => '10.2.0.1'])
+            === ['wg-a' => $failed]));
+    uu_check($t, '(p10) a timer with no address yet (new, or converted from 1.3) takes the member\'s without a reset',
+        uu_try_case(fn (): bool => uu_timers_follow_resolvers(['wg-a' => ['resolver' => ''] + $failed],
+            ['wg-a' => '10.2.0.1']) === ['wg-a' => $failed]));
+    uu_check($t, '(p10) each member alone: one member\'s change resets only its own timer; a member with no entry in '
+        . 'the resolvers is left as it is; a member left with no resolver resets',
+        uu_try_case(function () use ($failed): bool {
+            $r = uu_timers_follow_resolvers(['wg-a' => $failed, 'wg-b' => $failed, 'wg-c' => $failed],
+                ['wg-a' => '10.2.0.9', 'wg-b' => '10.2.0.1']);
+            $gone = uu_timers_follow_resolvers(['wg-a' => $failed], ['wg-a' => '']);
+            return $r['wg-a']['resolver_failed_until'] === null && $r['wg-b'] === $failed && $r['wg-c'] === $failed
+                && $gone['wg-a']['resolver_failed_until'] === null && $gone['wg-a']['resolver'] === '';
+        }));
+    uu_check($t, '(p10) the addresses are compared in canonical form',
+        uu_try_case(fn (): bool => uu_timers_follow_resolvers(['wg-a' => ['resolver' => '2001:DB8:A:0::53'] + $failed],
+            ['wg-a' => '2001:db8:a::53'])['wg-a']['resolver_failed_until'] === 10100));
+
     return uu_tally_report('choose', $t);
 });

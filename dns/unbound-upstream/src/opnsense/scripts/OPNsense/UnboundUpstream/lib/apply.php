@@ -114,7 +114,7 @@ final class UuApplyRun
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>},
-     *     reasons: list<string>}
+     *     reasons: list<string>, drain: list<string>}
      */
     private array $p;
     /**
@@ -188,7 +188,7 @@ final class UuApplyRun
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>},
-     *     reasons: list<string>} $p
+     *     reasons: list<string>, drain: list<string>} $p
      * @param array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
      *         probe_name: string},
@@ -221,12 +221,10 @@ final class UuApplyRun
          * a root that could not be read leaves the record as it was, but Unbound that is not running forwards to
          * nothing (it restarts on its configured root), which counts as a read of the empty root */
         $live = $s['unbound']['live_root'];
-        $read = $s['unbound']['pid_alive'] ? $live : [];
-        if ($read !== null) {
-            $named = uu_apply_bare($read);
-            foreach (array_keys($this->st['addresses']) as $address) {
-                $this->st['addresses'][$address]['forwarded'] = in_array((string)$address, $named, true);
-            }
+        $read = uu_state_snapshot_read($s['unbound']);
+        foreach ($this->st['addresses'] as $address => $entry) {
+            $this->st['addresses'][$address]['forwarded'] = uu_state_forwarded($read, (string)$address,
+                $entry['forwarded']);
         }
         $this->setLive($read);
         $this->live = $live;
@@ -251,9 +249,7 @@ final class UuApplyRun
     private function setLive(?array $live): void
     {
         $this->live = $live;
-        if ($live !== null) {
-            $this->forwarded[$this->key] = in_array($this->key, uu_apply_bare($live), true);
-        }
+        $this->forwarded[$this->key] = uu_state_forwarded($live, $this->key, $this->forwarded[$this->key]);
     }
 
     /**
@@ -934,13 +930,13 @@ final class UuApplyRun
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>},
- *     reasons: list<string>} $p uu_plan()
+ *     reasons: list<string>, drain: list<string>} $p uu_plan()
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>, stop: ?string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
@@ -998,13 +994,13 @@ function uu_apply(array $p, array $s, array $io): array
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>},
- *     reasons: list<string>} $p
+ *     reasons: list<string>, drain: list<string>} $p
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>, stop: ?string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},

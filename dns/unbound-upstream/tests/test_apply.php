@@ -21,21 +21,25 @@ require_once __DIR__ . '/scratch.php';
  * The planner's test snapshot with Unbound's live root as Unbound prints it: bare addresses, its own order.
  *
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
@@ -56,8 +60,8 @@ function uu_test_apply_snapshot(): array
  * $all after a "-- case" marker, so the never-planned assertions see every case and where each starts.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}} $s
  * @param ArrayObject<int, string> $all
@@ -316,13 +320,12 @@ uu_register_suite('apply', function (): int {
     $v6 = '2001:db8:a::53';
     $v6Snapshot = function (string $hop, string $dev) use ($v6): array {
         $s6 = uu_test_apply_snapshot();
-        $s6['settings']['resolver'] = $v6;
         $s6['tiers'] = [['wg-a6']];
         $s6['members'] = ['wg-a6' => ['name' => 'wg-a6', 'interface' => 'opt3', 'if' => $dev, 'next_hop' => $hop]
             + $s6['members']['wg-a']];
         $s6['probes'] = ['wg-a6' => $s6['probes']['wg-a']];
         $s6['block_table']['addresses'] = [$v6];
-        return $s6;
+        return uu_test_default($s6, $v6);
     };
     $usable6 = ['wg-a6' => uu_test_timer(500, null, $now - 60)];
     $s6 = $v6Snapshot('fd00::3:2', 'wg3');
@@ -375,7 +378,7 @@ uu_register_suite('apply', function (): int {
             && !uu_plan_route_via(['gateway' => 'fe80::2%gif0'] + $viaGif, $s6['members']['wg-a6'])
             && !uu_plan_route_via(['interface' => 'gif1'] + $viaGif, $s6['members']['wg-a6'])));
     $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
-    $s6['route']['gateway'] = 'FD00:0::3:2';
+    $s6 = uu_test_route($s6, ['gateway' => 'FD00:0::3:2'] + $s6['route']);
     $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $s6));
     $r = uu_test_io($s6, $all);
     uu_apply($p, $s6, $r['io']);
@@ -480,7 +483,8 @@ uu_register_suite('apply', function (): int {
 
     $gap = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $gap['settings']['enabled'] = false;
-    $gap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $gap = uu_test_route($gap, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                'ours' => false]);
     $p = uu_plan($gap, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($gap, $all);
     $st = uu_apply($p, $gap, $r['io']);
@@ -500,7 +504,8 @@ uu_register_suite('apply', function (): int {
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
-    $s['route'] = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
+    $s = uu_test_route($s, ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
+                            'ours' => true]);
     $p = uu_plan($s, uu_test_plan_state(null));
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
@@ -577,9 +582,9 @@ uu_register_suite('apply', function (): int {
         && $st['last_switch']['from'] === 'tunnel' && $st['tls_applied'] === null);
 
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
-    $s['route'] = ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0', 'reject' => false,
-                   'ours' => false];
-    $s['contract_input']['foreign_route'] = true;
+    $s = uu_test_route($s, ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0', 'reject' => false,
+                            'ours' => false]);
+    $s['contract_input']['foreign'] = ['10.2.0.1'];
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
@@ -654,14 +659,17 @@ uu_register_suite('apply', function (): int {
     $gone['tiers'] = [];
     $gone['members'] = [];
     $gone['probes'] = [];
-    $gone['route']['ours'] = false;
+    $gone = uu_test_route($gone, ['ours' => false] + $gone['route']);
     $gone['contract_input']['group_found'] = false;
     $gone['contract_input']['members'] = 0;
-    $gone['contract_input']['foreign_route'] = true;
-    $adopted = uu_route_adopt($gone, $memberRecord);
+    $gone['contract_input']['foreign'] = ['10.2.0.1'];
+    /* the state's map holding a route record for the resolver, or nothing */
+    $map = fn (?array $record): array => $record === null ? []
+        : ['10.2.0.1' => ['route' => $record, 'forwarded' => true, 'released_at' => null]];
+    $adopted = uu_route_adopt($gone, $map($memberRecord));
     uu_check($t, 'a live route equal to the recorded one is ours, and no longer a foreign-route contract failure',
-        $adopted['route']['ours'] && !$adopted['contract_input']['foreign_route']
-        && uu_route_adopt($gone, null) === $gone);
+        $adopted['route']['ours'] && $adopted['contract_input']['foreign'] === []
+        && uu_route_adopt($gone, $map(null)) === $gone);
     $p = uu_plan($adopted, $recorded);
     $r = uu_test_io($adopted, $all);
     $st = uu_apply($p, $adopted, $r['io']);
@@ -680,7 +688,7 @@ uu_register_suite('apply', function (): int {
 
     $other = $memberRecord;
     $other['next_hop'] = '10.2.0.9';
-    $foreign = uu_route_adopt($gone, $other);
+    $foreign = uu_route_adopt($gone, $map($other));
     $p = uu_plan($foreign, $recorded);
     $r = uu_test_io($foreign, $all);
     $st = uu_apply($p, $foreign, $r['io']);
@@ -695,14 +703,16 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'stop never deletes that foreign route',
         $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot, 'uc forward']);
     $rejectLive = $gone;
-    $rejectLive['route'] = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
-                            'ours' => false];
+    $rejectLive = uu_test_route($rejectLive, ['present' => true, 'gateway' => '', 'interface' => 'lo0',
+                                              'reject' => true, 'ours' => false]);
     uu_check($t, 'a member route is not adopted by a reject record, nor a reject route by a member record',
-        uu_route_adopt($gone, $rejectRecord) === $gone && uu_route_adopt($rejectLive, $memberRecord) === $rejectLive
-        && uu_route_adopt($rejectLive, $rejectRecord)['route']['ours']);
+        uu_route_adopt($gone, $map($rejectRecord)) === $gone
+        && uu_route_adopt($rejectLive, $map($memberRecord)) === $rejectLive
+        && uu_route_adopt($rejectLive, $map($rejectRecord))['route']['ours']);
     $absent = $gone;
-    $absent['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
-    uu_check($t, 'no live route: nothing to adopt', uu_route_adopt($absent, $memberRecord) === $absent);
+    $absent = uu_test_route($absent, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                      'ours' => false]);
+    uu_check($t, 'no live route: nothing to adopt', uu_route_adopt($absent, $map($memberRecord)) === $absent);
 
     // Per-evaluation checks while staying on wg-a.
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
@@ -773,9 +783,7 @@ uu_register_suite('apply', function (): int {
         && $st['member'] === 'wg-a');
 
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
-    $s['route']['reject'] = true;
-    $s['route']['interface'] = 'lo0';
-    $s['route']['gateway'] = '';
+    $s = uu_test_route($s, ['reject' => true, 'interface' => 'lo0', 'gateway' => ''] + $s['route']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
@@ -1006,7 +1014,7 @@ uu_register_suite('apply', function (): int {
     // A stop that cannot restore: a requested stop and a removal restart Unbound
     // on any restore failure; a removal that still cannot restore leaves the reject route.
     $fp = uu_test_apply_snapshot();
-    $fp['settings']['resolver'] = '192.0.2.1';
+    $fp = uu_test_default($fp, '192.0.2.1');
     $fp = uu_test_in_tunnel($fp, 'wg-a');
     $fpRoot = ['192.0.2.53', '2001:db8::53'];
     $fpReject = 'route change -inet -host 192.0.2.1 127.0.0.1 -reject';
@@ -1106,7 +1114,8 @@ uu_register_suite('apply', function (): int {
             'configctl unbound restart, then route delete -inet6 -host ' . $v6)
         && !uu_test_logged($r['calls'], LOG_ERR, 'route delete -host'));
     $fpGap = $fp;
-    $fpGap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $fpGap = uu_test_route($fpGap, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                    'ours' => false]);
     $run = $stopAs($fpGap, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
     uu_check($t, '(a5) the same with the route missing (a route-loss window) → the reject route added',
         $run['acts'] === [$restoreDot, 'restart', 'route add -inet -host 192.0.2.1 127.0.0.1 -reject'] && $lastResort($run));
@@ -1122,8 +1131,8 @@ uu_register_suite('apply', function (): int {
         $run['acts'] === [$restoreDot, 'restart', $fpReject, 'route add -inet -host 192.0.2.1 127.0.0.1 -reject']
         && $noReject($run));
     $fpForeign = $fp;
-    $fpForeign['route'] = ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0', 'reject' => false,
-                           'ours' => false];
+    $fpForeign = uu_test_route($fpForeign, ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0',
+                                            'reject' => false, 'ours' => false]);
     $run = $stopAs($fpForeign, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false,
                                                 'restarts' => true]);
     uu_check($t, '(a5) removal whose restart fails with a foreign route → no reject route over it, never deleted, the resolver recorded, an error naming the removal and the remedy',
@@ -1727,7 +1736,8 @@ uu_register_suite('apply', function (): int {
 
     $silentFp = uu_test_apply_snapshot();
     $silentFp['unbound'] = ['enabled' => true, 'pid_alive' => true, 'control_ok' => false, 'live_root' => null];
-    $silentFp['route'] = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
+    $silentFp = uu_test_route($silentFp, ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
+                                          'ours' => true]);
     $keep = uu_test_plan_state(null, $usable);
     $keep['addresses'] = ['10.2.0.1' => $entry($rejectRecord, true), '192.0.2.77' => $entry(null, true, 9000)];
     $p = uu_plan($silentFp, $keep);
@@ -1757,7 +1767,8 @@ uu_register_suite('apply', function (): int {
         '192.0.2.77' => $entry(null, true, 9000),
         '192.0.2.78' => $entry($rejectRecord, false, 4),
     ];
-    $others['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $others = uu_test_route($others, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                      'ours' => false]);
     $others['probes']['wg-a'] = $settledDown;
     $others['probes']['wg-b'] = $settledDown;
     $p = uu_plan($others, $mapped);
@@ -1826,7 +1837,8 @@ uu_register_suite('apply', function (): int {
     $p = uu_plan($dead, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($dead, $all);
     $st = uu_apply($p, $dead, $r['io']);
-    $dead['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+    $dead = uu_test_route($dead, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                  'ours' => false]);
     $p2 = uu_plan($dead, $st);
     $r2 = uu_test_io($dead, $all);
     $st2 = uu_apply($p2, $dead, $r2['io']);

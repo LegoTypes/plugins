@@ -480,6 +480,40 @@ function uu_state_load(string $path): array
 }
 
 /**
+ * The live root an evaluation's snapshot read: Unbound's root forwarders as unbound-control printed them, null when
+ * the channel did not answer, and the empty root when Unbound is not running (it forwards to nothing, and restarts on
+ * its configured root).
+ *
+ * @param array{pid_alive: bool, live_root: ?list<string>} $unbound the Snapshot's unbound
+ * @return ?list<string>
+ */
+function uu_state_snapshot_read(array $unbound): ?array
+{
+    return $unbound['pid_alive'] ? $unbound['live_root'] : [];
+}
+
+/**
+ * Whether Unbound forwards to an address once a live root read is taken: it does when the read names it (as
+ * unbound-control prints a forwarder, @port and #name dropped, compared in canonical form) and does not when the read
+ * names only others; a read that failed (null) leaves what was recorded. The one home of the forwarded rule: the
+ * planner's reject routes and apply's map entries both take it.
+ *
+ * @param ?list<string> $read
+ */
+function uu_state_forwarded(?array $read, string $address, bool $recorded): bool
+{
+    if ($read === null) {
+        return $recorded;
+    }
+    foreach ($read as $forwarder) {
+        if (uu_ip_same((string)preg_replace('/[@#].*$/', '', $forwarder), $address)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * The route the plugin last installed for an address, from the state's map: null for an address with no entry or an
  * entry with none. The address is looked up in its canonical form, as the map is keyed.
  *

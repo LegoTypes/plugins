@@ -33,6 +33,8 @@ const UU_CORE_UNBOUND_RESTART = '/usr/local/sbin/pluginctl -c unbound_start'; /*
 const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this long after flush_requestlist, before
                                            * the delete: the VM measured the last send to the resolver within 13 ms
                                            * of the flush (without it, retries ran up to 14.5 s) */
+const UU_OLD_ADDRESS_HOLD = 60;          /* an address no member uses any more is drained no sooner than this after
+                                           * it was released: it only spaces the drain from the switch */
 const UU_RULE_PRIORITY = 99998;           /* firewall rule priority, beside the tunnels plugin's 99999 */
 const UU_FAILBACK_DEFAULT = 120;          /* the model's failback_delay default, used for a value that is not digits */
 const UU_FAILBACK_DELAY_MAX = 3600;       /* the largest failback_delay Save accepts */

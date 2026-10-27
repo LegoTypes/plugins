@@ -9,24 +9,89 @@ declare(strict_types=1);
  *
  * Core contract. Pure.
  *
- * Takes the snapshot's contract input and says whether tunnel mode may run. Every failure refuses tunnel mode
- * and is shown on the status page verbatim, so the strings are part of the interface. Notes are status-only.
+ * Takes the snapshot's contract input and says whether tunnel mode may run, and through which members. Every failure
+ * refuses tunnel mode and is shown on the status page verbatim, so the strings are part of the interface. Notes are
+ * status-only. excluded lists the members that are no candidate: one with no resolver, one with no next hop, and,
+ * while the rest still have a candidate, one whose resolver has an address-scoped failure (it is a gateway's monitor,
+ * lies in a static route, or has a route the plugin did not make).
  *
- * Contract = array{ok: bool, failures: list<string>, notes: list<string>}
+ * Contract = array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>}
  */
 
 /**
+ * The address-scoped failures in 1.3's words, each with the address it is about and the members whose effective
+ * resolver it is: every monitor match, then every static route, then every foreign route, the last apart since the
+ * contract lists it after the unmonitored members. An address no member uses excludes nobody and is left out.
+ *
+ * @param array{monitors: array<string, list<string>>, statics: array<string, list<string>>, foreign: list<string>,
+ *     member_resolvers: array<string, string>} $c
+ * @return array{before: list<array{address: string, failure: string, members: list<string>}>,
+ *     after: list<array{address: string, failure: string, members: list<string>}>}
+ */
+function uu_contract_scoped(array $c): array
+{
+    $users = fn (string $address): array => array_map('strval', array_keys($c['member_resolvers'], $address, true));
+    $before = [];
+    foreach ($c['monitors'] as $address => $gateways) {
+        foreach ($gateways as $gateway) {
+            $before[] = ['address' => (string)$address, 'failure' => 'resolver is the monitor of ' . $gateway];
+        }
+    }
+    foreach ($c['statics'] as $address => $networks) {
+        foreach ($networks as $network) {
+            $before[] = ['address' => (string)$address, 'failure' => 'resolver is inside static route ' . $network];
+        }
+    }
+    $after = [];
+    foreach ($c['foreign'] as $address) {
+        $after[] = ['address' => $address, 'failure' => 'resolver route not ours'];
+    }
+    $with = function (array $items) use ($users): array {
+        $out = [];
+        foreach ($items as $item) {
+            $members = $users($item['address']);
+            if ($members !== []) {
+                $out[] = $item + ['members' => $members];
+            }
+        }
+        return $out;
+    };
+    return ['before' => $with($before), 'after' => $with($after)];
+}
+
+/**
  * @param array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *     status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *     unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *     status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *     unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *     resolver_notes: list<string>, no_next_hop: list<string>, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>} $c
- * @return array{ok: bool, failures: list<string>, notes: list<string>}
+ *   monitors and statics are keyed by address (the gateways whose monitor it is, the static routes it lies in),
+ *   foreign lists the addresses whose route the plugin did not make, member_resolvers is each member's effective
+ *   resolver ('' for none), resolver_notes uu_member_resolvers()'s notes, no_next_hop the members whose gateway
+ *   record has no address to route through
+ * @return array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>}
+ *   an address-scoped failure is a failure, in 1.3's words, when the members its addresses exclude are every member
+ *   that has a resolver, with " (<address>)" appended only when the members have more than one address between
+ *   them; otherwise each excluded member gets the note "<name> excluded: <failure>" and the others still run
  */
 function uu_contract(array $c): array
 {
     $failures = [];
     $notes = [];
+
+    $scoped = uu_contract_scoped($c);
+    $hit = [];
+    foreach (array_merge($scoped['before'], $scoped['after']) as $item) {
+        foreach ($item['members'] as $name) {
+            $hit[$name] = true;
+        }
+    }
+    $resolvers = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '');
+    $refused = $hit !== [] && count($hit) === count($resolvers);
+    $several = count(array_unique($resolvers)) > 1;
+    $scopedFailures = fn (array $items): array => array_map(
+        fn (array $item): string => $item['failure'] . ($several ? " ({$item['address']})" : ''), $items);
 
     if ($c['unbound_hooks_registered'] !== true) {
         $failures[] = 'unbound_start hook missing';
@@ -40,17 +105,14 @@ function uu_contract(array $c): array
     if ($c['status_fields'] !== true) {
         $failures[] = 'gateway status lacks expected fields';
     }
-    foreach ($c['resolver_is_monitor'] as $gateway) {
-        $failures[] = 'resolver is the monitor of ' . $gateway;
-    }
-    foreach ($c['resolver_in_static'] as $network) {
-        $failures[] = 'resolver is inside static route ' . $network;
+    if ($refused) {
+        array_push($failures, ...$scopedFailures($scoped['before']));
     }
     foreach ($c['unmonitored_members'] as $gateway) {
         $failures[] = 'member ' . $gateway . ' is not monitored';
     }
-    if ($c['foreign_route'] === true) {
-        $failures[] = 'resolver route not ours';
+    if ($refused) {
+        array_push($failures, ...$scopedFailures($scoped['after']));
     }
     /* Verifying (a status call after the ruleset changed) is no fault, the next evaluation lists */
     if ($c['rules']['state'] === 'verifying') {
@@ -88,5 +150,26 @@ function uu_contract(array $c): array
         $notes[] = "core command changed: $name (a removal that configd does not answer runs the old command)";
     }
 
-    return ['ok' => $failures === [], 'failures' => $failures, 'notes' => $notes];
+    /* the members that are no candidate, in member order, each with its note (uu_member_resolvers() wrote the note
+     * of a member with no resolver) */
+    array_push($notes, ...$c['resolver_notes']);
+    $excluded = [];
+    foreach ($c['member_resolvers'] as $name => $address) {
+        $name = (string)$name;
+        if ($address === '') {
+            $excluded[] = $name;
+        } elseif (in_array($name, $c['no_next_hop'], true)) {
+            $excluded[] = $name;
+            $notes[] = "$name has no next hop: not a candidate";
+        } elseif (!$refused && isset($hit[$name])) {
+            $excluded[] = $name;
+            foreach (array_merge($scoped['before'], $scoped['after']) as $item) {
+                if (in_array($name, $item['members'], true)) {
+                    $notes[] = "$name excluded: {$item['failure']}";
+                }
+            }
+        }
+    }
+
+    return ['ok' => $failures === [], 'failures' => $failures, 'notes' => $notes, 'excluded' => $excluded];
 }

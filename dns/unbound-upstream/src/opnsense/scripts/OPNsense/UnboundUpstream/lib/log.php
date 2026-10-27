@@ -93,21 +93,25 @@ function uu_duration_text(int $seconds): string
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
@@ -124,7 +128,7 @@ function uu_duration_text(int $seconds): string
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>},
- *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
+ *     reasons: list<string>, drain: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the first address the saved state records
  * @param string $routeOut `route -n get -inet <resolver>`
@@ -141,7 +145,7 @@ function uu_duration_text(int $seconds): string
  *         healthy_for: int, healthy_for_text: string, last_down: ?array{at: int, reason: string},
  *         resolver_failed_for: ?int, probe_failures: int}>,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
- *     contract: array{ok: bool, failures: list<string>, notes: list<string>},
+ *     contract: array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>},
  *     next: array{action: string, reasons: list<string>}}
  */
 function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOut): array

@@ -19,6 +19,7 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/address.php';
 
 /**
  * @return array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int, probe_failures: int,
@@ -68,6 +69,37 @@ function uu_timers_update(array $timers, array $kinds, array $usable, array $dow
         $out[$name] = $timer;
     }
     return $out;
+}
+
+/**
+ * The timers once each member's resolver is known: a timer's resolver_failed_until and probe_failures are about the
+ * address in its resolver field, so when the member's effective resolver is another address, those two reset for
+ * that member alone and the field takes the new address. A timer with no address yet ('', a new one or one converted
+ * from 1.3) takes the member's without a reset. A member absent from $resolvers is left as it is.
+ *
+ * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *                            probe_failures: int,
+ *                                last_down: ?array{at: int, reason: string}, resolver: string}> $timers
+ * @param array<string, string> $resolvers each member's effective resolver, canonical, '' for none
+ * @return array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *                             probe_failures: int,
+ *                                 last_down: ?array{at: int, reason: string}, resolver: string}>
+ */
+function uu_timers_follow_resolvers(array $timers, array $resolvers): array
+{
+    foreach ($timers as $name => $timer) {
+        if (!array_key_exists($name, $resolvers)) {
+            continue;
+        }
+        $want = $resolvers[$name];
+        if ($timer['resolver'] !== '' && !uu_ip_same($timer['resolver'], $want)) {
+            $timer['resolver_failed_until'] = null;
+            $timer['probe_failures'] = 0;
+        }
+        $timer['resolver'] = $want;
+        $timers[$name] = $timer;
+    }
+    return $timers;
 }
 
 /**

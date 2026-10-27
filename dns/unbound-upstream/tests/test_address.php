@@ -98,5 +98,60 @@ uu_register_suite('address', function (): int {
             && uu_route_delete_text('2001:db8:a::53') === 'route delete -inet6 -host 2001:db8:a::53'
             && uu_route_delete_text('<resolver>') === 'route delete -host <resolver>'));
 
+    /* each member's effective resolver: its own row, else the Default, else none */
+    $uuidA = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6a';
+    $uuidB = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6b';
+    $uuidC = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6c';
+    $uuidGone = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60';
+    $names = [$uuidA => 'wg-a', $uuidB => 'wg-b', $uuidC => 'wg-c'];
+    uu_check($t, '(p1) member resolvers: a member with its own row has its address, one without has the Default',
+        uu_try_case(fn (): bool => uu_member_resolvers(['wg-a', 'wg-b'], [$uuidB => '2001:db8:b::53'], $names,
+            '2001:db8:a::53') === ['resolvers' => ['wg-a' => '2001:db8:a::53', 'wg-b' => '2001:db8:b::53'],
+                                   'notes' => []]));
+    uu_check($t, '(p1) member resolvers: with no Default a member without a row has none, and is noted',
+        uu_try_case(fn (): bool => uu_member_resolvers(['wg-a', 'wg-b'], [$uuidB => '2001:db8:b::53'], $names, '')
+            === ['resolvers' => ['wg-a' => '', 'wg-b' => '2001:db8:b::53'],
+                 'notes' => ['wg-a has no resolver: not a candidate']]));
+    uu_check($t, '(p1) member resolvers: a row for a gateway outside the group and a row whose id names no gateway are '
+        . 'noted and change nothing',
+        uu_try_case(fn (): bool => uu_member_resolvers(['wg-a', 'wg-b'],
+            [$uuidC => '2001:db8:c::53', $uuidGone => '2001:db8:d::53'], $names, '2001:db8:a::53')
+            === ['resolvers' => ['wg-a' => '2001:db8:a::53', 'wg-b' => '2001:db8:a::53'],
+                 'notes' => ['row for wg-c ignored: not a member of the group',
+                             "row for gateway $uuidGone ignored: no such gateway"]]));
+    uu_check($t, '(p1) member resolvers: one IPv4 Default and no rows (the one-address setup) is that address for '
+        . 'every member, with no note',
+        uu_try_case(fn (): bool => uu_member_resolvers(['wg-a', 'wg-b'], [], $names, '10.2.0.1')
+            === ['resolvers' => ['wg-a' => '10.2.0.1', 'wg-b' => '10.2.0.1'], 'notes' => []]));
+    uu_check($t, '(p1) member resolvers: a row for the only member with no Default is its resolver, with no note',
+        uu_try_case(fn (): bool => uu_member_resolvers(['wg-a'], [$uuidA => '192.0.2.53'], $names, '')
+            === ['resolvers' => ['wg-a' => '192.0.2.53'], 'notes' => []]));
+
+    /* the group's family: the first member's in tier order */
+    $proto = fn (string $p): array => ['ipprotocol' => $p];
+    uu_check($t, '(p2) group family: an IPv4 group, an IPv6 group, the first member in tier order deciding a mixed one',
+        uu_try_case(fn (): bool => uu_group_family(['wg-a' => $proto('inet'), 'wg-b' => $proto('inet')],
+                [['wg-a'], ['wg-b']]) === ['family' => 'inet', 'mixed' => false]
+            && uu_group_family(['wg-a' => $proto('inet6'), 'wg-b' => $proto('inet6')], [['wg-a', 'wg-b']])
+                === ['family' => 'inet6', 'mixed' => false]
+            && uu_group_family(['wg-a' => $proto('inet'), 'wg-b' => $proto('inet6')], [['wg-b'], ['wg-a']])
+                === ['family' => 'inet6', 'mixed' => true]
+            && uu_group_family(['wg-a' => $proto('inet'), 'wg-b' => $proto('inet6')], [['wg-a'], ['wg-b']])
+                === ['family' => 'inet', 'mixed' => true]));
+    uu_check($t, '(p2) group family: \'\' with no members, and a member with no family (or no record) is skipped',
+        uu_try_case(fn (): bool => uu_group_family([], []) === ['family' => '', 'mixed' => false]
+            && uu_group_family(['wg-a' => $proto('')], [['wg-a']]) === ['family' => '', 'mixed' => false]
+            && uu_group_family(['wg-b' => $proto('inet6')], [['wg-a', 'wg-b']])
+                === ['family' => 'inet6', 'mixed' => false]
+            && uu_group_family(['wg-a' => $proto(''), 'wg-b' => $proto('inet')], [['wg-a'], ['wg-b']])
+                === ['family' => 'inet', 'mixed' => false]));
+
+    uu_check($t, '(p15) next hop routable: an address of either family, a link-local one with its scope; never empty '
+        . 'or dynamic',
+        uu_try_case(fn (): bool => uu_next_hop_routable('10.2.0.2') && uu_next_hop_routable('fd00::3:2')
+            && uu_next_hop_routable('fe80::1%wg3') && uu_next_hop_routable('fe80::1')
+            && !uu_next_hop_routable('') && !uu_next_hop_routable('dynamic')
+            && !uu_next_hop_routable('%wg3')));
+
     return uu_tally_report('address', $t);
 });

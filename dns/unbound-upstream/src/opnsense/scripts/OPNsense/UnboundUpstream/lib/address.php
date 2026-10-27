@@ -10,7 +10,8 @@ declare(strict_types=1);
  * The one address type: the resolver, a member's next hop and every address the scripts compare are an IPv4 or an
  * IPv6 address with a family, compared in canonical form (inet_ntop of inet_pton, so 2001:DB8:0:0::53 and
  * 2001:db8::53 are one address). Pure and standalone: it requires nothing, so the hook can load it beside state.php.
- * The ranges uu_ip_problem() refuses are the model's (UnboundUpstream::resolverProblems()), case for case.
+ * The ranges uu_ip_problem() refuses are the model's (UnboundUpstream::resolverProblems()), case for case. Each
+ * member's effective resolver and the group's family are decided here too, from plain arrays.
  */
 
 /**
@@ -100,6 +101,15 @@ function uu_next_hop(string $hop): string
 }
 
 /**
+ * Whether a gateway record's next hop is an address a host route can go through (a link-local one with its %scope
+ * too); never an empty or 'dynamic' gateway, which leaves the member with no route to its resolver.
+ */
+function uu_next_hop_routable(string $hop): bool
+{
+    return uu_ip_family(explode('%', $hop, 2)[0]) !== null;
+}
+
+/**
  * The next hop as route(8) takes it: a link-local IPv6 hop needs its device, <hop>%<if>; any other hop is unchanged.
  */
 function uu_route_hop(string $hop, string $if): string
@@ -135,4 +145,94 @@ function uu_route_get_args(string $resolver): ?string
 function uu_family_arg(string $family): string
 {
     return $family === 'inet6' ? '-inet6' : '-inet';
+}
+
+/**
+ * Each member's effective resolver: its own row's address, else the Default, else '' (none: never a candidate). A row
+ * is keyed by its gateway's UUID, which the Gateways model resolves to a name; a row whose UUID names no gateway, or
+ * a gateway that is not a member, changes nothing and gets a note, as does a member left with no resolver.
+ *
+ * @param list<string> $members the group's member names, in tier order
+ * @param array<string, string> $rows gateway UUID => canonical address (uu_settings_clean())
+ * @param array<string, string> $names gateway UUID => gateway name, for every gateway the Gateways model holds
+ * @param string $default the Default resolver, canonical, or ''
+ * @return array{resolvers: array<string, string>, notes: list<string>}
+ */
+function uu_member_resolvers(array $members, array $rows, array $names, string $default): array
+{
+    $notes = [];
+    $own = [];
+    foreach ($rows as $uuid => $address) {
+        $name = $names[$uuid] ?? null;
+        if ($name === null) {
+            $notes[] = "row for gateway $uuid ignored: no such gateway";
+        } elseif (!in_array($name, $members, true)) {
+            $notes[] = "row for $name ignored: not a member of the group";
+        } else {
+            $own[$name] = $address;
+        }
+    }
+    $resolvers = [];
+    foreach ($members as $name) {
+        $resolvers[$name] = $own[$name] ?? $default;
+        if ($resolvers[$name] === '') {
+            $notes[] = "$name has no resolver: not a candidate";
+        }
+    }
+    return ['resolvers' => $resolvers, 'notes' => $notes];
+}
+
+/**
+ * The group's address family, as core reads a group's (GatewayGroups::getGroupIPProto(): its first gateway's): the
+ * ipprotocol of the first member in tier order that has 'inet' or 'inet6', '' with none; mixed when another member has
+ * the other family. The script-side counterpart of the model's groupFamily().
+ *
+ * @param array<string, array{ipprotocol: string}> $members member records by name
+ * @param list<list<string>> $tiers best tier first
+ * @return array{family: string, mixed: bool}
+ */
+function uu_group_family(array $members, array $tiers): array
+{
+    $family = '';
+    $mixed = false;
+    foreach ($tiers as $tier) {
+        foreach ($tier as $name) {
+            $proto = $members[$name]['ipprotocol'] ?? '';
+            if ($proto !== 'inet' && $proto !== 'inet6') {
+                continue;
+            }
+            if ($family === '') {
+                $family = $proto;
+            } elseif ($proto !== $family) {
+                $mixed = true;
+            }
+        }
+    }
+    return ['family' => $family, 'mixed' => $mixed];
+}
+
+/**
+ * The setting's addresses: the members' effective resolvers, which decide what is a footprint, what the rules render
+ * and what the counting table holds; none while the plugin is disabled or its group is not found, so a disabled
+ * plugin's recorded addresses stay footprints. Canonical, each once, sorted. The one home of this rule.
+ *
+ * @param array{settings: array{enabled: bool}, contract_input: array{group_found: bool},
+ *     members: array<string, array{resolver: string}>} $s the Snapshot (planner.php), or the same fields
+ * @return list<string>
+ */
+function uu_setting_addresses(array $s): array
+{
+    if (!$s['settings']['enabled'] || !$s['contract_input']['group_found']) {
+        return [];
+    }
+    $addresses = [];
+    foreach ($s['members'] as $m) {
+        $address = uu_ip_canonical($m['resolver']);
+        if ($address !== null) {
+            $addresses[$address] = true;
+        }
+    }
+    $addresses = array_map('strval', array_keys($addresses));
+    sort($addresses, SORT_STRING);
+    return $addresses;
 }

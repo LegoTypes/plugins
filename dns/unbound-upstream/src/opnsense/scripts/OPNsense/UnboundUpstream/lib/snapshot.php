@@ -355,85 +355,110 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
 }
 
 /**
- * A live route equal to the one the plugin last installed (the route record of the resolver's entry in the state's
- * addresses) is the plugin's own even when
- * no current member explains it, so a group renamed or deleted in tunnel mode lets fallback and stop replace or delete
- * the plugin's stale route instead of reading it as foreign. evaluate.php applies it to every snapshot before planning;
- * a route matching neither stays foreign.
+ * A live route equal to the one the plugin last installed for that address (the route record of its entry in the
+ * state's addresses, uu_state_route_record()) is the plugin's own even when no current member explains it, so a group
+ * renamed or deleted in tunnel mode lets fallback and stop replace or delete the plugin's stale route instead of
+ * reading it as foreign. Per address: each adopted address leaves contract_input.foreign, and the Default's route
+ * (route) follows its entry in routes. evaluate.php applies it to every snapshot before planning; a route matching
+ * neither stays foreign.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
- * @param ?array{kind: string, next_hop: string, if: string} $installed
+ * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
+ *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
-function uu_route_adopt(array $s, ?array $installed): array
+function uu_route_adopt(array $s, array $addresses): array
 {
-    $route = $s['route'];
-    if ($installed === null || !$route['present'] || $route['ours']) {
+    $adopted = [];
+    foreach ($s['routes'] as $address => $route) {
+        $address = (string)$address;
+        $installed = uu_state_route_record(['addresses' => $addresses], $address);
+        if ($installed === null || !$route['present'] || $route['ours']) {
+            continue;
+        }
+        $matches = $installed['kind'] === 'reject'
+            ? $route['reject'] && $route['interface'] === $installed['if']
+            : $installed['kind'] === 'member' && !$route['reject'] && $route['gateway'] !== ''
+                && uu_next_hop($route['gateway']) === uu_next_hop($installed['next_hop'])
+                && $route['interface'] === $installed['if'];
+        if ($matches) {
+            $s['routes'][$address]['ours'] = true;
+            $adopted[] = $address;
+        }
+    }
+    if ($adopted === []) {
         return $s;
     }
-    $matches = $installed['kind'] === 'reject'
-        ? $route['reject'] && $route['interface'] === $installed['if']
-        : $installed['kind'] === 'member' && !$route['reject'] && $route['gateway'] !== ''
-            && uu_next_hop($route['gateway']) === uu_next_hop($installed['next_hop'])
-            && $route['interface'] === $installed['if'];
-    if (!$matches) {
-        return $s;
+    $s['contract_input']['foreign'] = array_values(array_diff($s['contract_input']['foreign'], $adopted));
+    $default = uu_ip_canonical($s['settings']['resolver']);
+    if ($default !== null && in_array($default, $adopted, true)) {
+        $s['route'] = $s['routes'][$default];
     }
-    $s['route']['ours'] = true;
-    $s['contract_input']['foreign_route'] = false;
     return $s;
 }
 
 /**
  * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
- * model's masks. A resolver that is not an IPv4 or IPv6 address, or is one the model refuses (link-local, multicast,
- * loopback, unspecified), is '' (unset) and any other is its canonical form, a probe name outside UU_PROBE_NAME_MASK
- * is '.', a failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One
- * problem per substitution; none quotes the value.
+ * model's masks. A Default resolver that is not an IPv4 or IPv6 address, or is one the model refuses (link-local,
+ * multicast, loopback, unspecified), is '' (unset) and any other is its canonical form (resolver and default are the
+ * same address), a per-member row whose gateway is not a UUID or whose address is refused the same way is dropped, as
+ * is a second row for one gateway, a probe name outside UU_PROBE_NAME_MASK is '.', a failback_delay is clamped to
+ * 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per substitution; none quotes the
+ * value.
  *
- * @param array{resolver: string, probe_name: string, failback_delay: string, group_uuid: string} $raw
- * @return array{settings: array{resolver: string, probe_name: string, failback_delay: int, group_uuid: string},
- *     problems: list<string>}
+ * @param array{resolver: string, rows: list<array{gateway: string, address: string}>, probe_name: string,
+ *     failback_delay: string, group_uuid: string} $raw
+ * @return array{settings: array{resolver: string, default: string, rows: array<string, string>, probe_name: string,
+ *     failback_delay: int, group_uuid: string}, problems: list<string>}
+ *   rows: gateway UUID => canonical address
  */
 function uu_settings_clean(array $raw): array
 {
@@ -446,6 +471,18 @@ function uu_settings_clean(array $raw): array
             $resolver = '';
         } else {
             $resolver = uu_ip_canonical($resolver) ?? '';
+        }
+    }
+    $rows = [];
+    foreach ($raw['rows'] as $row) {
+        $address = uu_resolver_refusal($row['address']) === null ? uu_ip_canonical($row['address']) : null;
+        if ($address === null || preg_match('/^[0-9a-f-]{36}$/D', $row['gateway']) !== 1) {
+            $problems[] = 'settings: a per-member resolver row is not a gateway id and an IPv4 or IPv6 address; '
+                . 'ignored';
+        } elseif (isset($rows[$row['gateway']])) {
+            $problems[] = 'settings: two per-member resolver rows name one gateway; the second is ignored';
+        } else {
+            $rows[$row['gateway']] = $address;
         }
     }
     $probe = $raw['probe_name'];
@@ -468,24 +505,31 @@ function uu_settings_clean(array $raw): array
         $problems[] = 'settings: gateway group is not an id; evaluating as none chosen';
         $uuid = '';
     }
-    return ['settings' => ['resolver' => $resolver, 'probe_name' => $probe, 'failback_delay' => $delay,
-                           'group_uuid' => $uuid], 'problems' => $problems];
+    return ['settings' => ['resolver' => $resolver, 'default' => $resolver, 'rows' => $rows, 'probe_name' => $probe,
+                           'failback_delay' => $delay, 'group_uuid' => $uuid], 'problems' => $problems];
 }
 
 /**
  * The plugin's settings, cleaned by uu_settings_clean(). The group is the NAME of the gateway group the stored
- * UUID points at, '' when the group is gone or none is chosen. $warn logs each substitution at LOG_WARNING: the
- * evaluations pass it, status (polled every 30 s, so it would repeat the line) and record do not.
+ * UUID points at, '' when the group is gone or none is chosen. resolver is the Default (kept beside default while
+ * apply, the rules and the status still read it), rows the per-member rows by gateway UUID. $warn logs each
+ * substitution at LOG_WARNING: the evaluations pass it, status (polled every 30 s, so it would repeat the line) and
+ * record do not.
  *
- * @return array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *     probe_name: string}
+ * @return array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     rows: array<string, string>, failback_delay: int, probe_name: string}
  */
 function uu_settings(bool $warn = false): array
 {
     uu_load_core();
     $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    $rows = [];
+    foreach ($mdl->resolvers->resolver->iterateItems() as $row) {
+        $rows[] = ['gateway' => $row->gateway->getValue(), 'address' => $row->address->getValue()];
+    }
     $clean = uu_settings_clean([
         'resolver' => $mdl->resolver->getValue(),
+        'rows' => $rows,
         'probe_name' => $mdl->probe_name->getValue(),
         'failback_delay' => $mdl->failback_delay->getValue(),
         'group_uuid' => $mdl->gateway_group->getValue(),
@@ -507,6 +551,8 @@ function uu_settings(bool $warn = false): array
         'dry_run' => $mdl->dry_run->isEqual('1'),
         'group' => $group,
         'resolver' => $clean['settings']['resolver'],
+        'default' => $clean['settings']['default'],
+        'rows' => $clean['settings']['rows'],
         'failback_delay' => $clean['settings']['failback_delay'],
         'probe_name' => $clean['settings']['probe_name'],
     ];
@@ -623,14 +669,20 @@ function uu_zone_decode(string $stdout): ?array
 
 /**
  * A snapshot evaluate.php record wrote, in this version's shape for replay: a recording made before 1.3 has no
- * contract_input.core_commands, which reads as nothing drifted, since that version did not check.
- * Anything else is as recorded; replay checks the top-level shape.
+ * contract_input.core_commands, which reads as nothing drifted, since that version did not check. A recording made
+ * before 1.4 (a route and no routes) is refused: it has one resolver's route and none of the per-member fields, and
+ * a recording is a diagnostic of one box at one time, so it is recorded again rather than converted. Anything else
+ * is as recorded; replay checks the top-level shape.
  *
  * @param array<string, mixed> $snapshot
+ * @param string $path the recording's file, which the refusal names
  * @return array<string, mixed>
  */
-function uu_snapshot_recorded(array $snapshot): array
+function uu_snapshot_recorded(array $snapshot, string $path): array
 {
+    if (!array_key_exists('routes', $snapshot)) {
+        throw new RuntimeException("$path was recorded before 1.4: record it again");
+    }
     if (is_array($snapshot['contract_input'] ?? null)
         && !array_key_exists('core_commands', $snapshot['contract_input'])) {
         $snapshot['contract_input']['core_commands'] = [];
@@ -641,36 +693,42 @@ function uu_snapshot_recorded(array $snapshot): array
 /**
  * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
- * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *     probe_name: string} $settings uu_settings()
+ * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
  * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved, or
  *     the saved one is a fault (it is verified again), or a listing was cut short: an evaluation's snapshot, never
  *     a status call's
+ * @param list<string> $stateAddresses the saved state's map keys (uu_state_footprint()): routes covers them beside
+ *     every member's effective resolver, so an address the plugin may still be routed to is read too
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
- *         probe_name: string},
- *     trigger: string, tiers: list<list<string>>,
- *     members: array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *         force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
- *         loss_interval: int, losshigh: int}>,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
  *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, resolver_is_monitor: list<string>, resolver_in_static: list<string>,
- *         unmonitored_members: list<string>, foreign_route: bool, rules: array{state: string, problems: list<string>},
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
-function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules): array
+function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules, array $stateAddresses): array
 {
     /* pfctl's stderr file goes in the run directory, and a status after a boot runs before any evaluation made it */
     uu_run_dir();
@@ -693,7 +751,6 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* gateway records: members of the group, and the monitor addresses of every gateway */
     $all = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true);
-    $resolverIsMonitor = uu_resolver_monitors($all, $resolver);
     $members = [];
     $unmonitored = [];
     foreach ($tiers as $tier) {
@@ -706,6 +763,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
                 'name' => $name,
                 'interface' => (string)($gw['interface'] ?? ''),
                 'if' => (string)($gw['if'] ?? ''),
+                'ipprotocol' => (string)($gw['ipprotocol'] ?? ''),
+                'resolver' => '',
                 'next_hop' => (string)($gw['gateway'] ?? ''),
                 'disabled' => !empty($gw['disabled']),
                 'force_down' => !empty($gw['force_down']),
@@ -719,6 +778,34 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             if ($members[$name]['monitor_disable']) {
                 $unmonitored[] = $name;
             }
+        }
+    }
+
+    /* each member's effective resolver: its row (by the gateway's UUID; a dynamic gateway has none) else the
+     * Default */
+    $names = [];
+    foreach ($all as $name => $gw) {
+        $uuid = (string)($gw['uuid'] ?? '');
+        if ($uuid !== '') {
+            $names[$uuid] = (string)$name;
+        }
+    }
+    $effective = uu_member_resolvers(array_map('strval', array_keys($members)), $settings['rows'], $names,
+        $settings['default']);
+    $noNextHop = [];
+    foreach ($members as $name => $m) {
+        $members[$name]['resolver'] = $effective['resolvers'][$name] ?? '';
+        if (!uu_next_hop_routable($m['next_hop'])) {
+            $noNextHop[] = (string)$name;
+        }
+    }
+    $addresses = array_values(array_unique(array_filter($effective['resolvers'],
+        fn (string $address): bool => $address !== '')));
+    $monitors = [];
+    foreach ($addresses as $address) {
+        $monitoring = uu_resolver_monitors($all, $address);
+        if ($monitoring !== []) {
+            $monitors[$address] = $monitoring;
         }
     }
 
@@ -763,22 +850,48 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $liveRoot = $pidAlive ? uu_live_root() : null;
     $zone = uu_root_zone(uu_zone_texts());
 
-    /* the resolver's route */
-    $route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
-    $routeArgs = uu_route_get_args($resolver);
-    if ($routeArgs !== null) {
-        $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . $routeArgs . ' 2>/dev/null'));
+    /* the route of every effective resolver and every address the state's map holds, and the Default's (route,
+     * which apply, the table and the status still read) */
+    $routed = [];
+    foreach ($addresses as $address) {
+        $routed[$address] = true;
     }
-    $ours = uu_route_ours($route, $members);
+    foreach ($stateAddresses as $address) {
+        $canonical = uu_ip_canonical($address);
+        if ($canonical !== null) {
+            $routed[$canonical] = true;
+        }
+    }
+    $read = function (string $address) use ($members): array {
+        $route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
+        $routeArgs = uu_route_get_args($address);
+        if ($routeArgs !== null) {
+            $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . $routeArgs . ' 2>/dev/null'));
+        }
+        return $route + ['ours' => uu_route_ours($route, $members)];
+    };
+    $routes = [];
+    $foreign = [];
+    $keys = array_map('strval', array_keys($routed));
+    sort($keys, SORT_STRING);
+    foreach ($keys as $address) {
+        $routes[$address] = $read($address);
+        if ($routes[$address]['present'] && !$routes[$address]['ours']) {
+            $foreign[] = $address;
+        }
+    }
+    $route = $routes[$resolver] ?? $read($resolver);
     $fibSyncMs = uu_parse_sysctl_int((string)shell_exec('/sbin/sysctl -n net.route.algo.fib_max_sync_delay_ms 2>/dev/null'));
 
-    /* static routes that cover the resolver */
-    $inStatic = [];
-    if ($resolver !== '') {
+    /* static routes that cover an effective resolver */
+    $statics = [];
+    if ($addresses !== []) {
         foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $r) {
             $network = $r->network->getValue();
-            if ($r->enabled->isEqual('1') && uu_in_static($resolver, $network)) {
-                $inStatic[] = $network;
+            foreach ($addresses as $address) {
+                if ($r->enabled->isEqual('1') && uu_in_static($address, $network)) {
+                    $statics[$address][] = $network;
+                }
             }
         }
     }
@@ -800,6 +913,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
         'settings' => $settings,
         'trigger' => $trigger,
         'tiers' => $tiers,
+        'family' => uu_group_family($members, $tiers)['family'],
         'members' => $members,
         'probes' => $probes,
         'named' => $named,
@@ -811,17 +925,21 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             'live_root' => $liveRoot,
         ],
         'zone' => $zone,
-        'route' => $route + ['ours' => $ours],
+        'route' => $route,
+        'routes' => $routes,
         'fib_sync_ms' => $fibSyncMs,
         'contract_input' => [
             'unbound_hooks_registered' => $hooks,
             'unbound_sorts_first' => uu_unbound_sorts_first(array_map('strval', array_keys(plugins_scan()))),
             'groups_have_tiers' => $groupsHaveTiers,
             'status_fields' => $statusFields,
-            'resolver_is_monitor' => $resolverIsMonitor,
-            'resolver_in_static' => $inStatic,
+            'monitors' => $monitors,
+            'statics' => $statics,
             'unmonitored_members' => $unmonitored,
-            'foreign_route' => $route['present'] && !$ours,
+            'foreign' => $foreign,
+            'member_resolvers' => $effective['resolvers'],
+            'resolver_notes' => $effective['notes'],
+            'no_next_hop' => $noNextHop,
             'rules' => ['state' => $pf['rules']['state'], 'problems' => $pf['rules']['problems']],
             'zone' => $zone,
             'fib_sync_ms' => $fibSyncMs,

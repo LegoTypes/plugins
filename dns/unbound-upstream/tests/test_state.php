@@ -415,12 +415,15 @@ uu_register_suite('state', function (): int {
             if ($converted === null) {
                 return false;
             }
-            $live = ['route' => ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
-                                 'ours' => false]];
-            $adopted = uu_route_adopt($live, uu_state_route_record($converted, '10.2.0.1'));
-            $other = ['route' => ['gateway' => '10.2.0.5'] + $live['route']];
+            $route = ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
+                      'ours' => false];
+            $live = ['settings' => ['resolver' => '10.2.0.1'], 'route' => $route, 'routes' => ['10.2.0.1' => $route],
+                     'contract_input' => ['foreign' => ['10.2.0.1']]];
+            $adopted = uu_route_adopt($live, $converted['addresses']);
+            $otherRoute = ['gateway' => '10.2.0.5'] + $route;
+            $other = ['route' => $otherRoute, 'routes' => ['10.2.0.1' => $otherRoute]] + $live;
             return $adopted['route']['ours'] === true
-                && uu_route_adopt($other, uu_state_route_record($converted, '10.2.0.1')) === $other;
+                && uu_route_adopt($other, $converted['addresses']) === $other;
         }));
     $v5Fallback = $v5;
     $v5Fallback['mode'] = 'fallback';
@@ -542,5 +545,24 @@ uu_register_suite('state', function (): int {
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);
+    // The forwarded rule, as the planner's reject routes and apply's entries take it from a live root read.
+    uu_check($t, 'forwarded: a read naming the address (as Unbound prints a forwarder, with @port or #name, in any '
+        . 'spelling) is true; one naming only others is false, whatever was recorded',
+        uu_try_case(fn (): bool => uu_state_forwarded(['2001:db8:a::53@53#dns.example'], '2001:db8:a::53', false)
+            && uu_state_forwarded(['192.0.2.53', '2001:DB8:A:0::53'], '2001:db8:a::53', false)
+            && uu_state_forwarded(['10.2.0.1'], '10.2.0.1', false)
+            && !uu_state_forwarded(['192.0.2.53@853#dns.example'], '10.2.0.1', true)
+            && !uu_state_forwarded([], '10.2.0.1', true)));
+    uu_check($t, 'forwarded: a read that failed keeps what was recorded',
+        uu_try_case(fn (): bool => uu_state_forwarded(null, '10.2.0.1', true)
+            && !uu_state_forwarded(null, '10.2.0.1', false)));
+    uu_check($t, 'snapshot read: the live root while Unbound runs (null when its channel did not answer), the empty '
+        . 'root when it does not run',
+        uu_try_case(fn (): bool => uu_state_snapshot_read(['pid_alive' => true, 'live_root' => ['10.2.0.1']])
+                === ['10.2.0.1']
+            && uu_state_snapshot_read(['pid_alive' => true, 'live_root' => null]) === null
+            && uu_state_snapshot_read(['pid_alive' => false, 'live_root' => null]) === []
+            && uu_state_snapshot_read(['pid_alive' => false, 'live_root' => ['10.2.0.1']]) === []));
+
     return uu_tally_report('state', $t);
 });
