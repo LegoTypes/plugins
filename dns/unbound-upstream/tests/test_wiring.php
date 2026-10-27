@@ -248,6 +248,9 @@ uu_register_suite('wiring', function (): int {
         && str_contains($view, 'footprints = data.footprint ? [data.footprint] : [];')
         && str_contains($view, "if (entry.footprint) {\n                        footprints.push(addr);")
         && str_contains($view, "plain(footprints.join(', '))"));
+    uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs',
+        str_contains($view, "\$(document).on('settings-changed', function () {\n"
+            . "            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -306,15 +309,49 @@ uu_register_suite('wiring', function (): int {
         $allows('page-services-unboundupstream', '/api/unboundupstream/service/state')
         && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
 
-    /* (l5) the five resolver actions, run as the API runs them over a row added to the controller's model in memory
-     * only: search lists it with its member's name, get reads it, add and set refuse what fails validation, del finds
-     * no row by an unknown id; none saves, so config.xml is unchanged */
+    /* (l5) the five resolver actions, run as the API runs them over rows added to the controller's model in memory
+     * only, with the controller's save counted instead of run, so no case (and no broken action) writes config.xml:
+     * search lists a row with its member's name, get reads it, add and set refuse what fails validation, del finds no
+     * row by an unknown id. Then, with the plugin enabled on proton_test_grp in memory, every row change is checked
+     * against the whole model as a Save is: a non-member's row, a second row for one gateway (the message lands on the
+     * other row) and a delete that leaves a member with no resolver are refused unsaved; a member's row and a delete
+     * that leaves the model valid are saved */
     $ctl = null;
     $config = '/conf/config.xml';
     $configBefore = md5_file($config);
     $saved = ['server' => $_SERVER, 'post' => $_POST, 'request' => $_REQUEST];
+    $controller = fn (): object => new class extends \OPNsense\UnboundUpstream\Api\SettingsController {
+        public int $saves = 0;
+
+        protected function save($validateFullModel = false, $disable_validation = false)
+        {
+            $this->saves++;
+            return ['result' => 'saved'];
+        }
+    };
+    $model = fn (object $c): object => (new ReflectionMethod($c, 'getModel'))->invoke($c);
+    $addRow = function (object $c, string $gateway) use ($model): string {
+        $node = $model($c)->resolvers->resolver->Add();
+        $node->setNodes(['gateway' => $gateway, 'address' => '10.2.0.1']);
+        return (string)$node->getAttribute('uuid');
+    };
+    /* a POST of $post to $call, the config lock released after it as the end of a request releases it */
+    $post = function (array $post, callable $call): mixed {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_POST = $post;
+        $_REQUEST = $post;
+        try {
+            return $call();
+        } catch (\OPNsense\Base\UserException $e) {
+            return ['refused' => $e->getMessage()];
+        } finally {
+            \OPNsense\Core\Config::getInstance()->unlock();
+            $_POST = [];
+            $_REQUEST = [];
+        }
+    };
     try {
-        $c = new \OPNsense\UnboundUpstream\Api\SettingsController();
+        $c = $controller();
         $c->request = new \OPNsense\Mvc\Request();
         $_SERVER['REQUEST_METHOD'] = 'GET';
         $_POST = [];
@@ -326,30 +363,80 @@ uu_register_suite('wiring', function (): int {
             $gwName = $gw->name->getValue();
             break;
         }
-        $node = (new ReflectionMethod($c, 'getModel'))->invoke($c)->resolvers->resolver->Add();
+        $node = $model($c)->resolvers->resolver->Add();
         $node->setNodes(['gateway' => $gwUuid, 'address' => '192.0.2.10']);
         $row = (string)$node->getAttribute('uuid');
+        $cn = $controller();
+        $cn->request = $c->request;
         $ctl = ['row' => $row, 'gateway' => $gwUuid, 'name' => $gwName, 'search' => $c->searchResolverAction(),
-                'get' => $c->getResolverAction($row), 'new' => $c->getResolverAction()];
+                'get' => $c->getResolverAction($row), 'new' => $cn->getResolverAction()];
         /* the grid's search box finds a row by its member's name and by its address */
         foreach (['byName' => $gwName, 'byAddress' => '192.0.2.10', 'byNothing' => '198.51.100.99'] as $k => $phrase) {
             $_REQUEST = ['searchPhrase' => $phrase];
             $ctl[$k] = array_column($c->searchResolverAction()['rows'], 'uuid');
         }
         $_REQUEST = [];
-        $_SERVER['REQUEST_METHOD'] = 'POST';
-        $_POST = ['resolver' => ['gateway' => '', 'address' => 'not an address']];
-        $_REQUEST = $_POST;
-        $ctl['add'] = $c->addResolverAction();
-        \OPNsense\Core\Config::getInstance()->unlock();
-        $_POST = ['resolver' => ['address' => 'not an address']];
-        $_REQUEST = $_POST;
-        $ctl['set'] = $c->setResolverAction($row);
-        \OPNsense\Core\Config::getInstance()->unlock();
-        $_POST = [];
-        $_REQUEST = [];
-        $ctl['del'] = $c->delResolverAction('00000000-0000-4000-8000-000000000000');
-        \OPNsense\Core\Config::getInstance()->unlock();
+        /* each request on its own controller, as the web server runs them: a new row's fields (get with no id) and a
+         * refused add leave their row in the model of the request that made it */
+        $ca = $controller();
+        $ca->request = $c->request;
+        $ctl['add'] = $post(['resolver' => ['gateway' => '', 'address' => 'not an address']],
+            fn (): array => $ca->addResolverAction());
+        $ctl['set'] = $post(['resolver' => ['address' => 'not an address']],
+            fn (): array => $c->setResolverAction($row));
+        $cd = $controller();
+        $cd->request = $c->request;
+        $ctl['del'] = $post([], fn (): array => $cd->delResolverAction('00000000-0000-4000-8000-000000000000'));
+        $ctl['saves'] = $c->saves + $ca->saves + $cd->saves;
+
+        /* the group's members and a gateway that is none */
+        $groupUuid = '';
+        $memberNames = [];
+        foreach ((new \OPNsense\Routing\GatewayGroups())->gateway_group->iterateItems() as $key => $g) {
+            if ($g->name->getValue() === 'proton_test_grp') {
+                $groupUuid = (string)$key;
+                foreach (['item', 'item2', 'item3', 'item4', 'item5'] as $tier) {
+                    foreach (explode(',', $g->$tier->getValue()) as $entry) {
+                        $memberNames[] = explode('|', $entry)[0];
+                    }
+                }
+            }
+        }
+        $byName = [];
+        foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $key => $gw) {
+            $byName[$gw->name->getValue()] = (string)$key;
+        }
+        $outsider = (string)(array_values(array_diff(array_keys($byName), $memberNames))[0] ?? '');
+        $enabled = function (string $default) use ($controller, $model, $groupUuid): object {
+            $e = $controller();
+            $e->request = new \OPNsense\Mvc\Request();
+            $m = $model($e);
+            $m->enabled->setValue('1');
+            $m->gateway_group->setValue($groupUuid);
+            $m->resolver->setValue($default);
+            return $e;
+        };
+        $a = $byName['wg-test-429'] ?? '';
+        $b = $byName['wg-test-529'] ?? '';
+        $ctl['outsider'] = $outsider;
+        $e1 = $enabled('10.2.0.1');
+        $ctl['nonMember'] = [$post(['resolver' => ['gateway' => $byName[$outsider] ?? '', 'address' => '10.2.0.1']],
+            fn (): array => $e1->addResolverAction()), $e1->saves];
+        $e2 = $enabled('10.2.0.1');
+        $ctl['member'] = [$post(['resolver' => ['gateway' => $a, 'address' => '10.2.0.1']],
+            fn (): array => $e2->addResolverAction()), $e2->saves];
+        $e3 = $enabled('10.2.0.1');
+        $r1 = $addRow($e3, $a);
+        $addRow($e3, $b);
+        $ctl['second'] = [$post(['resolver' => ['gateway' => $b]], fn (): array => $e3->setResolverAction($r1)),
+            $e3->saves];
+        $e4 = $enabled('');
+        $r4 = $addRow($e4, $a);
+        $addRow($e4, $b);
+        $ctl['noResolver'] = [$post([], fn (): array => $e4->delResolverAction($r4)), $e4->saves];
+        $e5 = $enabled('10.2.0.1');
+        $r5 = $addRow($e5, $a);
+        $ctl['delete'] = [$post([], fn (): array => $e5->delResolverAction($r5)), $e5->saves];
     } catch (\Throwable $e) {
         printf("  threw %s: %s\n", get_class($e), $e->getMessage());
         \OPNsense\Core\Config::getInstance()->unlock();
@@ -369,15 +456,39 @@ uu_register_suite('wiring', function (): int {
         && ($ctl['get']['resolver']['address'] ?? null) === '192.0.2.10'
         && array_keys($ctl['new']['resolver'] ?? []) === ['gateway', 'address']
         && ($ctl['new']['resolver']['address'] ?? null) === '');
-    uu_check($t, '(l5) add_resolver and set_resolver refuse a row that fails validation, naming its fields; '
-        . 'del_resolver finds no row by an unknown id; config.xml is unchanged',
-        $ctl !== null
+    $refused = $ctl !== null
         && ($ctl['add']['result'] ?? null) === 'failed'
         && array_keys($ctl['add']['validations'] ?? []) === ['resolver.gateway', 'resolver.address']
         && ($ctl['set'] ?? null) === ['result' => 'failed',
             'validations' => ['resolver.address' => 'Enter a single IPv4 or IPv6 address.']]
-        && ($ctl['del'] ?? null) === ['result' => 'not found']
-        && md5_file($config) === $configBefore);
+        && ($ctl['del'] ?? null) === ['result' => 'not found'] && ($ctl['saves'] ?? null) === 0;
+    if ($ctl !== null && !$refused) {
+        printf("  add %s, set %s, del %s, saves %s\n", json_encode($ctl['add'] ?? null),
+            json_encode($ctl['set'] ?? null), json_encode($ctl['del'] ?? null), json_encode($ctl['saves'] ?? null));
+    }
+    uu_check($t, '(l5) add_resolver and set_resolver refuse a row that fails validation, naming its fields; '
+        . 'del_resolver finds no row by an unknown id; nothing is saved', $refused);
+    $outsider = $ctl['outsider'] ?? '';
+    $nonMember = $outsider !== ''
+        && ($ctl['nonMember'] ?? null) === [['result' => 'failed', 'validations' => ['resolver.gateway' =>
+            'Gateway ' . $outsider . ' is not a member of the selected group.']], 0]
+        && ($ctl['member'][0]['result'] ?? null) === 'saved' && ($ctl['member'][1] ?? null) === 1;
+    $wholeModel = ($ctl['second'] ?? null) === [['result' => 'failed', 'validations' => ['resolver.gateway' =>
+            'Gateway wg-test-529 has more than one resolver row.']], 0]
+        && ($ctl['noResolver'] ?? null) === [['refused' =>
+            'Enter the default resolver address, or one for every member of the group.'], 0]
+        && ($ctl['delete'] ?? null) === [['result' => 'deleted'], 1]
+        && md5_file($config) === $configBefore;
+    if ($ctl !== null && (!$nonMember || !$wholeModel)) {
+        foreach (['nonMember', 'member', 'second', 'noResolver', 'delete'] as $k) {
+            printf("  %s: %s\n", $k, json_encode($ctl[$k] ?? null));
+        }
+    }
+    uu_check($t, '(l5) enabled: a grid add of a non-member\'s row is refused on its gateway, as a Save refuses it, and '
+        . 'nothing is saved; a member\'s row is saved', $nonMember);
+    uu_check($t, '(l5) enabled: a row changed to another row\'s gateway is refused (the message is the other row\'s, '
+        . 'shown on this one\'s gateway), and a delete that leaves a member with no resolver is refused; neither is '
+        . 'saved, while a delete that leaves the model valid is; config.xml is unchanged', $wholeModel);
 
     /* program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';

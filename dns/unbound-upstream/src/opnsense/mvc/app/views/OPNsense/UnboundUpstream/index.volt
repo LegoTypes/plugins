@@ -119,7 +119,7 @@
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
         });
-        /* the per-member resolvers: each row is saved by its own dialog */
+        /* the per-member resolvers: each row is saved by its own dialog, then applied (below) */
         $('#grid-resolvers').UIBootgrid({
             search: '/api/unboundupstream/settings/search_resolver',
             get: '/api/unboundupstream/settings/get_resolver/',
@@ -134,6 +134,24 @@
                 return dfObj;
             },
             onAction: function () { refreshState(); }
+        });
+        /* a row the grid saved or deleted is applied at once, as Apply applies the settings it saves: evaluations
+           read the saved rows every minute, and only Apply's filter reload renders the rules a new resolver needs,
+           so a row saved but not applied would fall back to Unbound's own forwarders */
+        $(document).on('settings-changed', function () {
+            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {
+                if (status === 'success' && data && String(data.status).toLowerCase().trim() === 'ok') {
+                    $('#change_message_base_form').hide();
+                } else {
+                    BootstrapDialog.show({
+                        type: BootstrapDialog.TYPE_WARNING,
+                        title: "{{ lang._('Error reconfiguring service.') }}",
+                        message: $('<div/>').text(plain(data && (data.status_msg || data.status))),
+                        draggable: true
+                    });
+                }
+                refreshState();
+            });
         });
         refreshState();
         /* the plugin evaluates every minute and on gateway events: keep the page current */
