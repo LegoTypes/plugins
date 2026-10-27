@@ -163,7 +163,11 @@ function uu_setting_blocks(array $settingAddresses, bool $counting): array
  * A pass to an address, with the address's own protocol. disablereplyto keeps the pass from also stamping reply-to.
  * Its states are bound to the interface (keep state (if-bound); core renders a state-policy only beside a statetype):
  * a floating state would let a packet of an established connection (a TCP ACK or FIN) leave by whatever route the
- * address has once the member's route is gone, past every block.
+ * address has once the member's route is gone, past every block. It matches TCP packets with any flags, not only a
+ * SYN: Unbound reuses an upstream TCP connection, and after a switch to another member its next packet leaves by
+ * the new member with no state there (its state is bound to the old one); with S/SA that packet would meet the
+ * counting block and wait out Unbound's timeout, counted as blocked on a member path, where with any flags it makes a
+ * state on the new member and the far end resets the connection at once, as it did with floating states.
  *
  * @return array<string, string|bool>
  */
@@ -173,8 +177,8 @@ function uu_pass_conf(string $opt, string $to, string $label, string $descr): ar
         'type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => $opt,
         'ipprotocol' => uu_ip_family($to) ?? 'inet',
         'protocol' => 'tcp/udp', 'from' => $opt . 'ip', 'to' => $to, 'to_port' => '53',
-        'disablereplyto' => true, 'statetype' => 'keep', 'state-policy' => 'if-bound', 'label' => $label,
-        'descr' => $descr,
+        'disablereplyto' => true, 'flags' => 'any', 'statetype' => 'keep', 'state-policy' => 'if-bound',
+        'label' => $label, 'descr' => $descr,
     ];
 }
 
@@ -259,7 +263,8 @@ function uu_footprints_from_state(array $state, ?array $records, array $settingA
  * with no footprint reads no records. The setting renders when the settings and the records were both read and name a
  * group (enabled): each member found in the records gets its effective resolver (uu_member_resolvers(): its row, by
  * the UUID of its record, else the Default when that is an address the model accepts, the same refusal as
- * uu_settings_clean(), in its canonical form; '' for none), and the setting's addresses are uu_setting_addresses()'s.
+ * uu_settings_clean(), in its canonical form; '' for none), and the setting's addresses are uu_setting_addresses()'s
+ * (with no member found, the accepted Default).
  * default is the Default as the setting has it, so the hook can name a refused one. A failed settings read renders the
  * footprints as if the setting rendered nothing (their passes and blocks); a failed records read leaves the footprints
  * their blocks alone, which error then names (uu_footprints_from_state()). Each failed read is part of error, which is
@@ -303,8 +308,9 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
             $names[] = (string)$name;
         }
     }
+    $accepted = uu_resolver_refusal($default) === null ? (uu_ip_canonical($default) ?? '') : '';
     $resolvers = uu_member_resolvers($names, $settings['rows'] ?? [], uu_gateway_names($recs ?? []),
-        uu_resolver_refusal($default) === null ? (uu_ip_canonical($default) ?? '') : '')['resolvers'];
+        $accepted)['resolvers'];
     $members = [];
     $byName = [];
     foreach ($names as $name) {
@@ -312,7 +318,7 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
             'if' => (string)($recs[$name]['if'] ?? ''), 'resolver' => $resolvers[$name] ?? ''];
         $byName[$name] = ['resolver' => $resolvers[$name] ?? ''];
     }
-    $addresses = uu_setting_addresses(['settings' => ['enabled' => $enabled],
+    $addresses = uu_setting_addresses(['settings' => ['enabled' => $enabled, 'default' => $accepted],
         'contract_input' => ['group_found' => $gateways !== null], 'members' => $byName]);
     $found = uu_footprints_from_state($read['state'], $recsFailed ? null : ($recs ?? []), $addresses);
     if ($found['problem'] !== null) {

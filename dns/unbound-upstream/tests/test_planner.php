@@ -1306,6 +1306,23 @@ uu_register_suite('planner', function (): int {
                 && uu_plan_addresses($spelled) === ['2001:db8:a::53']
                 && uu_plan_addresses(uu_test_snapshot()) === ['10.2.0.1'];
         }));
+    uu_check($t, '(p16) the setting\'s addresses with the group found and no member: the Default, canonical, as 1.3_2 '
+        . 'rendered its resolver; none for no Default, while disabled or with the group not found, where the planner '
+        . 'still keeps the Default',
+        uu_try_case(function () use ($gone): bool {
+            $found = $gone;
+            $found['contract_input']['group_found'] = true;
+            $noDefault = $found;
+            $noDefault['settings']['default'] = '';
+            $spelled = $found;
+            $spelled['settings']['default'] = '2001:DB8:A:0::53';
+            $off = $found;
+            $off['settings']['enabled'] = false;
+            return uu_setting_addresses($found) === ['10.2.0.1'] && uu_setting_addresses($noDefault) === []
+                && uu_setting_addresses($spelled) === ['2001:db8:a::53']
+                && uu_setting_addresses($off) === [] && uu_setting_addresses($gone) === []
+                && uu_plan_addresses($off) === ['10.2.0.1'] && uu_plan_addresses($gone) === ['10.2.0.1'];
+        }));
     uu_check($t, '(g1) group deleted, state file lost, Unbound still forwarding to the Default over a route no member '
         . 'explains → fallback, with 1.3_2\'s three reasons exactly',
         uu_try_case(function () use ($gone, $memberRoute): bool {

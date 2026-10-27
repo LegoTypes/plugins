@@ -260,30 +260,18 @@ function uu_group_family(array $members, array $tiers): array
 }
 
 /**
- * The setting's addresses: the members' effective resolvers, which decide what is a footprint, what the rules render
- * and what the counting table holds; none while the plugin is disabled or its group is not found, so a disabled
- * plugin's recorded addresses stay footprints. Canonical, each once, sorted. The one home of this rule; the planner's
- * own set is uu_plan_addresses(), which keeps the Default when the group is gone.
+ * The setting's addresses: the planner's addresses (uu_plan_addresses(): the members' effective resolvers, or the
+ * Default when the group has no member) while the plugin is enabled and its group is found, as 1.3_2 rendered its
+ * resolver; none otherwise, so a disabled plugin's recorded addresses stay footprints. They decide what is a
+ * footprint, what the rules render and what the counting table holds. The one home of this rule.
  *
- * @param array{settings: array{enabled: bool}, contract_input: array{group_found: bool},
+ * @param array{settings: array{enabled: bool, default: string}, contract_input: array{group_found: bool},
  *     members: array<string, array{resolver: string}>} $s the Snapshot (planner.php), or the same fields
  * @return list<string>
  */
 function uu_setting_addresses(array $s): array
 {
-    if (!$s['settings']['enabled'] || !$s['contract_input']['group_found']) {
-        return [];
-    }
-    $addresses = [];
-    foreach ($s['members'] as $m) {
-        $address = uu_ip_canonical($m['resolver']);
-        if ($address !== null) {
-            $addresses[$address] = true;
-        }
-    }
-    $addresses = array_map('strval', array_keys($addresses));
-    sort($addresses, SORT_STRING);
-    return $addresses;
+    return $s['settings']['enabled'] && $s['contract_input']['group_found'] ? uu_plan_addresses($s) : [];
 }
 
 /**
@@ -293,8 +281,8 @@ function uu_setting_addresses(array $s): array
  * the snapshot reads the route, the monitors and the static routes of these addresses (and their foreign routes are
  * the contract's), and the planner takes from it the addresses the live root may name, those that keep their reject
  * route outside tunnel mode, and those never drained. An orphan is an address the state holds outside this set, so
- * its release (released_at) is judged against it too. Distinct from uu_setting_addresses(), which is empty while the
- * plugin is disabled or the group is not found.
+ * its release (released_at) is judged against it too. uu_setting_addresses() is this set while the plugin is enabled
+ * and its group is found, and empty otherwise.
  *
  * @param array{settings: array{default: string}, members: array<string, array{resolver: string}>} $s the Snapshot
  *     (planner.php), or the same fields

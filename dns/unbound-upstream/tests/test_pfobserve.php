@@ -45,14 +45,16 @@ function uu_pfobserve_fixture(string $name): string
 
 /**
  * The 1.3_2 capture pfctl_vsr_12.txt (members on opt1/wg1 and opt2/wg2, resolver 10.2.0.1) as this version's rules
- * print: each pass under its interface-and-address label, with its states bound to the interface.
+ * print: each pass under its interface-and-address label, with its states bound to the interface, and its tcp pass
+ * with any flags.
  */
 function uu_pfobserve_vsr12(): string
 {
     return str_replace(
-        ['label "' . md5('uu-pass-opt1') . '"', 'label "' . md5('uu-pass-opt2') . '"', 'keep state label'],
+        ['label "' . md5('uu-pass-opt1') . '"', 'label "' . md5('uu-pass-opt2') . '"', 'flags S/SA keep state label',
+         'keep state label'],
         ['label "' . uu_label_pass('opt1', '10.2.0.1') . '"', 'label "' . uu_label_pass('opt2', '10.2.0.1') . '"',
-         'keep state (if-bound) label'],
+         'flags any keep state (if-bound) label', 'keep state (if-bound) label'],
         uu_pfobserve_fixture('pfctl_vsr_12.txt')
     );
 }
@@ -155,6 +157,20 @@ uu_register_suite('pfobserve', function (): int {
             === ['loaded' => false, 'problems' => ['wg-b6 pass: missing if-bound']]
             && uu_rules_verdict(str_replace(' (if-bound)', '', uu_pfobserve_vsr12()), $members, [$resolver])
             === ['loaded' => false, 'problems' => ['wg-a pass: missing if-bound', 'wg-b pass: missing if-bound']]));
+    uu_check($t, 'a tcp pass with pf\'s default flags S/SA reads "pass: missing flags any"; a udp pass has no flags',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['on wg2 inet6 proto tcp'], 'flags any', 'flags S/SA'))
+            === ['loaded' => false, 'problems' => ['wg-b6 pass: missing flags any']]
+            && !str_contains(implode("\n", preg_grep('/proto udp/', explode("\n", $vsrV6)) ?: []), 'flags')));
+    /* the counting block and one backstop to the longer of two setting addresses, in each family */
+    $oneBackstop = fn (string $family, string $address): string => "block drop out log quick {$family} from any to "
+        . '<' . UU_BLOCK_TABLE . '> label "' . uu_label_block() . "\"\nblock drop out log quick {$family} from any to "
+        . $address . ' label "' . uu_label_backstop() . "\"\n";
+    uu_check($t, '(v2) a backstop to 192.0.2.10 is no backstop to 192.0.2.1, nor one to 2001:db8::2:10 to '
+        . '2001:db8::2:1',
+        uu_try_case(fn (): bool => uu_rules_verdict($oneBackstop('inet', '192.0.2.10'), [], ['192.0.2.1', '192.0.2.10'])
+            === ['loaded' => false, 'problems' => ['backstop block for 192.0.2.1 missing']]
+            && uu_rules_verdict($oneBackstop('inet6', '2001:db8::2:10'), [], ['2001:db8::2:1', '2001:db8::2:10'])
+            === ['loaded' => false, 'problems' => ['backstop block for 2001:db8::2:1 missing']]));
     uu_check($t, 'if-bound among other state options still reads loaded',
         uu_try_case(fn (): bool => $verdictV6($editV6(['on wg1 inet6 proto udp'], '(if-bound)',
             '(max 10, if-bound, adaptive.start 6, adaptive.end 12)')) === ['loaded' => true, 'problems' => []]));
@@ -328,7 +344,7 @@ uu_register_suite('pfobserve', function (): int {
         uu_try_case(fn (): bool => $verdict($fpBlock(uu_label_backstop()))
             === ['loaded' => false, 'problems' => ['backstop block: wrong target']]));
     $fpPass = fn (string $label): string => $vsr
-        . "pass out quick on wg1 inet proto tcp from (wg1) to 192.0.2.1 port = domain flags S/SA keep state (if-bound) "
+        . "pass out quick on wg1 inet proto tcp from (wg1) to 192.0.2.1 port = domain flags any keep state (if-bound) "
         . "label \"{$label}\"\n"
         . "pass out quick on wg1 inet proto udp from (wg1) to 192.0.2.1 port = domain keep state (if-bound) label "
         . "\"{$label}\"\n";

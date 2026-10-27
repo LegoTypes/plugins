@@ -168,10 +168,10 @@ function uu_rules_block_problems(array $lines, string $what, array $targets): ar
 /**
  * Whether the plugin's rules are in the listing, member by member (tcp and udp pass, by the label of the member's
  * interface and resolver) and block by block, with the shape of each checked by keyword on its own line: a pass out,
- * quick, if-bound, on the member's device, in its resolver's family, to it, port 53; a counting block for each family
- * of the setting's addresses, on the table; a backstop to each setting address, in its family, and to nothing else
- * (with no backstop at all, the one problem is that it is missing). A device is
- * bounded like a word that may not continue with a word character or a dot (wg1 is not wg10 or wg1.65), an address as
+ * quick, if-bound (and for tcp with any flags), on the member's device, in its resolver's family, to it, port 53; a
+ * counting block for each family of the setting's addresses, on the table; a backstop to each setting address, in its
+ * family, and to nothing else (with no backstop at all, the one problem is that it is missing). A device is bounded
+ * like a word that may not continue with a word character or a dot (wg1 is not wg10 or wg1.65), an address as
  * uu_rules_to() bounds it. Every address is compared in canonical form, as pf prints it.
  *
  * @param list<array{name: string, interface: string, if: string, resolver: string}> $members uu_ruled_members()
@@ -201,6 +201,9 @@ function uu_rules_verdict(string $vsrOut, array $members, array $settingAddresse
                     'pass' => '\bpass\b', 'out' => '\bout\b', 'quick' => '\bquick\b',
                     'if-bound' => '\bkeep state \([^)]*\bif-bound\b',
                 ];
+                if ($proto === 'tcp') {
+                    $checks['flags any'] = '\bflags any\b';
+                }
                 foreach ($checks as $word => $pattern) {
                     if (!uu_rules_has($line, $pattern)) {
                         $problems[] = $member['name'] . ' pass: missing ' . $word;
@@ -381,10 +384,10 @@ function uu_rules_record_save(string $path, array $record): void
 
 /**
  * The counting blocks' table as the status reads it. armed: the table holds exactly the setting's addresses ($want,
- * uu_setting_addresses()), compared as canonical sets, and there is one; a footprint is never in it (its literal block
- * covers it), so an orphan in its hold neither arms nor stops the fill. fill: the table is referenced by a rule but is
- * not armed, so the evaluation fills it; never for an unreferenced table or with no setting address. blocked: the
- * table's Out/Block packets, null without the table.
+ * uu_setting_addresses()), compared as canonical sets, and the set is not empty; a footprint is never in it (its
+ * literal block covers it), so an orphan in its hold neither arms nor stops the fill. fill: the table is referenced by
+ * a rule but is not armed, so the evaluation fills it; never for an unreferenced table or with no setting address.
+ * blocked: the table's Out/Block packets, null without the table.
  *
  * @param ?array{addresses: int, references: int, out_block: int} $table
  * @param list<string> $addresses what `pfctl -T show` listed (uu_pf_show_addresses())

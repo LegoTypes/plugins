@@ -125,7 +125,8 @@ uu_register_suite('render', function (): int {
      */
     $passConf = fn (string $opt, string $to, string $family): array => ['type' => 'pass', 'direction' => 'out',
         'quick' => true, 'interface' => $opt, 'ipprotocol' => $family, 'protocol' => 'tcp/udp', 'from' => $opt . 'ip',
-        'to' => $to, 'to_port' => '53', 'disablereplyto' => true, 'statetype' => 'keep', 'state-policy' => 'if-bound',
+        'to' => $to, 'to_port' => '53', 'disablereplyto' => true, 'flags' => 'any', 'statetype' => 'keep',
+        'state-policy' => 'if-bound',
         'label' => md5('uu-pass-' . $opt . '-' . $to), 'descr' => 'Unbound upstream: the resolver through this member'];
     $countConf = fn (string $family): array => ['type' => 'block', 'direction' => 'out', 'quick' => true,
         'log' => true, 'ipprotocol' => $family, 'to' => '<__unboundupstream_block>', 'label' => md5('uu-block'),
@@ -135,7 +136,8 @@ uu_register_suite('render', function (): int {
         'descr' => 'Unbound upstream: the resolver never leaves by another interface (backstop)'];
     $fpPassConf = fn (string $opt, string $to, string $family): array => ['type' => 'pass', 'direction' => 'out',
         'quick' => true, 'interface' => $opt, 'ipprotocol' => $family, 'protocol' => 'tcp/udp', 'from' => $opt . 'ip',
-        'to' => $to, 'to_port' => '53', 'disablereplyto' => true, 'statetype' => 'keep', 'state-policy' => 'if-bound',
+        'to' => $to, 'to_port' => '53', 'disablereplyto' => true, 'flags' => 'any', 'statetype' => 'keep',
+        'state-policy' => 'if-bound',
         'label' => md5('uu-footprint-pass-' . $opt . '-' . $to),
         'descr' => 'Unbound upstream: the address the plugin last used, through the device of its route'];
     $fpBlockConf = fn (string $to, string $family): array => ['type' => 'block', 'direction' => 'out', 'quick' => true,
@@ -227,12 +229,45 @@ uu_register_suite('render', function (): int {
             return $r['rules'] === $at([$passConf('opt1', '2001:db8:a::53', 'inet6'), $countConf('inet6'),
                     $backstopConf('2001:db8:a::53', 'inet6')]) && $r['logged'] === [];
         }));
+    uu_check($t, '(p16) a found group whose one gateway has no record, and a group with no gateway: 1.3_2\'s counting '
+        . 'block and backstop for the Default, the table once, nothing logged',
+        uu_scratch_case(function (string $dir) use ($render, $records, $at, $countConf, $backstopConf): bool {
+            $gone = $render($dir . '/state.json', ['default' => '192.0.2.9', 'rows' => [], 'gateways' => ['wg-gone']],
+                $records);
+            $empty = $render($dir . '/state.json', ['default' => '192.0.2.9', 'rows' => [], 'gateways' => []],
+                $records);
+            $want = $at([$countConf('inet'), $backstopConf('192.0.2.9', 'inet')]);
+            return $gone['rules'] === $want && $gone['tables'] === [[UU_BLOCK_TABLE, false, null]]
+                && $gone['logged'] === [] && $empty['rules'] === $want && $empty['logged'] === [];
+        }));
+    uu_check($t, '(p16) the same with the Default recorded on its reject route: no footprint rule for it',
+        uu_scratch_case(function (string $dir) use ($render, $stateOf, $records, $at, $countConf, $backstopConf): bool {
+            uu_state_save($dir . '/state.json', $stateOf('192.0.2.9', ['kind' => 'reject', 'next_hop' => '',
+                'if' => 'lo0']));
+            $r = $render($dir . '/state.json', ['default' => '192.0.2.9', 'rows' => [], 'gateways' => ['wg-gone']],
+                $records);
+            return $r['rules'] === $at([$countConf('inet'), $backstopConf('192.0.2.9', 'inet')]) && $r['logged'] === [];
+        }));
+    uu_check($t, '(p16) a refused Default with no member: no rules and one error',
+        uu_scratch_case(function (string $dir) use ($render, $records): bool {
+            $r = $render($dir . '/state.json', ['default' => 'fe80::1', 'rows' => [], 'gateways' => ['wg-gone']],
+                $records);
+            return $r['rules'] === [] && $r['tables'] === [] && count($r['logged']) === 1
+                && $r['logged'][0] === ['err', 'rules for the resolver setting not rendered: resolver is link-local'];
+        }));
+    uu_check($t, 'the records read fails with no footprint: no rules, and one error naming the read alone',
+        uu_scratch_case(function (string $dir) use ($render, $on): bool {
+            $r = $render($dir . '/state.json', $on('192.0.2.9'), null);
+            return uu_footprints_from_state(uu_state_new(), null, []) === ['footprints' => [], 'problem' => null]
+                && $r['rules'] === [] && $r['logged'] === [['err', 'rules for the setting not rendered: cannot read '
+                    . 'the gateway records: records unreadable']];
+        }));
     uu_check($t, '(v7) a member\'s resolver given as 2001:DB8:A:0::53: its pass goes to 2001:db8:a::53 under the label '
         . 'of that address',
         uu_try_case(fn (): bool => uu_rule_confs([['interface' => 'opt1', 'resolver' => '2001:DB8:A:0::53']], false,
             [], []) === [$passConf('opt1', '2001:db8:a::53', 'inet6')]));
     uu_check($t, '(r1) one IPv4 member pair on 10.2.0.1: the confs are 1.3_2\'s in every field but the two pass labels '
-        . 'and the passes\' states, kept if-bound',
+        . 'and the passes\' states, kept if-bound with any flags',
         uu_try_case(function (): bool {
             $descr = 'Unbound upstream: the resolver through this member';
             $old = [
@@ -252,14 +287,14 @@ uu_register_suite('render', function (): int {
             $members = [['name' => 'wg-test-429', 'interface' => 'opt1', 'resolver' => '10.2.0.1'],
                         ['name' => 'wg-test-529', 'interface' => 'opt2', 'resolver' => '10.2.0.1']];
             $c = uu_rule_confs($members, true, ['10.2.0.1'], []);
-            $bare = fn (array $conf): array => array_diff_key($conf, ['label' => true, 'statetype' => true,
-                'state-policy' => true]);
+            $bare = fn (array $conf): array => array_diff_key($conf, ['label' => true, 'flags' => true,
+                'statetype' => true, 'state-policy' => true]);
             return count($c) === 4 && $bare($c[0]) === $bare($old[0]) && $bare($c[1]) === $bare($old[1])
                 && $c[0]['label'] === md5('uu-pass-opt1-10.2.0.1') && $c[1]['label'] === md5('uu-pass-opt2-10.2.0.1')
-                && $c[0]['statetype'] === 'keep' && $c[0]['state-policy'] === 'if-bound'
-                && $c[1]['statetype'] === 'keep' && $c[1]['state-policy'] === 'if-bound'
+                && $c[0]['flags'] === 'any' && $c[0]['statetype'] === 'keep' && $c[0]['state-policy'] === 'if-bound'
+                && $c[1]['flags'] === 'any' && $c[1]['statetype'] === 'keep' && $c[1]['state-policy'] === 'if-bound'
                 && array_keys($c[0]) === ['type', 'direction', 'quick', 'interface', 'ipprotocol', 'protocol', 'from',
-                    'to', 'to_port', 'disablereplyto', 'statetype', 'state-policy', 'label', 'descr']
+                    'to', 'to_port', 'disablereplyto', 'flags', 'statetype', 'state-policy', 'label', 'descr']
                 && $c[2] === $old[2] && $c[3] === $old[3];
         }));
     uu_check($t, '(r3) two members on one interface with two resolvers: two passes on it with distinct labels; a third '
@@ -289,7 +324,7 @@ uu_register_suite('render', function (): int {
     uu_check($t, 'per member: pass out quick on the friendly interface, from <opt>ip, tcp/udp to resolver port 53',
         $c[0] == ['type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => 'opt14',
             'ipprotocol' => 'inet', 'protocol' => 'tcp/udp', 'from' => 'opt14ip', 'to' => '10.2.0.1', 'to_port' => '53',
-            'disablereplyto' => true, 'statetype' => 'keep', 'state-policy' => 'if-bound',
+            'disablereplyto' => true, 'flags' => 'any', 'statetype' => 'keep', 'state-policy' => 'if-bound',
             'label' => md5('uu-pass-opt14-10.2.0.1'),
             'descr' => 'Unbound upstream: the resolver through this member']);
     uu_check($t, 'the second member gets its own interface and label',
@@ -398,7 +433,8 @@ uu_register_suite('render', function (): int {
             && uu_label_footprint_pass('opt14', '192.0.2.1') !== uu_label_pass('opt14', '192.0.2.1')));
     $fpPass = ['type' => 'pass', 'direction' => 'out', 'quick' => true, 'interface' => 'opt14', 'ipprotocol' => 'inet',
         'protocol' => 'tcp/udp', 'from' => 'opt14ip', 'to' => '192.0.2.1', 'to_port' => '53', 'disablereplyto' => true,
-        'statetype' => 'keep', 'state-policy' => 'if-bound', 'label' => md5('uu-footprint-pass-opt14-192.0.2.1'),
+        'flags' => 'any', 'statetype' => 'keep', 'state-policy' => 'if-bound',
+        'label' => md5('uu-footprint-pass-opt14-192.0.2.1'),
         'descr' => 'Unbound upstream: the address the plugin last used, through the device of its route'];
     $fpBlock = ['type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'ipprotocol' => 'inet',
         'to' => '192.0.2.1', 'label' => md5('uu-footprint'),

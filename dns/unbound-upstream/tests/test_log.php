@@ -141,6 +141,25 @@ uu_register_suite('log', function (): int {
         && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $route)) === $s['settings']['default']
         && $footprint($doc) === null);
 
+    uu_check($t, '(p16) status: a found group with no member, the Default recorded on its reject route: no footprint, '
+        . 'and the counter armed for a table holding the Default',
+        uu_try_case(function () use ($s, $st, $route, $footprint): bool {
+            $bare = $s;
+            $bare['tiers'] = [];
+            $bare['members'] = [];
+            $bare['probes'] = [];
+            $bare['contract_input']['members'] = 0;
+            $bare['contract_input']['member_resolvers'] = [];
+            $recorded = $st;
+            $recorded['mode'] = 'fallback';
+            $recorded['member'] = null;
+            $recorded['addresses'] = ['10.2.0.1' => ['route' => ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'],
+                'forwarded' => false, 'released_at' => null]];
+            $table = uu_block_table_view(['addresses' => 1, 'references' => 1, 'out_block' => 3], ['10.2.0.1'],
+                uu_setting_addresses($bare));
+            $doc = uu_status_doc($bare, uu_plan($bare, $recorded), $table, $route);
+            return $footprint($doc) === null && $doc['counter_armed'] === true;
+        }));
     /* (l1) the status's resolver is the active one: in tunnel mode the live root's address, else the member's
      * resolver; otherwise the first member in tier order that has one, else the Default, else '' */
     $active = fn (array $snapshot, array $state): string => uu_status_active($snapshot, uu_plan($snapshot, $state));

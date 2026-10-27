@@ -15,6 +15,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/se
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
 require_once __DIR__ . '/test_verdict.php';
+require_once __DIR__ . '/scratch.php';
 
 uu_register_suite('render_vm', function (): int {
     $t = ['fail' => 0, 'total' => 0];
@@ -53,8 +54,10 @@ uu_register_suite('render_vm', function (): int {
         . $dev . ')} to {10.2.0.1} port {53} label "' . md5('uu-pass-' . $opt) . '" # Unbound upstream: the resolver '
         . 'through this member';
     $now = fn (string $dev, string $opt): string => str_replace('port {53} label "' . md5('uu-pass-' . $opt) . '"',
-        'port {53} keep state ( if-bound ) label "' . md5('uu-pass-' . $opt . '-10.2.0.1') . '"', $line132($dev, $opt));
-    uu_check($t, '(r5) each one-address pass is 1.3_2\'s line but for its label and its states, kept if-bound',
+        'port {53} flags any keep state ( if-bound ) label "' . md5('uu-pass-' . $opt . '-10.2.0.1') . '"',
+        $line132($dev, $opt));
+    uu_check($t, '(r5) each one-address pass is 1.3_2\'s line but for its label and its states, kept if-bound with '
+        . 'any flags',
         $now('wg1', 'opt1') !== $line132('wg1', 'opt1')
         && in_array($now('wg1', 'opt1'), explode("\n", $text), true)
         && in_array($now('wg2', 'opt2'), explode("\n", $text), true));
@@ -121,13 +124,13 @@ uu_register_suite('render_vm', function (): int {
     $rule = fn (string $head, string $label): bool
         => preg_match('/^' . preg_quote($head, '/') . '[^\n]*label "' . $label . '"/m', $text) === 1;
     uu_check($t, '(r5) each member\'s pass on its own device, inet6, to its own resolver, if-bound, under its label',
-        $rule('pass out quick on wg1 inet6 proto {tcp udp} from {(wg1)} to {2001:db8:a::53} port {53} keep state '
-            . '( if-bound )', md5('uu-pass-opt1-2001:db8:a::53'))
-        && $rule('pass out quick on wg2 inet6 proto {tcp udp} from {(wg2)} to {2001:db8:b::53} port {53} keep state '
-            . '( if-bound )', md5('uu-pass-opt2-2001:db8:b::53')));
+        $rule('pass out quick on wg1 inet6 proto {tcp udp} from {(wg1)} to {2001:db8:a::53} port {53} flags any '
+            . 'keep state ( if-bound )', md5('uu-pass-opt1-2001:db8:a::53'))
+        && $rule('pass out quick on wg2 inet6 proto {tcp udp} from {(wg2)} to {2001:db8:b::53} port {53} flags any '
+            . 'keep state ( if-bound )', md5('uu-pass-opt2-2001:db8:b::53')));
     uu_check($t, '(r5) the footprint pass is if-bound too',
-        $rule('pass out quick on wg1 inet6 proto {tcp udp} from {(wg1)} to {2001:db8:c::53} port {53} keep state '
-            . '( if-bound )', md5('uu-footprint-pass-opt1-2001:db8:c::53')));
+        $rule('pass out quick on wg1 inet6 proto {tcp udp} from {(wg1)} to {2001:db8:c::53} port {53} flags any '
+            . 'keep state ( if-bound )', md5('uu-footprint-pass-opt1-2001:db8:c::53')));
     uu_check($t, '(r5) one inet6 counting block, a backstop per address, the footprint block, no ## placeholder',
         substr_count($text, 'label "' . md5('uu-block') . '"') === 1
         && str_contains($text, 'block out log quick inet6 from {any} to {<__unboundupstream_block>}')
@@ -137,29 +140,61 @@ uu_register_suite('render_vm', function (): int {
         && !str_contains($text, '##'));
     printf("%s", preg_replace('/^/m', '    | ', $text));
 
-    /* (r6) the saved model's rows reach the render by each gateway's UUID: a child php enables the plugin on the VM's
-     * proton_test_grp with a row for wg-test-529 in its own copy of the configuration, never saved, and prints what
-     * the render would render */
-    $code = 'require "config.inc"; require "/usr/local/opnsense/mvc/script/load_phalcon.php"; '
-        . 'require $argv[1]; '
-        . '$recs = (new \\OPNsense\\Routing\\Gateways())->gatewaysIndexedByName(true); $group = ""; '
-        . 'foreach ((new \\OPNsense\\Routing\\GatewayGroups())->gateway_group->iterateItems() as $k => $g) { '
-        . 'if ($g->name->getValue() === "proton_test_grp") { $group = (string)$k; } } '
-        . '$m = new \\OPNsense\\UnboundUpstream\\UnboundUpstream(); '
-        . '$m->setNodes(["enabled" => "1", "gateway_group" => $group, "resolver" => "10.2.0.1"]); '
-        . '$m->getNodeByReference("resolvers.resolver")->Add()->setNodes(["gateway" => '
-        . '(string)($recs["wg-test-529"]["uuid"] ?? ""), "address" => "10.2.0.9"]); '
-        . '$m->serializeToConfig(); echo json_encode(uu_wanted_render());';
-    $out = (string)shell_exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code) . ' '
-        . escapeshellarg(__DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php') . ' 2>&1');
-    $w = json_decode($out, true);
-    if (!is_array($w)) {
-        printf("  the child php printed: %s\n", substr(preg_replace('/[^\x20-\x7e]/', '?', $out) ?? '', 0, 400));
+    /* (r5) pf takes the rules as core renders them: pfctl -n parses a file of them, never loading it */
+    $listed = '';
+    $parsed = uu_scratch_case(function (string $dir) use ($fw, &$listed): bool {
+        file_put_contents($dir . '/rules.conf', $fw->tablesToText() . "\n" . $fw->outputFilterRules());
+        $out = [];
+        $rc = 0;
+        exec('/sbin/pfctl -nvf ' . escapeshellarg($dir . '/rules.conf') . ' 2>&1', $out, $rc);
+        $listed = implode("\n", $out);
+        return $rc === 0;
+    });
+    uu_check($t, '(r5) pfctl -n takes the rules on {tcp udp}: the tcp pass with any flags and if-bound, the udp pass '
+        . 'if-bound', $parsed
+        && str_contains($listed, 'pass out quick on wg1 inet6 proto tcp from (wg1) to 2001:db8:a::53 port = domain '
+            . 'flags any keep state (if-bound) label')
+        && str_contains($listed, 'pass out quick on wg1 inet6 proto udp from (wg1) to 2001:db8:a::53 port = domain '
+            . 'keep state (if-bound) label'));
+    if (!$parsed) {
+        printf("%s\n", preg_replace('/^/m', '    | ', $listed));
     }
+
+    /* (r6) the saved model's rows reach the render by each gateway's UUID: a child php enables the plugin on the VM's
+     * proton_test_grp with the Default and rows (gateway name => address) in its own copy of the configuration, never
+     * saved, and returns what the render would render */
+    $wantedOf = function (string $default, array $rows): ?array {
+        $code = 'require "config.inc"; require "/usr/local/opnsense/mvc/script/load_phalcon.php"; '
+            . 'require $argv[1]; $rows = json_decode($argv[3], true); '
+            . '$recs = (new \\OPNsense\\Routing\\Gateways())->gatewaysIndexedByName(true); $group = ""; '
+            . 'foreach ((new \\OPNsense\\Routing\\GatewayGroups())->gateway_group->iterateItems() as $k => $g) { '
+            . 'if ($g->name->getValue() === "proton_test_grp") { $group = (string)$k; } } '
+            . '$m = new \\OPNsense\\UnboundUpstream\\UnboundUpstream(); '
+            . '$m->setNodes(["enabled" => "1", "gateway_group" => $group, "resolver" => $argv[2]]); '
+            . 'foreach ($rows as $name => $address) { $m->getNodeByReference("resolvers.resolver")->Add()->setNodes('
+            . '["gateway" => (string)($recs[$name]["uuid"] ?? ""), "address" => $address]); } '
+            . '$m->serializeToConfig(); echo json_encode(uu_wanted_render());';
+        $out = (string)shell_exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code) . ' '
+            . escapeshellarg(__DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php') . ' '
+            . escapeshellarg($default) . ' ' . escapeshellarg((string)json_encode($rows)) . ' 2>&1');
+        $w = json_decode($out, true);
+        if (!is_array($w)) {
+            printf("  the child php printed: %s\n", substr(preg_replace('/[^\x20-\x7e]/', '?', $out) ?? '', 0, 400));
+            return null;
+        }
+        return $w;
+    };
+    $w = $wantedOf('10.2.0.1', ['wg-test-529' => '10.2.0.9']);
     uu_check($t, '(r6) the saved model\'s row reaches its member by the gateway\'s UUID, the other member takes the '
         . 'Default, and the setting\'s addresses are both',
         is_array($w) && array_column($w['members'] ?? [], 'resolver', 'name')
             === ['wg-test-429' => '10.2.0.1', 'wg-test-529' => '10.2.0.9']
         && ($w['addresses'] ?? null) === ['10.2.0.1', '10.2.0.9'] && ($w['enabled'] ?? null) === true);
+    $w = $wantedOf('', ['wg-test-429' => '10.2.0.1', 'wg-test-529' => '10.2.0.9']);
+    uu_check($t, '(r6) with no Default and a row for every member, the plugin still renders: each member its row',
+        is_array($w) && ($w['enabled'] ?? null) === true
+        && array_column($w['members'] ?? [], 'resolver', 'name')
+            === ['wg-test-429' => '10.2.0.1', 'wg-test-529' => '10.2.0.9']
+        && ($w['addresses'] ?? null) === ['10.2.0.1', '10.2.0.9']);
     return uu_tally_report('render_vm', $t);
 });
