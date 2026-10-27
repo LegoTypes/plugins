@@ -13,6 +13,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/choose.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * @return array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int, probe_failures: int,

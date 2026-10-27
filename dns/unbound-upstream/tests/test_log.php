@@ -15,6 +15,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/se
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/log.php';
 require_once __DIR__ . '/test_planner.php';
 require_once __DIR__ . '/test_snapshot.php';
+require_once __DIR__ . '/scratch.php';
 
 uu_register_suite('log', function (): int {
     $t = ['fail' => 0, 'total' => 0];

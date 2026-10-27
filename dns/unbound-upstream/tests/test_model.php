@@ -193,6 +193,21 @@ uu_register_suite('model', function (): int {
         in_array('gateway_group', uu_test_model_refused(['enabled' => '1', 'gateway_group' => $uuid, 'resolver' => '10.2.0.1']), true)
     );
 
+    $v4 = uu_test_model_group_uuid('proton_test_grp');
+    $v6 = uu_test_model_group_uuid('uu_far6_grp');
+    $gw429 = uu_test_model_gateway_uuid('wg-test-429');
+    $gwA = uu_test_model_gateway_uuid('wg-far-a-ipv6');
+    $gwB = uu_test_model_gateway_uuid('wg-far-b-ipv6');
+    if ($v4 === '' || $v6 === '' || $gw429 === '' || $gwA === '' || $gwB === '') {
+        uu_check($t, 'model: the Proton and far-end groups and gateways are not on this box (base missing)', false);
+        return uu_tally_report('model', $t);
+    }
+    uu_check(
+        $t,
+        'enabled on the IPv4 group with Default 10.2.0.1 and no rows: nothing about the resolver (1.3 settings mean the same)',
+        uu_test_model_messages(['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1']) === []
+    );
+
     $gf = fn (array $protos): ?string => \OPNsense\UnboundUpstream\UnboundUpstream::groupFamily($protos);
     uu_check(
         $t,
@@ -209,20 +224,6 @@ uu_register_suite('model', function (): int {
             && $gp('inet') === [] && $gp('inet6') === [] && $gp('') === []
     );
 
-    $v4 = uu_test_model_group_uuid('proton_test_grp');
-    $v6 = uu_test_model_group_uuid('uu_far6_grp');
-    $gw429 = uu_test_model_gateway_uuid('wg-test-429');
-    $gwA = uu_test_model_gateway_uuid('wg-far-a-ipv6');
-    $gwB = uu_test_model_gateway_uuid('wg-far-b-ipv6');
-    if ($v4 === '' || $v6 === '' || $gw429 === '' || $gwA === '' || $gwB === '') {
-        uu_check($t, 'model: the Proton and far-end groups and gateways are not on this box (base missing)', false);
-        return uu_tally_report('model', $t);
-    }
-    uu_check(
-        $t,
-        'enabled on the IPv4 group with Default 10.2.0.1 and no rows: nothing about the resolver (1.3 settings mean the same)',
-        uu_test_model_messages(['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1']) === []
-    );
     $problems = fn (string $addr, string $group, string $family, bool $v6, array $mon, array $nets): array =>
         \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems($addr, $group, $family, $v6, $mon, $nets);
     $linkLocal = 'Enter a resolver address that is not link-local, multicast, loopback or unspecified.';

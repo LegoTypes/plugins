@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+require_once __DIR__ . '/scratch.php';
 
 uu_register_suite('snapshot_vm', function (): int {
     $t = ['fail' => 0, 'total' => 0];
