@@ -339,6 +339,10 @@ uu_register_suite('state', function (): int {
             $d['addresses']['::ffff:192.0.2.1'] = $d['addresses']['2001:db8:a::53'];
             return $d;
         },
+        'addresses as a JSON list' => function (array $d): array {
+            $d['addresses'] = [$d['addresses']['2001:db8:a::53']];
+            return $d;
+        },
         'a route of an unknown kind' => function (array $d): array {
             $d['addresses']['2001:db8:a::53']['route']['kind'] = 'other';
             return $d;
@@ -407,17 +411,16 @@ uu_register_suite('state', function (): int {
         && $converted['timers']['wg-b'] === ['usable_since' => null, 'counted' => 0, 'last_at' => null,
             'resolver_failed_until' => null, 'probe_failures' => 0, 'last_down' => null, 'resolver' => '']);
     uu_check($t, 'state v6 (s4): the converted route is adopted from a live route that matches it',
-        uu_try_case(function () use ($converted, $v5): bool {
+        uu_try_case(function () use ($converted): bool {
             if ($converted === null) {
                 return false;
             }
             $live = ['route' => ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
                                  'ours' => false]];
-            $adopted = uu_route_adopt($live, $converted['addresses']['10.2.0.1']['route']);
+            $adopted = uu_route_adopt($live, uu_state_route_record($converted, '10.2.0.1'));
             $other = ['route' => ['gateway' => '10.2.0.5'] + $live['route']];
             return $adopted['route']['ours'] === true
-                && uu_route_adopt($other, $converted['addresses']['10.2.0.1']['route']) === $other
-                && $v5['resolver'] === '10.2.0.1';
+                && uu_route_adopt($other, uu_state_route_record($converted, '10.2.0.1')) === $other;
         }));
     $v5Fallback = $v5;
     $v5Fallback['mode'] = 'fallback';
@@ -471,14 +474,21 @@ uu_register_suite('state', function (): int {
     // The footprint: the map's keys, and what an evaluation that changed it runs.
     $recorded = uu_state_new();
     $recorded['addresses'] = ['192.0.2.1' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
-    uu_check($t, '(s7) footprint: the recorded addresses, sorted; none when the map is empty',
+    uu_check($t, 'footprint: the recorded addresses, sorted; none when the map is empty',
         uu_try_case(fn (): bool => uu_state_footprint($recorded) === ['192.0.2.1']
             && uu_state_footprint(uu_state_new()) === []
             && uu_state_footprint($two) === ['2001:db8:a::53', '2001:db8:b::53']));
     $reordered = $two;
     $reordered['addresses'] = array_reverse($two['addresses'], true);
-    uu_check($t, '(s7) footprint: the order of the map does not matter',
+    uu_check($t, 'footprint: the order of the map does not matter',
         uu_try_case(fn (): bool => uu_state_footprint($reordered) === uu_state_footprint($two)));
+    uu_check($t, 'route record: the entry\'s route by the address in any spelling; none for no entry or a null route',
+        uu_try_case(fn (): bool => uu_state_route_record($two, '2001:db8:a::53') === $member
+            && uu_state_route_record($two, '2001:DB8:A:0::0053') === $member
+            && uu_state_route_record($two, '2001:db8:b::53') === $rejected
+            && uu_state_route_record($two, '192.0.2.1') === null
+            && uu_state_route_record($recorded, '192.0.2.1') === null
+            && uu_state_route_record(uu_state_new(), 'not an address') === null));
     uu_check($t, '(s8) footprint text: none for the empty list, the address for one, a comma list for more',
         uu_try_case(fn (): bool => uu_footprint_text([]) === 'none' && uu_footprint_text(['10.2.0.1']) === '10.2.0.1'
             && uu_footprint_text(['192.0.2.1', '2001:db8:a::53']) === '192.0.2.1, 2001:db8:a::53'));
@@ -502,7 +512,7 @@ uu_register_suite('state', function (): int {
         '[] → [], disabled: nothing' => [[], [], false, false, false],
     ];
     foreach ($cases as $what => [$before, $after, $enabled, $reload, $cron]) {
-        uu_check($t, "(s7) footprint $what",
+        uu_check($t, (str_contains($what, 'A, B') ? '(s7)' : '(e1)') . " footprint $what",
             uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled, null)
                 === ['reload' => $reload, 'cron' => $cron]));
     }

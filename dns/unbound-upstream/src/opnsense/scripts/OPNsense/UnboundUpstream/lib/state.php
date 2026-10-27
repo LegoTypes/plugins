@@ -29,9 +29,8 @@ declare(strict_types=1);
  * after its delete), so the route stays the plugin's own when the group that explained it is renamed or deleted;
  * released_at is the monotonic second an address left use, null while in use. A Save that changes the resolver
  * setting undoes every other recorded address's route and forwarders first. A version 5 file (one resolver and one
- * route_installed) converts on read. A file that cannot
- * be read back exactly as written is discarded: the planner derives the mode from the live forwarders and route,
- * so a fresh state costs only the failback timers. The file lives in the root-only run directory and is read as a
+ * route_installed) converts on read. A file that cannot be read back exactly as written is discarded: the planner
+ * derives the mode from the live forwarders and route, so a fresh state costs only the failback timers. The file lives in the root-only run directory and is read as a
  * regular file only.
  */
 
@@ -154,7 +153,7 @@ function uu_state_new(): array
  *
  * @param array<array-key, mixed> $timer
  */
-function uu_state_timer_ok(array $timer, bool $current = true): bool
+function uu_state_timer_ok(array $timer, bool $current): bool
 {
     $nullableInt = fn (string $key): bool => array_key_exists($key, $timer)
         && ($timer[$key] === null || is_int($timer[$key]));
@@ -436,7 +435,8 @@ function uu_state_from_doc(array $doc): ?array
  * @return array{state: array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -466,7 +466,8 @@ function uu_state_read(string $path): array
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -476,6 +477,19 @@ function uu_state_read(string $path): array
 function uu_state_load(string $path): array
 {
     return uu_state_read($path)['state'];
+}
+
+/**
+ * The route the plugin last installed for an address, from the state's map: null for an address with no entry or an
+ * entry with none. The address is looked up in its canonical form, as the map is keyed.
+ *
+ * @param array{addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *     forwarded: bool, released_at: ?int}>} $state
+ * @return ?array{kind: string, next_hop: string, if: string}
+ */
+function uu_state_route_record(array $state, string $address): ?array
+{
+    return $state['addresses'][uu_ip_canonical($address) ?? $address]['route'] ?? null;
 }
 
 /**
@@ -531,7 +545,8 @@ function uu_footprint_actions(array $before, array $after, bool $enabled, ?strin
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -540,7 +555,8 @@ function uu_footprint_actions(array $before, array $after, bool $enabled, ?strin
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -563,7 +579,8 @@ function uu_state_forget_resolver(array $state): array
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,

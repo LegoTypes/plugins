@@ -26,7 +26,7 @@ declare(strict_types=1);
  *   answer (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an
  *   evaluation saves), block_table the counting table's facts as pf printed them (table null: no such table);
  *   the caller turns it into uu_block_table_view()
- *   with the saved state's resolver, since the snapshot never reads the state file.
+ *   with the first address the saved state records, since the snapshot never reads the state file.
  * Plan     = array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *                  escalate_restart: bool, state: State, reasons: list<string>}
  *   action: 'stop' (disabled, a stop cause, or Unbound not running), 'skip' (control channel silent), 'tunnel'
@@ -101,7 +101,8 @@ function uu_plan_note(
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -224,7 +225,8 @@ function uu_plan_stop_reason(array $s): ?string
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,

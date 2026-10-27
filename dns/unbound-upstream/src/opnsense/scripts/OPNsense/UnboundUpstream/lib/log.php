@@ -126,7 +126,7 @@ function uu_duration_text(int $seconds): string
  *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
- *     block_table and the saved state's resolver
+ *     block_table and the first address the saved state records
  * @param string $routeOut `route -n get -inet <resolver>`
  * @return array{enabled: bool, dry_run: bool, resolver: string, mode: string, member: ?string, tier: ?int,
  *     unbound: array{enabled: bool, running: bool, control_ok: bool}, live_root: ?list<string>,
@@ -176,7 +176,7 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
     /* the address the footprint block is rendered for, as the render reads it: one the setting's rules do not
      * already cover */
     $setting = $s['settings']['enabled'] && $s['contract_input']['group_found'] ? $s['settings']['resolver'] : '';
-    $footprint = uu_footprint_from_state($st, [], $setting)['footprint'];
+    $footprint = uu_footprint_from_state($st, [], $setting);
 
     return [
         'enabled' => $s['settings']['enabled'],

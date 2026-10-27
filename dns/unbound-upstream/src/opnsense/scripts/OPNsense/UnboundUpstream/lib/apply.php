@@ -141,7 +141,8 @@ final class UuApplyRun
      * @var array{version: int, mode: string, member: ?string,
      *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
      *     probe_failures: int,
-     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+     *     control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -152,16 +153,19 @@ final class UuApplyRun
     /** @var ?list<string> Unbound's live root as last read or set; null while unknown */
     private ?array $live;
     /**
-     * @var array<string, bool> per address (its canonical form): Unbound is, or may be, forwarding to it. True once this
-     *     run sent forward_add for it, although the reply was lost, or a live root read names it; false only after a
-     *     read in this run that succeeded and names something else. A failed or unparseable read changes nothing.
+     * @var array<string, bool> per address (its canonical form): Unbound is, or may be, forwarding to it. True once
+     *     this run sent forward_add for it, although the reply was lost, or a live root read names it; false only
+     *     after a read in this run that succeeded and names something else. A failed or unparseable read changes
+     *     nothing.
      */
     private array $forwarded = [];
     /** @var array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}> */
     private array $routes = [];
     /** @var array<string, ?array{kind: string, next_hop: string, if: string}> the route the plugin last installed */
     private array $records = [];
-    /** the resolver's key in all three: its canonical form, else as typed (an address that is none is never recorded) */
+    /** @var array<string, bool> per address: a route call failed after an absent read, so the route is not known */
+    private array $unknown = [];
+    /** the resolver's key in all four: its canonical form, else as typed (an address that is none is never recorded) */
     private string $key;
     private bool $fibPending = false;
     /** an unbound-control call of this run got no answer (timeout or no channel) */
@@ -214,15 +218,18 @@ final class UuApplyRun
         $this->records[$this->key] = $this->st['addresses'][$this->key]['route'] ?? null;
         $this->forwarded[$this->key] = $this->st['addresses'][$this->key]['forwarded'] ?? false;
         /* each recorded address is forwarded again as the live root read for this snapshot says, before any route call;
-         * a root that could not be read leaves the record as it was */
+         * a root that could not be read leaves the record as it was, but Unbound that is not running forwards to
+         * nothing (it restarts on its configured root), which counts as a read of the empty root */
         $live = $s['unbound']['live_root'];
-        if ($live !== null) {
-            $named = uu_apply_bare($live);
+        $read = $s['unbound']['pid_alive'] ? $live : [];
+        if ($read !== null) {
+            $named = uu_apply_bare($read);
             foreach (array_keys($this->st['addresses']) as $address) {
                 $this->st['addresses'][$address]['forwarded'] = in_array((string)$address, $named, true);
             }
+            $this->forwarded[$this->key] = in_array($this->key, $named, true);
         }
-        $this->setLive($live);
+        $this->live = $live;
     }
 
     /**
@@ -255,7 +262,8 @@ final class UuApplyRun
      * @return array{version: int, mode: string, member: ?string,
      *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
      *     probe_failures: int,
-     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+     *     control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -745,6 +753,10 @@ final class UuApplyRun
         if ($ok) {
             $this->fibPending = true;
         }
+        /* a failed call proves no more than a failed read: an add refused because the route exists after all must
+         * not lose the record that lets the next run adopt it, and is never retried as a change (the route may be
+         * foreign) */
+        $this->unknown[$this->key] = !$ok;
         return $ok;
     }
 
@@ -884,7 +896,8 @@ final class UuApplyRun
         }
         $route = $this->route();
         $tunnel = $this->st['mode'] === 'tunnel';
-        if (!($route['present'] && $route['ours']) && !$tunnel && !$this->forwarded[$this->key]) {
+        $keep = ($this->unknown[$this->key] ?? false) && isset($this->st['addresses'][$this->key]);
+        if (!($route['present'] && $route['ours']) && !$tunnel && !$this->forwarded[$this->key] && !$keep) {
             unset($this->st['addresses'][$this->key]);
             return;
         }
@@ -939,7 +952,8 @@ final class UuApplyRun
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,

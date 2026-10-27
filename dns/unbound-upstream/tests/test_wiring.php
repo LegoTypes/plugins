@@ -20,6 +20,7 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/se
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/log.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
 require_once __DIR__ . '/scratch.php';
 
 /** Every daily file of one log directory under /var/log, in order. */
@@ -544,7 +545,7 @@ uu_register_suite('wiring', function (): int {
         . 'the same both times',
         is_array($s9Docs[0]) && $s9Docs[0] === $s9Docs[1] && $s9Docs[0]['mode'] === 'tunnel'
         && $s9Docs[0]['member'] === 'wg-a' && $s9Docs[0]['footprint'] === '10.2.0.1'
-        && $s9Docs[0]['last_switch']['to'] === 'wg-a' && is_string($s9Docs[0]['resolver']));
+        && $s9Docs[0]['last_switch']['to'] === 'wg-a' && $s9Docs[0]['resolver'] === uu_settings()['resolver']);
     uu_check($t, '(s9) …without a plugin log line between the marks, and the file\'s bytes and modification time unchanged',
         $s9 !== null && $s9['between'] === [] && $s9['same']);
     uu_check($t, '(s9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $s9Had && !file_exists($s9Aside)

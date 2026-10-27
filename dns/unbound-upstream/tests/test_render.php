@@ -438,34 +438,34 @@ uu_register_suite('render', function (): int {
         }));
 
     /* the footprint reader itself */
-    uu_check($t, 'footprint: none recorded is none, and no problem',
+    uu_check($t, 'footprint: none recorded is none',
         uu_try_case(fn (): bool => uu_footprint_from_state($stateOf(null, null), $records, '')
-            === ['footprint' => null, 'problem' => null]));
+            === null));
     uu_check($t, 'footprint: a reject route, or none, gives the block only (no interface)',
         uu_try_case(fn (): bool => uu_footprint_from_state($stateOf('192.0.2.1', ['kind' => 'reject',
             'next_hop' => '', 'if' => 'lo0']), $records, '')
-            === ['footprint' => ['resolver' => '192.0.2.1', 'interface' => ''], 'problem' => null]
+            === ['resolver' => '192.0.2.1', 'interface' => '']
             && uu_footprint_from_state($stateOf('192.0.2.1', null), $records, '')
-            === ['footprint' => ['resolver' => '192.0.2.1', 'interface' => ''], 'problem' => null]));
+            === ['resolver' => '192.0.2.1', 'interface' => '']));
     uu_check($t, 'footprint: a record on the device with another next hop is not the route\'s',
         uu_try_case(fn (): bool => uu_footprint_from_state($stateOf('192.0.2.1', ['kind' => 'member',
-            'next_hop' => '192.0.2.3', 'if' => 'wg1']), $records, '')['footprint']
+            'next_hop' => '192.0.2.3', 'if' => 'wg1']), $records, '')
             === ['resolver' => '192.0.2.1', 'interface' => '']));
     uu_check($t, 'footprint: of two matching records the first by sorted name wins, and one without an interface '
         . 'is passed over',
         uu_try_case(fn (): bool => uu_footprint_from_state($stateOf('192.0.2.1', $onWg1),
             ['wg-c' => ['interface' => 'opt16', 'if' => 'wg1', 'gateway' => '192.0.2.2'],
-             'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')['footprint']
+             'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')
             === ['resolver' => '192.0.2.1', 'interface' => 'opt15']
             && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1),
                 ['wg-a' => ['interface' => '', 'if' => 'wg1', 'gateway' => '192.0.2.2'],
-                 'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')['footprint']
+                 'wg-b' => ['interface' => 'opt15', 'if' => 'wg1', 'gateway' => '192.0.2.2']], '')
             === ['resolver' => '192.0.2.1', 'interface' => 'opt15']));
     uu_check($t, 'footprint: the setting\'s own address is no footprint; another setting, or none, leaves it one',
         uu_try_case(fn (): bool
             => uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.1')
-                === ['footprint' => null, 'problem' => null]
-            && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.9')['footprint']
+                === null
+            && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.9')
                 === ['resolver' => '192.0.2.1', 'interface' => 'opt14']));
     uu_check($t, 'footprint: a version 5 file whose resolver is no address (a host name, an IPv4-mapped one) converts to '
         . 'an empty map: no footprint and no problem',
@@ -478,8 +478,8 @@ uu_register_suite('render', function (): int {
             $named = uu_state_from_doc($v5);
             $mapped = uu_state_from_doc(['resolver' => '::ffff:192.0.2.1'] + $v5);
             return $named !== null && $mapped !== null
-                && uu_footprint_from_state($named, $records, '') === ['footprint' => null, 'problem' => null]
-                && uu_footprint_from_state($mapped, $records, '') === ['footprint' => null, 'problem' => null];
+                && uu_footprint_from_state($named, $records, '') === null
+                && uu_footprint_from_state($mapped, $records, '') === null;
         }));
     uu_check($t, 'footprint: of several recorded addresses, the first in sorted order that is not the setting\'s',
         uu_try_case(function () use ($records, $onWg1): bool {
@@ -488,11 +488,11 @@ uu_register_suite('render', function (): int {
                 '2001:db8:a::53' => ['route' => null, 'forwarded' => true, 'released_at' => null],
                 '192.0.2.1' => ['route' => $onWg1, 'forwarded' => false, 'released_at' => null],
             ];
-            return uu_footprint_from_state($st, $records, '')['footprint']
+            return uu_footprint_from_state($st, $records, '')
                 === ['resolver' => '192.0.2.1', 'interface' => 'opt14']
-                && uu_footprint_from_state($st, $records, '192.0.2.1')['footprint']
+                && uu_footprint_from_state($st, $records, '192.0.2.1')
                 === ['resolver' => '2001:db8:a::53', 'interface' => '']
-                && uu_footprint_from_state($st, $records, '2001:db8:a::53')['footprint']
+                && uu_footprint_from_state($st, $records, '2001:db8:a::53')
                 === ['resolver' => '192.0.2.1', 'interface' => 'opt14'];
         }));
     uu_check($t, 'wanted: a setting with an address that is not IPv4 covers no footprint, and its members come from '

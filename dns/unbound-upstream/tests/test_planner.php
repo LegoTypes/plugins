@@ -137,7 +137,8 @@ function uu_test_in_tunnel(array $s, string $member): array
 }
 
 /**
- * A state in tunnel mode on the member, or in fallback when it is null.
+ * A state in tunnel mode on the member, or in fallback when it is null. In tunnel mode on wg-a or wg-b it records the
+ * resolver (10.2.0.1 unless $resolver names another, null for none) as the plugin does.
  *
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int,
@@ -156,7 +157,8 @@ function uu_test_plan_state(
     ?string $member,
     array $timers = [],
     int $controlFailures = 0,
-    ?int $silentSince = null
+    ?int $silentSince = null,
+    ?string $resolver = '10.2.0.1'
 ): array {
     $st = uu_state_new();
     $st['mode'] = $member === null ? 'fallback' : 'tunnel';
@@ -164,6 +166,12 @@ function uu_test_plan_state(
     $st['timers'] = $timers;
     $st['control_failures'] = $controlFailures;
     $st['control_silent_since'] = $silentSince;
+    /* the entry the plugin writes for tunnel mode on a member of the test group: its route, forwarded */
+    $routes = ['wg-a' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
+               'wg-b' => ['kind' => 'member', 'next_hop' => '10.2.0.6', 'if' => 'wg2']];
+    if ($resolver !== null && isset($routes[$member ?? ''])) {
+        $st['addresses'] = [$resolver => ['route' => $routes[$member], 'forwarded' => true, 'released_at' => null]];
+    }
     return $st;
 }
 

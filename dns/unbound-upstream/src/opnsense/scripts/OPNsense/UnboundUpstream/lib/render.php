@@ -177,20 +177,21 @@ function uu_block_conf(string $to, string $label, string $descr, string $family)
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>} $state
  * @param array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
- * @return array{footprint: ?array{resolver: string, interface: string}, problem: ?string}
+ * @return ?array{resolver: string, interface: string}
  */
-function uu_footprint_from_state(array $state, array $records, string $settingResolver): array
+function uu_footprint_from_state(array $state, array $records, string $settingResolver): ?array
 {
     $others = array_values(array_filter(uu_state_footprint($state), fn (string $a): bool => $a !== $settingResolver));
     if ($others === []) {
-        return ['footprint' => null, 'problem' => null];
+        return null;
     }
     $address = $others[0];
     $interface = '';
@@ -208,7 +209,7 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
             }
         }
     }
-    return ['footprint' => ['resolver' => $address, 'interface' => $interface], 'problem' => null];
+    return ['resolver' => $address, 'interface' => $interface];
 }
 
 /**
@@ -262,14 +263,13 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
     }
     $setting = $enabled && uu_resolver_refusal($resolver) === null ? (uu_ip_canonical($resolver) ?? '') : '';
     $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
-    if ($recsFailed && $found['footprint'] !== null) {
-        /* the address passed uu_footprint_from_state()'s address check */
-        $errors[] = 'DNS to ' . $found['footprint']['resolver']
+    if ($recsFailed && $found !== null) {
+        $errors[] = 'DNS to ' . $found['resolver']
             . ' is blocked until a filter reload can read the gateway records';
     }
     return ['enabled' => $enabled, 'resolver' => $resolver, 'members' => $members,
-        'footprint' => $found['footprint'],
-        'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem'],
+        'footprint' => $found,
+        'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : null,
         'error' => $errors === [] ? null : implode('; ', $errors)];
 }
 

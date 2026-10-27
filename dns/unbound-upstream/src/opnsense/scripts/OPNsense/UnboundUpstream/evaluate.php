@@ -239,7 +239,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     try {
         $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
             $settings['resolver'], $before[0] ?? null);
-        $s = uu_route_adopt($s, $st['addresses'][$settings['resolver']]['route'] ?? null);
+        $s = uu_route_adopt($s, uu_state_route_record($st, $settings['resolver']));
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
         $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
@@ -388,8 +388,7 @@ function uu_status_main(): int
     $settings = uu_settings();
     $st = uu_state_load(UU_STATE_PATH);
     /* never lists the ruleset: the checksum and the counting table only */
-    $s = uu_route_adopt(uu_snapshot($settings, [], null, false),
-        $st['addresses'][$settings['resolver']]['route'] ?? null);
+    $s = uu_route_adopt(uu_snapshot($settings, [], null, false), uu_state_route_record($st, $settings['resolver']));
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
         uu_state_footprint($st)[0] ?? null);
@@ -460,7 +459,7 @@ function uu_replay_main(string $path): int
     $recordedSettings = $doc['snapshot']['settings'] ?? null;
     $resolver = is_array($recordedSettings) && is_string($recordedSettings['resolver'] ?? null)
         ? $recordedSettings['resolver'] : '';
-    $s = uu_route_adopt(uu_snapshot_recorded($doc['snapshot']), $st['addresses'][$resolver]['route'] ?? null);
+    $s = uu_route_adopt(uu_snapshot_recorded($doc['snapshot']), uu_state_route_record($st, $resolver));
     $p = uu_plan($s, $st);
     uu_apply_preview($p, $s, function (string $msg, int $prio): void {
         echo $msg, "\n";
