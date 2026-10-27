@@ -602,68 +602,36 @@ function uu_conf_file_text(string $path = '/var/unbound/unbound.conf', string $h
 
 /**
  * Unbound's configuration as Unbound reads it: $path's text with every "include:" line replaced, in place, by the
- * included files' text (a glob expanded in sorted order, as glob(3) does, and an included file's own includes in turn),
- * so the last "do-ip6:" line over the whole text is the one Unbound keeps. Each file is read by
- * uu_conf_file_text(), with its refusals (a link, anything but a regular file, an unreadable file). A glob with no
- * match is no files; an include of one path that is missing is unreadable, as it is for Unbound. A relative include
- * is taken from $path's directory. Null when anything is unreadable, or the files exceed UU_CONF_MAX_FILES, UU_CONF_MAX_BYTES or
- * UU_CONF_MAX_DEPTH (so a loop ends): "could not look" is never "no override". $helper and $seconds are for the tests.
+ * included files' text (zone_read.py --conf, which does it all in one process, so the directory core empties and
+ * refills at every Unbound start is looked at once: a file a glob listed that is gone by the time it is opened is no
+ * file). The last "do-ip6:" line over the whole text is the one Unbound keeps. The rules are the helper's: globs, a
+ * relative include taken from the last "directory:" line, a link or a non-regular file refused. A file over
+ * UU_FILE_MAX_BYTES is cut after its last line end, so an option past the cut is not seen. An "include:" whose path is
+ * on the next line is not followed (core never writes it). Null when anything is unreadable or the files exceed
+ * UU_CONF_MAX_FILES or UU_CONF_MAX_BYTES (which also ends a loop): "could not look" is never "no override".
+ * $helper and $seconds are for the tests.
  */
 function uu_conf_expanded_text(string $path = '/var/unbound/unbound.conf',
     string $helper = __DIR__ . '/../zone_read.py', int $seconds = UU_ZONE_READ_SECONDS): ?string
 {
-    $files = 0;
-    $bytes = 0;
-    $expand = function (string $file, int $depth) use (&$expand, &$files, &$bytes, $path, $helper,
-                                                    $seconds): ?string {
-        $text = $depth > UU_CONF_MAX_DEPTH || ++$files > UU_CONF_MAX_FILES ? null
-            : uu_conf_file_text($file, $helper, $seconds);
-        $bytes += strlen((string)$text);
-        if ($text === null || $bytes > UU_CONF_MAX_BYTES) {
-            return null;
-        }
-        $out = '';
-        foreach (preg_split('/\R/', $text) ?: [] as $line) {
-            $target = uu_conf_include_target($line);
-            if ($target === null) {
-                $out .= $line . "\n";
-                continue;
-            }
-            $target = str_starts_with($target, '/') ? $target : dirname($path) . '/' . $target;
-            if (strpbrk($target, '*?[') === false) {
-                $matches = [$target];
-            } else {
-                $matches = glob($target, GLOB_NOSORT);
-                if ($matches === false) {
-                    return null;
-                }
-                sort($matches, SORT_STRING);
-            }
-            foreach ($matches as $match) {
-                $included = $expand($match, $depth + 1);
-                if ($included === null) {
-                    return null;
-                }
-                $out .= $included;
-            }
-        }
-        return $out;
-    };
-    return $expand($path, 0);
+    $doc = uu_zone_read_run(['--conf', $path], $helper, $seconds,
+        [(string)UU_CONF_MAX_FILES, (string)UU_CONF_MAX_BYTES]);
+    return $doc === null || $doc['skipped'] > 0 || count($doc['texts']) !== 1 ? null : $doc['texts'][0];
 }
 
 /**
- * zone_read.py run with $args (a DIR, or --file and a PATH) and UU_FILE_MAX_BYTES, from its argv (no shell), for at
- * most $seconds, its stdout decoded (uu_zone_decode()); null for a helper that cannot start, runs past that (it is
- * killed), exits non-zero or prints what the decoder refuses.
+ * zone_read.py run with $args (a DIR, or --file or --conf and a PATH), UU_FILE_MAX_BYTES and $tail, from its argv (no
+ * shell), for at most $seconds, its stdout decoded (uu_zone_decode()); null for a helper that cannot start, runs
+ * past that (it is killed), exits non-zero or prints what the decoder refuses.
  *
  * @param list<string> $args
+ * @param list<string> $tail
  * @return ?array{texts: list<string>, skipped: int}
  */
-function uu_zone_read_run(array $args, string $helper, int $seconds): ?array
+function uu_zone_read_run(array $args, string $helper, int $seconds, array $tail = []): ?array
 {
     $pipes = [];
-    $proc = @proc_open([UU_PYTHON, '-I', $helper, ...$args, (string)UU_FILE_MAX_BYTES],
+    $proc = @proc_open([UU_PYTHON, '-I', $helper, ...$args, (string)UU_FILE_MAX_BYTES, ...$tail],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
     if (!is_resource($proc)) {
         return null;

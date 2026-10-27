@@ -440,16 +440,6 @@ uu_register_suite('zone', function (): int {
             && $sweep("server:\n  do-ip4: no\n  do-ip6: no # c\n")));
 
     /* (m5) the include lines core writes, and the configuration with them spliced in, in Unbound's order */
-    uu_check($t, '(m5) include lines: the three core writes, quotes, a comment and include-toplevel; no other line',
-        uu_try_case(fn (): bool => uu_conf_include_target('include: /var/unbound/advanced.conf')
-                === '/var/unbound/advanced.conf'
-            && uu_conf_include_target('include: /var/unbound/etc/*.conf') === '/var/unbound/etc/*.conf'
-            && uu_conf_include_target("  include:\t\"/x y/*.conf\"  # c") === '/x y/*.conf'
-            && uu_conf_include_target("include: '/z.conf'") === '/z.conf'
-            && uu_conf_include_target('include-toplevel: rel.conf') === 'rel.conf'
-            && uu_conf_include_target('# include: /x.conf') === null && uu_conf_include_target('include:') === null
-            && uu_conf_include_target('include-x: /x.conf') === null
-            && uu_conf_include_target('private-address: include: /x') === null));
     $expanded = function (callable $setup, string $main = ''): ?array {
         $result = null;
         uu_scratch_case(function (string $dir) use ($setup, $main, &$result): bool {
@@ -523,6 +513,104 @@ uu_register_suite('zone', function (): int {
                 file_put_contents($dir . '/etc/.hidden.conf', "outgoing-interface: 192.0.2.1\n");
             }, "do-ip6: yes\ninclude: etc/*.conf\n");
             return $r !== null && $r['facts'] === array_replace($base, ['do_ip4' => false]);
+        }));
+    uu_check($t, '(m5) include spellings: a quoted path, a comment after it, include-toplevel and a plain path are '
+        . 'followed; a commented line, a similar keyword, a line that only holds the word and a path on the next '
+        . 'line are not',
+        uu_try_case(function () use ($expanded): bool {
+            $followed = $expanded(function (string $dir): void {
+                foreach (['a', 'b', 'c', 'd'] as $n) {
+                    file_put_contents("$dir/$n.txt", "# from $n\n");
+                }
+            }, "include: /var/unbound/a.txt\n  include:\t\"/var/unbound/b.txt\"  # c\n"
+                . "include: '/var/unbound/c.txt'\ninclude-toplevel: d.txt\n");
+            $ignored = $expanded(function (string $dir): void {
+                file_put_contents("$dir/a.txt", "# from a\n");
+            }, "# include: /var/unbound/a.txt\ninclude-x: /var/unbound/a.txt\nprivate-address: include: /x\n"
+                . "include:\n/var/unbound/a.txt\n");
+            $t = (string)($followed['text'] ?? '');
+            return $followed !== null && strpos($t, '# from a') < strpos($t, '# from b')
+                && strpos($t, '# from b') < strpos($t, '# from c') && strpos($t, '# from c') < strpos($t, '# from d')
+                && $ignored !== null && !str_contains((string)$ignored['text'], '# from a');
+        }));
+    uu_check($t, '(m5) a relative include is taken from the last directory: line read, not unbound.conf\'s own '
+        . 'directory (before any, from it)',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $other = $expanded(function (string $dir): void {
+                mkdir($dir . '/sub');
+                file_put_contents($dir . '/rel.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/sub/rel.conf', "do-ip6: no\n");
+            }, "directory: /var/unbound/sub\ninclude: rel.conf\n");
+            $plain = $expanded(function (string $dir): void {
+                mkdir($dir . '/sub');
+                file_put_contents($dir . '/rel.conf', "do-ip6: no\n");
+                file_put_contents($dir . '/sub/rel.conf', "do-ip6: yes\n");
+            }, "include: rel.conf\n");
+            $later = $expanded(function (string $dir): void {
+                mkdir($dir . '/sub');
+                file_put_contents($dir . '/rel.conf', "directory: $dir/sub\n");
+                file_put_contents($dir . '/sub/x.conf', "do-ip4: no\n");
+            }, "include: rel.conf\ninclude: x.conf\n");
+            return $other !== null && $other['facts'] === array_replace($base, ['do_ip6' => false])
+                && $plain !== null && $plain['facts'] === array_replace($base, ['do_ip6' => false])
+                && $later !== null && $later['facts'] === array_replace($base, ['do_ip4' => false]);
+        }));
+    uu_check($t, '(m5) globs: ? and [ ] match one character, braces give their alternatives in order, each sorted, '
+        . 'and a brace path that is missing is no file',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $files = function (string $dir): void {
+                file_put_contents($dir . '/etc/a1.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/etc/a2.conf', "do-ip6: no\n");
+                file_put_contents($dir . '/etc/ab.conf', "do-ip4: no\n");
+            };
+            $question = $expanded($files, "include: /var/unbound/etc/a?.conf\n");
+            $class = $expanded($files, "include: /var/unbound/etc/a[12].conf\n");
+            $order = $expanded($files, "include: /var/unbound/etc/{a2,a1}.conf\n");
+            $reverse = $expanded($files, "include: /var/unbound/etc/{a1,a2}.conf\n");
+            $gone = $expanded($files, "include: /var/unbound/etc/{a1,nothere}.conf\n");
+            return $question !== null && $question['facts'] === ['do_ip4' => false, 'do_ip6' => false,
+                    'outgoing_interface' => false]
+                && $class !== null && $class['facts'] === array_replace($base, ['do_ip6' => false])
+                && $order !== null && $order['facts'] === $base
+                && $reverse !== null && $reverse['facts'] === array_replace($base, ['do_ip6' => false])
+                && $gone !== null && $gone['facts'] === $base;
+        }));
+    uu_check($t, '(m5) a chain of five distinct files is followed (no depth bound); a leading ~ and a wildcard in a '
+        . 'directory component are refused',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $chain = $expanded(function (string $dir): void {
+                for ($i = 1; $i <= 5; $i++) {
+                    file_put_contents("$dir/c$i.txt", $i < 5 ? "include: c" . ($i + 1) . ".txt\n" : "do-ip6: no\n");
+                }
+            }, "include: c1.txt\n");
+            $tilde = $expanded(fn (string $dir) => null, "include: ~/x*.conf\n");
+            $dirGlob = $expanded(fn (string $dir) => mkdir($dir . '/e1'), "include: /var/unbound/e*/x.conf\n");
+            return $chain !== null && $chain['facts'] === array_replace($base, ['do_ip6' => false])
+                && $tilde !== null && $tilde['text'] === null && $dirGlob !== null && $dirGlob['text'] === null;
+        }));
+    uu_check($t, '(m5) an entry a glob lists that is gone when opened is no file (core empties and refills its '
+        . 'custom directory at every start); a listed link is still refused',
+        uu_try_case(function (): bool {
+            $helper = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/zone_read.py';
+            return uu_scratch_case(function (string $dir) use ($helper): bool {
+                mkdir($dir . '/etc');
+                file_put_contents($dir . '/unbound.conf', "include: $dir/etc/*.conf\n");
+                file_put_contents($dir . '/etc/a.conf', "do-ip6: no\n");
+                $script = "import runpy, sys, os\nns = runpy.run_path(sys.argv[1])\nreal = os.listdir\n"
+                    . "os.listdir = lambda fd: real(fd) + ['ghost.conf']\n"
+                    . "sys.exit(ns['main_conf'](sys.argv[2], 1048576, 64, 8388608))\n";
+                $run = function () use ($script, $helper, $dir): string {
+                    $out = [];
+                    exec(UU_PYTHON . ' -I -c ' . escapeshellarg($script) . ' ' . escapeshellarg($helper) . ' '
+                        . escapeshellarg($dir . '/unbound.conf') . ' 2>/dev/null', $out);
+                    return implode("\n", $out);
+                };
+                $gone = $run();
+                symlink($dir . '/etc/a.conf', $dir . '/etc/ghost.conf');
+                $linked = $run();
+                return $gone === '{"texts": ["ZG8taXA2OiBubwo="], "skipped": 0}'
+                    && $linked === '{"texts": [], "skipped": 1}';
+            });
         }));
     uu_check($t, '(m5) unreadable (null): a link among the included files, a directory matched, a path that is '
         . 'missing, a loop, more files or bytes than the bounds, and unbound.conf itself missing; a glob with no '

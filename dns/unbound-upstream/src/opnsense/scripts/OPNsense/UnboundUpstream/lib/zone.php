@@ -188,16 +188,3 @@ function uu_unbound_conf_facts(string $text): array
     }
     return ['do_ip4' => $doIp4, 'do_ip6' => $doIp6, 'outgoing_interface' => $outgoing];
 }
-
-/**
- * The path or glob an "include:" (or "include-toplevel:") line names, quotes removed, or null for any other line. A
- * comment after it is not part of it. Pure.
- */
-function uu_conf_include_target(string $line): ?string
-{
-    $value = '(?:"([^"]+)"|\'([^\']+)\'|([^\s#"\']+))';
-    if (preg_match("/^\\s*include(?:-toplevel)?:\\s*$value\\s*(#.*)?\$/D", $line, $m, PREG_UNMATCHED_AS_NULL) !== 1) {
-        return null;
-    }
-    return $m[1] ?? $m[2] ?? $m[3];
-}
