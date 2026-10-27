@@ -34,4 +34,44 @@ class SettingsController extends ApiMutableModelControllerBase
 {
     protected static $internalModelName = 'unboundupstream';
     protected static $internalModelClass = '\OPNsense\UnboundUpstream\UnboundUpstream';
+
+    /**
+     * The per-member resolvers for the page's grid: each row's member and address.
+     */
+    public function searchResolverAction()
+    {
+        return $this->searchBase('resolvers.resolver', ['gateway', 'address']);
+    }
+
+    /**
+     * One per-member resolver, or a new row's fields with no id.
+     */
+    public function getResolverAction($uuid = null)
+    {
+        return $this->getBase('resolver', 'resolvers.resolver', $uuid);
+    }
+
+    /**
+     * Add a per-member resolver from the dialog; nothing is saved when it fails validation.
+     */
+    public function addResolverAction()
+    {
+        return $this->addBase('resolver', 'resolvers.resolver');
+    }
+
+    /**
+     * Change a per-member resolver from the dialog; nothing is saved when it fails validation.
+     */
+    public function setResolverAction($uuid)
+    {
+        return $this->setBase('resolver', 'resolvers.resolver', $uuid);
+    }
+
+    /**
+     * Delete per-member resolvers by id (one, or several comma-separated).
+     */
+    public function delResolverAction($uuid)
+    {
+        return $this->delBase('resolvers.resolver', $uuid);
+    }
 }

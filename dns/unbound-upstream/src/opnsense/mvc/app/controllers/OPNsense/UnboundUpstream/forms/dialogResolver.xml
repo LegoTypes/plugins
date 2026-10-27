@@ -1,0 +1,14 @@
+<form>
+    <field>
+        <id>resolver.gateway</id>
+        <label>Member</label>
+        <type>dropdown</type>
+        <help>The member this resolver is for.</help>
+    </field>
+    <field>
+        <id>resolver.address</id>
+        <label>Resolver</label>
+        <type>text</type>
+        <help>The resolver's address inside this member's tunnel. IPv4 or IPv6.</help>
+    </field>
+</form>

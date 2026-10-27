@@ -15,7 +15,9 @@ declare(strict_types=1);
  * puts it back, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
  * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
- * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes.
+ * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes, and
+ * runs the settings controller's resolver actions over a row it adds to the controller's model in memory only (no
+ * action it runs saves).
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -200,6 +202,52 @@ uu_register_suite('wiring', function (): int {
         && !str_contains($view, '.html('));
     uu_check($t, 'the installed status view sets each refusal and note as text on its own line, not joined into one',
         str_contains($view, "box.append($('<div/>').text(n));") && !str_contains($view, 'notes.join('));
+
+    /* (l5) the per-member resolvers: the dialog's two fields, the grid on the page over the five actions, the member
+     * table's Resolver column, and the route row and footprint text for several addresses */
+    $dialog = @simplexml_load_file('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/forms/'
+        . 'dialogResolver.xml');
+    $fields = [];
+    foreach ($dialog === false ? [] : ($dialog->xpath('/form/field') ?: []) as $field) {
+        $fields[(string)$field->id] = [(string)$field->type, (string)$field->help];
+    }
+    uu_check($t, '(l5) the installed dialogResolver.xml names the member\'s gateway (a dropdown) and its address '
+        . '(text), with their help',
+        $fields === ['resolver.gateway' => ['dropdown', 'The member this resolver is for.'],
+                     'resolver.address' => ['text',
+                         "The resolver's address inside this member's tunnel. IPv4 or IPv6."]]);
+    $index = (string)@file_get_contents('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/'
+        . 'IndexController.php');
+    $members = preg_match('~<table[^>]*id="unboundupstream-members".*?</thead>~s', $view, $m) === 1 ? $m[0] : '';
+    uu_check($t, '(l5) the installed view has the grid-resolvers grid under its heading, over the five resolver '
+        . 'actions, with the dialog the page controller supplies',
+        str_contains($view, '<table id="grid-resolvers" class="table table-condensed table-hover table-striped"'
+            . "\n                   data-editDialog=\"DialogResolver\">")
+        && str_contains($view, "{{ lang._('Per-member resolvers') }}")
+        && str_contains($view, "$('#grid-resolvers').UIBootgrid({\n"
+            . "            search: '/api/unboundupstream/settings/search_resolver',\n"
+            . "            get: '/api/unboundupstream/settings/get_resolver/',\n"
+            . "            set: '/api/unboundupstream/settings/set_resolver/',\n"
+            . "            add: '/api/unboundupstream/settings/add_resolver/',\n"
+            . "            del: '/api/unboundupstream/settings/del_resolver/'\n")
+        && str_contains($view, "{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': "
+            . "'DialogResolver',")
+        && str_contains($index, "\$this->view->resolverForm = \$this->getForm('dialogResolver');"));
+    uu_check($t, '(l5) the member table has the Resolver column after Tier, each member\'s resolver set as text, and '
+        . 'the view still builds no markup with .html(',
+        str_contains($members, "<th>{{ lang._('Tier') }}</th>\n                <th>{{ lang._('Resolver') }}</th>")
+        && str_contains($view, ".append($('<td/>').text(m.tier))\n                        "
+            . ".append($('<td/>').text(plain(m.resolver)))")
+        && !str_contains($view, '.html('));
+    uu_check($t, '(l5) with at most one address the route row and the footprint text are 1.3_2\'s, from route and '
+        . 'footprint; with more, a row per address and the footprints joined with ", "',
+        substr_count($view, 'if ((data.addresses || []).length <= 1) {') === 2
+        && str_contains($view, "body.append(row(\"{{ lang._('Resolver route') }}\", routeText(route)));")
+        && str_contains($view, "body.append(row(\"{{ lang._('Resolver route') }} (\" + plain(addr) + ')', "
+            . 'routeText(r)));')
+        && str_contains($view, 'footprints = data.footprint ? [data.footprint] : [];')
+        && str_contains($view, "if (entry.footprint) {\n                        footprints.push(addr);")
+        && str_contains($view, "plain(footprints.join(', '))"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -248,13 +296,88 @@ uu_register_suite('wiring', function (): int {
     $writes = ['/api/unboundupstream/service/stop', '/api/unboundupstream/service/start',
         '/api/unboundupstream/service/reconfigure', '/api/unboundupstream/service/status',
         '/api/unboundupstream/settings/set', '/api/unboundupstream/settings/get', '/ui/unboundupstream',
-        '/api/diagnostics/log/core/unboundupstream'];
+        '/api/diagnostics/log/core/unboundupstream', '/api/unboundupstream/settings/search_resolver',
+        '/api/unboundupstream/settings/get_resolver', '/api/unboundupstream/settings/add_resolver',
+        '/api/unboundupstream/settings/set_resolver', '/api/unboundupstream/settings/del_resolver'];
     uu_check($t, 'ACL: the status privilege allows service/state and none of the other plugin endpoints',
         $allows('page-status-unboundupstream', '/api/unboundupstream/service/state')
         && array_filter($writes, fn (string $u): bool => $allows('page-status-unboundupstream', $u)) === []);
     uu_check($t, 'ACL: the page privilege still allows the state and every other plugin endpoint',
         $allows('page-services-unboundupstream', '/api/unboundupstream/service/state')
         && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
+
+    /* (l5) the five resolver actions, run as the API runs them over a row added to the controller's model in memory
+     * only: search lists it with its member's name, get reads it, add and set refuse what fails validation, del finds
+     * no row by an unknown id; none saves, so config.xml is unchanged */
+    $ctl = null;
+    $config = '/conf/config.xml';
+    $configBefore = md5_file($config);
+    $saved = ['server' => $_SERVER, 'post' => $_POST, 'request' => $_REQUEST];
+    try {
+        $c = new \OPNsense\UnboundUpstream\Api\SettingsController();
+        $c->request = new \OPNsense\Mvc\Request();
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_POST = [];
+        $_REQUEST = [];
+        $gwUuid = '';
+        $gwName = '';
+        foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $key => $gw) {
+            $gwUuid = (string)$key;
+            $gwName = $gw->name->getValue();
+            break;
+        }
+        $node = (new ReflectionMethod($c, 'getModel'))->invoke($c)->resolvers->resolver->Add();
+        $node->setNodes(['gateway' => $gwUuid, 'address' => '192.0.2.10']);
+        $row = (string)$node->getAttribute('uuid');
+        $ctl = ['row' => $row, 'gateway' => $gwUuid, 'name' => $gwName, 'search' => $c->searchResolverAction(),
+                'get' => $c->getResolverAction($row), 'new' => $c->getResolverAction()];
+        /* the grid's search box finds a row by its member's name and by its address */
+        foreach (['byName' => $gwName, 'byAddress' => '192.0.2.10', 'byNothing' => '198.51.100.99'] as $k => $phrase) {
+            $_REQUEST = ['searchPhrase' => $phrase];
+            $ctl[$k] = array_column($c->searchResolverAction()['rows'], 'uuid');
+        }
+        $_REQUEST = [];
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_POST = ['resolver' => ['gateway' => '', 'address' => 'not an address']];
+        $_REQUEST = $_POST;
+        $ctl['add'] = $c->addResolverAction();
+        \OPNsense\Core\Config::getInstance()->unlock();
+        $_POST = ['resolver' => ['address' => 'not an address']];
+        $_REQUEST = $_POST;
+        $ctl['set'] = $c->setResolverAction($row);
+        \OPNsense\Core\Config::getInstance()->unlock();
+        $_POST = [];
+        $_REQUEST = [];
+        $ctl['del'] = $c->delResolverAction('00000000-0000-4000-8000-000000000000');
+        \OPNsense\Core\Config::getInstance()->unlock();
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+        \OPNsense\Core\Config::getInstance()->unlock();
+    } finally {
+        $_SERVER = $saved['server'];
+        $_POST = $saved['post'];
+        $_REQUEST = $saved['request'];
+    }
+    $gwOption = $ctl['get']['resolver']['gateway'][$ctl['gateway'] ?? ''] ?? null;
+    uu_check($t, '(l5) search_resolver lists the row with its member\'s name and address and searches both; '
+        . 'get_resolver reads it, and with no id a new row\'s fields',
+        $ctl !== null && $ctl['gateway'] !== ''
+        && ($ctl['search']['rows'] ?? null) === [['uuid' => $ctl['row'], 'gateway' => $ctl['gateway'],
+            '%gateway' => $ctl['name'], 'address' => '192.0.2.10']]
+        && $ctl['byName'] === [$ctl['row']] && $ctl['byAddress'] === [$ctl['row']] && $ctl['byNothing'] === []
+        && $gwOption === ['value' => $ctl['name'], 'selected' => 1]
+        && ($ctl['get']['resolver']['address'] ?? null) === '192.0.2.10'
+        && array_keys($ctl['new']['resolver'] ?? []) === ['gateway', 'address']
+        && ($ctl['new']['resolver']['address'] ?? null) === '');
+    uu_check($t, '(l5) add_resolver and set_resolver refuse a row that fails validation, naming its fields; '
+        . 'del_resolver finds no row by an unknown id; config.xml is unchanged',
+        $ctl !== null
+        && ($ctl['add']['result'] ?? null) === 'failed'
+        && array_keys($ctl['add']['validations'] ?? []) === ['resolver.gateway', 'resolver.address']
+        && ($ctl['set'] ?? null) === ['result' => 'failed',
+            'validations' => ['resolver.address' => 'Enter a single IPv4 or IPv6 address.']]
+        && ($ctl['del'] ?? null) === ['result' => 'not found']
+        && md5_file($config) === $configBefore);
 
     /* program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';
@@ -554,9 +677,28 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, '(s9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $s9Had && !file_exists($s9Aside)
         && ($s9Had ? (string)file_get_contents(UU_STATE_PATH) : null) === $s9Saved);
 
+    $s9Doc = is_array($s9Docs[0]) ? $s9Docs[0] : [];
+    $entry = $s9Doc['routes']['10.2.0.1'] ?? null;
+    $l6 = ($s9Doc['addresses'] ?? null) === ['10.2.0.1'] && array_keys($s9Doc['routes'] ?? []) === ['10.2.0.1']
+        && is_array($entry) && array_keys($entry) === ['present', 'gateway', 'interface', 'reject', 'ours', 'flags',
+            'footprint']
+        && is_array($entry['flags']) && $entry['footprint'] === true;
+    if (!$l6) {
+        printf("  resolver %s, addresses %s, route %s, routes %s\n", json_encode($s9Doc['resolver'] ?? null),
+            json_encode($s9Doc['addresses'] ?? null), json_encode($s9Doc['route'] ?? null),
+            json_encode($s9Doc['routes'] ?? null));
+    }
+    uu_check($t, '(l6) status over the version 5 file: its one address with its route as the status reads one, a '
+        . 'footprint while the plugin is disabled', $l6);
+
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);
     uu_check($t, 'configctl state returns the status JSON', is_array($state) && isset($state['mode'], $state['members'])
         && $state['enabled'] === false);
+    uu_check($t, '(l6) configctl state with the plugin disabled carries routes and addresses, an entry and a route per '
+        . 'address the state holds',
+        is_array($state) && array_key_exists('routes', $state) && array_key_exists('addresses', $state)
+        && is_array($state['routes']) && is_array($state['addresses'])
+        && array_keys($state['routes']) === $state['addresses']);
 
     /* core calls the monitor hook with no arguments at boot (rc.bootup), and plugins_configure clamps the declared
      * two to what it has: the hook must take one argument, or none, without throwing */

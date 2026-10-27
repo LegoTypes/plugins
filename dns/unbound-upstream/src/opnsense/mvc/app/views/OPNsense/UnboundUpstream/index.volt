@@ -26,7 +26,7 @@
             'none': "{{ lang._('none') }}"
         };
         /* loaded, verifying (the ruleset changed since the last evaluation) or the named problems; then
-           the address the footprint block keeps while the plugin may still be using it, when there is one */
+           the addresses the footprint block keeps while the plugin may still be using them, when there are any */
         function rulesText(data) {
             var r = data.rules || {};
             var text = r.state === 'loaded' ? "{{ lang._('yes') }}"
@@ -35,9 +35,27 @@
             if (r.verified_at !== null && r.verified_at !== undefined) {
                 text += ' (' + "{{ lang._('verified') }} " + new Date(r.verified_at * 1000).toLocaleString() + ')';
             }
+            var footprints = [];
+            if ((data.addresses || []).length <= 1) {
+                footprints = data.footprint ? [data.footprint] : [];
+            } else {
+                $.each(data.routes, function (addr, entry) {
+                    if (entry.footprint) {
+                        footprints.push(addr);
+                    }
+                });
+            }
             return text + ', ' + (data.counter_armed && data.blocked !== null
                 ? data.blocked + " {{ lang._('blocked packets') }}" : "{{ lang._('counter not armed') }}")
-                + (data.footprint ? "; {{ lang._('footprint block for') }} " + plain(data.footprint) : '');
+                + (footprints.length ? "; {{ lang._('footprint block for') }} " + plain(footprints.join(', ')) : '');
+        }
+        /* a route as a route row shows it: its next hop and device, or reject, with its flags */
+        function routeText(route) {
+            return route.present
+                ? plain((route.reject ? "{{ lang._('reject') }}" : route.gateway + ' ' + route.interface)
+                    + ' [' + (route.flags || []).join(' ') + ']'
+                    + (route.ours ? '' : " {{ lang._('(not made by this plugin)') }}"))
+                : "{{ lang._('absent') }}";
         }
         function lastDown(d) {
             return d ? new Date(d.at * 1000).toLocaleString() + ': ' + plain(d.reason) : '';
@@ -61,7 +79,14 @@
                 body.append(row("{{ lang._('Live root forwarders') }}", data.live_root === null ? "{{ lang._('unknown') }}" : plain(data.live_root.join(', '))));
                 body.append(row("{{ lang._('Configured root forwarders') }}", plain((data.configured_root.addrs || []).join(', ')) + (data.configured_root.tls ? ' (TLS)' : '')));
                 body.append(row("{{ lang._('TLS flag last applied') }}", data.tls_applied === null ? '' : yesno(data.tls_applied)));
-                body.append(row("{{ lang._('Resolver route') }}", route.present ? plain((route.reject ? "{{ lang._('reject') }}" : route.gateway + ' ' + route.interface) + ' [' + (route.flags || []).join(' ') + ']' + (route.ours ? '' : " {{ lang._('(not made by this plugin)') }}")) : "{{ lang._('absent') }}"));
+                /* one address: the route row as it always read; several: a row for each */
+                if ((data.addresses || []).length <= 1) {
+                    body.append(row("{{ lang._('Resolver route') }}", routeText(route)));
+                } else {
+                    $.each(data.routes, function (addr, r) {
+                        body.append(row("{{ lang._('Resolver route') }} (" + plain(addr) + ')', routeText(r)));
+                    });
+                }
                 body.append(row("{{ lang._('Rules loaded') }}", rulesText(data)));
                 body.append(row("{{ lang._('Last direct check') }}", check((data.checks || {}).direct)));
                 body.append(row("{{ lang._('Last check through Unbound') }}", check((data.checks || {}).unbound)));
@@ -72,6 +97,7 @@
                     members.append($('<tr/>')
                         .append($('<td/>').text(plain(m.name)))
                         .append($('<td/>').text(m.tier))
+                        .append($('<td/>').text(plain(m.resolver)))
                         .append($('<td/>').text(plain(readings[m.kind] || m.kind)))
                         .append($('<td/>').text(plain(m.verdict === null ? "{{ lang._('up') }}" : m.verdict)))
                         .append($('<td/>').text(yesno(m.usable)))
@@ -93,6 +119,14 @@
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
         });
+        /* the per-member resolvers: each row is saved by its own dialog */
+        $('#grid-resolvers').UIBootgrid({
+            search: '/api/unboundupstream/settings/search_resolver',
+            get: '/api/unboundupstream/settings/get_resolver/',
+            set: '/api/unboundupstream/settings/set_resolver/',
+            add: '/api/unboundupstream/settings/add_resolver/',
+            del: '/api/unboundupstream/settings/del_resolver/'
+        });
         $('#reconfigureAct').SimpleActionButton({
             onPreAction: function () {
                 var dfObj = new $.Deferred();
@@ -111,6 +145,38 @@
     {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
 </div>
 <div class="content-box">
+    <table class="table table-condensed">
+        <tr><td><h3>{{ lang._('Per-member resolvers') }}</h3></td></tr>
+        <tr><td>
+            <table id="grid-resolvers" class="table table-condensed table-hover table-striped"
+                   data-editDialog="DialogResolver">
+                <thead>
+                    <tr>
+                        <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">
+                            {{ lang._('ID') }}</th>
+                        <th data-column-id="gateway" data-type="string">{{ lang._('Member') }}</th>
+                        <th data-column-id="address" data-type="string">{{ lang._('Resolver') }}</th>
+                        <th data-column-id="commands" data-width="7em" data-formatter="commands" data-sortable="false">
+                            {{ lang._('Commands') }}</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+                <tfoot>
+                    <tr>
+                        <td></td>
+                        <td>
+                            <button data-action="add" type="button" class="btn btn-xs btn-primary">
+                                <span class="fa fa-fw fa-plus"></span></button>
+                            <button data-action="deleteSelected" type="button" class="btn btn-xs btn-default">
+                                <span class="fa fa-fw fa-trash-o"></span></button>
+                        </td>
+                    </tr>
+                </tfoot>
+            </table>
+        </td></tr>
+    </table>
+</div>
+<div class="content-box">
     <div class="alert alert-info" id="unboundupstream-notes" style="display: none;"></div>
     <p>{{ lang._("Unbound's own settings page keeps showing its configured forwarders while the tunnel is in use") }}</p>
     <table class="table table-condensed" id="unboundupstream-state">
@@ -121,6 +187,7 @@
             <tr>
                 <th>{{ lang._('Member') }}</th>
                 <th>{{ lang._('Tier') }}</th>
+                <th>{{ lang._('Resolver') }}</th>
                 <th>{{ lang._('Reading') }}</th>
                 <th>{{ lang._('Verdict') }}</th>
                 <th>{{ lang._('Usable') }}</th>
@@ -133,3 +200,5 @@
     </table>
 </div>
 {{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/unboundupstream/service/reconfigure'}) }}
+{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': 'DialogResolver',
+    'label': lang._('Edit per-member resolver')]) }}

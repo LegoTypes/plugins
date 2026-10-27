@@ -360,10 +360,10 @@ function uu_status_main(): int
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
         uu_setting_addresses($s));
-    /* the active resolver's route, in its family */
-    $args = uu_route_get_args(uu_status_active($s, $p));
-    $route = $args === null ? '' : (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null');
-    $doc = uu_status_doc($s, $p, $table, $route);
+    /* the route of the active resolver and of each address the state holds, each in its family */
+    $routes = uu_status_route_outs($s, $p,
+        fn (string $args): string => (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null'));
+    $doc = uu_status_doc($s, $p, $table, $routes);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
     return 0;
 }
