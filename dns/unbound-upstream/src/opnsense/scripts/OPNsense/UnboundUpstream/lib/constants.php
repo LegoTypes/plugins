@@ -50,7 +50,6 @@ const UU_ZONE_READ_SECONDS = 5;           /* zone_read.py is killed after this l
 const UU_RULES_LIST_PAIRS = 2;            /* checksum-listing-checksum tries before a straddled listing is given up */
 const UU_STOP_REQUEST = 'request';        /* Snapshot.stop: evaluate.php stop (the service's stop, or a Save) */
 const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being removed */
-const UU_STOP_RESOLVER = 'resolver';      /* Snapshot.stop: undoing the resolver address a Save replaced */
 const UU_STOP_REMOVING = 'removing';      /* Snapshot.stop: any other evaluation while the removal marker exists */
 const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect timeout */
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */

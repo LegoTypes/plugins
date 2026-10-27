@@ -11,7 +11,8 @@ declare(strict_types=1);
  * IPv6 address with a family, compared in canonical form (inet_ntop of inet_pton, so 2001:DB8:0:0::53 and
  * 2001:db8::53 are one address). Pure and standalone: it requires nothing, so the hook can load it beside state.php.
  * The ranges uu_ip_problem() refuses are the model's (UnboundUpstream::resolverProblems()), case for case. Each
- * member's effective resolver and the group's family are decided here too, from plain arrays.
+ * member's effective resolver and the group's family are decided here too, from plain arrays, and forwarder lists
+ * are compared as sets (uu_apply_same()).
  */
 
 /**
@@ -268,4 +269,40 @@ function uu_plan_addresses(array $s): array
     $addresses = array_map('strval', array_keys($addresses));
     sort($addresses, SORT_STRING);
     return $addresses;
+}
+
+/**
+ * Addresses as `unbound-control forward` prints them, for comparing as sets: "@port" and "#name" dropped, IPv6 in
+ * its canonical form, sorted, each once. With uu_apply_same(), the one comparison of forwarder lists that apply and
+ * the planner share.
+ *
+ * @param list<string> $addrs
+ * @return list<string>
+ */
+function uu_apply_bare(array $addrs): array
+{
+    $out = [];
+    foreach ($addrs as $addr) {
+        $ip = (string)preg_replace('/[@#].*$/', '', $addr);
+        if (filter_var($ip, FILTER_VALIDATE_IP) !== false) {
+            $packed = inet_pton($ip);
+            $text = $packed === false ? false : inet_ntop($packed);
+            $ip = $text === false ? $ip : $text;
+        }
+        $out[] = strtolower($ip);
+    }
+    $out = array_values(array_unique($out));
+    sort($out);
+    return $out;
+}
+
+/**
+ * Whether the live root forwarders are the wanted ones; an unknown live root never is.
+ *
+ * @param ?list<string> $live
+ * @param list<string> $want
+ */
+function uu_apply_same(?array $live, array $want): bool
+{
+    return $live !== null && uu_apply_bare($live) === uu_apply_bare($want);
 }

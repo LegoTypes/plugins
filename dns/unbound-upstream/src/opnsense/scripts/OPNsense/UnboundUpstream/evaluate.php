@@ -13,7 +13,7 @@ declare(strict_types=1);
  *                                     the gateways the monitor hook passed (configd hands %s over as one parameter)
  *   evaluate.php start                regenerate cron (the minute job exists while enabled, or while a footprint is
  *                                     recorded), then one evaluation (Save with enabled on while the job is missing)
- *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the resolver's route,
+ *   evaluate.php stop                 regenerate cron, then leave tunnel mode and delete the plugin's routes,
  *                                     whatever the settings say (Save with enabled off)
  *   evaluate.php remove               the package's deinstall, on an upgrade too (a reload between the old files'
  *                                     removal and the new install renders none of the plugin's rules): leave the
@@ -167,12 +167,10 @@ function uu_remove(): int
 /**
  * One evaluation. stop and remove run as stops whatever the settings say, and so does every evaluation while the
  * removal marker exists, as a tick of the removal (uu_plan_causes()); the cause goes to the planner (Snapshot.stop),
- * which logs it. The settings are read under the lock, so an evaluation that waited for it acts on the last Save. When
- * the state records a resolver address other than the setting's (a Save changed it), that address's route and
- * forwarders are undone first by a stop for it, under the run's cause (a requested stop's or a removal's undo restarts
- * Unbound when it cannot restore, and a removal's leaves the reject route), and the members' resolver-failed marks,
- * which were about it, are forgotten; if the undo does not finish, the run ends there and the new address waits for the
- * next evaluation.
+ * which logs it. The settings are read under the lock, so an evaluation that waited for it acts on the last Save. A
+ * Save that changed a resolver is no stop: the planner switches in place, every address the state still holds is
+ * rejected, held and drained by apply, and each member's resolver-failed mark follows its own resolver
+ * (uu_timers_follow_resolvers()). 1 when the run left an address it had to leave (uu_evaluate_once()).
  *
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param list<string> $named
@@ -180,50 +178,29 @@ function uu_remove(): int
 function uu_evaluate(?string $stop, array $named): int
 {
     $settings = uu_settings(true);
-    $causes = uu_plan_causes($stop, is_file(UU_REMOVING_PATH));
-    if ($causes['run'] === UU_STOP_REMOVING) {
+    $cause = uu_plan_causes($stop, is_file(UU_REMOVING_PATH))['run'];
+    if ($cause === UU_STOP_REMOVING) {
         /* every minute after a deinstall that stopped partway: worth the noise */
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    /* the footprint as the rules and the minute job read it: the state's keys are addresses by construction */
-    foreach (uu_state_footprint(uu_state_load(UU_STATE_PATH)) as $old) {
-        if ($old === $settings['resolver']) {
-            continue;
-        }
-        uu_log("resolver changed from $old to {$settings['resolver']}: undoing the route and forwarders of $old "
-            . 'first');
-        $previous = $settings;
-        $previous['resolver'] = $old;
-        $previous['default'] = $old;
-        uu_evaluate_once($previous, [], $causes['undo']);
-        $st = uu_state_load(UU_STATE_PATH);
-        if (isset($st['addresses'][$old])) {
-            uu_log("the route or forwarders of $old could not be undone: " . ($causes['run'] === null
-                ? "{$settings['resolver']} waits for the next evaluation"
-                : 'the stop ends there, with what the lines above say is left'), LOG_ERR);
-            return 1;
-        }
-        uu_state_save(UU_STATE_PATH, uu_state_forget_resolver($st));
-    }
-    uu_evaluate_once($settings, $named, $causes['run']);
-    return 0;
+    return uu_evaluate_once($settings, $named, $cause);
 }
 
 /**
- * Snapshot, the rules' verification saved when this run made one, plan, apply, the counting table's upkeep and
- * blocked-count line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
- * (uu_footprint_follow()), then the switch notification when the run switched, for one set of
- * settings. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with
- * changes the checksum anyway; the stop for a replaced resolver address would also verify the rules against an
- * address they are no longer rendered for and save that verdict under the live checksum.
+ * Snapshot (with the routes of every address the loaded state holds), the rules' verification saved when this run
+ * made one, plan, apply, the counting table's upkeep and blocked-count line, save, the filter reload (and cron
+ * restart) when the footprint changed, except in remove itself (uu_footprint_follow()), then the switch notification
+ * when the run switched. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends
+ * with changes the checksum anyway. 1 when apply left an address it had to leave (its reject route, its delete, the
+ * flush before it or the restore that had to take Unbound off it failed, each with its error line), else 0.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
  * @param list<string> $named
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  */
-function uu_evaluate_once(array $settings, array $named, ?string $stop): void
+function uu_evaluate_once(array $settings, array $named, ?string $stop): int
 {
     $st = uu_state_load(UU_STATE_PATH);
     $before = uu_state_footprint($st);
@@ -243,7 +220,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         $s = uu_route_adopt($s, $st['addresses']);
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
-        $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
+        $outcome = uu_apply_outcome($p, $s, uu_live_io(UU_STATE_PATH));
+        $st = $outcome['state'];
 
         $blocked = null;
         if (uu_plan_stop_reason($s) === null) {
@@ -265,6 +243,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
     }
+    return $outcome['unfinished'] === [] ? 0 : 1;
 }
 
 /**
@@ -332,7 +311,6 @@ function uu_block_table_fill(string $resolver): void
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -358,7 +336,6 @@ function uu_block_table_fill(string $resolver): void
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -401,7 +378,8 @@ function uu_status_main(): int
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
         uu_state_footprint($st)[0] ?? null);
-    $args = uu_route_get_args($settings['resolver']);
+    /* the active resolver's route, in its family */
+    $args = uu_route_get_args(uu_status_active($s, $p));
     $route = $args === null ? '' : (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null');
     $doc = uu_status_doc($s, $p, $table, $route);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
@@ -455,7 +433,7 @@ function uu_replay_main(string $path): int
     }
     $doc = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
     $keys = ['now', 'wall', 'settings', 'trigger', 'tiers', 'family', 'members', 'probes', 'named', 'stop', 'unbound',
-             'zone', 'route', 'routes', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
+             'zone', 'routes', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
     /* the snapshot is evaluate.php record's own output: its top-level shape is checked, not every field, once a
      * recording made before 1.4 has been refused by name */
     $not = "$path is not a snapshot and state written by evaluate.php record";

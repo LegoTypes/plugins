@@ -14,19 +14,19 @@ declare(strict_types=1);
  *                  trigger: string, tiers: list<list<string>>, family: string, members: array<string, Member>,
  *                  probes: array<string, Probe>, named: list<string>, stop: ?string,
  *                  unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *                  zone: Zone, route: Route, routes: array<string, Route>, fib_sync_ms: ?int,
+ *                  zone: Zone, routes: array<string, Route>, fib_sync_ms: ?int,
  *                  contract_input: ContractInput, rules: RulesCheck,
  *                  block_table: array{table: ?TableFacts, addresses: list<string>}}
  *   Route    = array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}
  *   now is monotonic seconds; settings.default is the Default resolver and settings.resolver the same address (kept
- *   while apply, the rules and the status read it), rows the per-member rows by gateway UUID; tiers come from the group
- *   (best first) and are empty when the group is gone; family is the group's (uu_group_family()); members and probes
+ *   while the rules read it), rows the per-member rows by gateway UUID; tiers come from the group (best first) and
+ *   are empty when the group is gone; family is the group's (uu_group_family()); members and probes
  *   are keyed by gateway name (Member and Probe: verdict.php; a Member also carries its gateway's ipprotocol and its
  *   effective resolver, '' for none); named lists the gateways the monitor hook passed; stop is why this run stops
  *   whatever the settings say (a UU_STOP_* cause), or null; live_root is null when unbound-control did not answer;
  *   routes is `route -n get <address>` for every planner address (uu_plan_addresses(): the effective resolvers, or
- *   the Default when the group has no member) and every address the state's map holds, route
- *   the Default's, interface the device it leaves by (compared with Member.if) and ours whether the plugin made it;
+ *   the Default when the group has no member) and every address the state's map holds, each with interface the
+ *   device it leaves by (compared with Member.if) and ours whether the plugin made it;
  *   Zone is zone.php's; ContractInput is uu_contract()'s input (contract.php). rules is uu_rules_check()'s
  *   answer (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an
  *   evaluation saves), block_table the counting table's facts as pf printed them (table null: no such table);
@@ -36,14 +36,15 @@ declare(strict_types=1);
  *                  escalate_restart: bool, state: State, reasons: list<string>, drain: list<string>}
  *   action: 'stop' (disabled, a stop cause, or Unbound not running), 'skip' (control channel silent), 'tunnel'
  *   (apply tries candidates in order; the first is the target; the current member first with its resolver changed is
- *   a switch in place), 'fallback' (leave tunnel mode) or 'none'.
+ *   a switch in place), 'fallback' (leave tunnel mode, or in fallback restore a live root that names an address of
+ *   the plugin's beside others, uu_plan_restore_due()) or 'none'.
  *   candidates is always the full choice list, so apply can move on when the current member fails its resolver
  *   checks; a member the contract excludes (no resolver, no next hop, an address-scoped failure) is never in it.
  *   reassert and route_repair are the reconcile and are only set with 'none': reassert when the live root is not
  *   the current member's resolver, route_repair when that resolver's route is not via the member, or another address
  *   the map holds (outside tunnel mode: any planner address, uu_plan_addresses(), or any the map holds) lacks its
- *   reject route while Unbound no longer forwards to it. drain lists the orphans due for theirs (uu_plan_drain());
- *   a stop and a skip have none.
+ *   reject route while Unbound no longer forwards to it. drain lists the orphans due for their drain and delete
+ *   (uu_plan_drain()); a stop and a skip have none.
  *   state carries the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
@@ -173,9 +174,8 @@ function uu_plan_silent(int $failures, ?int $since, int $now): array
 
 /**
  * Whether a stop with this cause restarts Unbound for a silent control channel at once: a requested stop and the
- * removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, the undo
- * of a replaced address, a tick while the removal marker exists, and any cause added later) waits for
- * uu_plan_silent()'s bound.
+ * removal, which the minute job does not repeat. Every other cause (a disabled plugin's tick, a tick while the
+ * removal marker exists, and any cause added later) waits for uu_plan_silent()'s bound.
  */
 function uu_plan_restarts_at_once(?string $stop): bool
 {
@@ -183,26 +183,23 @@ function uu_plan_restarts_at_once(?string $stop): bool
 }
 
 /**
- * The causes of one evaluation's runs: its own (run), and that of the stop for a replaced resolver address that comes
- * first when the state records one (undo). An evaluation with no cause that finds the removal marker is a tick of
- * the removal: it stops, as the ticks do, but only remove itself has the removal's restart and last resort, since
- * the package is still installed while the marker exists. The undo runs under the run's cause, so a requested stop's
- * or a removal's undo has their restart and last resort (else pkg delete could leave the old address's route and
- * forwarders with nothing enforcing them); an evaluation's undo is the replaced address's own stop.
+ * The cause of one evaluation's run. An evaluation with no cause that finds the removal marker is a tick of the
+ * removal: it stops, as the ticks do, but only remove itself has the removal's restart and last resort, since the
+ * package is still installed while the marker exists. A Save that changes a resolver is no stop: the planner switches
+ * in place.
  *
- * @return array{run: ?string, undo: string}
+ * @return array{run: ?string}
  */
 function uu_plan_causes(?string $stop, bool $removing): array
 {
-    $run = $stop === null && $removing ? UU_STOP_REMOVING : $stop;
-    return ['run' => $run, 'undo' => $run ?? UU_STOP_RESOLVER];
+    return ['run' => $stop === null && $removing ? UU_STOP_REMOVING : $stop];
 }
 
 /**
  * Why this evaluation stops whatever else it reads, or null when it does not. A requested stop while disabled is
  * a Save with enabled off, so it reads as the setting.
  *
- * @param array{settings: array{enabled: bool, resolver: string}, stop: ?string} $s
+ * @param array{settings: array{enabled: bool}, stop: ?string} $s
  */
 function uu_plan_stop_reason(array $s): ?string
 {
@@ -210,7 +207,6 @@ function uu_plan_stop_reason(array $s): ?string
     return match (true) {
         $s['stop'] === UU_STOP_REMOVE => 'the package is being removed',
         $s['stop'] === UU_STOP_REMOVING => 'the package is being removed: its removal marker exists',
-        $s['stop'] === UU_STOP_RESOLVER => "the resolver setting changed: undoing {$s['settings']['resolver']}",
         !$enabled => 'disabled in settings',
         $s['stop'] === UU_STOP_REQUEST => 'stopped on request (configctl unboundupstream stop)',
         $s['stop'] !== null => "stopped ({$s['stop']})",
@@ -249,6 +245,32 @@ function uu_plan_live_addr(?array $liveRoot, array $addresses): ?string
     foreach ($addresses as $address) {
         if ($live !== null && uu_ip_same($address, $live)) {
             return $live;
+        }
+    }
+    return null;
+}
+
+/**
+ * The address of the plugin's that Unbound's live root names when the live root is not Unbound's configured root zone,
+ * so a restore is due: the first of $addresses (every planner address, uu_plan_addresses(), and every address the
+ * state's map holds) that the live root names (uu_state_forwarded()); null when it names none, when it is exactly the
+ * configured zone's forward-addr list (compared as sets: a zone that names the resolver itself is never restored
+ * over, every minute, to itself) and for an unknown live root. One rule, which the planner's fallback and apply's
+ * restore both take: a live root that is exactly [A] is due, and so is A beside another forwarder (an external
+ * forward_add . A B).
+ *
+ * @param ?list<string> $live
+ * @param list<string> $addresses
+ * @param array{shape: string, addrs: list<string>, tls: bool, problems: list<string>} $zone
+ */
+function uu_plan_restore_due(?array $live, array $addresses, array $zone): ?string
+{
+    if ($live === null || uu_apply_same($live, $zone['addrs'])) {
+        return null;
+    }
+    foreach ($addresses as $address) {
+        if (uu_state_forwarded($live, $address, false)) {
+            return $address;
         }
     }
     return null;
@@ -327,7 +349,6 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -448,9 +469,9 @@ function uu_plan(array $s, array $st): array
         $escalate = false;
         if (!uu_plan_restarts_at_once($s['stop']) && $s['unbound']['enabled'] && $s['unbound']['pid_alive']
             && !$s['unbound']['control_ok']) {
-            /* a stop that repeats (a disabled plugin's tick, which the minute job runs while a footprint remains, the
-             * undo of a replaced address, and a tick while the removal marker exists) restarts Unbound for a silent
-             * channel only within the bound of tunnel mode's escalation, never every minute */
+            /* a stop that repeats (a disabled plugin's tick, which the minute job runs while a footprint remains, and
+             * a tick while the removal marker exists) restarts Unbound for a silent channel only within the bound of
+             * tunnel mode's escalation, never every minute */
             $silent = uu_plan_silent($st['control_failures'], $st['control_silent_since'], $now);
             $st['control_failures'] = $silent['failures'];
             $st['control_silent_since'] = $silent['since'];
@@ -504,13 +525,16 @@ function uu_plan(array $s, array $st): array
     $read = uu_state_snapshot_read($s['unbound']);
     $drain = uu_plan_drain($s, $st['addresses'], $read);
     /* outside tunnel mode every planner address (uu_plan_addresses()) and every address the map holds needs its
-     * reject route */
+     * reject route, and a live root that names one of them is restored first */
+    $ours = array_values(array_unique(array_merge(uu_plan_addresses($s),
+        array_map('strval', array_keys($st['addresses'])))));
     $rejectRepair = false;
-    foreach (array_unique(array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))))
-        as $address) {
+    foreach ($ours as $address) {
         $rejectRepair = $rejectRepair
             || uu_plan_needs_reject(uu_plan_route($s, $address), $st['addresses'][$address] ?? null, $read, $address);
     }
+    $named = $mode === 'fallback' ? uu_plan_restore_due($read, $ours, $s['zone']) : null;
+    $restore = $named === null ? null : "live root names $named but is not Unbound's configured root zone: restore it";
 
     if (!$contract['ok']) {
         foreach ($contract['failures'] as $failure) {
@@ -520,6 +544,10 @@ function uu_plan(array $s, array $st): array
         if ($mode === 'tunnel') {
             return uu_plan_result('fallback', $candidates, false, false, false, $st, $reasons, $drain);
         }
+        if ($restore !== null) {
+            $reasons[] = $restore;
+            return uu_plan_result('fallback', $candidates, false, false, false, $st, $reasons, $drain);
+        }
         return uu_plan_result('none', $candidates, false, $rejectRepair, false, $st, $reasons, $drain);
     }
 
@@ -527,6 +555,10 @@ function uu_plan(array $s, array $st): array
         $now, $contract['excluded']);
     $target = $candidates[0] ?? null;
     if ($target === null) {
+        if ($mode === 'fallback' && $restore !== null) {
+            $reasons[] = $restore;
+            return uu_plan_result('fallback', $candidates, false, false, false, $st, $reasons, $drain);
+        }
         if ($mode === 'fallback') {
             return uu_plan_result('none', $candidates, false, $rejectRepair, false, $st, $reasons, $drain);
         }

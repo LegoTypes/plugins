@@ -137,11 +137,11 @@ uu_register_suite('snapshot', function (): int {
             && uu_resolver_monitors($records, '2001:db8:a::54') === []));
     $adopt = function (string $gateway, string $dev, string $hop, string $if): bool {
         $route = ['present' => true, 'gateway' => $gateway, 'interface' => $dev, 'reject' => false, 'ours' => false];
-        $s = ['settings' => ['resolver' => '192.0.2.1'], 'route' => $route, 'routes' => ['192.0.2.1' => $route],
+        $s = ['settings' => ['resolver' => '192.0.2.1'], 'routes' => ['192.0.2.1' => $route],
               'contract_input' => ['foreign' => ['192.0.2.1']]];
         $r = uu_route_adopt($s, ['192.0.2.1' => ['route' => ['kind' => 'member', 'next_hop' => $hop, 'if' => $if],
                                                  'forwarded' => true, 'released_at' => null]]);
-        return $r['route']['ours'] === true && $r['contract_input']['foreign'] === [];
+        return $r['routes']['192.0.2.1']['ours'] === true && $r['contract_input']['foreign'] === [];
     };
     uu_check($t, '(t7) adopt: a recorded member route is ours again when route(8) prints the next hop scoped or in '
         . 'another spelling, and not when it is another hop',
@@ -379,13 +379,13 @@ uu_register_suite('snapshot', function (): int {
         }));
 
     uu_check($t, '(g11) adopt per address: the Default\'s route and a row\'s address, each matching its record and '
-        . 'explained by no member, are both the plugin\'s; foreign empties; route follows the Default\'s only',
+        . 'explained by no member, are both the plugin\'s; foreign empties; each is adopted only by its own record',
         uu_try_case(function (): bool {
             $viaWg1 = ['present' => true, 'gateway' => '10.2.0.2', 'interface' => 'wg1', 'reject' => false,
                        'ours' => false];
             $viaWg4 = ['present' => true, 'gateway' => 'fd00::4:2', 'interface' => 'wg4', 'reject' => false,
                        'ours' => false];
-            $s = ['settings' => ['resolver' => '10.2.0.1'], 'route' => $viaWg1,
+            $s = ['settings' => ['resolver' => '10.2.0.1'],
                   'routes' => ['10.2.0.1' => $viaWg1, '2001:db8:b::53' => $viaWg4],
                   'contract_input' => ['foreign' => ['10.2.0.1', '2001:db8:b::53']]];
             $map = ['10.2.0.1' => ['route' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
@@ -395,8 +395,8 @@ uu_register_suite('snapshot', function (): int {
             $both = uu_route_adopt($s, $map);
             $rowOnly = uu_route_adopt($s, ['2001:db8:b::53' => $map['2001:db8:b::53']]);
             return $both['routes']['10.2.0.1']['ours'] && $both['routes']['2001:db8:b::53']['ours']
-                && $both['contract_input']['foreign'] === [] && $both['route'] === $both['routes']['10.2.0.1']
-                && $rowOnly['routes']['2001:db8:b::53']['ours'] && !$rowOnly['route']['ours']
+                && $both['contract_input']['foreign'] === []
+                && $rowOnly['routes']['2001:db8:b::53']['ours']
                 && !$rowOnly['routes']['10.2.0.1']['ours'] && $rowOnly['contract_input']['foreign'] === ['10.2.0.1'];
         }));
 
@@ -443,7 +443,7 @@ uu_register_suite('snapshot', function (): int {
         }));
     uu_check($t, '(p17) recorded: a recording with routes passes through unchanged',
         uu_try_case(function (): bool {
-            $rec = ['route' => ['present' => false], 'routes' => [],
+            $rec = ['routes' => [],
                     'contract_input' => ['core_commands' => ['cron restart']]];
             return uu_snapshot_recorded($rec, '/root/new.json') === $rec;
         }));

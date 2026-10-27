@@ -721,9 +721,8 @@ uu_register_suite('wiring', function (): int {
             $doc['snapshot']['tiers'] = [];
             $doc['snapshot']['unbound'] = ['enabled' => true, 'pid_alive' => true, 'control_ok' => true,
                 'live_root' => ['192.0.2.53']];
-            $doc['snapshot']['route'] = ['present' => true, 'gateway' => '198.51.100.9', 'interface' => 'wg9',
-                'reject' => false, 'ours' => false];
-            $doc['snapshot']['routes'] = ['192.0.2.1' => $doc['snapshot']['route']];
+            $doc['snapshot']['routes'] = ['192.0.2.1' => ['present' => true, 'gateway' => '198.51.100.9',
+                'interface' => 'wg9', 'reject' => false, 'ours' => false]];
             $doc['state'] = ['version' => 6, 'mode' => 'fallback', 'member' => null, 'timers' => [],
                 'control_failures' => 0, 'control_silent_since' => null, 'last_switch' => null,
                 'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => null, 'blocked' => null,

@@ -16,6 +16,7 @@ require_once __DIR__ . '/logline.php';
 require_once __DIR__ . '/verdict.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/contract.php';
+require_once __DIR__ . '/planner.php';
 require_once __DIR__ . '/render.php';
 
 /**
@@ -89,6 +90,41 @@ function uu_duration_text(int $seconds): string
 }
 
 /**
+ * The status's resolver: the active one. In tunnel mode the address Unbound's live root names (uu_plan_live_addr(),
+ * over the planner's addresses and the state's map), else the current member's resolver (the live root unknown, or
+ * not yet the member's); otherwise, and in tunnel mode with no member's to name, the effective resolver of the first
+ * member in tier order that has one, else the Default, else ''. Canonical, as `unbound-control forward` prints it,
+ * so Home Assistant's live_root == [resolver] holds; with one address it is the Default in every mode.
+ *
+ * @param array{settings: array{default: string}, tiers: list<list<string>>,
+ *     members: array<string, array{resolver: string}>,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>}} $s
+ * @param array{state: array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
+ *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>}} $plan uu_plan() of the snapshot
+ */
+function uu_status_active(array $s, array $plan): string
+{
+    $st = $plan['state'];
+    $own = fn (string $name): string => uu_ip_canonical($s['members'][$name]['resolver'] ?? '') ?? '';
+    if ($st['mode'] === 'tunnel') {
+        $live = uu_plan_live_addr($s['unbound']['live_root'],
+            array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))));
+        $member = $st['member'] === null ? '' : $own($st['member']);
+        if ($live !== null || $member !== '') {
+            return $live ?? $member;
+        }
+    }
+    foreach ($s['tiers'] as $tier) {
+        foreach ($tier as $name) {
+            if ($own($name) !== '') {
+                return $own($name);
+            }
+        }
+    }
+    return uu_ip_canonical($s['settings']['default']) ?? '';
+}
+
+/**
  * The status page's document. The mode, member and timers are the plan's view of now (recovered
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
  *
@@ -103,7 +139,6 @@ function uu_duration_text(int $seconds): string
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -131,7 +166,7 @@ function uu_duration_text(int $seconds): string
  *     reasons: list<string>, drain: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the first address the saved state records
- * @param string $routeOut `route -n get -inet <resolver>`
+ * @param string $routeOut `route -n get` of the active resolver (uu_status_active()), in its family
  * @return array{enabled: bool, dry_run: bool, resolver: string, mode: string, member: ?string, tier: ?int,
  *     unbound: array{enabled: bool, running: bool, control_ok: bool}, live_root: ?list<string>,
  *     configured_root: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
@@ -181,11 +216,13 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
      * already cover */
     $setting = $s['settings']['enabled'] && $s['contract_input']['group_found'] ? $s['settings']['resolver'] : '';
     $footprint = uu_footprint_from_state($st, [], $setting);
+    $active = uu_status_active($s, $plan);
+    $route = uu_plan_route($s, $active);
 
     return [
         'enabled' => $s['settings']['enabled'],
         'dry_run' => $s['settings']['dry_run'],
-        'resolver' => $s['settings']['resolver'],
+        'resolver' => $active,
         'mode' => $st['mode'],
         'member' => $st['member'],
         'tier' => $st['member'] === null ? null : ($tierOf[$st['member']] ?? null),
@@ -194,7 +231,7 @@ function uu_status_doc(array $s, array $plan, array $blockTable, string $routeOu
         'live_root' => $s['unbound']['live_root'],
         'configured_root' => $s['zone'],
         'tls_applied' => $st['tls_applied'],
-        'route' => $s['route'] + ['flags' => $s['route']['present'] ? uu_status_route_flags($routeOut) : []],
+        'route' => $route + ['flags' => $route['present'] ? uu_status_route_flags($routeOut) : []],
         'rules_loaded' => $s['rules']['state'] === 'loaded',
         'rules' => ['state' => $s['rules']['state'], 'problems' => $s['rules']['problems'],
                     'verified_at' => $s['rules']['verified_at']],

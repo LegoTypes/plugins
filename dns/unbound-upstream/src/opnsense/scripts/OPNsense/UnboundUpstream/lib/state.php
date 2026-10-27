@@ -27,11 +27,11 @@ declare(strict_types=1);
  * on it, sent forward_add for it and has not seen Unbound forward elsewhere, or the live root names it). route is
  * the resolver route the plugin last added or changed for that address (null when none was installed in this file or
  * after its delete), so the route stays the plugin's own when the group that explained it is renamed or deleted;
- * released_at is the monotonic second an address left use, null while in use. A Save that changes the resolver
- * setting undoes every other recorded address's route and forwarders first. A version 5 file (one resolver and one
- * route_installed) converts on read. A file that cannot be read back exactly as written is discarded: the planner
- * derives the mode from the live forwarders and route, so a fresh state costs only the failback timers. The file
- * lives in the root-only run directory and is read as a regular file only.
+ * released_at is the monotonic second an address became an orphan (no member's resolver, not forwarded to), null
+ * otherwise; a drain deletes an orphan's route and entry at least UU_OLD_ADDRESS_HOLD later (apply.php). A version 5
+ * file (one resolver and one route_installed) converts on read. A file that cannot be read back exactly as written is
+ * discarded: the planner derives the mode from the live forwarders and route, so a fresh state costs only the
+ * failback timers. The file lives in the root-only run directory and is read as a regular file only.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -570,40 +570,6 @@ function uu_footprint_actions(array $before, array $after, bool $enabled, ?strin
         return ['reload' => false, 'cron' => false];
     }
     return ['reload' => $before !== $after, 'cron' => !$enabled && ($before === []) !== ($after === [])];
-}
-
-/**
- * The state once the plugin's footprint on another resolver address has been undone: every member's resolver-failed
- * mark and probe failure count were about that address, so none holds for the new one.
- *
- * @param array{version: int, mode: string, member: ?string,
- *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
- *     control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string},
- *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>} $state
- * @return array{version: int, mode: string, member: ?string,
- *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
- *     control_silent_since: ?int,
- *     last_switch: ?array{at: int, from: string, to: string, reason: string},
- *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
- *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
- */
-function uu_state_forget_resolver(array $state): array
-{
-    foreach (array_keys($state['timers']) as $name) {
-        $state['timers'][$name]['resolver_failed_until'] = null;
-        $state['timers'][$name]['probe_failures'] = 0;
-    }
-    return $state;
 }
 
 /**

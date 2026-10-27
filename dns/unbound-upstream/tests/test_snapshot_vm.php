@@ -55,7 +55,8 @@ uu_register_suite('snapshot_vm', function (): int {
         && $s['unbound']['live_root'] !== null && count($s['unbound']['live_root']) >= 1);
     uu_check($t, 'zone: one forward zone with tls', $s['zone']['shape'] === 'one' && $s['zone']['tls'] && count($s['zone']['addrs']) >= 1);
     uu_check($t, 'route: the VM has no route of the resolver',
-        $s['route'] === ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false]);
+        $s['routes']['10.2.0.1'] === ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+            'ours' => false]);
     uu_check($t, 'fib_sync_ms 1000', $s['fib_sync_ms'] === 1000);
     $c = $s['contract_input'];
     uu_check($t, 'contract input: group found, two members, hooks fine, order is a fault only while the hook file is not overlaid',
@@ -109,7 +110,7 @@ uu_register_suite('snapshot_vm', function (): int {
     $none = uu_snapshot(['group' => ''] + $settings, [], null, false, []);
     uu_check($t, 'no group set: group_found false', $none['contract_input']['group_found'] === false);
     uu_check($t, '(g5) a group that does not exist: the Default\'s route is still read, as the planner\'s one address',
-        array_keys($gone['routes']) === ['10.2.0.1'] && $gone['route'] === $gone['routes']['10.2.0.1']
+        array_keys($gone['routes']) === ['10.2.0.1'] && !array_key_exists('route', $gone)
         && $gone['contract_input']['member_resolvers'] === [] && $gone['contract_input']['foreign'] === []);
 
     /* (g12) an address the state alone holds, whose live route the plugin did not make: read into routes, and not
@@ -170,7 +171,7 @@ uu_register_suite('snapshot_vm', function (): int {
         && array_keys($p18['routes']) === ['10.2.0.1', '192.0.2.9', '198.51.100.77']
         && $p18['routes']['192.0.2.9'] === ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
                                             'ours' => false]
-        && $p18['route'] === $p18['routes']['10.2.0.1']
+        && !array_key_exists('route', $p18)
         && $p18['contract_input']['member_resolvers'] === ['wg-test-429' => '10.2.0.1', 'wg-test-529' => '192.0.2.9']
         && $p18['contract_input']['resolver_notes'] === [] && $p18['contract_input']['no_next_hop'] === []
         && $p18['contract_input']['foreign'] === []);

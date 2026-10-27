@@ -78,7 +78,7 @@ uu_register_suite('log', function (): int {
         && $doc['live_root'] === ['10.2.0.1'] && $doc['configured_root'] === $s['zone'] && $doc['tls_applied'] === false
         && $doc['unbound'] === ['enabled' => true, 'running' => true, 'control_ok' => true]);
     uu_check($t, 'status: the route with its flags',
-        $doc['route'] === $s['route'] + ['flags' => ['UP', 'GATEWAY', 'HOST', 'DONE', 'STATIC']]);
+        $doc['route'] === $s['routes']['10.2.0.1'] + ['flags' => ['UP', 'GATEWAY', 'HOST', 'DONE', 'STATIC']]);
     uu_check($t, 'status: the rules as the snapshot verified them, loaded; the counter armed with its table\'s count',
         $doc['rules_loaded'] === true
         && $doc['rules'] === ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000]
@@ -140,6 +140,66 @@ uu_register_suite('log', function (): int {
         $footprint(uu_status_doc($s, uu_plan($s, $fst), $armed, $route)) === '192.0.2.1'
         && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $route)) === $s['settings']['resolver']
         && $footprint($doc) === null);
+
+    /* (l1) the status's resolver is the active one: in tunnel mode the live root's address, else the member's
+     * resolver; otherwise the first member in tier order that has one, else the Default, else '' */
+    $active = fn (array $snapshot, array $state): string => uu_status_active($snapshot, uu_plan($snapshot, $state));
+    $silent = fn (array $snapshot): array => ['control_ok' => false, 'live_root' => null] + $snapshot['unbound'];
+    $one = null;
+    $ok = uu_try_case(function () use ($s, $st, $active, $silent, &$one): bool {
+        $quiet = $s;
+        $quiet['unbound'] = $silent($s);
+        $fallback = uu_test_snapshot();
+        $groupGone = $fallback;
+        $groupGone['tiers'] = [];
+        $groupGone['members'] = [];
+        $groupGone['probes'] = [];
+        $groupGone['contract_input']['group_found'] = false;
+        $one = [$active($s, $st), $active($quiet, $st), $active($fallback, uu_test_plan_state(null)),
+                $active($groupGone, uu_test_plan_state(null))];
+        return true;
+    });
+    uu_check($t, '(l1) one address: the status\'s active resolver is the Default in tunnel mode, with the live root '
+        . 'unknown, in fallback and with the group gone',
+        $ok && $one === ['10.2.0.1', '10.2.0.1', '10.2.0.1', '10.2.0.1']);
+    foreach (['IPv6' => ['2001:db8:a::53', '2001:DB8:B:0::53', 'fd00::3:2', 'wg3', 'fd00::4:2', 'wg4'],
+              'IPv4' => ['198.51.100.10', '198.51.100.20', '10.2.0.2', 'wg1', '10.2.0.6', 'wg2']]
+             as $family => [$a, $b, $hopA, $ifA, $hopB, $ifB]) {
+        $got = null;
+        $ok = uu_try_case(function () use ($a, $b, $hopA, $ifA, $hopB, $ifB, $active, $silent, &$got): bool {
+            $pm = uu_test_default(uu_test_snapshot(), $a);
+            $pm['members']['wg-a']['next_hop'] = $hopA;
+            $pm['members']['wg-a']['if'] = $ifA;
+            $pm['members']['wg-b']['next_hop'] = $hopB;
+            $pm['members']['wg-b']['if'] = $ifB;
+            $pm = uu_test_resolver($pm, 'wg-b', $b);
+            $onB = uu_test_in_tunnel($pm, 'wg-b');
+            $stB = uu_test_plan_state('wg-b', [], 0, null, $b, $pm);
+            $midSwitch = $onB;
+            $midSwitch['unbound']['live_root'] = [$a];
+            $quiet = $onB;
+            $quiet['unbound'] = $silent($onB);
+            $noA = $pm;
+            $noA['members']['wg-a']['resolver'] = '';
+            $none = $noA;
+            $none['members']['wg-b']['resolver'] = '';
+            $none['settings']['default'] = '';
+            $got = [$active($onB, $stB), $active($midSwitch, $stB), $active($quiet, $stB),
+                    $active($pm, uu_test_plan_state(null)), $active($noA, uu_test_plan_state(null)),
+                    $active($none, uu_test_plan_state(null))];
+            $doc = uu_status_doc($onB, uu_plan($onB, $stB), ['armed' => true, 'fill' => false, 'blocked' => 0],
+                uu_snapshot_fixture('route_get_member.txt'));
+            $got[] = $doc['resolver'];
+            $got[] = $doc['route'] === $onB['routes'][uu_ip_canonical($b)] + ['flags' => ['UP', 'GATEWAY', 'HOST',
+                'DONE', 'STATIC']];
+            return true;
+        });
+        $bc = uu_ip_canonical($b);
+        uu_check($t, "(l1) $family, a resolver per member: in tunnel mode on wg-b the live root's address (also "
+            . 'mid-switch), the member\'s with the live root unknown; otherwise the first member in tier order with '
+            . 'one, else none; canonical; the status names it and its route',
+            $ok && $got === [$bc, $a, $bc, $a, $bc, '', $bc, true]);
+    }
 
     $gone = $s;
     $gone['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];

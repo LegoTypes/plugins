@@ -358,9 +358,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  * A live route equal to the one the plugin last installed for that address (the route record of its entry in the
  * state's addresses, uu_state_route_record()) is the plugin's own even when no current member explains it, so a group
  * renamed or deleted in tunnel mode lets fallback and stop replace or delete the plugin's stale route instead of
- * reading it as foreign. Per address: each adopted address leaves contract_input.foreign, and the Default's route
- * (route) follows its entry in routes. evaluate.php applies it to every snapshot before planning; a route matching
- * neither stays foreign.
+ * reading it as foreign. Per address: each adopted address leaves contract_input.foreign. evaluate.php applies it to
+ * every snapshot before planning; a route matching neither stays foreign.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
@@ -373,7 +372,6 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -400,7 +398,6 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -438,10 +435,6 @@ function uu_route_adopt(array $s, array $addresses): array
         return $s;
     }
     $s['contract_input']['foreign'] = array_values(array_diff($s['contract_input']['foreign'], $adopted));
-    $default = uu_ip_canonical($s['settings']['resolver']);
-    if ($default !== null && in_array($default, $adopted, true)) {
-        $s['route'] = $s['routes'][$default];
-    }
     return $s;
 }
 
@@ -713,7 +706,6 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -850,9 +842,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $liveRoot = $pidAlive ? uu_live_root() : null;
     $zone = uu_root_zone(uu_zone_texts());
 
-    /* the route of every planner address and every address the state's map holds, and the Default's (route, which
-     * apply, the table and the status still read); a foreign route is the contract's only for a planner address (one
-     * the state alone holds excludes nobody) */
+    /* the route of every planner address and every address the state's map holds; a foreign route is the contract's
+     * only for a planner address (one the state alone holds excludes nobody) */
     $routed = [];
     foreach ($addresses as $address) {
         $routed[$address] = true;
@@ -881,7 +872,6 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             $foreign[] = $address;
         }
     }
-    $route = $routes[$resolver] ?? $read($resolver);
     $fibSyncMs = uu_parse_sysctl_int((string)shell_exec('/sbin/sysctl -n net.route.algo.fib_max_sync_delay_ms 2>/dev/null'));
 
     /* static routes that cover a planner address */
@@ -926,7 +916,6 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             'live_root' => $liveRoot,
         ],
         'zone' => $zone,
-        'route' => $route,
         'routes' => $routes,
         'fib_sync_ms' => $fibSyncMs,
         'contract_input' => [

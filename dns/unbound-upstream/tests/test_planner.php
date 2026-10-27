@@ -35,7 +35,6 @@ require_once __DIR__ . '/scratch.php';
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -82,7 +81,6 @@ function uu_test_snapshot(): array
         'stop' => null,
         'unbound' => ['enabled' => true, 'pid_alive' => true, 'control_ok' => true, 'live_root' => $zone['addrs']],
         'zone' => $zone,
-        'route' => ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false],
         'routes' => ['10.2.0.1' => ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
                                     'ours' => false]],
         'fib_sync_ms' => 1000,
@@ -108,7 +106,6 @@ function uu_test_snapshot(): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -133,7 +130,6 @@ function uu_test_snapshot(): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -158,8 +154,8 @@ function uu_test_in_tunnel(array $s, string $member): array
 }
 
 /**
- * The snapshot with the route of an address (the Default's unless named) as given, in routes and, for the Default,
- * in route too, as the snapshot reads them.
+ * The snapshot with the route of an address (the Default's unless named) as given in routes, as the snapshot reads
+ * it.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
@@ -172,7 +168,6 @@ function uu_test_in_tunnel(array $s, string $member): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -198,7 +193,6 @@ function uu_test_in_tunnel(array $s, string $member): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -215,11 +209,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  */
 function uu_test_route(array $s, array $route, ?string $address = null): array
 {
-    $key = uu_ip_canonical($address ?? $s['settings']['resolver']) ?? '';
-    $s['routes'][$key] = $route;
-    if ($key === uu_ip_canonical($s['settings']['resolver'])) {
-        $s['route'] = $route;
-    }
+    $s['routes'][uu_ip_canonical($address ?? $s['settings']['resolver']) ?? ''] = $route;
     return $s;
 }
 
@@ -238,7 +228,6 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -263,7 +252,6 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -306,7 +294,6 @@ function uu_test_resolver(array $s, string $member, string $address): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -331,7 +318,6 @@ function uu_test_resolver(array $s, string $member, string $address): array
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -349,6 +335,7 @@ function uu_test_resolver(array $s, string $member, string $address): array
 function uu_test_default(array $s, string $address): array
 {
     $family = uu_ip_family($address) ?? '';
+    $route = uu_plan_route($s, $s['settings']['default']);
     $s['settings']['resolver'] = $address;
     $s['settings']['default'] = $address;
     $s['family'] = $family;
@@ -358,7 +345,7 @@ function uu_test_default(array $s, string $address): array
         $s['members'][$name]['ipprotocol'] = $family;
         $s['contract_input']['member_resolvers'][$name] = $address;
     }
-    $s['routes'] = [uu_ip_canonical($address) ?? $address => $s['route']];
+    $s['routes'] = [uu_ip_canonical($address) ?? $address => $route];
     return $s;
 }
 
@@ -507,7 +494,7 @@ uu_register_suite('planner', function (): int {
         && $p['state']['member'] === 'wg-a');
 
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
-    $s = uu_test_route($s, ['reject' => true] + $s['route']);
+    $s = uu_test_route($s, ['reject' => true] + $s['routes']['10.2.0.1']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     uu_check($t, 'tunnel on wg-a, our route carries reject → none + route_repair',
         $p['action'] === 'none' && $p['route_repair']);
@@ -516,7 +503,7 @@ uu_register_suite('planner', function (): int {
     uu_check($t, 'tunnel on wg-a, our route points at wg-b → none + route_repair',
         $p['action'] === 'none' && $p['route_repair']);
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
-    $s = uu_test_route($s, ['interface' => 'wg2'] + $s['route']);
+    $s = uu_test_route($s, ['interface' => 'wg2'] + $s['routes']['10.2.0.1']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     uu_check($t, 'tunnel on wg-a, our route has wg-a\'s next hop on another device → route_repair',
         $p['action'] === 'none' && $p['route_repair']);
@@ -787,26 +774,7 @@ uu_register_suite('planner', function (): int {
         && !$tickRequestedPlan['escalate_restart'] && $tickRequestedPlan['state']['control_failures'] === 0
         && !$tickRemovePlan['escalate_restart'] && $tickRemovePlan['state']['control_failures'] === 0);
 
-    /* every other silent-channel stop waits for the same bound, so the undo of a replaced address, which a
-     * disabled plugin's tick runs first while the setting names another, restarts at most once per bound */
-    foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
-        $undo = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
-        $undo['settings']['enabled'] = $on;
-        $undo['stop'] = UU_STOP_RESOLVER;
-        $undo['unbound']['control_ok'] = false;
-        $undo['unbound']['live_root'] = null;
-        $u1 = uu_plan($undo, $footprint);
-        $undo['now'] = $now + 60;
-        $u2 = uu_plan($undo, $u1['state']);
-        $undo['now'] = $now + UU_ESCALATE_MIN_SECONDS;
-        $u3 = uu_plan($undo, $u2['state']);
-        uu_check($t, "the undo of a replaced address, plugin $what, silent channel → no restart on the first and second evaluations, one on the third at 120 s",
-            $u1['action'] === 'stop' && !$u1['escalate_restart'] && $u1['state']['control_failures'] === 1
-            && !$u2['escalate_restart'] && $u2['state']['control_failures'] === 2
-            && $u3['escalate_restart'] && $u3['state']['control_failures'] === 0
-            && uu_test_reason_has($u1['reasons'], 'resolver setting changed'));
-    }
-    /* a tick while the removal marker exists is such a stop too */
+    /* a tick while the removal marker exists is a silent-channel stop that waits for the same bound */
     foreach (['disabled' => false, 'enabled' => true] as $what => $on) {
         $m = null;
         $ok = uu_try_case(function () use ($on, $footprint, $now, &$m): bool {
@@ -830,37 +798,34 @@ uu_register_suite('planner', function (): int {
             && !uu_test_reason_has($m['reasons'], 'disabled in settings'));
     }
 
-    /* an evaluation's causes, for its run and for the undo of a replaced address before it */
+    /* an evaluation's cause */
     $causes = [
-        'an evaluation: none, and the undo as the replaced address\'s' => [null, false,
-            fn (): array => ['run' => null, 'undo' => UU_STOP_RESOLVER]],
-        'an evaluation while the removal marker exists: both a tick of the removal' => [null, true,
-            fn (): array => ['run' => UU_STOP_REMOVING, 'undo' => UU_STOP_REMOVING]],
-        'a requested stop: both the requested stop' => [UU_STOP_REQUEST, false,
-            fn (): array => ['run' => UU_STOP_REQUEST, 'undo' => UU_STOP_REQUEST]],
-        'a requested stop while the removal marker exists: both still the requested stop' => [UU_STOP_REQUEST, true,
-            fn (): array => ['run' => UU_STOP_REQUEST, 'undo' => UU_STOP_REQUEST]],
-        'the removal, whose marker exists: both the removal' => [UU_STOP_REMOVE, true,
-            fn (): array => ['run' => UU_STOP_REMOVE, 'undo' => UU_STOP_REMOVE]],
+        'an evaluation: none' => [null, false, fn (): array => ['run' => null]],
+        'an evaluation while the removal marker exists: a tick of the removal' => [null, true,
+            fn (): array => ['run' => UU_STOP_REMOVING]],
+        'a requested stop: the requested stop' => [UU_STOP_REQUEST, false, fn (): array => ['run' => UU_STOP_REQUEST]],
+        'a requested stop while the removal marker exists: still the requested stop' => [UU_STOP_REQUEST, true,
+            fn (): array => ['run' => UU_STOP_REQUEST]],
+        'the removal, whose marker exists: the removal' => [UU_STOP_REMOVE, true,
+            fn (): array => ['run' => UU_STOP_REMOVE]],
     ];
     foreach ($causes as $what => [$stop, $removing, $want]) {
         uu_check($t, "the causes of $what",
             uu_try_case(fn (): bool => uu_plan_causes($stop, $removing) === $want()));
     }
 
-    /* each stop says why: a requested stop, a removal and a replaced resolver while enabled are not the setting */
+    /* each stop says why: a requested stop and a removal while enabled are not the setting */
     $stops = [];
-    foreach ([UU_STOP_REQUEST, UU_STOP_REMOVE, UU_STOP_RESOLVER] as $cause) {
+    foreach ([UU_STOP_REQUEST, UU_STOP_REMOVE] as $cause) {
         $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
         $s['stop'] = $cause;
         $stops[$cause] = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     }
     uu_check($t, 'stop causes while enabled → stop, each with its own reason and none "disabled in settings"',
         array_map(fn (array $p): string => $p['action'], $stops) === [UU_STOP_REQUEST => 'stop',
-            UU_STOP_REMOVE => 'stop', UU_STOP_RESOLVER => 'stop']
+            UU_STOP_REMOVE => 'stop']
         && uu_test_reason_has($stops[UU_STOP_REQUEST]['reasons'], 'stopped on request')
         && uu_test_reason_has($stops[UU_STOP_REMOVE]['reasons'], 'package is being removed')
-        && uu_test_reason_has($stops[UU_STOP_RESOLVER]['reasons'], 'resolver setting changed', '10.2.0.1')
         && !in_array(true, array_map(fn (array $p): bool => uu_test_reason_has($p['reasons'], 'disabled in settings'),
             $stops), true));
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
@@ -1454,6 +1419,47 @@ uu_register_suite('planner', function (): int {
             $timers = uu_plan($perMember(), uu_test_plan_state(null))['state']['timers'];
             return ($timers['wg-a']['resolver'] ?? null) === $a6 && ($timers['wg-b']['resolver'] ?? null) === $b6;
         }));
+
+    /* a restore is due when the live root names an address of the plugin's and is not the configured root zone */
+    $zoneOf = fn (array $addrs): array => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false, 'problems' => []];
+    foreach (['IPv6' => ['2001:db8:a::53', '2001:db8:b::53'], 'IPv4' => ['198.51.100.10', '198.51.100.20']]
+             as $family => [$a, $b]) {
+        uu_check($t, "(r1) $family, a restore is due for a live root of [A], of A beside B (B configured, A in any "
+            . 'spelling, @port and #name dropped), or of [A] with no . zone; not for the configured root itself, one '
+            . 'naming none of the addresses, or an unknown one',
+            uu_try_case(fn (): bool => uu_plan_restore_due([$a], [$a], $zoneOf([$b])) === $a
+                && uu_plan_restore_due([strtoupper($a), $b], [$a], $zoneOf([$b . '@853#dns.example'])) === $a
+                && uu_plan_restore_due([$a], [$a], ['shape' => 'none', 'addrs' => [], 'tls' => false,
+                    'problems' => []]) === $a
+                && uu_plan_restore_due([$b, $a], [$a], $zoneOf([$a, $b])) === null
+                && uu_plan_restore_due([$b], [$a], $zoneOf([$b])) === null
+                && uu_plan_restore_due(null, [$a], $zoneOf([$b])) === null));
+        $plans = null;
+        $ok = uu_try_case(function () use ($a, $b, $zoneOf, $settledDown, &$plans): bool {
+            $s = uu_test_default(uu_test_snapshot(), $a);
+            $s['zone'] = $zoneOf([$b]);
+            $s['contract_input']['zone'] = $s['zone'];
+            $s['unbound']['live_root'] = [$a, $b];
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $refused = $s;
+            $refused['contract_input']['unbound_sorts_first'] = false;
+            $configured = $s;
+            $configured['zone'] = $zoneOf([$a, $b]);
+            $configured['contract_input']['zone'] = $configured['zone'];
+            $plans = [uu_plan($s, uu_test_plan_state(null)), uu_plan($refused, uu_test_plan_state(null)),
+                      uu_plan($configured, uu_test_plan_state(null))];
+            return true;
+        });
+        $restore = "live root names $a but is not Unbound's configured root zone: restore it";
+        uu_check($t, "(r1) $family, fallback with no candidate, and fallback with the contract refusing: a live root "
+            . 'of A beside the configured B is a fallback that restores it; with A configured too, nothing to do',
+            $ok && $plans !== null && $plans[0]['action'] === 'fallback'
+            && in_array($restore, $plans[0]['reasons'], true)
+            && $plans[1]['action'] === 'fallback' && in_array($restore, $plans[1]['reasons'], true)
+            && uu_test_reason_has($plans[1]['reasons'], 'contract:')
+            && $plans[2]['action'] === 'none' && !$plans[2]['route_repair'] && $plans[2]['reasons'] === []);
+    }
 
     return uu_tally_report('planner', $t);
 });

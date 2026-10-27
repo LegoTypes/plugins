@@ -186,15 +186,6 @@ uu_register_suite('state', function (): int {
         $loaded['mode'] === 'tunnel' && array_keys($loaded['timers']) === [123]
         && $loaded['timers'][123] === $s['timers']['wg-a']);
 
-    $marked = $s;
-    $marked['timers']['wg-a']['resolver_failed_until'] = 1400;
-    $forgot = uu_state_forget_resolver($marked);
-    $want = $marked;
-    $want['timers']['wg-a']['resolver_failed_until'] = null;
-    $want['timers']['wg-a']['probe_failures'] = 0;
-    uu_check($t, 'forgetting an undone resolver clears every resolver-failed mark and probe failure count, nothing else',
-        $forgot === $want);
-
     $doc = json_decode((string)json_encode($s), true);
     uu_check($t, 'a decoded document of the State shape converts; any other is null',
         is_array($doc) && uu_state_from_doc($doc) === $s
@@ -417,12 +408,12 @@ uu_register_suite('state', function (): int {
             }
             $route = ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
                       'ours' => false];
-            $live = ['settings' => ['resolver' => '10.2.0.1'], 'route' => $route, 'routes' => ['10.2.0.1' => $route],
+            $live = ['settings' => ['resolver' => '10.2.0.1'], 'routes' => ['10.2.0.1' => $route],
                      'contract_input' => ['foreign' => ['10.2.0.1']]];
             $adopted = uu_route_adopt($live, $converted['addresses']);
             $otherRoute = ['gateway' => '10.2.0.5'] + $route;
-            $other = ['route' => $otherRoute, 'routes' => ['10.2.0.1' => $otherRoute]] + $live;
-            return $adopted['route']['ours'] === true
+            $other = ['routes' => ['10.2.0.1' => $otherRoute]] + $live;
+            return $adopted['routes']['10.2.0.1']['ours'] === true
                 && uu_route_adopt($other, $converted['addresses']) === $other;
         }));
     $v5Fallback = $v5;
@@ -537,11 +528,9 @@ uu_register_suite('state', function (): int {
                 && uu_footprint_actions($before, $after, false, UU_STOP_REMOVE)
                 === ['reload' => false, 'cron' => false]));
     }
-    uu_check($t, 'footprint A → none in a requested stop or the undo of a replaced address: as an evaluation',
+    uu_check($t, 'footprint A → none in a requested stop: as an evaluation',
         uu_try_case(fn (): bool => uu_footprint_actions($a, [], false, UU_STOP_REQUEST)
-            === ['reload' => true, 'cron' => true]
-            && uu_footprint_actions($a, [], true, UU_STOP_RESOLVER)
-            === ['reload' => true, 'cron' => false]));
+            === ['reload' => true, 'cron' => true]));
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

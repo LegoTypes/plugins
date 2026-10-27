@@ -31,7 +31,6 @@ require_once __DIR__ . '/scratch.php';
  *     named: list<string>, stop: ?string,
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     fib_sync_ms: ?int,
@@ -54,26 +53,30 @@ function uu_test_apply_snapshot(): array
 }
 
 /**
- * A recording Io over a fake kernel and Unbound that follow the calls. The device the last route call chose
- * decides the direct probe's result ('reject' for the reject route); forward_add and forward_remove set what
- * `forward` prints, bare and in reverse order, as Unbound prints its own order. Every call is also appended to
- * $all after a "-- case" marker, so the never-planned assertions see every case and where each starts.
+ * A recording Io over a fake kernel and Unbound that follow the calls. Each address has a device, the one its last
+ * route call chose (keyed by the argument after -host, canonical; 'reject' for the reject route, 'none' once deleted
+ * or never routed), and the device of the probed address decides the direct probe's result; forward_add and
+ * forward_remove set what `forward` prints, bare and in reverse order, as Unbound prints its own order. Every call is
+ * also appended to $all after a "-- case" marker, which names the addresses that start on their reject route, so the
+ * never-planned assertions see every case and where each starts.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     route: array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}} $s
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>} $s
  * @param ArrayObject<int, string> $all
  * @param array{direct?: array<string, list<bool>>, unbound?: list<bool>, uc_fail?: list<string>,
- *     forward_out?: string, route_fail?: list<string>, restart?: bool, silent?: bool,
+ *     uc_lost?: list<string>, forward_out?: string, route_fail?: list<string>, restart?: bool, silent?: bool,
  *     restart_live?: list<string>, throw_on?: string, restarts?: bool} $o
  *   direct: per device, successive direct probe results (true when absent or used up); unbound: successive
  *   through-Unbound results (true when used up); uc_fail and route_fail: commands or verbs that fail once each,
- *   in order; forward_out: what `forward` prints instead of the fake's live root; silent: every unbound-control
- *   call times out (null) until a restart that sets restart_live as the live root; throw_on: the Io function
- *   that throws, after recording its call; restarts: the case expects a restart (the sweep at the end allows one
- *   nowhere else)
+ *   in order (a route_fail entry "<verb> <address>" fails only that address's call); uc_lost: commands that take
+ *   effect but whose reply is lost once each (null, as a timeout); forward_out: what `forward` prints instead of the
+ *   fake's live root; silent: every unbound-control call times out (null) until a restart that sets restart_live as
+ *   the live root; throw_on: the Io function that throws, after recording its call; restarts: the case expects a
+ *   restart (the sweep at the end allows one nowhere else)
  * @return array{io: array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
@@ -86,20 +89,27 @@ function uu_test_apply_snapshot(): array
 function uu_test_io(array $s, ArrayObject $all, array $o = []): array
 {
     $calls = new ArrayObject();
-    $route = $s['route'];
-    /* the sweep at the end allows a first flush_requestlist only in a case that starts on the reject route, and a
-     * restart only in a case that expects one */
-    $all[] = '-- case' . ($route['present'] && $route['reject'] ? ' on reject' : '')
-        . (($o['restarts'] ?? false) ? ' restarts' : '');
+    $dev = new ArrayObject();
+    $onReject = [];
+    foreach ($s['routes'] as $address => $route) {
+        $dev[(string)$address] = $route['present'] ? ($route['reject'] ? 'reject' : $route['interface']) : 'none';
+        if ($route['present'] && $route['reject']) {
+            $onReject[] = (string)$address;
+        }
+    }
+    /* the sweep at the end allows flush_requestlist only while an address is on its reject route, and a restart only
+     * in a case that expects one */
+    $all[] = '-- case' . (($o['restarts'] ?? false) ? ' restarts' : '')
+        . ($onReject === [] ? '' : ' on reject ' . implode(',', $onReject));
     $record = function (string $call) use ($calls, $all): void {
         $calls[] = $call;
         $all[] = $call;
     };
-    $dev = new ArrayObject(['dev' => $route['present'] ? ($route['reject'] ? 'reject' : $route['interface']) : 'none']);
     $live = new ArrayObject(['live' => $s['unbound']['live_root']]);
     $direct = new ArrayObject($o['direct'] ?? []);
     $unbound = new ArrayObject($o['unbound'] ?? []);
     $ucFail = new ArrayObject($o['uc_fail'] ?? []);
+    $ucLost = new ArrayObject($o['uc_lost'] ?? []);
     $routeFail = new ArrayObject($o['route_fail'] ?? []);
     $silent = new ArrayObject(['silent' => $o['silent'] ?? false]);
     $saved = new ArrayObject();
@@ -120,19 +130,25 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
         return true;
     };
     $io = [
-        'route' => function (string $verb, array $args) use ($record, $dev, $routeFail, $failOnce, $maybeThrow): bool {
+        'route' => function (string $verb, array $args) use ($record, $dev, $routeFail, $failOnce, $maybeThrow,
+                                                             $all): bool {
             $record(trim("route $verb " . implode(' ', $args)));
             $maybeThrow('route');
-            if ($failOnce($routeFail, $verb)) {
+            $at = array_search('-host', $args, true);
+            $host = $at === false ? '' : (string)($args[$at + 1] ?? '');
+            $host = uu_ip_canonical($host) ?? $host;
+            if ($failOnce($routeFail, $verb) || $failOnce($routeFail, "$verb $host")) {
+                /* for the sweep only: the kernel kept the route the call would have changed */
+                $all[] = '-- route failed';
                 return false;
             }
             if ($verb === 'delete') {
-                $dev['dev'] = 'none';
+                $dev[$host] = 'none';
             } elseif (in_array('-reject', $args, true)) {
-                $dev['dev'] = 'reject';
+                $dev[$host] = 'reject';
             } else {
                 $at = array_search('-ifp', $args, true);
-                $dev['dev'] = $at === false ? 'unknown' : (string)($args[$at + 1] ?? 'unknown');
+                $dev[$host] = $at === false ? 'unknown' : (string)($args[$at + 1] ?? 'unknown');
             }
             return true;
         },
@@ -142,12 +158,13 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
         'probe_direct' => function (string $resolver, string $name) use ($record, $dev, $direct, $maybeThrow): bool {
             $record("probe_direct $resolver $name");
             $maybeThrow('probe_direct');
-            $results = $direct[$dev['dev']] ?? [];
+            $device = (string)($dev[uu_ip_canonical($resolver) ?? $resolver] ?? 'none');
+            $results = $direct[$device] ?? [];
             if ($results === []) {
                 return true;
             }
             $ok = (bool)array_shift($results);
-            $direct[$dev['dev']] = $results;
+            $direct[$device] = $results;
             return $ok;
         },
         'probe_unbound' => function (string $name) use ($record, $unbound): bool {
@@ -160,14 +177,16 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             $unbound->exchangeArray($results);
             return $ok;
         },
-        'uc' => function (array $args) use ($record, $live, $ucFail, $failOnce, $o, $silent, $maybeThrow): ?string {
+        'uc' => function (array $args) use ($record, $live, $ucFail, $ucLost, $failOnce, $o, $silent,
+                                            $maybeThrow): ?string {
             $record('uc ' . implode(' ', $args));
             $maybeThrow('uc');
             if ($silent['silent']) {
                 return null;
             }
             $cmd = (string)($args[0] ?? '');
-            if ($failOnce($ucFail, $cmd)) {
+            $lost = $failOnce($ucLost, $cmd);
+            if (!$lost && $failOnce($ucFail, $cmd)) {
                 return 'error failed';
             }
             if ($cmd === 'forward') {
@@ -184,7 +203,7 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             } elseif ($cmd === 'forward_remove') {
                 $live['live'] = [];
             }
-            return "ok\n";
+            return $lost ? null : "ok\n";
         },
         'restart_unbound' => function () use ($record, $o, $silent, $live): bool {
             $record('restart');
@@ -378,7 +397,7 @@ uu_register_suite('apply', function (): int {
             && !uu_plan_route_via(['gateway' => 'fe80::2%gif0'] + $viaGif, $s6['members']['wg-a6'])
             && !uu_plan_route_via(['interface' => 'gif1'] + $viaGif, $s6['members']['wg-a6'])));
     $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
-    $s6 = uu_test_route($s6, ['gateway' => 'FD00:0::3:2'] + $s6['route']);
+    $s6 = uu_test_route($s6, ['gateway' => 'FD00:0::3:2'] + $s6['routes'][$v6]);
     $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $s6));
     $r = uu_test_io($s6, $all);
     uu_apply($p, $s6, $r['io']);
@@ -659,7 +678,7 @@ uu_register_suite('apply', function (): int {
     $gone['tiers'] = [];
     $gone['members'] = [];
     $gone['probes'] = [];
-    $gone = uu_test_route($gone, ['ours' => false] + $gone['route']);
+    $gone = uu_test_route($gone, ['ours' => false] + $gone['routes']['10.2.0.1']);
     $gone['contract_input']['group_found'] = false;
     $gone['contract_input']['members'] = 0;
     $gone['contract_input']['foreign'] = ['10.2.0.1'];
@@ -668,7 +687,7 @@ uu_register_suite('apply', function (): int {
         : ['10.2.0.1' => ['route' => $record, 'forwarded' => true, 'released_at' => null]];
     $adopted = uu_route_adopt($gone, $map($memberRecord));
     uu_check($t, 'a live route equal to the recorded one is ours, and no longer a foreign-route contract failure',
-        $adopted['route']['ours'] && $adopted['contract_input']['foreign'] === []
+        $adopted['routes']['10.2.0.1']['ours'] && $adopted['contract_input']['foreign'] === []
         && uu_route_adopt($gone, $map(null)) === $gone);
     $p = uu_plan($adopted, $recorded);
     $r = uu_test_io($adopted, $all);
@@ -708,7 +727,7 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'a member route is not adopted by a reject record, nor a reject route by a member record',
         uu_route_adopt($gone, $map($rejectRecord)) === $gone
         && uu_route_adopt($rejectLive, $map($memberRecord)) === $rejectLive
-        && uu_route_adopt($rejectLive, $map($rejectRecord))['route']['ours']);
+        && uu_route_adopt($rejectLive, $map($rejectRecord))['routes']['10.2.0.1']['ours']);
     $absent = $gone;
     $absent = uu_test_route($absent, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
                                       'ours' => false]);
@@ -783,7 +802,7 @@ uu_register_suite('apply', function (): int {
         && $st['member'] === 'wg-a');
 
     $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
-    $s = uu_test_route($s, ['reject' => true, 'interface' => 'lo0', 'gateway' => ''] + $s['route']);
+    $s = uu_test_route($s, ['reject' => true, 'interface' => 'lo0', 'gateway' => ''] + $s['routes']['10.2.0.1']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
@@ -935,38 +954,10 @@ uu_register_suite('apply', function (): int {
         uu_test_logged($r['calls'], LOG_WARNING, 'no longer forwards to the resolver'));
 
     // Only a requested stop and the removal restart at once for a silent channel; every other stop waits
-    // for the bound, the undo of a replaced address included.
+    // for the bound.
     $silentTail = [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain,
         'route delete -inet -host ' . $silentTunnel['settings']['resolver']];
     $silentRoot = ['192.0.2.53', '2001:db8::53'];
-    /* disabled, footprint A, setting B: each tick first undoes A, as UU_STOP_RESOLVER, on the same counter */
-    $undo = $silentStop;
-    $undo['stop'] = UU_STOP_RESOLVER;
-    $acts = [];
-    $st = uu_test_plan_state('wg-a', $usable);
-    foreach ([0, 60, UU_ESCALATE_MIN_SECONDS] as $i => $offset) {
-        $undo['now'] = $now + $offset;
-        $p = uu_plan($undo, $st);
-        $r = uu_test_io($undo, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => $i === 2]);
-        $st = uu_apply($p, $undo, $r['io']);
-        $acts[] = uu_test_acts($r['calls']);
-    }
-    uu_check($t, 'disabled, footprint A, setting B, silent channel: the undo restarts on no tick before the third, at 120 s, then the tail',
-        $acts[0] === [$restoreDot] && $acts[1] === [$restoreDot] && $acts[2] === $silentTail
-        && $st['mode'] === 'fallback' && uu_state_footprint($st) === []);
-    $undoOn = $silentTunnel;
-    $undoOn['stop'] = UU_STOP_RESOLVER;
-    $p = uu_plan($undoOn, uu_test_plan_state('wg-a', $usable));
-    $r = uu_test_io($undoOn, $all, ['silent' => true, 'restart_live' => $silentRoot]);
-    $st = uu_apply($p, $undoOn, $r['io']);
-    uu_check($t, 'the undo of a replaced address, silent channel, fresh count → no restart, the route stays',
-        uu_test_acts($r['calls']) === [$restoreDot] && $st['mode'] === 'tunnel'
-        && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
-    $p = uu_plan($undoOn, $atBound);
-    $r = uu_test_io($undoOn, $all, ['silent' => true, 'restart_live' => $silentRoot, 'restarts' => true]);
-    $st = uu_apply($p, $undoOn, $r['io']);
-    uu_check($t, 'the same at the bound → restart, the configured root confirmed, then the tail',
-        uu_test_acts($r['calls']) === $silentTail && $st['mode'] === 'fallback');
     foreach ([UU_STOP_REQUEST => 'a requested stop', UU_STOP_REMOVE => 'the removal'] as $cause => $what) {
         $immediate = $silentTunnel;
         $immediate['stop'] = $cause;
@@ -1149,11 +1140,6 @@ uu_register_suite('apply', function (): int {
         $run['acts'] === [$restoreDot, 'uc forward', 'restart', 'uc forward'] && $run['st']['mode'] === 'tunnel'
         && uu_state_footprint($run['st']) === ['192.0.2.1'] && uu_test_logged($run['calls'], LOG_ERR, 'route stays'));
 
-    $run = $stopAs($fp, UU_STOP_RESOLVER, $fpRefused);
-    uu_check($t, '(a7) resolver-change stop, restore refused with the channel answering → no restart (1.2_1), the route stays',
-        $run['action'] === 'stop' && $run['acts'] === [$restoreDot] && $run['st']['mode'] === 'tunnel'
-        && uu_state_footprint($run['st']) === ['192.0.2.1']);
-
     $userOff = $fp;
     $userOff['unbound']['enabled'] = false;
     $run = $stopAs($userOff, UU_STOP_REMOVE, $fpRefused);
@@ -1167,26 +1153,6 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(a9) requested stop that restores → the tail, the resolver cleared, no footprint warning',
         $run['acts'] === array_merge([$restoreDot, 'uc forward'], $fpTail) && $cleared($run['st'])
         && !uu_test_logged($run['calls'], LOG_WARNING, 'block stays'));
-
-    // The undo of a replaced address runs under the requested stop's cause. Setting B, footprint A
-    // (192.0.2.1), the zone unrestorable: the undo of A is a stop of A's snapshot.
-    $r50 = null;
-    $ok = uu_try_case(function () use ($stopAs, $unrestorable, &$r50): bool {
-        $r50 = $stopAs($unrestorable, uu_plan_causes(UU_STOP_REMOVE, true)['undo'],
-            ['restart' => false, 'restarts' => true]);
-        return true;
-    });
-    uu_check($t, 'a removal with setting B, footprint A and the zone unrestorable → the undo of A restarts at once, then, still not restored, the reject route over A\'s route, never a delete, the removal line',
-        $ok && $r50 !== null && $r50['action'] === 'stop' && $r50['acts'] === ['restart', $fpReject]
-        && $lastResort($r50));
-    $ok = uu_try_case(function () use ($stopAs, $unrestorable, $fpRoot, &$r50): bool {
-        $r50 = $stopAs($unrestorable, uu_plan_causes(UU_STOP_REQUEST, false)['undo'],
-            ['restart_live' => $fpRoot, 'restarts' => true]);
-        return true;
-    });
-    uu_check($t, 'the same under a requested stop → the undo of A restarts at once, the configured root confirmed, then the tail, A cleared',
-        $ok && $r50 !== null && $r50['acts'] === array_merge(['restart', 'uc forward'], $fpTail)
-        && $cleared($r50['st']));
 
     // A tick while the removal marker exists is a stop with the ticks' rules: a restart only for a silent
     // channel at the bound, no cacheflush override, never the reject route. remove itself keeps both
@@ -1708,9 +1674,9 @@ uu_register_suite('apply', function (): int {
     $r = uu_test_io($external, $all);
     $st = uu_apply($p, $external, $r['io']);
     uu_check($t, '(f4) Unbound restarted by someone else (the live root is the configured list): fallback installs the '
-        . 'reject route at once, forwarded false from the read, released_at as it was',
+        . 'reject route at once, forwarded false from the read, released_at cleared (a member\'s resolver)',
         $p['action'] === 'fallback' && uu_test_acts($r['calls']) === [$reject]
-        && $st['mode'] === 'fallback' && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false, 7)]);
+        && $st['mode'] === 'fallback' && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false)]);
 
     $p = uu_plan($down, $recorded);
     $r = uu_test_io($down, $all);
@@ -1718,7 +1684,7 @@ uu_register_suite('apply', function (): int {
     uu_check($t, '(f4) …but with the live root still the resolver, the restore comes first and the reject route after '
         . 'it, forwarded false once the read confirms',
         uu_test_acts($r['calls']) === [$restoreDot, 'uc forward', $reject]
-        && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false, 7)]);
+        && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false)]);
 
     $repair = uu_test_apply_snapshot();
     $repair['probes']['wg-a'] = $settledDown;
@@ -1769,15 +1735,25 @@ uu_register_suite('apply', function (): int {
     ];
     $others = uu_test_route($others, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
                                       'ours' => false]);
+    /* 192.0.2.77 keeps a reject route of the plugin's, so its entry stays once the read clears its forwarded */
+    $others = uu_test_route($others, ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
+                                      'ours' => true], '192.0.2.77');
     $others['probes']['wg-a'] = $settledDown;
     $others['probes']['wg-b'] = $settledDown;
     $p = uu_plan($others, $mapped);
-    $st = uu_apply($p, $others, uu_test_io($others, $all)['io']);
-    uu_check($t, '(f7) every recorded address is recomputed from the run\'s read before any route call: an address the '
-        . 'root no longer names turns false, one it names turns true, released_at kept',
-        $st['addresses']['192.0.2.77'] === $entry(null, false, 9000)
-        && $st['addresses']['192.0.2.78'] === $entry($rejectRecord, true, 4)
-        && array_key_exists('10.2.0.1', $st['addresses']) === true);
+    $r = uu_test_io($others, $all, ['throw_on' => 'uc']);
+    $thrown = false;
+    try {
+        uu_apply($p, $others, $r['io']);
+    } catch (RuntimeException $e) {
+        $thrown = $e->getMessage() === 'test: uc throws';
+    }
+    uu_check($t, '(f7) every recorded address is recomputed from the run\'s read before any call: an address the root '
+        . 'no longer names turns false, one it names turns true, released_at kept (as saved when the first call, the '
+        . 'restore, throws)',
+        $thrown && uu_test_acts($r['calls']) === [$restoreDot]
+        && $r['saved']['state']['addresses'] === ['192.0.2.77' => $entry(null, false, 9000),
+            '192.0.2.78' => $entry($rejectRecord, true, 4)]);
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
@@ -1797,9 +1773,11 @@ uu_register_suite('apply', function (): int {
     $s['settings']['enabled'] = false;
     $s['unbound']['live_root'] = ['10.2.0.1', '192.0.2.53'];
     $p = uu_plan($s, uu_test_plan_state(null));
-    $st = uu_apply($p, $s, uu_test_io($s, $all)['io']);
-    uu_check($t, '(f9) a live root naming the resolver among others records it forwarded',
-        $p['action'] === 'stop' && $st['addresses'] === ['10.2.0.1' => $entry(null, true)]);
+    $r = uu_test_io($s, $all, ['uc_fail' => ['forward_add']]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, '(f9) a live root naming the resolver among others records it forwarded (the stop\'s restore refused)',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [$restoreDot]
+        && $st['addresses'] === ['10.2.0.1' => $entry(null, true)]);
 
     $empty = $down;
     $empty['unbound']['live_root'] = [];
@@ -1808,7 +1786,7 @@ uu_register_suite('apply', function (): int {
     $p = uu_plan($empty, $recorded);
     $st = uu_apply($p, $empty, uu_test_io($empty, $all)['io']);
     uu_check($t, '(f10) an empty live root (Unbound recursing) is a read that clears forwarded',
-        $p['action'] === 'fallback' && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false, 7)]);
+        $p['action'] === 'fallback' && $st['addresses'] === ['10.2.0.1' => $entry($rejectRecord, false)]);
 
     $named = uu_test_apply_snapshot();
     $named['unbound']['live_root'] = ['192.0.2.78', '192.0.2.53'];
@@ -1817,9 +1795,10 @@ uu_register_suite('apply', function (): int {
     $recorded = uu_test_plan_state(null, $usable);
     $recorded['addresses'] = ['192.0.2.78' => $entry($rejectRecord, false, 4)];
     $p = uu_plan($named, $recorded);
-    $st = uu_apply($p, $named, uu_test_io($named, $all)['io']);
-    uu_check($t, '(f11) another recorded address named among others turns forwarded true',
-        ($st['addresses']['192.0.2.78'] ?? null) === $entry($rejectRecord, true, 4));
+    $st = uu_apply($p, $named, uu_test_io($named, $all, ['uc_fail' => ['forward_add']])['io']);
+    uu_check($t, '(f11) another recorded address named among others turns forwarded true (the restore it is due '
+        . 'refused)',
+        $p['action'] === 'fallback' && ($st['addresses']['192.0.2.78'] ?? null) === $entry($rejectRecord, true, 4));
 
     $s = uu_test_apply_snapshot();
     $s['settings']['enabled'] = false;
@@ -1828,9 +1807,9 @@ uu_register_suite('apply', function (): int {
     $p = uu_plan($s, $two);
     $r = uu_test_io($s, $all);
     $st = uu_apply($p, $s, $r['io']);
-    uu_check($t, '(f12) the resolver\'s own entry leaves and another address\'s stays, recomputed from the read',
-        $p['action'] === 'stop' && uu_test_acts($r['calls']) === []
-        && $st['addresses'] === ['192.0.2.77' => $entry(null, false, 9000)]);
+    uu_check($t, '(f12) every entry is recomputed from the read: the resolver\'s own and another address\'s both leave '
+        . 'once neither a route of the plugin\'s nor the live root refers to them',
+        $p['action'] === 'stop' && uu_test_acts($r['calls']) === [] && $st['addresses'] === []);
 
     $dead = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $dead['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
@@ -1873,19 +1852,591 @@ uu_register_suite('apply', function (): int {
             . 'plugin\'s route: once it is removed, run configctl unbound restart, then route delete -host '
             . '192.0.2.1; route delete -inet6 -host 2001:db8:a::53'));
 
-    // Never planned, across every case above; flush_requestlist only behind the reject route.
+    /* (a12) an external Unbound restart on 1.3_2's one-address setup, from the state 1.3_2 wrote: 1.3_2's own code,
+     * run on this input, logged exactly these lines (the reject route then read "route change -host", before the
+     * family argument) */
+    $v5 = ['version' => 5, 'mode' => 'tunnel', 'member' => 'wg-a',
+           'timers' => ['wg-a' => array_diff_key($usable['wg-a'], ['resolver' => true]),
+                        'wg-b' => array_diff_key($usable['wg-b'], ['resolver' => true])],
+           'control_failures' => 0, 'control_silent_since' => null, 'last_switch' => null,
+           'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => false, 'blocked' => null,
+           'route_installed' => $memberRecord, 'resolver' => '10.2.0.1'];
+    $noCandidate = 'no candidate, fallback: wg-a down: settled down; wg-b down: settled down (trigger downloss)';
+    $lines132 = [
+        'external' => ['log ' . LOG_NOTICE . ' ' . $noCandidate,
+                       'log ' . LOG_NOTICE . ' route: 10.2.0.1 rejected locally',
+                       'log ' . LOG_NOTICE . ' switch wg-a -> fallback: ' . $noCandidate],
+        'unknown' => ['log ' . LOG_WARNING . ' Unbound control channel silent (1 evaluations, 0 s)'],
+    ];
+    foreach (['external' => ['192.0.2.53', '2001:db8::53'], 'unknown' => null] as $what => $liveRoot) {
+        $run = null;
+        $ok = uu_try_case(function () use ($v5, $liveRoot, $settledDown, $all, &$run): bool {
+            $converted = uu_state_from_v5($v5);
+            $s = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $s['unbound']['live_root'] = $liveRoot;
+            $s['unbound']['control_ok'] = $liveRoot !== null;
+            $p = uu_plan($s, $converted ?? uu_state_new());
+            $r = uu_test_io($s, $all);
+            $run = ['converted' => $converted, 'p' => $p, 'calls' => $r['calls'], 'st' => uu_apply($p, $s, $r['io'])];
+            return true;
+        });
+        $logs = $run === null ? [] : array_values(array_filter($run['calls']->getArrayCopy(),
+            fn (string $c): bool => str_starts_with($c, 'log ')));
+        uu_check($t, $what === 'external'
+            ? '(a12) a converted 1.3_2 state, forwarded, the snapshot\'s live root the configured DoT list: fallback '
+                . 'rejects at once (no forward_add +t, no forward read), every log line as 1.3_2 logs it'
+            : '(a12) the same with the live root unknown (a silent channel): no reject route, 1.3_2\'s one line',
+            $ok && $run !== null && $run['converted'] !== null
+            && $run['converted']['addresses'] === ['10.2.0.1' => $entry($memberRecord, true)]
+            && uu_test_acts($run['calls']) === ($liveRoot === null ? [] : [$reject])
+            && $logs === $lines132[$what]
+            && $run['st']['addresses'] === ['10.2.0.1' => $liveRoot === null ? $entry($memberRecord, true)
+                : $entry($rejectRecord, false)]);
+    }
+
+    /* (a19) the one-address path's result: a fallback whose restore is refused, a disabled plugin's tick whose restore
+     * is refused, a stop whose reject route fails and one whose flush_requestlist fails leave 10.2.0.1 unfinished,
+     * each with its error line exactly as 1.3_2 logs it; an entry, a stay and a finished stop leave nothing */
+    $outcomes = null;
+    $ok = uu_try_case(function () use ($usable, $settledDown, $all, &$outcomes): bool {
+        /* the run's unfinished addresses and its last error line, '' for none */
+        $outcome = function (array $s, array $st, array $o = []) use ($all): array {
+            $r = uu_test_io($s, $all, $o);
+            $unfinished = uu_apply_outcome(uu_plan($s, $st), $s, $r['io'])['unfinished'];
+            $errors = array_values(array_filter($r['calls']->getArrayCopy(),
+                fn (string $c): bool => str_starts_with($c, 'log ' . LOG_ERR . ' ')));
+            return [$unfinished, substr((string)end($errors), strlen('log ' . LOG_ERR . ' '))];
+        };
+        $down = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+        $down['probes']['wg-a'] = $settledDown;
+        $down['probes']['wg-b'] = $settledDown;
+        $off = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+        $off['settings']['enabled'] = false;
+        $onA = uu_test_plan_state('wg-a', $usable);
+        $outcomes = [$outcome($down, $onA, ['uc_fail' => ['forward_add']]),
+                     $outcome($off, $onA, ['uc_fail' => ['forward_add']]),
+                     $outcome($off, $onA, ['route_fail' => ['change', 'add']]),
+                     $outcome($off, $onA, ['uc_fail' => ['flush_requestlist']]),
+                     $outcome(uu_test_apply_snapshot(), uu_test_plan_state(null, $usable)),
+                     $outcome(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), $onA),
+                     $outcome($off, $onA)];
+        return true;
+    });
+    $one = ['10.2.0.1'];
+    uu_check($t, '(a19) one address: a fallback whose restore is refused, a disabled plugin\'s tick whose restore is '
+        . 'refused, a stop whose reject route fails and one whose flush_requestlist fails leave the resolver '
+        . 'unfinished (evaluate.php exits 1), each line as 1.3_2 logs it; an entry, a stay and a finished stop leave '
+        . 'nothing',
+        $ok && $outcomes === [
+            [$one, 'fallback incomplete: Unbound may still forward to the resolver, so no reject route; the next '
+                . 'evaluation tries again'],
+            [$one, 'stop: Unbound may still forward to the resolver, so its route stays (without it the queries would '
+                . 'follow the default route)'],
+            [$one, "stop: no reject route, so the resolver's route stays: Unbound may still retry the resolver"],
+            [$one, 'stop: unbound-control flush_requestlist failed, so the reject route stays: Unbound may still retry '
+                . 'the resolver'],
+            [[], ''], [[], ''], [[], '']]);
+
+    // A resolver per member, in each family: a switch to a member with another resolver rejects the previous address
+    // in place; an address no member uses any more (an orphan) is released, held, then drained and deleted.
+    $families = [
+        'IPv6' => ['a' => '2001:db8:a::53', 'b' => '2001:db8:b::53', 'c' => '2001:db8:c::53', 'typo' => '2001:db8:a::5',
+                   'hop_a' => 'fd00::3:2', 'if_a' => 'wg3', 'hop_b' => 'fd00::4:2', 'if_b' => 'wg4', 'arg' => '-inet6',
+                   'lo' => '::1'],
+        'IPv4' => ['a' => '198.51.100.10', 'b' => '198.51.100.20', 'c' => '198.51.100.30', 'typo' => '198.51.100.1',
+                   'hop_a' => '10.2.0.2', 'if_a' => 'wg1', 'hop_b' => '10.2.0.6', 'if_b' => 'wg2', 'arg' => '-inet',
+                   'lo' => '127.0.0.1'],
+    ];
+    /* the apply snapshot in the family: wg-a's resolver $wgA (the Default), wg-b's $wgB (its own row when it
+     * differs) */
+    $perMember = function (array $f, string $wgA, string $wgB): array {
+        $s = uu_test_default(uu_test_apply_snapshot(), $wgA);
+        foreach (['wg-a' => ['hop_a', 'if_a'], 'wg-b' => ['hop_b', 'if_b']] as $name => [$hop, $if]) {
+            $s['members'][$name]['next_hop'] = $f[$hop];
+            $s['members'][$name]['if'] = $f[$if];
+        }
+        return $wgB === $wgA ? $s : uu_test_resolver($s, 'wg-b', $wgB);
+    };
+    $via = fn (array $f, string $member): array => ['present' => true,
+        'gateway' => $f[$member === 'wg-a' ? 'hop_a' : 'hop_b'],
+        'interface' => $f[$member === 'wg-a' ? 'if_a' : 'if_b'], 'reject' => false, 'ours' => true];
+    $viaRecord = fn (array $f, string $member): array => ['kind' => 'member',
+        'next_hop' => $f[$member === 'wg-a' ? 'hop_a' : 'hop_b'], 'if' => $f[$member === 'wg-a' ? 'if_a' : 'if_b']];
+    $rejected = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
+    $rejectOf = fn (array $f, string $address): string => "route change {$f['arg']} -host $address {$f['lo']} -reject";
+    $deleteOf = fn (array $f, string $address): string => "route delete {$f['arg']} -host $address";
+    /* the index of the first log line that is exactly the message at notice, -1 when there is none */
+    $lineAt = function (ArrayObject $calls, string $msg): int {
+        $at = array_search('log ' . LOG_NOTICE . ' ' . $msg, $calls->getArrayCopy(), true);
+        return $at === false ? -1 : (int)$at;
+    };
+    /* a run of the plan against the fake Io: the plan, the calls, the acts, the state it returns, the state last
+     * saved, and the addresses it had to leave and could not */
+    $applyRun = function (array $s, array $st, array $o = []) use ($all): array {
+        $p = uu_plan($s, $st);
+        $r = uu_test_io($s, $all, $o);
+        $out = uu_apply_outcome($p, $s, $r['io']);
+        return ['p' => $p, 'calls' => $r['calls'], 'acts' => uu_test_acts($r['calls']), 'st' => $out['state'],
+                'saved' => $r['saved'], 'unfinished' => $out['unfinished']];
+    };
+    $with = function (array $st, array $addresses): array {
+        $st['addresses'] = $addresses;
+        return $st;
+    };
+
+    foreach ($families as $family => $f) {
+        [$a, $b, $c, $typo] = [$f['a'], $f['b'], $f['c'], $f['typo']];
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $usable, $applyRun, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $a), 'wg-a');
+            $s['members']['wg-a']['force_down'] = true;
+            $run = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s));
+            return true;
+        });
+        uu_check($t, "(a1) $family, members sharing one address, change of member: route change, sleep, the direct "
+            . 'probe, flush_infra, forward; no forward_add and no other route',
+            $ok && $run !== null && $run['p']['action'] === 'tunnel'
+            && $run['acts'] === array_merge(["route change {$f['arg']} -host $a {$f['hop_b']} -ifp {$f['if_b']}", $wait,
+                "probe_direct $a .", "uc flush_infra $a", 'uc forward'], $through)
+            && $run['st']['member'] === 'wg-b'
+            && $run['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-b'), true)]);
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-a');
+            $s['members']['wg-a']['force_down'] = true;
+            $run = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s));
+            return true;
+        });
+        uu_check($t, "(a2) $family, wg-a down, wg-b has its own resolver: B routed, probed, forward_add, flush_infra, "
+            . 'confirmed, then A changed to its reject route in place; B forwarded, A held as wg-a\'s',
+            $ok && $run !== null && $run['p']['action'] === 'tunnel'
+            && $run['acts'] === array_merge(["route add {$f['arg']} -host $b {$f['hop_b']} -ifp {$f['if_b']}", $wait,
+                "probe_direct $b .", "uc forward_add . $b", "uc flush_infra $b", 'uc forward', $rejectOf($f, $a)],
+                $through)
+            && $lineAt($run['calls'], "forwarders: . -> $b, plain DNS inside the tunnel (no +t)") >= 0
+            && $lineAt($run['calls'], "forwarders: . -> $b, plain DNS inside the tunnel (no +t)")
+                < $lineAt($run['calls'], "route: $a rejected locally (previous member's resolver)")
+            && $run['st']['member'] === 'wg-b'
+            && $run['st']['addresses'] === [$a => $entry($rejectRecord, false),
+                $b => $entry($viaRecord($f, 'wg-b'), true)]
+            && $run['saved']['state']['addresses'] === $run['st']['addresses'] && $run['unfinished'] === []);
+
+        /* the same where A is no member's resolver any more: both members use B */
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $via, $rejected, &$runs): bool {
+            $s = $perMember($f, $b, $b);
+            $s['unbound']['live_root'] = [$a];
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['members']['wg-a']['force_down'] = true;
+            $first = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s));
+            $later = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
+            $later['members']['wg-a']['force_down'] = true;
+            $later = uu_test_route($later, $rejected, $a);
+            $runs = [$first];
+            foreach ([59, 60] as $offset) {
+                $later['now'] = $s['now'] + $offset;
+                $runs[] = $applyRun($later, $runs[count($runs) - 1]['st']);
+            }
+            return true;
+        });
+        uu_check($t, "(a3) $family, A no member's resolver: rejected in place and released at the switch",
+            $ok && $runs !== null && in_array($rejectOf($f, $a), $runs[0]['acts'], true)
+            && $runs[0]['st']['addresses'][$a] === $entry($rejectRecord, false, $now));
+        uu_check($t, "(a3) $family, …a run 59 s later deletes nothing; one 60 s later runs flush_requestlist, the "
+            . 'drain (fib_sync + 500 ms + 1 s), then the delete, and A leaves the map',
+            $ok && $runs !== null && $runs[1]['p']['drain'] === [] && !in_array($flushReq, $runs[1]['acts'], true)
+            && $runs[1]['st']['addresses'][$a] === $entry($rejectRecord, false, $now)
+            && $runs[2]['p']['drain'] === [$a]
+            && array_slice($runs[2]['acts'], -3) === [$flushReq, $drain, $deleteOf($f, $a)]
+            && array_keys($runs[2]['st']['addresses']) === [$b]
+            && uu_test_logged($runs[2]['calls'], LOG_NOTICE, "route: $a deleted"));
+
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $rejected,
+                                           $rejectRecord, $viaRecord, $now, &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
+            $s['members']['wg-a']['force_down'] = true;
+            $s = uu_test_route($s, $rejected, $a);
+            $s['now'] = $now + 60;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($rejectRecord, false, $now), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $failed = $applyRun($s, $st, ['uc_fail' => ['flush_requestlist']]);
+            $s['now'] = $now + 61;
+            $runs = [$failed, $applyRun($s, $failed['st'])];
+            return true;
+        });
+        uu_check($t, "(a4) $family, no delete before a successful flush_requestlist and drain: the flush fails, A "
+            . 'keeps its reject route and its hold, one error names it; the next run drains it',
+            $ok && $runs !== null && $runs[0]['p']['drain'] === [$a]
+            && array_slice($runs[0]['acts'], -1) === [$flushReq]
+            && array_filter($runs[0]['acts'], fn (string $c): bool => str_starts_with($c, 'route ')) === []
+            && $runs[0]['st']['addresses'][$a] === $entry($rejectRecord, false, $now)
+            && count(array_filter($runs[0]['calls']->getArrayCopy(), fn (string $c): bool
+                => str_starts_with($c, 'log ' . LOG_ERR . ' ') && str_contains($c, $a))) === 1
+            && array_slice($runs[1]['acts'], -3) === [$flushReq, $drain, $deleteOf($f, $a)]
+            && !isset($runs[1]['st']['addresses'][$a])
+            && $runs[0]['unfinished'] === [$a] && $runs[1]['unfinished'] === []);
+
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $via, &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-a');
+            $s['members']['wg-a']['force_down'] = true;
+            $first = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s),
+                ['uc_lost' => ['forward_add'], 'uc_fail' => ['forward_add']]);
+            $next = $s;
+            $next['unbound']['live_root'] = [$b];
+            $next = uu_test_route($next, $via($f, 'wg-b'), $b);
+            $runs = [$first, $applyRun($next, $first['st'])];
+            return true;
+        });
+        uu_check($t, "(a5) $family, forward_add sent and its reply lost, the restore refused: A keeps its member "
+            . 'route, both addresses recorded forwarded',
+            $ok && $runs !== null
+            && $runs[0]['acts'] === ["route add {$f['arg']} -host $b {$f['hop_b']} -ifp {$f['if_b']}", $wait,
+                "probe_direct $b .", "uc forward_add . $b", $restoreDot]
+            && $runs[0]['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), true)
+            && $runs[0]['st']['addresses'][$b] === $entry($viaRecord($f, 'wg-b'), true));
+        uu_check($t, "(a5) $family, …the next run confirms B without a forward_add, then rejects A",
+            $ok && $runs !== null && !in_array("uc forward_add . $b", $runs[1]['acts'], true)
+            && array_slice($runs[1]['acts'], 0, 4) === ["probe_direct $b .", "uc flush_infra $b", 'uc forward',
+                $rejectOf($f, $a)]
+            && $runs[1]['st']['member'] === 'wg-b'
+            && $runs[1]['st']['addresses'][$a] === $entry($rejectRecord, false));
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-b');
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['settings']['enabled'] = false;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st);
+            return true;
+        });
+        uu_check($t, "(a6) $family, a stop with two entries: one restore, both reject routes, one flush_requestlist, "
+            . 'one drain, both deleted, the map empty',
+            $ok && $run !== null && $run['p']['action'] === 'stop'
+            && $run['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b), $flushReq, $drain,
+                $deleteOf($f, $a), $deleteOf($f, $b)]
+            && $run['st']['addresses'] === [] && $run['st']['mode'] === 'fallback');
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, $settledDown, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st);
+            return true;
+        });
+        uu_check($t, "(a7) $family, fallback rejects every entry after the restore; the orphan gets released_at, the "
+            . 'member\'s resolver does not',
+            $ok && $run !== null && $run['p']['action'] === 'fallback'
+            && $run['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b)]
+            && $run['st']['addresses'] === [$a => $entry($rejectRecord, false, $now),
+                $b => $entry($rejectRecord, false)]);
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $c, $usable, $applyRun, $via, &$run): bool {
+            $s = $perMember($f, $c, $b);
+            $s['unbound']['live_root'] = [$a];
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $timers = $usable;
+            $timers['wg-a']['resolver'] = $a;
+            $run = $applyRun($s, uu_test_plan_state('wg-a', $timers, 0, null, $a, $s));
+            return true;
+        });
+        uu_check($t, "(a8) $family, a Save changes the active member's resolver: switched in place on the same member, "
+            . 'no switch recorded or logged, the forwarders line and the previous address rejected',
+            $ok && $run !== null && $run['p']['action'] === 'tunnel' && $run['p']['candidates'][0] === 'wg-a'
+            && $run['acts'] === array_merge(["route add {$f['arg']} -host $c {$f['hop_a']} -ifp {$f['if_a']}", $wait,
+                "probe_direct $c .", "uc forward_add . $c", "uc flush_infra $c", 'uc forward', $rejectOf($f, $a)],
+                $through)
+            && $run['st']['mode'] === 'tunnel' && $run['st']['member'] === 'wg-a' && $run['st']['last_switch'] === null
+            && !uu_test_logged($run['calls'], LOG_NOTICE, 'switch ')
+            && $lineAt($run['calls'], "forwarders: . -> $c, plain DNS inside the tunnel (no +t)") >= 0
+            && $lineAt($run['calls'], "route: $a rejected locally (previous member's resolver)") >= 0
+            && $run['st']['addresses'][$a] === $entry($rejectRecord, false, $now));
+
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $typo, $usable, $applyRun, $rejected, $via,
+                                           &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $typo, $typo), 'wg-a');
+            $s['unbound']['live_root'] = [$a];
+            $s = uu_test_route($s, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                    'ours' => false], $typo);
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $timers = $usable;
+            $timers['wg-a']['resolver'] = $a;
+            $timers['wg-b']['resolver'] = $a;
+            $typoRun = $applyRun($s, uu_test_plan_state('wg-a', $timers, 0, null, $a, $s),
+                ['direct' => [$f['if_a'] => [false], $f['if_b'] => [false]]]);
+            $fixed = $perMember($f, $a, $a);
+            $fixed = uu_test_route($fixed, $rejected, $a);
+            $fixed = uu_test_route($fixed, $rejected, $typo);
+            $fixed['now'] = $s['now'] + 30;
+            $runs = [$typoRun, $applyRun($fixed, $typoRun['st'])];
+            return true;
+        });
+        uu_check($t, "(a10) $family, a Save typo fails the direct probe on every member: fallback, A keeps its member "
+            . 'route until the restore is confirmed, then both get their reject route and A is released',
+            $ok && $runs !== null && $runs[0]['p']['action'] === 'tunnel'
+            && $runs[0]['acts'] === ["route add {$f['arg']} -host $typo {$f['hop_a']} -ifp {$f['if_a']}", $wait,
+                "probe_direct $typo .", "route change {$f['arg']} -host $typo {$f['hop_b']} -ifp {$f['if_b']}", $wait,
+                "probe_direct $typo .", $restoreDot, 'uc forward', $rejectOf($f, $typo), $rejectOf($f, $a)]
+            && $runs[0]['st']['mode'] === 'fallback'
+            && $runs[0]['st']['addresses'] === [$typo => $entry($rejectRecord, false),
+                $a => $entry($rejectRecord, false, $now)]);
+        uu_check($t, "(a9) $family, the typo fixed within a minute: A, an orphan in its hold, is re-used by route "
+            . 'change from its reject route, never a delete and add, and its released_at clears; the typo is released',
+            $ok && $runs !== null && $runs[1]['p']['action'] === 'tunnel'
+            && $runs[1]['acts'][0] === "route change {$f['arg']} -host $a {$f['hop_a']} -ifp {$f['if_a']}"
+            && array_filter($runs[1]['acts'], fn (string $c): bool => str_starts_with($c, 'route delete')
+                || str_starts_with($c, 'route add')) === []
+            && $runs[1]['st']['member'] === 'wg-a'
+            && $runs[1]['st']['addresses'] === [$typo => $entry($rejectRecord, false, $now + 30),
+                $a => $entry($viaRecord($f, 'wg-a'), true)]);
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-b');
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['stop'] = UU_STOP_REMOVE;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
+            return true;
+        });
+        $removed = $run === null ? [] : array_values(array_filter($run['calls']->getArrayCopy(), fn (string $c): bool
+            => str_starts_with($c, 'log ' . LOG_ERR . ' ') && str_contains($c, 'being removed')));
+        uu_check($t, "(a13) $family, a removal with two entries whose restore and restart fail: both changed to their "
+            . 'reject route, nothing deleted, one error naming both with the remedy for each',
+            $ok && $run !== null
+            && $run['acts'] === [$restoreDot, 'restart', $rejectOf($f, $a), $rejectOf($f, $b)]
+            && $run['st']['addresses'] === [$a => $entry($rejectRecord, false), $b => $entry($rejectRecord, true)]
+            && $run['unfinished'] === [$a, $b]
+            && $removed === ['log ' . LOG_ERR . ' stop: the package is being removed while Unbound may still forward '
+                . "to $a, $b, so its queries to $a, $b are rejected locally until Unbound restarts: run configctl "
+                . 'unbound restart, then ' . uu_route_delete_text($a) . '; ' . uu_route_delete_text($b)]);
+
+        /* a failed reject route over the previous address: it keeps its member route and entry, one error names it,
+         * and the new address is switched in all the same */
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-a');
+            $s['members']['wg-a']['force_down'] = true;
+            $run = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s),
+                ['route_fail' => ["change $a", "add $a"]]);
+            return true;
+        });
+        uu_check($t, "(a15) $family, the previous address's reject route fails: A keeps its member route and entry, "
+            . 'one error names it, B is switched in',
+            $ok && $run !== null && $run['st']['member'] === 'wg-b'
+            && in_array($rejectOf($f, $a), $run['acts'], true)
+            && $run['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), false)
+            && $run['st']['addresses'][$b] === $entry($viaRecord($f, 'wg-b'), true)
+            && array_values(array_filter($run['calls']->getArrayCopy(), fn (string $c): bool
+                => str_starts_with($c, 'log ' . LOG_ERR . ' ')))
+                === ['log ' . LOG_ERR . " route: the reject route for $a failed"]
+            && $run['unfinished'] === [$a]);
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, $now, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
+            $s['members']['wg-a']['force_down'] = true;
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false, $now - 60), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st, ['route_fail' => ["change $a", "add $a"]]);
+            return true;
+        });
+        uu_check($t, "(a16) $family, an orphan due for its drain but still on a member route (its reject route fails "
+            . 'again): the route repair tries the reject route, and nothing is flushed or deleted',
+            $ok && $run !== null && $run['p']['action'] === 'none' && $run['p']['route_repair']
+            && $run['p']['drain'] === [$a]
+            && $run['acts'] === array_merge([$rejectOf($f, $a), "route add {$f['arg']} -host $a {$f['lo']} -reject",
+                "probe_direct $b ."], $through)
+            && $run['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), false, $now - 60));
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $rejected,
+                                           $rejectRecord, $viaRecord, $now, &$run): bool {
+            $s = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
+            $s['members']['wg-a']['force_down'] = true;
+            $s = uu_test_route($s, $rejected, $a);
+            $s['now'] = $now + 60;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($rejectRecord, false, $now), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $run = $applyRun($s, $st, ['route_fail' => ['delete']]);
+            return true;
+        });
+        uu_check($t, "(a17) $family, the drain's delete fails: A keeps its reject route, record and hold, one error "
+            . 'names it, and the run says A is unfinished',
+            $ok && $run !== null && array_slice($run['acts'], -3) === [$flushReq, $drain, $deleteOf($f, $a)]
+            && $run['st']['addresses'][$a] === $entry($rejectRecord, false, $now)
+            && array_values(array_filter($run['calls']->getArrayCopy(), fn (string $c): bool
+                => str_starts_with($c, 'log ' . LOG_ERR . ' ')))
+                === ['log ' . LOG_ERR . " route: deleting the route of $a failed"]
+            && $run['unfinished'] === [$a]);
+
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $typo, $usable, $applyRun, $via, &$run): bool {
+            $s = $perMember($f, $typo, $typo);
+            $s['unbound']['live_root'] = [$a];
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $run = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s),
+                ['direct' => [$f['if_a'] => [false], $f['if_b'] => [false]], 'uc_fail' => ['forward_add']]);
+            return true;
+        });
+        uu_check($t, "(a18) $family, the Save typo again with the restore refused: no reject route anywhere, A keeps "
+            . 'its member route and stays forwarded, the fallback line, and the run says A is unfinished',
+            $ok && $run !== null && array_slice($run['acts'], -1) === [$restoreDot]
+            && array_filter($run['acts'], fn (string $c): bool => str_ends_with($c, ' -reject')) === []
+            && $run['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), true)
+            && uu_test_logged($run['calls'], LOG_ERR, "fallback incomplete: Unbound may still forward to the resolver "
+                . "($a), so no reject route; the next evaluation tries again")
+            && $run['unfinished'] === [$a]);
+
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $a, $b), 'wg-b');
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['settings']['enabled'] = false;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $runs = [$applyRun($s, $st, ['uc_fail' => ['flush_requestlist']]),
+                     $applyRun($s, $st, ['uc_fail' => ['forward_add']])];
+            return true;
+        });
+        $errors = fn (array $run): array => array_values(array_filter($run['calls']->getArrayCopy(),
+            fn (string $c): bool => str_starts_with($c, 'log ' . LOG_ERR . ' ')));
+        uu_check($t, "(a20) $family, a disabled plugin's stop with two entries: its flush_requestlist fails, so both "
+            . 'keep their reject route, one error names both; its restore refused, both keep their member route, one '
+            . 'error names both; each run leaves both unfinished',
+            $ok && $runs !== null
+            && $runs[0]['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b), $flushReq]
+            && $runs[0]['st']['addresses'] === [$a => $entry($rejectRecord, false), $b => $entry($rejectRecord, false)]
+            && $errors($runs[0]) === ['log ' . LOG_ERR . ' stop: unbound-control flush_requestlist failed, so the '
+                . "reject route stays: Unbound may still retry the resolver ($a, $b)"]
+            && $runs[1]['acts'] === [$restoreDot]
+            && $runs[1]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), false),
+                $b => $entry($viaRecord($f, 'wg-b'), true)]
+            && array_slice($errors($runs[1]), -1) === ['log ' . LOG_ERR . " stop: Unbound may still forward to the "
+                . "resolver ($a, $b), so its route stays (without it the queries would follow the default route)"]
+            && $runs[0]['unfinished'] === [$a, $b] && $runs[1]['unfinished'] === [$a, $b]);
+
+        // Unbound's live root naming the resolver beside a configured forwarder B (an external forward_add . A B).
+        $zoneOf = fn (array $addrs): array => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false, 'problems' => []];
+        $named = function (array $configured, ?string $stop, bool $enabled) use ($perMember, $f, $a, $b, $via,
+                                                                                 $settledDown, $zoneOf): array {
+            $s = $perMember($f, $a, $a);
+            $s['zone'] = $zoneOf($configured);
+            $s['contract_input']['zone'] = $s['zone'];
+            $s['unbound']['live_root'] = [$a, $b];
+            $s = uu_test_route($s, $via($f, 'wg-a'), $a);
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $s['stop'] = $stop;
+            $s['settings']['enabled'] = $enabled;
+            return $s;
+        };
+        $inFallback = fn (array $s): array => $with(uu_test_plan_state(null, $usable),
+            [$a => $entry($viaRecord($f, 'wg-a'), true)]);
+        foreach (['fallback' => [null, true], 'a requested stop' => [UU_STOP_REQUEST, false],
+                  'the removal' => [UU_STOP_REMOVE, true]] as $what => [$stop, $enabled]) {
+            $runs = null;
+            $ok = uu_try_case(function () use ($named, $b, $stop, $enabled, $applyRun, $inFallback, $rejected, $a,
+                                               &$runs): bool {
+                $s = $named([$b], $stop, $enabled);
+                $first = $applyRun($s, $inFallback($s));
+                $next = $s;
+                $next['unbound']['live_root'] = [$b];
+                $next = uu_test_route($next, $first['st']['addresses'] === [] ? ['present' => false, 'gateway' => '',
+                    'interface' => '', 'reject' => false, 'ours' => false] : $rejected, $a);
+                $runs = [$first, $applyRun($next, $first['st'])];
+                return true;
+            });
+            $tail = $stop === null ? [$rejectOf($f, $a)] : [$rejectOf($f, $a), $flushReq, $drain, $deleteOf($f, $a)];
+            uu_check($t, "(b1) $family, configured [B], live [A, B], $what: one restore, confirmed [B], then A's "
+                . 'reject route' . ($stop === null ? ', forwarded false' : ', the drain and the delete') . '; no '
+                . 'restore on the next run',
+                $ok && $runs !== null
+                && $runs[0]['acts'] === array_merge(["uc forward_add . $b", 'uc forward'], $tail)
+                && $runs[0]['st']['addresses'] === ($stop === null ? [$a => $entry($rejectRecord, false)] : [])
+                && $runs[1]['acts'] === []);
+        }
+        foreach (['fallback' => [null, true], 'a requested stop' => [UU_STOP_REQUEST, false],
+                  'the removal' => [UU_STOP_REMOVE, true]] as $what => [$stop, $enabled]) {
+            $runs = null;
+            $ok = uu_try_case(function () use ($named, $a, $b, $stop, $enabled, $applyRun, $inFallback, &$runs): bool {
+                $s = $named([$a, $b], $stop, $enabled);
+                $first = $applyRun($s, $inFallback($s));
+                $runs = [$first, $applyRun($s, $first['st'])];
+                return true;
+            });
+            uu_check($t, "(b2) $family, configured [A, B], live [A, B], $what: no restore, no reject route and no "
+                . 'delete while the root names A, the entry kept forwarded, and not a line on either run',
+                $ok && $runs !== null && $runs[0]['calls']->getArrayCopy() === []
+                && $runs[1]['calls']->getArrayCopy() === [] && $runs[0]['unfinished'] === []
+                && $runs[0]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), true)]
+                && $runs[1]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), true)]);
+        }
+        foreach (['fallback' => [null, true], 'a requested stop' => [UU_STOP_REQUEST, false]] as $what
+                 => [$stop, $enabled]) {
+            $runs = null;
+            $ok = uu_try_case(function () use ($named, $a, $b, $stop, $enabled, $applyRun, $usable, $settledDown,
+                                               &$runs): bool {
+                $s = $named([$a, $b], $stop, $enabled);
+                $s = uu_test_in_tunnel($s, 'wg-a');
+                $first = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s));
+                $next = $s;
+                $next['unbound']['live_root'] = [$a, $b];
+                $runs = [$first, $applyRun($next, $first['st'])];
+                return true;
+            });
+            uu_check($t, "(b2) $family, the same from tunnel mode on A, $what: the restore to [A, B], then no reject "
+                . 'route over A, fallback, the entry kept forwarded, no error' . ($stop === null ? '' : ', one warning '
+                . 'that its route stays') . '; the next run calls nothing and logs nothing',
+                $ok && $runs !== null && $runs[0]['acts'] === ["uc forward_add . $a $b", 'uc forward']
+                && $runs[0]['st']['mode'] === 'fallback'
+                && !in_array(true, array_map(fn (string $c): bool => str_starts_with($c, 'log ' . LOG_ERR . ' '),
+                    $runs[0]['calls']->getArrayCopy()), true)
+                && ($stop === null) === !uu_test_logged($runs[0]['calls'], LOG_WARNING,
+                    "stop: Unbound's configured root zone names $a, so its route stays")
+                && $runs[0]['unfinished'] === []
+                && $runs[0]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), true)]
+                && $runs[1]['calls']->getArrayCopy() === []);
+        }
+    }
+
+    // Never planned, across every case above; flush_requestlist only behind reject routes.
     $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'reload', 'reload_keep_cache',
                   'fast_reload'];
     $clean = count($all) > 0;
     $previous = '';
-    $onReject = false;
+    /* the addresses on their reject route at this point of the case, as its marker and its route calls say, and
+     * before the last route call (a failed call changes nothing) */
+    $onReject = [];
+    $beforeRoute = [];
     $restartsExpected = false;
     $restartsOk = true;
     $restarts = 0;
     foreach ($all as $call) {
         if (str_starts_with($call, '-- case')) {
             $previous = '';
-            $onReject = str_contains($call, ' on reject');
+            $onReject = preg_match('/ on reject (\S+)/', $call, $m) === 1 ? array_fill_keys(explode(',', $m[1]), true)
+                : [];
             $restartsExpected = str_contains($call, ' restarts');
             continue;
         }
@@ -1893,13 +2444,25 @@ uu_register_suite('apply', function (): int {
             $restarts++;
             $restartsOk = $restartsOk && $restartsExpected;
         }
+        if ($call === '-- route failed') {
+            $onReject = $beforeRoute;
+            continue;
+        }
+        if (preg_match('/^route (\S+) .*-host (\S+)/', $call, $m) === 1) {
+            $host = uu_ip_canonical($m[2]) ?? $m[2];
+            $beforeRoute = $onReject;
+            if ($m[1] !== 'delete' && str_ends_with($call, ' -reject')) {
+                $onReject[$host] = true;
+            } else {
+                unset($onReject[$host]);
+            }
+        }
         if (str_starts_with($call, 'uc ')) {
             $words = explode(' ', substr($call, 3));
-            /* behind the reject route: just after it was installed, or first in a case that starts on it */
+            /* behind reject routes: a stop's or a drain's, so some address is on its reject route */
             $clean = $clean && !in_array($words[0], $forbidden, true)
                 && ($words[0] !== 'flush_type' || $words === ['flush_type', '.', 'SOA'])
-                && ($words[0] !== 'flush_requestlist' || ($previous === '' && $onReject)
-                    || str_ends_with($previous, ' -reject'));
+                && ($words[0] !== 'flush_requestlist' || $onReject !== []);
         }
         if (!str_starts_with($call, 'log ')) {
             $clean = $clean && !(str_starts_with($previous, 'route delete') && str_starts_with($call, 'route add'));
