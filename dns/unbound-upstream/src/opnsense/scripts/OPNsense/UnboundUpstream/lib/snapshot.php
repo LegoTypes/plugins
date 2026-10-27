@@ -709,10 +709,11 @@ function uu_zone_decode(string $stdout): ?array
 
 /**
  * A snapshot evaluate.php record wrote, in this version's shape for replay: a recording made before 1.3 has no
- * contract_input.core_commands, which reads as nothing drifted, since that version did not check. A recording made
- * before 1.4 (a route and no routes) is refused: it has one resolver's route and none of the per-member fields, and
- * a recording is a diagnostic of one box at one time, so it is recorded again rather than converted. Anything else
- * is as recorded; replay checks the top-level shape.
+ * contract_input.core_commands, which reads as nothing drifted, since that version did not check; an earlier 1.4
+ * recording has no route_flags, which reads as no flags read (only the status shows them), placed right after routes
+ * so the top-level order is this version's. A recording made before 1.4 (a route and no routes) is refused: it has
+ * one resolver's route and none of the per-member fields, and a recording is a diagnostic of one box at one time, so
+ * it is recorded again rather than converted. Anything else is as recorded; replay checks the top-level shape.
  *
  * @param array<string, mixed> $snapshot
  * @param string $path the recording's file, which the refusal names
@@ -726,6 +727,11 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
     if (is_array($snapshot['contract_input'] ?? null)
         && !array_key_exists('core_commands', $snapshot['contract_input'])) {
         $snapshot['contract_input']['core_commands'] = [];
+    }
+    if (!array_key_exists('route_flags', $snapshot)) {
+        $after = (int)array_search('routes', array_keys($snapshot), true) + 1;
+        $snapshot = array_slice($snapshot, 0, $after, true) + ['route_flags' => []]
+            + array_slice($snapshot, $after, null, true);
     }
     return $snapshot;
 }

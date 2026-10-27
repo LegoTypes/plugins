@@ -452,9 +452,17 @@ uu_register_suite('snapshot', function (): int {
         }));
     uu_check($t, '(p17) recorded: a recording with routes passes through unchanged',
         uu_try_case(function (): bool {
-            $rec = ['routes' => [],
+            $rec = ['routes' => [], 'route_flags' => ['10.2.0.1' => ['UP', 'HOST']],
                     'contract_input' => ['core_commands' => ['cron restart']]];
             return uu_snapshot_recorded($rec, '/root/new.json') === $rec;
+        }));
+    uu_check($t, 'recorded: an earlier 1.4 recording with no route_flags gains none read, right after routes',
+        uu_try_case(function (): bool {
+            $rec = ['now' => 10000, 'routes' => ['10.2.0.1' => ['present' => false]], 'fib_sync_ms' => 1000,
+                    'contract_input' => ['core_commands' => []]];
+            $read = uu_snapshot_recorded($rec, '/root/earlier.json');
+            return array_keys($read) === ['now', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input']
+                && $read['route_flags'] === [] && $read['routes'] === $rec['routes'];
         }));
 
     return uu_tally_report('snapshot', $t);

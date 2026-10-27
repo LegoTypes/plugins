@@ -1070,6 +1070,37 @@ VOLT;
     uu_check($t, '(p17) evaluate.php replay of a recording made before 1.4 (no routes) is refused, naming the file, '
         . 'and plans nothing', $p17Refused);
 
+    /* an earlier 1.4 recording, made before the snapshot kept its route reads' flags, replays: this box's own
+     * recording with route_flags taken out, in a scratch directory that is removed */
+    $flagless = null;
+    $flaglessDir = uu_scratch_dir();
+    try {
+        $rec = "$flaglessDir/recording.json";
+        $out = [];
+        $rc = 0;
+        exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec) . ' > /dev/null 2>&1',
+            $out, $rc);
+        $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+        if (is_array($doc) && is_array($doc['snapshot'] ?? null) && array_key_exists('route_flags', $doc['snapshot'])) {
+            unset($doc['snapshot']['route_flags']);
+            file_put_contents($rec, json_encode($doc, JSON_THROW_ON_ERROR));
+            $out = [];
+            exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' replay ' . escapeshellarg($rec) . ' 2>&1',
+                $out, $rc);
+            $flagless = ['rc' => $rc, 'out' => implode("\n", $out)];
+        } else {
+            printf("  record exited %d and wrote no snapshot with route_flags\n", $rc);
+        }
+    } finally {
+        uu_scratch_remove($flaglessDir);
+    }
+    $flaglessPlans = $flagless !== null && $flagless['rc'] === 0 && str_contains($flagless['out'], '"plan"');
+    if ($flagless !== null && !$flaglessPlans) {
+        printf("  replay exited %d:\n%s\n", $flagless['rc'], $flagless['out']);
+    }
+    uu_check($t, 'evaluate.php replay of an earlier 1.4 recording without route_flags plans and exits 0',
+        $flaglessPlans);
+
     /* (p18) record reads the route of every address the saved state holds, beside the effective resolvers: a state
      * holding an address no member uses is placed under the evaluate lock (record takes none, and no evaluation
      * acts on the placed state) and put back */
