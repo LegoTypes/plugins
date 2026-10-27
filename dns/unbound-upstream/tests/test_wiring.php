@@ -13,7 +13,7 @@ declare(strict_types=1);
  * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
  * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
- * cron's running state back. It also records and replays one snapshot in a scratch directory it removes.
+ * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
