@@ -227,8 +227,8 @@ final class UuApplyRun
             foreach (array_keys($this->st['addresses']) as $address) {
                 $this->st['addresses'][$address]['forwarded'] = in_array((string)$address, $named, true);
             }
-            $this->forwarded[$this->key] = in_array($this->key, $named, true);
         }
+        $this->setLive($read);
         $this->live = $live;
     }
 

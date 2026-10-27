@@ -137,16 +137,19 @@ function uu_test_in_tunnel(array $s, string $member): array
 }
 
 /**
- * A state in tunnel mode on the member, or in fallback when it is null. In tunnel mode on wg-a or wg-b it records the
- * resolver (10.2.0.1 unless $resolver names another, null for none) as the plugin does.
+ * A state in tunnel mode on the member, or in fallback when it is null. In tunnel mode on a member of $snapshot (the
+ * planner's base snapshot unless given) it records the resolver (10.2.0.1 unless $resolver names another, null for
+ * none) with that member's route, as the plugin does.
  *
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
- *                            probe_failures: int,
- *                                last_down: ?array{at: int, reason: string}, resolver: string}> $timers
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}> $timers
+ * @param ?array{members: array<string, array{next_hop: string, if: string}>} $snapshot
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
@@ -158,7 +161,8 @@ function uu_test_plan_state(
     array $timers = [],
     int $controlFailures = 0,
     ?int $silentSince = null,
-    ?string $resolver = '10.2.0.1'
+    ?string $resolver = '10.2.0.1',
+    ?array $snapshot = null
 ): array {
     $st = uu_state_new();
     $st['mode'] = $member === null ? 'fallback' : 'tunnel';
@@ -166,11 +170,12 @@ function uu_test_plan_state(
     $st['timers'] = $timers;
     $st['control_failures'] = $controlFailures;
     $st['control_silent_since'] = $silentSince;
-    /* the entry the plugin writes for tunnel mode on a member of the test group: its route, forwarded */
-    $routes = ['wg-a' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
-               'wg-b' => ['kind' => 'member', 'next_hop' => '10.2.0.6', 'if' => 'wg2']];
-    if ($resolver !== null && isset($routes[$member ?? ''])) {
-        $st['addresses'] = [$resolver => ['route' => $routes[$member], 'forwarded' => true, 'released_at' => null]];
+    /* the entry the plugin writes for tunnel mode on a member: its route, forwarded */
+    $m = ($snapshot ?? uu_test_snapshot())['members'][$member ?? ''] ?? null;
+    if ($resolver !== null && $m !== null) {
+        $key = uu_ip_canonical($resolver) ?? $resolver;
+        $st['addresses'] = [$key => ['route' => ['kind' => 'member', 'next_hop' => $m['next_hop'], 'if' => $m['if']],
+                                     'forwarded' => true, 'released_at' => null]];
     }
     return $st;
 }

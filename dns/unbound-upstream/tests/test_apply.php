@@ -340,7 +340,7 @@ uu_register_suite('apply', function (): int {
     $reject6 = 'route change -inet6 -host ' . $v6 . ' ::1 -reject';
     $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
     $s6['members']['wg-a6']['force_down'] = true;
-    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $s6));
     $r = uu_test_io($s6, $all);
     $st = uu_apply($p, $s6, $r['io']);
     uu_check($t, '(t6) fallback on an IPv6 resolver: the reject route is ::1 on -inet6, changed in place',
@@ -350,7 +350,7 @@ uu_register_suite('apply', function (): int {
         && uu_test_logged($r['calls'], LOG_NOTICE, 'route: ' . $v6 . ' rejected locally'));
     $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
     $s6['settings']['enabled'] = false;
-    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $s6));
     $r = uu_test_io($s6, $all);
     $st = uu_apply($p, $s6, $r['io']);
     uu_check($t, '(t6) stop on an IPv6 resolver ends in route delete -inet6 -host, and the record is cleared',
@@ -376,7 +376,7 @@ uu_register_suite('apply', function (): int {
             && !uu_plan_route_via(['interface' => 'gif1'] + $viaGif, $s6['members']['wg-a6'])));
     $s6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
     $s6['route']['gateway'] = 'FD00:0::3:2';
-    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6));
+    $p = uu_plan($s6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $s6));
     $r = uu_test_io($s6, $all);
     uu_apply($p, $s6, $r['io']);
     uu_check($t, '(t7) a route whose next hop is the member\'s in another spelling is left alone: no route call',
@@ -1098,7 +1098,7 @@ uu_register_suite('apply', function (): int {
         && !uu_test_logged($run['calls'], LOG_ERR, '-inet6'));
     $fp6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
     $fp6['stop'] = UU_STOP_REMOVE;
-    $p = uu_plan($fp6, uu_test_plan_state('wg-a6', $usable6));
+    $p = uu_plan($fp6, uu_test_plan_state('wg-a6', $usable6, 0, null, $v6, $fp6));
     $r = uu_test_io($fp6, $all, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
     uu_apply($p, $fp6, $r['io']);
     uu_check($t, '(a5) the same for an IPv6 resolver → the remedy names route delete -inet6 -host, the form route(8) takes',
@@ -1856,10 +1856,10 @@ uu_register_suite('apply', function (): int {
         $st['addresses'] === []);
 
     uu_check($t, 'the remove-timeout text for several addresses names each, comma-joined, and one delete command each',
-        uu_remove_timeout_text(['192.0.2.1', '2001:db8:a::53'])
-        === 'the package is being removed while Unbound may still forward to 192.0.2.1, 2001:db8:a::53 over the '
-        . 'plugin\'s route: once it is removed, run configctl unbound restart, then route delete -host 192.0.2.1; '
-        . 'route delete -inet6 -host 2001:db8:a::53');
+        uu_try_case(fn (): bool => uu_remove_timeout_text(['192.0.2.1', '2001:db8:a::53'])
+            === 'the package is being removed while Unbound may still forward to 192.0.2.1, 2001:db8:a::53 over the '
+            . 'plugin\'s route: once it is removed, run configctl unbound restart, then route delete -host '
+            . '192.0.2.1; route delete -inet6 -host 2001:db8:a::53'));
 
     // Never planned, across every case above; flush_requestlist only behind the reject route.
     $forbidden = ['flush', 'flush_zone', 'flush_bogus', 'flush_negative', 'reload', 'reload_keep_cache',

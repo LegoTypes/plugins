@@ -621,6 +621,52 @@ uu_register_suite('wiring', function (): int {
     uu_check($t, 'evaluate.php replay of a recording without contract_input.core_commands (the shape before 1.3) plans, exits 0 and prints no PHP warning',
         $m3 !== null && $m3['rc'] === 0 && !$m3Warned && str_contains($m3['out'], '"plan"'));
 
+    /* A disabled plugin whose resolver has a member route that no member explains: only the state's record makes
+     * that route the plugin's own, so the replay plans its delete. The recording is this box's own, rewritten in a
+     * scratch directory and removed. */
+    $e5 = null;
+    $e5Dir = uu_scratch_dir();
+    try {
+        $rec = "$e5Dir/recording.json";
+        $out = [];
+        $rc = 0;
+        exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec) . ' > /dev/null 2>&1',
+            $out, $rc);
+        $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+        if (is_array($doc) && is_array($doc['snapshot'] ?? null)) {
+            $hop = ['kind' => 'member', 'next_hop' => '198.51.100.9', 'if' => 'wg9'];
+            $doc['snapshot']['settings']['enabled'] = false;
+            $doc['snapshot']['settings']['resolver'] = '192.0.2.1';
+            $doc['snapshot']['stop'] = null;
+            $doc['snapshot']['members'] = [];
+            $doc['snapshot']['tiers'] = [];
+            $doc['snapshot']['unbound'] = ['enabled' => true, 'pid_alive' => true, 'control_ok' => true,
+                'live_root' => ['192.0.2.53']];
+            $doc['snapshot']['route'] = ['present' => true, 'gateway' => '198.51.100.9', 'interface' => 'wg9',
+                'reject' => false, 'ours' => false];
+            $doc['state'] = ['version' => 6, 'mode' => 'fallback', 'member' => null, 'timers' => [],
+                'control_failures' => 0, 'control_silent_since' => null, 'last_switch' => null,
+                'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => null, 'blocked' => null,
+                'addresses' => ['192.0.2.1' => ['route' => $hop, 'forwarded' => false, 'released_at' => null]]];
+            file_put_contents($rec, json_encode($doc, JSON_THROW_ON_ERROR));
+            $out = [];
+            exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' replay ' . escapeshellarg($rec) . ' 2>&1',
+                $out, $rc);
+            $e5 = ['rc' => $rc, 'out' => implode("\n", $out)];
+        } else {
+            printf("  record exited %d and wrote no snapshot\n", $rc);
+        }
+    } finally {
+        uu_scratch_remove($e5Dir);
+    }
+    if ($e5 !== null && !str_contains($e5['out'], '[dry] would run: route -n delete -inet -host 192.0.2.1')) {
+        printf("  replay exited %d:\n%s\n", $e5['rc'], $e5['out']);
+    }
+    uu_check($t, 'replay: a member route that only the state\'s record explains is the plugin\'s: a disabled '
+        . 'plugin\'s replay plans its reject, drain and delete',
+        $e5 !== null && $e5['rc'] === 0
+        && str_contains($e5['out'], '[dry] would run: route -n delete -inet -host 192.0.2.1'));
+
     $before = uu_test_evaluations();
     shell_exec('/usr/local/sbin/pluginctl -c unbound_start > /dev/null 2>&1');
     $seen = false;

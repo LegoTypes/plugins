@@ -30,8 +30,8 @@ declare(strict_types=1);
  * released_at is the monotonic second an address left use, null while in use. A Save that changes the resolver
  * setting undoes every other recorded address's route and forwarders first. A version 5 file (one resolver and one
  * route_installed) converts on read. A file that cannot be read back exactly as written is discarded: the planner
- * derives the mode from the live forwarders and route, so a fresh state costs only the failback timers. The file lives in the root-only run directory and is read as a
- * regular file only.
+ * derives the mode from the live forwarders and route, so a fresh state costs only the failback timers. The file
+ * lives in the root-only run directory and is read as a regular file only.
  */
 
 require_once __DIR__ . '/constants.php';
