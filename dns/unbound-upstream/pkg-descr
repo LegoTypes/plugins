@@ -22,33 +22,35 @@ Plugin Changelog
 1.4
 
 * A resolver per member (a row below the settings) or the default one,
-  IPv4 or IPv6. A group holds one family; a resolver of the other family
-  or a group with both refuses tunnel mode. With one default and no rows
-  the behaviour, log lines and status are 1.3's
+  IPv4 or IPv6. A group holds one family: Save refuses a resolver of the
+  other family, an IPv6 resolver while IPv6 is not allowed, or a group
+  with both, and tunnel mode is refused if one gets through. With one
+  default and no rows the routes, forwarders and the status fields 1.3
+  had are unchanged; the other entries below still apply
 * Saving a new resolver for the active member switches in place, with no
-  stop first. The previous address is rejected, held for 60 s and
-  drained, then deleted with its block; one the owner's own root zone
-  names is deleted as soon as Unbound's live root is that zone
-* Member and footprint passes keep state per interface (if-bound) and
-  accept any flags: a TCP state can no longer carry the resolver's
-  packets out the WAN after the member route is gone, and a reused
-  Unbound TCP connection after a member change is reset and reconnects
-  instead of being blocked
+  stop first. The previous address is rejected, held for at least 60 s
+  and drained, then deleted with its block; one the owner's own root
+  zone names is deleted as soon as Unbound's live root is that zone
+* The member passes, and the pass for the address the plugin last used,
+  keep state per interface (if-bound) and accept any flags: a TCP state
+  can no longer carry the resolver's packets out the WAN after the
+  member route is gone, and a reused Unbound TCP connection after a
+  member change is reset and reconnects instead of being blocked
 * The contract also refuses tunnel mode when unbound.conf cannot be read
   (its include files are read too), when Unbound's configuration says
-  do-ip6: no or do-ip4: no, when Outgoing Network Interfaces is set, when
-  the group mixes IPv4 and IPv6 members, when a resolver is of the other
-  family than the group's, and when Unbound's own root zone forwards to a
-  member's resolver
+  do-ip4: no for an IPv4 group or do-ip6: no for an IPv6 group, when
+  Outgoing Network Interfaces is set, when the group mixes IPv4 and IPv6
+  members, when a resolver is of the other family than the group's, and
+  when Unbound's own root zone forwards to a member's resolver
 * Per-member resolver rows apply as soon as they are saved or deleted,
   through the same apply as the Apply button; the settings form still
   needs Apply
-* A route or Unbound call that fails during a run is logged with its
-  address and retried by the next run
+* A failed reject route, delete or drain of an old address is logged
+  with its address and retried by the next run
 * The status keeps 1.3's fields for one address and adds routes,
   addresses and each member's resolver
-* The state file converts on read; the pass labels change, so the rules
-  are listed once after the upgrade
+* The state file converts on read; the pass labels and the passes' state
+  options change, so the rules are listed once after the upgrade
 * WireGuard is the only tunnel type tested
 
 1.3_2
