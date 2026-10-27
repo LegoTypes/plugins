@@ -248,9 +248,12 @@ uu_register_suite('wiring', function (): int {
         && str_contains($view, 'footprints = data.footprint ? [data.footprint] : [];')
         && str_contains($view, "if (entry.footprint) {\n                        footprints.push(addr);")
         && str_contains($view, "plain(footprints.join(', '))"));
-    uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs',
+    uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs, and the '
+        . 'page says so',
         str_contains($view, "\$(document).on('settings-changed', function () {\n"
-            . "            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {"));
+            . "            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {")
+        && str_contains($view, "{{ lang._('A row takes effect once saved or deleted. The settings above still need "
+            . "Apply.') }}"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -310,7 +313,8 @@ uu_register_suite('wiring', function (): int {
         && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
 
     /* (l5) the five resolver actions, run as the API runs them over rows added to the controller's model in memory
-     * only, with the controller's save counted instead of run, so no case (and no broken action) writes config.xml:
+     * only, with the controller's save counted instead of run (but for the refused non-member add, which runs on the
+     * real controller), so no case and no broken action writes config.xml:
      * search lists a row with its member's name, get reads it, add and set refuse what fails validation, del finds no
      * row by an unknown id. Then, with the plugin enabled on proton_test_grp in memory, every row change is checked
      * against the whole model as a Save is: a non-member's row, a second row for one gateway (the message lands on the
@@ -407,8 +411,8 @@ uu_register_suite('wiring', function (): int {
             $byName[$gw->name->getValue()] = (string)$key;
         }
         $outsider = (string)(array_values(array_diff(array_keys($byName), $memberNames))[0] ?? '');
-        $enabled = function (string $default) use ($controller, $model, $groupUuid): object {
-            $e = $controller();
+        $enabled = function (string $default, ?object $e = null) use ($controller, $model, $groupUuid): object {
+            $e = $e ?? $controller();
             $e->request = new \OPNsense\Mvc\Request();
             $m = $model($e);
             $m->enabled->setValue('1');
@@ -419,9 +423,10 @@ uu_register_suite('wiring', function (): int {
         $a = $byName['wg-test-429'] ?? '';
         $b = $byName['wg-test-529'] ?? '';
         $ctl['outsider'] = $outsider;
-        $e1 = $enabled('10.2.0.1');
+        /* the real controller: a refused add never reaches its save */
+        $e1 = $enabled('10.2.0.1', new \OPNsense\UnboundUpstream\Api\SettingsController());
         $ctl['nonMember'] = [$post(['resolver' => ['gateway' => $byName[$outsider] ?? '', 'address' => '10.2.0.1']],
-            fn (): array => $e1->addResolverAction()), $e1->saves];
+            fn (): array => $e1->addResolverAction()), md5_file($config) === $configBefore ? 0 : 1];
         $e2 = $enabled('10.2.0.1');
         $ctl['member'] = [$post(['resolver' => ['gateway' => $a, 'address' => '10.2.0.1']],
             fn (): array => $e2->addResolverAction()), $e2->saves];
@@ -484,8 +489,8 @@ uu_register_suite('wiring', function (): int {
             printf("  %s: %s\n", $k, json_encode($ctl[$k] ?? null));
         }
     }
-    uu_check($t, '(l5) enabled: a grid add of a non-member\'s row is refused on its gateway, as a Save refuses it, and '
-        . 'nothing is saved; a member\'s row is saved', $nonMember);
+    uu_check($t, '(l5) enabled: a grid add of a non-member\'s row is refused by the real controller on its gateway, '
+        . 'as a Save refuses it, and config.xml is unchanged; a member\'s row is saved', $nonMember);
     uu_check($t, '(l5) enabled: a row changed to another row\'s gateway is refused (the message is the other row\'s, '
         . 'shown on this one\'s gateway), and a delete that leaves a member with no resolver is refused; neither is '
         . 'saved, while a delete that leaves the model valid is; config.xml is unchanged', $wholeModel);

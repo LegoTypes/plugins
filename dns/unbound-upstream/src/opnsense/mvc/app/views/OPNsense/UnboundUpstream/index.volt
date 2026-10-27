@@ -164,7 +164,9 @@
 </div>
 <div class="content-box">
     <table class="table table-condensed">
-        <tr><td><h3>{{ lang._('Per-member resolvers') }}</h3></td></tr>
+        <tr><td><h3>{{ lang._('Per-member resolvers') }}</h3>
+            <p>{{ lang._('A row takes effect once saved or deleted. The settings above still need Apply.') }}</p>
+        </td></tr>
         <tr><td>
             <table id="grid-resolvers" class="table table-condensed table-hover table-striped"
                    data-editDialog="DialogResolver">
