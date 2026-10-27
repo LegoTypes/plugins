@@ -2303,22 +2303,34 @@ uu_register_suite('apply', function (): int {
             && $runs[1]['st']['addresses'] === [$b => $entry($viaRecord($f, 'wg-b'), true)]
             && $errorsOf($runs[1]) === []);
 
-        $run = null;
-        $ok = uu_try_case(function () use ($perMember, $f, $a, $typo, $usable, $applyRun, $via, &$run): bool {
-            $s = $perMember($f, $typo, $typo);
-            $s['unbound']['live_root'] = [$a];
+        /* a fallback whose restore is refused, with B switched in and A an orphan in its hold on a member route */
+        $runs = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
+                                           $viaRecord, $settledDown, $now, &$runs): bool {
+            $s = uu_test_in_tunnel($perMember($f, $b, $b), 'wg-b');
             $s = uu_test_route($s, $via($f, 'wg-a'), $a);
-            $run = $applyRun($s, uu_test_plan_state('wg-a', $usable, 0, null, $a, $s),
-                ['direct' => [$f['if_a'] => [false], $f['if_b'] => [false]], 'uc_fail' => ['forward_add']]);
+            $s['probes']['wg-a'] = $settledDown;
+            $s['probes']['wg-b'] = $settledDown;
+            $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
+                [$a => $entry($viaRecord($f, 'wg-a'), false, $now - 10), $b => $entry($viaRecord($f, 'wg-b'), true)]);
+            $failed = $applyRun($s, $st, ['uc_fail' => ['forward_add']]);
+            $runs = [$failed, $applyRun($s, $failed['st'])];
             return true;
         });
-        uu_check($t, "(a18) $family, the Save typo again with the restore refused: no reject route anywhere, A keeps "
-            . 'its member route and stays forwarded, and the fallback line names it',
-            $ok && $run !== null && array_slice($run['acts'], -1) === [$restoreDot]
-            && array_filter($run['acts'], fn (string $c): bool => str_ends_with($c, ' -reject')) === []
-            && $run['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), true)
-            && uu_test_logged($run['calls'], LOG_ERR, "fallback incomplete: Unbound may still forward to the resolver "
-                . "($a), so no reject route; the next evaluation tries again"));
+        uu_check($t, "(a18) $family, a fallback whose restore is refused: no reject route anywhere, one error names B, "
+            . 'A and B keep their member routes, records and A its hold, still tunnel on wg-b; the next run restores, '
+            . 'then rejects both',
+            $ok && $runs !== null && $runs[0]['p']['action'] === 'fallback' && $runs[0]['acts'] === [$restoreDot]
+            && $runs[0]['st']['mode'] === 'tunnel' && $runs[0]['st']['member'] === 'wg-b'
+            && $runs[0]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), false, $now - 10),
+                $b => $entry($viaRecord($f, 'wg-b'), true)]
+            && array_slice($errorsOf($runs[0]), -1) === ['log ' . LOG_ERR . ' fallback incomplete: Unbound may still '
+                . "forward to the resolver ($b), so no reject route; the next evaluation tries again"]
+            && $runs[1]['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b)]
+            && $runs[1]['st']['mode'] === 'fallback'
+            && $runs[1]['st']['addresses'] === [$a => $entry($rejectRecord, false, $now - 10),
+                $b => $entry($rejectRecord, false)]
+            && $errorsOf($runs[1]) === []);
 
         $runs = null;
         $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, $with, $entry, $via,
@@ -2328,13 +2340,14 @@ uu_register_suite('apply', function (): int {
             $s['settings']['enabled'] = false;
             $st = $with(uu_test_plan_state('wg-b', $usable, 0, null, $b, $s),
                 [$a => $entry($viaRecord($f, 'wg-a'), false), $b => $entry($viaRecord($f, 'wg-b'), true)]);
-            $runs = [$applyRun($s, $st, ['uc_fail' => ['flush_requestlist']]),
-                     $applyRun($s, $st, ['uc_fail' => ['forward_add']])];
+            $refused = $applyRun($s, $st, ['uc_fail' => ['forward_add']]);
+            $runs = [$applyRun($s, $st, ['uc_fail' => ['flush_requestlist']]), $refused,
+                     $applyRun($s, $refused['st'])];
             return true;
         });
         uu_check($t, "(a20) $family, a disabled plugin's stop with two entries: its flush_requestlist fails, so both "
-            . 'keep their reject route, one error names both; its restore refused, both keep their member route, one '
-            . 'error names both',
+            . 'keep their reject route, one error names both; its restore refused, both keep their member route and '
+            . 'record, one error names both, and the next tick restores, then drains and deletes both',
             $ok && $runs !== null
             && $runs[0]['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b), $flushReq]
             && $runs[0]['st']['addresses'] === [$a => $entry($rejectRecord, false), $b => $entry($rejectRecord, false)]
@@ -2344,7 +2357,10 @@ uu_register_suite('apply', function (): int {
             && $runs[1]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), false),
                 $b => $entry($viaRecord($f, 'wg-b'), true)]
             && array_slice($errorsOf($runs[1]), -1) === ['log ' . LOG_ERR . " stop: Unbound may still forward to the "
-                . "resolver ($a, $b), so its route stays (without it the queries would follow the default route)"]);
+                . "resolver ($a, $b), so its route stays (without it the queries would follow the default route)"]
+            && $runs[2]['acts'] === [$restoreDot, 'uc forward', $rejectOf($f, $a), $rejectOf($f, $b), $flushReq,
+                $drain, $deleteOf($f, $a), $deleteOf($f, $b)]
+            && $runs[2]['st']['addresses'] === [] && $errorsOf($runs[2]) === []);
 
         // Unbound's live root naming the resolver beside a configured forwarder B (an external forward_add . A B).
         $zoneOf = fn (array $addrs): array => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false, 'problems' => []];
