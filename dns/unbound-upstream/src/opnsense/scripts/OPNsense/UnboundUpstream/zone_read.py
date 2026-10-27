@@ -30,20 +30,23 @@ opened or read, a missing file).
 is Unbound's configuration as Unbound reads it, in this one process (so a directory that core replaces at an Unbound
 start is looked at once): PATH's text with every "include:" / "include-toplevel:" line replaced in place by the
 included files' text, an included file's own includes in turn. A relative include is resolved from the last
-"directory:" line read so far (PATH's directory before any), as Unbound's parser does. A path with a * ? [ { is a glob
-in its last component (a wildcard in a directory component, and a leading ~, are refused): braces are expanded in
-order, each alternative's matches sorted, a dot file matched only by a pattern that names it. A glob with no match is
-no files, and so is a listed entry that is gone when opened (core deletes and copies back its custom files at every
-start); a path without a glob that is missing is a failed read, as it is for Unbound. Each file is read as an entry is,
-so a link, a directory and any file that is no regular file is a failed read, and a file over MAX_BYTES is cut after
-its last line end (an option past the cut is not seen). More than MAX_FILES files or MAX_TOTAL bytes together is a
+"directory:" line read so far (PATH's directory before any), as Unbound's parser does. A path with a * ? [ { is a
+glob in its last component: braces are expanded, and the matches of all alternatives are sorted together, as Unbound
+reads them, a dot file matched only by a pattern that names it. Unbound also accepts a leading ~ (the user's home) and a
+wildcard in a directory component; the helper refuses both on purpose (fail-closed: the caller then reports the
+configuration unreadable), since core never writes either. A glob with no match is no files, and so is a listed entry
+that is gone when opened (core deletes and copies back its custom files at every start); a path without a glob that
+is missing is a failed read, as it is for Unbound. Each file is read as an entry is, so a link, a directory and any
+file that is no regular file is a failed read, and a file over MAX_BYTES is cut after its last line end (an option
+or an "include:" past the cut is not seen or followed). More than MAX_FILES files or MAX_TOTAL bytes together is a
 failed read, which also ends an include loop. Prints {"texts": [the one expanded text], "skipped": 0}, or
-{"texts": [], "skipped": 1} for a failed read; exit 1 and usage as above. An "include:" whose path is on the next
-line is not followed (core never writes that form).
+{"texts": [], "skipped": 1} for any failed read, an unreached directory included (exit 0; exit 2 is a usage error).
+An "include:" whose path is on the next line is not followed (core never writes that form).
 
-In both forms a DIR (or a PATH's directory) that is not reached this way is a failed read, never an empty one ("could
-not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on stdout, exit 1, as for
-any other failure, which names only the exception's type on stderr, never a file's text. A usage error exits 2.
+In the DIR and --file forms a DIR (or a PATH's directory) that is not reached this way is a failed read, never an
+empty one ("could not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on
+stdout, exit 1, as for any other failure, which names only the exception's type on stderr, never a file's text. A
+usage error exits 2.
 """
 
 import base64
@@ -146,18 +149,20 @@ def missing(dir_fd, name):
 
 
 def includes(target, cwd):
-    """The files an include names, as (path, may_be_gone) in Unbound's order."""
+    """The files an include names, as (path, may_be_gone) in Unbound's order (a glob's matches fully sorted)."""
     if target.startswith('~'):
         raise Refused()
-    out = []
     magic = WILD.search(target) is not None
+    found = set()
     for pattern in braces(target):
         pattern = os.path.normpath(os.path.join(cwd, pattern))
         directory, base = os.path.split(pattern)
-        if WILD.search(directory) or '/' in base:
+        if WILD.search(directory):
             raise Refused()
-        if not magic or not re.search(r'[*?\[]', base):
-            out.append((pattern, magic))
+        if not magic:
+            return [(pattern, False)]
+        if not re.search(r'[*?\[]', base):
+            found.add(pattern)
             continue
         dir_fd = open_dir(directory)
         if dir_fd is None:
@@ -165,12 +170,11 @@ def includes(target, cwd):
                 raise Refused()
             continue
         try:
-            names = sorted(n for n in os.listdir(dir_fd)
-                           if fnmatch.fnmatchcase(n, base) and (base.startswith('.') or not n.startswith('.')))
+            found.update(directory + '/' + n for n in os.listdir(dir_fd)
+                         if fnmatch.fnmatchcase(n, base) and (base.startswith('.') or not n.startswith('.')))
         finally:
             os.close(dir_fd)
-        out.extend((directory + '/' + n, True) for n in names)
-    return out
+    return [(path, True) for path in sorted(found)]
 
 
 def read_conf(path, max_bytes, state):

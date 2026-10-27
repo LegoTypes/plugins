@@ -517,7 +517,7 @@ uu_register_suite('zone', function (): int {
     uu_check($t, '(m5) include spellings: a quoted path, a comment after it, include-toplevel and a plain path are '
         . 'followed; a commented line, a similar keyword, a line that only holds the word and a path on the next '
         . 'line are not',
-        uu_try_case(function () use ($expanded): bool {
+        uu_try_case(function () use ($expanded, $base): bool {
             $followed = $expanded(function (string $dir): void {
                 foreach (['a', 'b', 'c', 'd'] as $n) {
                     file_put_contents("$dir/$n.txt", "# from $n\n");
@@ -531,7 +531,8 @@ uu_register_suite('zone', function (): int {
             $t = (string)($followed['text'] ?? '');
             return $followed !== null && strpos($t, '# from a') < strpos($t, '# from b')
                 && strpos($t, '# from b') < strpos($t, '# from c') && strpos($t, '# from c') < strpos($t, '# from d')
-                && $ignored !== null && !str_contains((string)$ignored['text'], '# from a');
+                && $ignored !== null && $ignored['text'] !== null && $ignored['facts'] === $base
+                && !str_contains($ignored['text'], '# from a');
         }));
     uu_check($t, '(m5) a relative include is taken from the last directory: line read, not unbound.conf\'s own '
         . 'directory (before any, from it)',
@@ -551,12 +552,18 @@ uu_register_suite('zone', function (): int {
                 file_put_contents($dir . '/rel.conf', "directory: $dir/sub\n");
                 file_put_contents($dir . '/sub/x.conf', "do-ip4: no\n");
             }, "include: rel.conf\ninclude: x.conf\n");
-            return $other !== null && $other['facts'] === array_replace($base, ['do_ip6' => false])
+            $relative = $expanded(function (string $dir): void {
+                mkdir($dir . '/sub');
+                file_put_contents($dir . '/rel.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/sub/rel.conf', "do-ip6: no\n");
+            }, "directory: sub\ninclude: rel.conf\n");
+            return $relative !== null && $relative['facts'] === array_replace($base, ['do_ip6' => false])
+                && $other !== null && $other['facts'] === array_replace($base, ['do_ip6' => false])
                 && $plain !== null && $plain['facts'] === array_replace($base, ['do_ip6' => false])
                 && $later !== null && $later['facts'] === array_replace($base, ['do_ip4' => false]);
         }));
-    uu_check($t, '(m5) globs: ? and [ ] match one character, braces give their alternatives in order, each sorted, '
-        . 'and a brace path that is missing is no file',
+    uu_check($t, '(m5) globs: ? and [ ] match one character, braces give their alternatives, '
+        . 'all matches sorted together as Unbound reads them, and a brace path that is missing is no file',
         uu_try_case(function () use ($expanded, $base): bool {
             $files = function (string $dir): void {
                 file_put_contents($dir . '/etc/a1.conf', "do-ip6: yes\n");
@@ -567,12 +574,18 @@ uu_register_suite('zone', function (): int {
             $class = $expanded($files, "include: /var/unbound/etc/a[12].conf\n");
             $order = $expanded($files, "include: /var/unbound/etc/{a2,a1}.conf\n");
             $reverse = $expanded($files, "include: /var/unbound/etc/{a1,a2}.conf\n");
+            $three = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/a.conf', "do-ip6: no\n");
+                file_put_contents($dir . '/etc/c.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/etc/b.conf', "do-ip6: no\n");
+            }, "include: /var/unbound/etc/{a,c,b}.conf\n");
             $gone = $expanded($files, "include: /var/unbound/etc/{a1,nothere}.conf\n");
             return $question !== null && $question['facts'] === ['do_ip4' => false, 'do_ip6' => false,
                     'outgoing_interface' => false]
                 && $class !== null && $class['facts'] === array_replace($base, ['do_ip6' => false])
-                && $order !== null && $order['facts'] === $base
+                && $order !== null && $order['facts'] === array_replace($base, ['do_ip6' => false])
                 && $reverse !== null && $reverse['facts'] === array_replace($base, ['do_ip6' => false])
+                && $three !== null && $three['facts'] === $base
                 && $gone !== null && $gone['facts'] === $base;
         }));
     uu_check($t, '(m5) a chain of five distinct files is followed (no depth bound); a leading ~ and a wildcard in a '
@@ -613,8 +626,8 @@ uu_register_suite('zone', function (): int {
             });
         }));
     uu_check($t, '(m5) unreadable (null): a link among the included files, a directory matched, a path that is '
-        . 'missing, a loop, more files or bytes than the bounds, and unbound.conf itself missing; a glob with no '
-        . 'match is not',
+        . 'missing, a glob in a linked directory, a loop, more files or bytes than the bounds, and unbound.conf '
+        . 'itself missing; a glob with no match is not',
         uu_try_case(function () use ($expanded): bool {
             $link = $expanded(function (string $dir): void {
                 file_put_contents($dir . '/target.txt', "do-ip6: yes\n");
@@ -629,6 +642,10 @@ uu_register_suite('zone', function (): int {
                     file_put_contents(sprintf('%s/etc/f%03d.conf', $dir, $i), "\n");
                 }
             });
+            $linkedDir = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/a.conf', "do-ip6: no\n");
+                symlink($dir . '/etc', $dir . '/lnk');
+            }, "include: /var/unbound/lnk/*.conf\n");
             $bytes = $expanded(function (string $dir): void {
                 for ($i = 0; $i < 9; $i++) {
                     file_put_contents(sprintf('%s/etc/b%d.conf', $dir, $i),
@@ -638,7 +655,8 @@ uu_register_suite('zone', function (): int {
             $none = $expanded(fn (string $dir) => null, "include: /nonexistent-dir/*.conf\ndo-ip6: no\n");
             return $link !== null && $link['text'] === null && $directory !== null && $directory['text'] === null
                 && $missing !== null && $missing['text'] === null && $loop !== null && $loop['text'] === null
-                && $many !== null && $many['text'] === null && $bytes !== null && $bytes['text'] === null
+                && $many !== null && $many['text'] === null && $linkedDir !== null && $linkedDir['text'] === null
+                && $bytes !== null && $bytes['text'] === null
                 && $none !== null && $none['facts'] === ['do_ip4' => true, 'do_ip6' => false,
                     'outgoing_interface' => false]
                 && uu_conf_expanded_text('/nonexistent-dir/unbound.conf') === null;
