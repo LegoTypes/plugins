@@ -32,8 +32,10 @@ declare(strict_types=1);
  *   evaluate.php replay FILE          plan from a recorded FILE and print every step apply would run; changes nothing
  * evaluate, start, stop and remove run under the evaluate lock, waiting as long as uu_lock_policy() says for the mode
  * (UU_LOCK_WAIT_SECONDS; remove UU_REMOVE_LOCK_WAIT_SECONDS) for an evaluation in flight, so a trigger that arrives
- * meanwhile runs after it instead of being dropped. Every failure is logged and exits non-zero; nothing is thrown into
- * configd.
+ * meanwhile runs after it instead of being dropped. A failure that stops the evaluation (the lock's wait running out,
+ * the settings, the snapshot or the state failing) is logged and exits non-zero; a route or Unbound call that fails
+ * during apply is logged at error level, its address keeps its entry for the next evaluation to try again, and the
+ * evaluation still exits 0. Nothing is thrown into configd.
  */
 
 require_once __DIR__ . '/lib/constants.php';
@@ -170,7 +172,7 @@ function uu_remove(): int
  * which logs it. The settings are read under the lock, so an evaluation that waited for it acts on the last Save. A
  * Save that changed a resolver is no stop: the planner switches in place, every address the state still holds is
  * rejected, held and drained by apply, and each member's resolver-failed mark follows its own resolver
- * (uu_timers_follow_resolvers()). 1 when the run left an address it had to leave (uu_evaluate_once()).
+ * (uu_timers_follow_resolvers()).
  *
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param list<string> $named
@@ -184,7 +186,8 @@ function uu_evaluate(?string $stop, array $named): int
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    return uu_evaluate_once($settings, $named, $cause);
+    uu_evaluate_once($settings, $named, $cause);
+    return 0;
 }
 
 /**
@@ -192,15 +195,14 @@ function uu_evaluate(?string $stop, array $named): int
  * made one, plan, apply, the counting table's upkeep and blocked-count line, save, the filter reload (and cron
  * restart) when the footprint changed, except in remove itself (uu_footprint_follow()), then the switch notification
  * when the run switched. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends
- * with changes the checksum anyway. 1 when apply left an address it had to leave (its reject route, its delete, the
- * flush before it or the restore that had to take Unbound off it failed, each with its error line), else 0.
+ * with changes the checksum anyway.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
  * @param list<string> $named
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  */
-function uu_evaluate_once(array $settings, array $named, ?string $stop): int
+function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 {
     $st = uu_state_load(UU_STATE_PATH);
     $before = uu_state_footprint($st);
@@ -220,8 +222,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): int
         $s = uu_route_adopt($s, $st['addresses']);
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
-        $outcome = uu_apply_outcome($p, $s, uu_live_io(UU_STATE_PATH));
-        $st = $outcome['state'];
+        $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
 
         $blocked = null;
         if (uu_plan_stop_reason($s) === null) {
@@ -243,7 +244,6 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): int
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
     }
-    return $outcome['unfinished'] === [] ? 0 : 1;
 }
 
 /**
