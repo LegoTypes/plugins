@@ -1422,16 +1422,17 @@ uu_register_suite('planner', function (): int {
 
     /* a restore is due when the live root names an address of the plugin's and is not the configured root zone */
     $zoneOf = fn (array $addrs): array => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false, 'problems' => []];
-    foreach (['IPv6' => ['2001:db8:a::53', '2001:db8:b::53'], 'IPv4' => ['198.51.100.10', '198.51.100.20']]
-             as $family => [$a, $b]) {
+    foreach (['IPv6' => ['2001:db8:a::53', '2001:db8:b::53', '2001:DB8:000A:0::0053'],
+              'IPv4' => ['198.51.100.10', '198.51.100.20', '198.51.100.10']] as $family => [$a, $b, $other]) {
         uu_check($t, "(r1) $family, a restore is due for a live root of [A], of A beside B (B configured, A in any "
-            . 'spelling, @port and #name dropped), or of [A] with no . zone; not for the configured root itself, one '
-            . 'naming none of the addresses, or an unknown one',
+            . 'spelling, @port and #name dropped), or of [A] with no . zone; not for the configured root itself, in '
+            . 'any spelling, with @port or #name, one naming none of the addresses, or an unknown one',
             uu_try_case(fn (): bool => uu_plan_restore_due([$a], [$a], $zoneOf([$b])) === $a
                 && uu_plan_restore_due([strtoupper($a), $b], [$a], $zoneOf([$b . '@853#dns.example'])) === $a
                 && uu_plan_restore_due([$a], [$a], ['shape' => 'none', 'addrs' => [], 'tls' => false,
                     'problems' => []]) === $a
                 && uu_plan_restore_due([$b, $a], [$a], $zoneOf([$a, $b])) === null
+                && uu_plan_restore_due([$a, $b], [$a], $zoneOf([$other . '@53', $b . '#dns.example'])) === null
                 && uu_plan_restore_due([$b], [$a], $zoneOf([$b])) === null
                 && uu_plan_restore_due(null, [$a], $zoneOf([$b])) === null));
         $plans = null;

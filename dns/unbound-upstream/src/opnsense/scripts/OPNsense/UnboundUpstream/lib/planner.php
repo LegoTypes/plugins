@@ -265,7 +265,7 @@ function uu_plan_live_addr(?array $liveRoot, array $addresses): ?string
  */
 function uu_plan_restore_due(?array $live, array $addresses, array $zone): ?string
 {
-    if ($live === null || uu_apply_same($live, $zone['addrs'])) {
+    if ($live === null || uu_plan_live_configured($live, $zone)) {
         return null;
     }
     foreach ($addresses as $address) {
@@ -274,6 +274,35 @@ function uu_plan_restore_due(?array $live, array $addresses, array $zone): ?stri
         }
     }
     return null;
+}
+
+/**
+ * Whether Unbound's live root is exactly its configured root zone's forward-addr list, compared as sets (@port and
+ * #name dropped, canonical, uu_apply_same()): Unbound's own forwarders, whatever addresses they name. An unknown live
+ * root never is. The one compare uu_plan_restore_due() and uu_plan_live_ours() share.
+ *
+ * @param ?list<string> $live
+ * @param array{shape: string, addrs: list<string>, tls: bool, problems: list<string>} $zone
+ */
+function uu_plan_live_configured(?array $live, array $zone): bool
+{
+    return uu_apply_same($live, $zone['addrs']);
+}
+
+/**
+ * The address the live root says the plugin put there, for inferring the mode when the state does not say tunnel:
+ * uu_plan_live_addr()'s, except for a live root that is Unbound's configured root zone (uu_plan_live_configured()),
+ * which is Unbound's own even when it is exactly [A], and gives null. Without it a configured root of [A] would read as
+ * tunnel mode at every evaluation, and each would leave it again: a switch, its notification and its lines every
+ * minute.
+ *
+ * @param ?list<string> $live
+ * @param list<string> $addresses every planner address and every address the state's map holds
+ * @param array{shape: string, addrs: list<string>, tls: bool, problems: list<string>} $zone
+ */
+function uu_plan_live_ours(?array $live, array $addresses, array $zone): ?string
+{
+    return uu_plan_live_configured($live, $zone) ? null : uu_plan_live_addr($live, $addresses);
 }
 
 /**
@@ -422,23 +451,25 @@ function uu_plan(array $s, array $st): array
     $st['timers'] = uu_timers_follow_resolvers(
         uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall']), $resolverOf);
 
-    /* when the state file does not say tunnel, the live root decides the mode; with the control
-     * channel silent there is no live root, and our route via a member is the evidence instead */
+    /* when the state file does not say tunnel, the live root decides the mode, unless it is Unbound's configured root
+     * zone (uu_plan_live_ours()); with the control channel silent there is no live root, and our route via a member is
+     * the evidence instead */
     $liveRoot = $s['unbound']['live_root'];
-    $liveAddr = uu_plan_live_addr($liveRoot, array_merge(uu_plan_addresses($s),
-        array_map('strval', array_keys($st['addresses']))));
+    $known = array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses'])));
+    $liveAddr = uu_plan_live_addr($liveRoot, $known);
+    $inferred = uu_plan_live_ours($liveRoot, $known, $s['zone']);
     $current = $st['mode'] === 'tunnel' ? $st['member'] : null;
-    if ($current === null && ($liveAddr !== null || $liveRoot === null)) {
+    if ($current === null && ($inferred !== null || $liveRoot === null)) {
         foreach (array_keys($kinds) as $name) {
             $m = $s['members'][$name] ?? null;
             $own = $resolverOf[$name] ?? '';
-            if ($m !== null && $own !== '' && ($liveAddr === null || $own === $liveAddr)
+            if ($m !== null && $own !== '' && ($inferred === null || $own === $inferred)
                 && uu_plan_route_via(uu_plan_route($s, $own), $m)) {
                 $current = $name;
                 break;
             }
         }
-        if ($liveAddr !== null) {
+        if ($inferred !== null) {
             $reasons[] = $current === null
                 ? 'live root is the resolver but our route is via no member: tunnel mode with no member'
                 : "live root is the resolver and our route is via $current: tunnel mode on $current";
@@ -446,7 +477,7 @@ function uu_plan(array $s, array $st): array
             $reasons[] = "live root unknown and our route is via $current: tunnel mode on $current";
         }
     }
-    if ($current !== null || $liveAddr !== null) {
+    if ($current !== null || $inferred !== null) {
         $mode = 'tunnel';
     } elseif ($liveRoot === null) {
         $mode = $st['mode'];
@@ -526,8 +557,7 @@ function uu_plan(array $s, array $st): array
     $drain = uu_plan_drain($s, $st['addresses'], $read);
     /* outside tunnel mode every planner address (uu_plan_addresses()) and every address the map holds needs its
      * reject route, and a live root that names one of them is restored first */
-    $ours = array_values(array_unique(array_merge(uu_plan_addresses($s),
-        array_map('strval', array_keys($st['addresses'])))));
+    $ours = array_values(array_unique($known));
     $rejectRepair = false;
     foreach ($ours as $address) {
         $rejectRepair = $rejectRepair

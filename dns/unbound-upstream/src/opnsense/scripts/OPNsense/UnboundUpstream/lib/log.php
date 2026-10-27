@@ -90,15 +90,17 @@ function uu_duration_text(int $seconds): string
 }
 
 /**
- * The status's resolver: the active one. In tunnel mode the address Unbound's live root names (uu_plan_live_addr(),
- * over the planner's addresses and the state's map), else the current member's resolver (the live root unknown, or
- * not yet the member's); otherwise, and in tunnel mode with no member's to name, the effective resolver of the first
- * member in tier order that has one, else the Default, else ''. Canonical, as `unbound-control forward` prints it,
- * so Home Assistant's live_root == [resolver] holds; with one address it is the Default in every mode.
+ * The status's resolver: the active one. In tunnel mode the address Unbound's live root names (uu_plan_live_ours(),
+ * over the planner's addresses and the state's map: none for Unbound's own configured root zone), else the current
+ * member's resolver (the live root unknown, or not yet the member's); otherwise, and in tunnel mode with no member's to
+ * name, the effective resolver of the first member in tier order that has one, else the Default, else ''. Canonical,
+ * as `unbound-control forward` prints it, so Home Assistant's live_root == [resolver] holds; with one address it is the
+ * Default in every mode.
  *
  * @param array{settings: array{default: string}, tiers: list<list<string>>,
  *     members: array<string, array{resolver: string}>,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>}} $s
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}} $s
  * @param array{state: array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
  *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>}} $plan uu_plan() of the snapshot
  */
@@ -107,8 +109,8 @@ function uu_status_active(array $s, array $plan): string
     $st = $plan['state'];
     $own = fn (string $name): string => uu_ip_canonical($s['members'][$name]['resolver'] ?? '') ?? '';
     if ($st['mode'] === 'tunnel') {
-        $live = uu_plan_live_addr($s['unbound']['live_root'],
-            array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))));
+        $live = uu_plan_live_ours($s['unbound']['live_root'],
+            array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))), $s['zone']);
         $member = $st['member'] === null ? '' : $own($st['member']);
         if ($live !== null || $member !== '') {
             return $live ?? $member;

@@ -76,6 +76,42 @@ function uu_drill_passed(string $out): bool
 }
 
 /**
+ * Whether a stop has anything to undo, as the snapshot and the state show it: tunnel mode (or a member), a restore due
+ * (the live root names an address of the plugin's and is not Unbound's configured root zone, uu_plan_restore_due(), or
+ * with the live root unknown, one of them is recorded forwarded), or a route of the plugin's on an address Unbound no
+ * longer forwards to, as the snapshot's read says (uu_state_forwarded()). A route the stop keeps by design, on an
+ * address Unbound's configured root zone names, is nothing to undo, and a stopped Unbound needs no restore. The one
+ * test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
+ * route.
+ *
+ * @param array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
+ *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>} $st
+ * @param array{settings: array{default: string}, members: array<string, array{resolver: string}>,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>} $s
+ */
+function uu_apply_undo_due(array $st, array $s): bool
+{
+    if ($st['mode'] === 'tunnel' || $st['member'] !== null) {
+        return true;
+    }
+    $pid = $s['unbound']['pid_alive'];
+    $read = uu_state_snapshot_read($s['unbound']);
+    $addresses = array_values(array_unique(array_merge(uu_plan_addresses($s), array_map('strval',
+        array_keys($s['routes'])), array_map('strval', array_keys($st['addresses'])))));
+    foreach ($addresses as $address) {
+        $forwarded = uu_state_forwarded($read, $address, $st['addresses'][$address]['forwarded'] ?? false);
+        $route = uu_plan_route($s, $address);
+        if (($pid && $read === null && $forwarded) || ($route['present'] && $route['ours'] && !$forwarded)) {
+            return true;
+        }
+    }
+    return $pid && uu_plan_restore_due($read, $addresses, $s['zone']) !== null;
+}
+
+/**
  * One apply: the plan's steps in order against the injected I/O, tracking per address what this run itself changed
  * (each route, the live root) so each later step decides on the current facts rather than the snapshot's. The run's
  * addresses are the planner's (uu_plan_addresses()), every address the state's map holds and every address the
@@ -332,14 +368,11 @@ final class UuApplyRun
      * The configured forwarders back if Unbound may be on one of the plugin's addresses, then every route the plugin
      * made drained and deleted, ignoring any orphan's hold. A restore that failed ends in a restart
      * (restartForStop()), and when that fails too, in stopIncomplete(). Nothing is logged while there is nothing to
-     * undo: no restore due, and every route of the plugin's on an address Unbound still forwards to (its configured
-     * root zone names it), which the minute job's ticks would otherwise repeat.
+     * undo (uu_apply_undo_due()), which the minute job's ticks would otherwise repeat.
      */
     private function stop(): void
     {
-        $undo = array_filter($this->addresses(), fn (string $a): bool => $this->ours($a) && !$this->forwarded[$a]);
-        if (!$this->needsRestore() && $undo === [] && $this->st['mode'] === 'fallback'
-            && $this->st['member'] === null) {
+        if (!uu_apply_undo_due($this->st, $this->s)) {
             return;
         }
         $this->reasons();
@@ -484,7 +517,8 @@ final class UuApplyRun
      * cache is untouched), and the reject routes are held for one drain before the deletes. A reject route that failed
      * keeps that address's route, and a flush that failed keeps every route: Unbound may still retry them. An address
      * the restored root still names (Unbound's configured root zone names it) keeps its route, never rejected or
-     * deleted. A stopped Unbound has nothing in flight; a route that is not ours is never touched.
+     * deleted, and a warning names each such route, with the delete to run once the package is removed in a removal. A
+     * stopped Unbound has nothing in flight; a route that is not ours is never touched.
      *
      * @param array<string, bool> $was the addresses Unbound was, or may have been, on when the run started
      */
@@ -499,7 +533,9 @@ final class UuApplyRun
                 continue;
             }
             if ($this->forwarded[$address]) {
-                $named[] = $address;
+                if ($this->ours($address)) {
+                    $named[] = $address;
+                }
                 continue;
             }
             $this->routeReject($address);
@@ -511,8 +547,12 @@ final class UuApplyRun
             $rejected[] = $address;
         }
         if ($named !== []) {
+            /* after a removal nothing deletes it: the remedy is named */
+            $remedy = $this->s['stop'] !== UU_STOP_REMOVE ? '' : '; once the package is removed, run '
+                . implode('; ', array_map('uu_route_delete_text', $named)) . " when Unbound's configured root zone no "
+                . 'longer names ' . (count($named) === 1 ? 'it' : 'them');
             $this->log("stop: Unbound's configured root zone names " . implode(', ', $named) . ', so its route stays '
-                . '(without it the queries would follow the default route)', LOG_WARNING);
+                . '(without it the queries would follow the default route)' . $remedy, LOG_WARNING);
         }
         if ($rejected !== []) {
             if (!$this->ucOk(['flush_requestlist'])) {
@@ -536,8 +576,8 @@ final class UuApplyRun
      * forwarded to): each that is still on its reject route and that Unbound still does not forward to, as this run
      * knows it, is drained as a stop drains, then deleted. One flush_requestlist for them all, then one drain; a flush
      * that failed keeps every reject route and hold, with one error naming them, and the next evaluation drains them
-     * again. An orphan still on a
-     * member route (its reject route failed) waits for the route repair that puts the reject route on first.
+     * again. An orphan still on a member route (its reject route failed) waits for the route repair that puts the
+     * reject route on first.
      *
      * @param list<string> $due the plan's drain
      */
@@ -790,15 +830,16 @@ final class UuApplyRun
     }
 
     /**
-     * Step 5: every other address the map holds gets its reject route, changed in place, once this run's read says
-     * Unbound no longer forwards to it (routeReject()). One Unbound was on when the run started is the previous
-     * member's resolver, and its line says so. An orphan among them is released at the next checkpoint (footprint()).
+     * Step 5: every other address the map holds, or that has a route of the plugin's, gets its reject route, changed in
+     * place, or added when its route is gone, once this run's read says Unbound no longer forwards to it
+     * (routeReject()); an entry whose route is gone keeps its entry and hold that way until the drain. One Unbound was
+     * on when the run started is the previous member's resolver, and its line says so. An orphan among them is released
+     * at the next checkpoint (footprint()).
      */
     private function rejectOthers(string $active): void
     {
-        $this->footprint();
         foreach ($this->addresses() as $address) {
-            if ($address !== $active && isset($this->st['addresses'][$address])) {
+            if ($address !== $active && (isset($this->st['addresses'][$address]) || $this->ours($address))) {
                 $this->routeReject($address, $this->forwardedAtStart[$address] ? "previous member's resolver" : '');
             }
         }
@@ -1100,8 +1141,9 @@ final class UuApplyRun
 /**
  * Apply the plan and return the state to save. In dry run nothing is applied: every step is logged through a
  * simulated I/O that takes each probe as passing, and the plan's own state comes back. A dry run that finds the
- * plugin's changes live (dry run turned on in tunnel mode, or a route of the plugin's) first undoes them for real, as
- * stop does, so dry run never leaves Unbound on the resolver.
+ * plugin's changes live (uu_apply_undo_due(): dry run turned on in tunnel mode, a restore due, or a route of the
+ * plugin's that a stop would undo) first undoes them for real, as stop does, so dry run never leaves Unbound on the
+ * resolver.
  *
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
@@ -1146,10 +1188,7 @@ function uu_apply(array $p, array $s, array $io): array
     if (!$s['settings']['dry_run']) {
         return (new UuApplyRun($p, $s, $io))->run();
     }
-    $changed = $p['state']['mode'] === 'tunnel';
-    foreach ($s['routes'] as $route) {
-        $changed = $changed || ($route['present'] && $route['ours']);
-    }
+    $changed = uu_apply_undo_due($p['state'], $s);
     if ($changed && $p['action'] === 'skip') {
         /* through a silent channel nothing can be undone; the skip runs as planned, its escalation
          * included, and the undo waits for the channel to answer */

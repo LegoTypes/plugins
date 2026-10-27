@@ -184,9 +184,22 @@ uu_register_suite('log', function (): int {
             $none = $noA;
             $none['members']['wg-b']['resolver'] = '';
             $none['settings']['default'] = '';
+            /* the tiers in the other order than the members' keys */
+            $reversed = $pm;
+            $reversed['tiers'] = [['wg-b'], ['wg-a']];
+            /* Unbound's own configured root zone [B] is no tunnel mode: the first member in tier order's */
+            $configured = uu_test_route($pm, ['present' => true, 'gateway' => $hopB, 'interface' => $ifB,
+                'reject' => false, 'ours' => true], $b);
+            $configured['zone'] = ['shape' => 'one', 'addrs' => [$b], 'tls' => false, 'problems' => []];
+            $configured['contract_input']['zone'] = $configured['zone'];
+            $configured['unbound']['live_root'] = [$b];
+            /* tunnel mode on wg-a while Unbound is back on its configured root [B]: the member's own resolver */
+            $onAConfigured = $configured;
+            $stA = uu_test_plan_state('wg-a', [], 0, null, $a, $pm);
             $got = [$active($onB, $stB), $active($midSwitch, $stB), $active($quiet, $stB),
                     $active($pm, uu_test_plan_state(null)), $active($noA, uu_test_plan_state(null)),
-                    $active($none, uu_test_plan_state(null))];
+                    $active($none, uu_test_plan_state(null)), $active($reversed, uu_test_plan_state(null)),
+                    $active($configured, uu_test_plan_state(null)), $active($onAConfigured, $stA)];
             $doc = uu_status_doc($onB, uu_plan($onB, $stB), ['armed' => true, 'fill' => false, 'blocked' => 0],
                 uu_snapshot_fixture('route_get_member.txt'));
             $got[] = $doc['resolver'];
@@ -197,8 +210,10 @@ uu_register_suite('log', function (): int {
         $bc = uu_ip_canonical($b);
         uu_check($t, "(l1) $family, a resolver per member: in tunnel mode on wg-b the live root's address (also "
             . 'mid-switch), the member\'s with the live root unknown; otherwise the first member in tier order with '
-            . 'one, else none; canonical; the status names it and its route',
-            $ok && $got === [$bc, $a, $bc, $a, $bc, '', $bc, true]);
+            . 'one (by the tiers, not the members\' order), else none, and so with a live root that is Unbound\'s '
+            . 'configured root zone, which in tunnel mode on wg-a names wg-a\'s; canonical; the status names it and '
+            . 'its route',
+            $ok && $got === [$bc, $a, $bc, $a, $bc, '', $bc, $a, $a, $bc, true]);
     }
 
     $gone = $s;
