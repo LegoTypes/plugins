@@ -204,6 +204,8 @@ function uu_in_static(string $addr, string $network): bool
     if ($canonical === null) {
         return false;
     }
+    /* a bare network is a host route; the model's resolverProblems() completes it the same way (it cannot load
+     * this library) */
     $cidr = str_contains($network, '/') ? $network : $network . (str_contains($network, ':') ? '/128' : '/32');
     return \OPNsense\Firewall\Util::isIPInCIDR($canonical, $cidr);
 }

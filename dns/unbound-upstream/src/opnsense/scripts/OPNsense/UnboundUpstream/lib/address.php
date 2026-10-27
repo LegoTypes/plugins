@@ -326,6 +326,26 @@ function uu_plan_addresses(array $s): array
 }
 
 /**
+ * A member's effective resolver, canonical; '' for a member with none or not in the snapshot. The one reading of it
+ * that the planner, apply and the status share.
+ *
+ * @param array{members: array<string, array{resolver: string}>} $s
+ */
+function uu_member_resolver(array $s, string $name): string
+{
+    return uu_ip_canonical($s['members'][$name]['resolver'] ?? '') ?? '';
+}
+
+/**
+ * The address of one forwarder as `unbound-control forward` prints it: "@port" and "#name" dropped. The one place
+ * that strip is made: the forwarded rule, the planner's live address and the forwarder-list comparison all take it.
+ */
+function uu_forwarder_addr(string $forwarder): string
+{
+    return (string)preg_replace('/[@#].*$/', '', $forwarder);
+}
+
+/**
  * Addresses as `unbound-control forward` prints them, for comparing as sets: "@port" and "#name" dropped, IPv6 in
  * its canonical form, sorted, each once. With uu_apply_same(), the one comparison of forwarder lists that apply and
  * the planner share.
@@ -337,7 +357,7 @@ function uu_apply_bare(array $addrs): array
 {
     $out = [];
     foreach ($addrs as $addr) {
-        $ip = (string)preg_replace('/[@#].*$/', '', $addr);
+        $ip = uu_forwarder_addr($addr);
         if (filter_var($ip, FILTER_VALIDATE_IP) !== false) {
             $packed = inet_pton($ip);
             $text = $packed === false ? false : inet_ntop($packed);

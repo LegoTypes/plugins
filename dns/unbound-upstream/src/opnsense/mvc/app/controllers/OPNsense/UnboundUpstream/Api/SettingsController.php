@@ -127,7 +127,8 @@ class SettingsController extends ApiMutableModelControllerBase
         foreach ($this->getModel()->performValidation($validateFullModel) as $msg) {
             $own = str_starts_with($msg->getField(), $node->__reference . '.');
             $field = $own ? $prefix . substr($msg->getField(), strlen($node->__reference)) : $prefix . '.gateway';
-            $text = $msg->getMessage();
+            $label = $own ? null : self::settingLabel($msg->getField());
+            $text = ($label === null ? '' : $label . ': ') . $msg->getMessage();
             $result['result'] = 'failed';
             $have = $result['validations'][$field] ?? [];
             $have = is_array($have) ? $have : [$have];
@@ -137,5 +138,21 @@ class SettingsController extends ApiMutableModelControllerBase
             $result['validations'][$field] = count($have) === 1 ? $have[0] : $have;
         }
         return $result;
+    }
+
+    /**
+     * The settings form's label of a setting a message names (gateway_group → "Gateway group"), read from the form
+     * itself so the two never differ; null for a field the form does not show (a row's). A message about a setting
+     * that refuses a row then says which setting it is about, though the dialog shows it on the row's member.
+     */
+    public static function settingLabel(string $field): ?string
+    {
+        $form = @simplexml_load_file(__DIR__ . '/../forms/general.xml');
+        foreach ($form === false ? [] : ($form->xpath('/form/field') ?: []) as $f) {
+            if ((string)$f->id === self::$internalModelName . '.' . $field) {
+                return gettext((string)$f->label);
+            }
+        }
+        return null;
     }
 }

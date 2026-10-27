@@ -340,6 +340,7 @@ class UnboundUpstream extends BaseModel
             }
         }
         foreach ($networks as $network) {
+            /* a bare network is a host route, completed as the scripts' uu_in_static() completes it */
             $cidr = str_contains($network, '/') ? $network : $network . (str_contains($network, ':') ? '/128' : '/32');
             if (Util::isIPInCIDR($canonical, $cidr)) {
                 $problems[] = sprintf(gettext('Resolver %s lies inside the static route %s.'), $canonical, $network);

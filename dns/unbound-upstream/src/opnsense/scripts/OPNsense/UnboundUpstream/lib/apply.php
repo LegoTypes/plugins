@@ -272,6 +272,9 @@ final class UuApplyRun
             $this->st['addresses'][$address]['forwarded'] = $this->forwarded[(string)$address];
         }
         $this->forwardedAtStart = $this->forwarded;
+        /* the forwarded flags took the snapshot's read (the empty root for an Unbound that is not running), but the
+         * live root stays what the snapshot read: unknown (null) for an Unbound that is not running, which
+         * needsRestore() reads with the pid first */
         $this->live = $s['unbound']['live_root'];
     }
 
@@ -302,7 +305,7 @@ final class UuApplyRun
     /** A member's effective resolver, canonical; '' for none (such a member is no candidate). */
     private function resolverOf(string $name): string
     {
-        return uu_ip_canonical($this->s['members'][$name]['resolver'] ?? '') ?? '';
+        return uu_member_resolver($this->s, $name);
     }
 
     /**

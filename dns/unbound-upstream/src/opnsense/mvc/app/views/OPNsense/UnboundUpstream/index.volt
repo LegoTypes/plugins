@@ -120,6 +120,24 @@
             $('.selectpicker').selectpicker('refresh');
         });
         /* the per-member resolvers: each row is saved by its own dialog, then applied (below) */
+        /* core's row delete fires settings-changed whatever the reply, so a refused delete would be applied too;
+           its delete-selected sends the rows in batches and fires it only when every batch succeeds, so a refused
+           batch would leave another batch's saved deletion unapplied. Both commands here send all their rows in one
+           call, which del_resolver deletes together or, refused, not at all, and fire it only when the reply says
+           deleted */
+        var deleteResolvers = function (ids, question) {
+            if (ids.length === 0) {
+                return;
+            }
+            stdDialogRemoveItem(question, function () {
+                ajaxCall('/api/unboundupstream/settings/del_resolver/' + ids.join(','), {}, function (data, status) {
+                    $('#grid-resolvers').bootgrid('reload');
+                    if (status === 'success' && data && data.result === 'deleted') {
+                        $(document).trigger('settings-changed');
+                    }
+                });
+            });
+        };
         $('#grid-resolvers').UIBootgrid({
             search: '/api/unboundupstream/settings/search_resolver',
             get: '/api/unboundupstream/settings/get_resolver/',
@@ -127,20 +145,18 @@
             add: '/api/unboundupstream/settings/add_resolver/',
             del: '/api/unboundupstream/settings/del_resolver/',
             commands: {
-                /* core's own row delete fires settings-changed whatever the reply, so a refused delete would be
-                   applied too: this one fires it only for a row the reply says was deleted */
                 delete: {
                     method: function (event, cell, uuid) {
                         event.stopPropagation();
-                        var id = uuid || $(event.currentTarget).data('row-id');
-                        stdDialogRemoveItem("{{ lang._('Remove this per-member resolver?') }}", function () {
-                            ajaxCall('/api/unboundupstream/settings/del_resolver/' + id, {}, function (data, status) {
-                                $('#grid-resolvers').bootgrid('reload');
-                                if (status === 'success' && data && data.result === 'deleted') {
-                                    $(document).trigger('settings-changed');
-                                }
-                            });
-                        });
+                        deleteResolvers([uuid || $(event.currentTarget).data('row-id')],
+                            "{{ lang._('Remove this per-member resolver?') }}");
+                    }
+                },
+                'delete-selected': {
+                    method: function (event) {
+                        event.stopPropagation();
+                        deleteResolvers($('#grid-resolvers').bootgrid('getSelectedRows') || [],
+                            "{{ lang._('Remove the selected per-member resolvers?') }}");
                     }
                 }
             }

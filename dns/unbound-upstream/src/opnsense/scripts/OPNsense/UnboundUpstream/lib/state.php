@@ -506,7 +506,7 @@ function uu_state_forwarded(?array $read, string $address, bool $recorded): bool
         return $recorded;
     }
     foreach ($read as $forwarder) {
-        if (uu_ip_same((string)preg_replace('/[@#].*$/', '', $forwarder), $address)) {
+        if (uu_ip_same(uu_forwarder_addr($forwarder), $address)) {
             return true;
         }
     }

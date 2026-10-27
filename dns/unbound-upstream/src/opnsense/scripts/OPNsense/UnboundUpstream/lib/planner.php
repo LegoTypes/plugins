@@ -222,14 +222,15 @@ function uu_plan_resolvers(array $s): array
 {
     $out = [];
     foreach ($s['members'] as $name => $m) {
-        $out[(string)$name] = uu_ip_canonical($m['resolver']) ?? '';
+        $out[(string)$name] = uu_member_resolver($s, (string)$name);
     }
     return $out;
 }
 
 /**
- * The address Unbound's live root names: A, canonical, when the live root is exactly [A] for an A among $addresses
- * (every effective resolver and every address the state's map holds); null otherwise, an unknown live root too.
+ * The address Unbound's live root names: A, canonical, when the live root is exactly [A] (its "@port" or "#name"
+ * dropped, as the forwarded rule drops them) for an A among $addresses (every effective resolver and every address
+ * the state's map holds); null otherwise, an unknown live root too.
  *
  * @param ?list<string> $liveRoot
  * @param list<string> $addresses
@@ -239,7 +240,7 @@ function uu_plan_live_addr(?array $liveRoot, array $addresses): ?string
     if ($liveRoot === null || count($liveRoot) !== 1) {
         return null;
     }
-    $live = uu_ip_canonical($liveRoot[0]);
+    $live = uu_ip_canonical(uu_forwarder_addr($liveRoot[0]));
     foreach ($addresses as $address) {
         if ($live !== null && uu_ip_same($address, $live)) {
             return $live;
@@ -357,9 +358,11 @@ function uu_plan_configured_orphan(?array $live, array $zone, string $address, a
  * is not one the plugin did not make (the drain deletes only its own), and either map entries released at least
  * UU_OLD_ADDRESS_HOLD seconds ago while Unbound no longer forwards to them as this run's read settles it
  * (uu_state_forwarded()), or named by Unbound's own configured root zone (uu_plan_configured_orphan()) and on its
- * reject route: one on a member route keeps it, its queries in the tunnel. The snapshot reads routes only for the
- * planner's addresses and the map's keys, so such an orphan is a map entry in practice; a lost state leaves its route
- * to the owner. Sorted.
+ * reject route: one on a member route keeps it, its queries in the tunnel. A released entry is listed whatever its
+ * route, since this run's route repair may put it on its reject route first; apply drains only those on their reject
+ * route once that repair has run, so one whose reject route fails stays listed until it holds. The snapshot reads
+ * routes only for the planner's addresses and the map's keys, so such an orphan is a map entry in practice; a lost
+ * state leaves its route to the owner. Sorted.
  *
  * @param array{now: int, settings: array{default: string}, members: array<string, array{resolver: string}>,
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}>,

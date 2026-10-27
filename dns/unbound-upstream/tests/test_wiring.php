@@ -286,31 +286,49 @@ uu_register_suite('wiring', function (): int {
             });
         });
 VOLT;
-    /* the grid's row delete: settings-changed only for a row the reply says was deleted */
+    /* the grid's row delete and delete-selected: all their rows in one call, settings-changed only when the reply
+     * says deleted */
     $deleteCommand = <<<'VOLT'
+        var deleteResolvers = function (ids, question) {
+            if (ids.length === 0) {
+                return;
+            }
+            stdDialogRemoveItem(question, function () {
+                ajaxCall('/api/unboundupstream/settings/del_resolver/' + ids.join(','), {}, function (data, status) {
+                    $('#grid-resolvers').bootgrid('reload');
+                    if (status === 'success' && data && data.result === 'deleted') {
+                        $(document).trigger('settings-changed');
+                    }
+                });
+            });
+        };
+VOLT;
+    $deleteCommands = <<<'VOLT'
+            commands: {
                 delete: {
                     method: function (event, cell, uuid) {
                         event.stopPropagation();
-                        var id = uuid || $(event.currentTarget).data('row-id');
-                        stdDialogRemoveItem("{{ lang._('Remove this per-member resolver?') }}", function () {
-                            ajaxCall('/api/unboundupstream/settings/del_resolver/' + id, {}, function (data, status) {
-                                $('#grid-resolvers').bootgrid('reload');
-                                if (status === 'success' && data && data.result === 'deleted') {
-                                    $(document).trigger('settings-changed');
-                                }
-                            });
-                        });
+                        deleteResolvers([uuid || $(event.currentTarget).data('row-id')],
+                            "{{ lang._('Remove this per-member resolver?') }}");
+                    }
+                },
+                'delete-selected': {
+                    method: function (event) {
+                        event.stopPropagation();
+                        deleteResolvers($('#grid-resolvers').bootgrid('getSelectedRows') || [],
+                            "{{ lang._('Remove the selected per-member resolvers?') }}");
                     }
                 }
+            }
 VOLT;
     uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs: the '
         . 'whole handler, its success and failure paths and the status refresh; and the page says so',
         str_contains($view, $applyHandler . "\n")
         && str_contains($view, "            {{ lang._('Each row is applied as soon as it is saved or deleted; the "
             . "settings above still need Apply.') }}\n"));
-    uu_check($t, '(l5) a refused row delete is not applied: the grid\'s own delete command fires settings-changed only '
-        . 'for a deleted row',
-        str_contains($view, "            commands: {\n") && str_contains($view, $deleteCommand . "\n"));
+    uu_check($t, '(l5) a refused delete is not applied, and a saved one always is: the row delete and delete-selected '
+        . 'send all their rows in one call and fire settings-changed only when the reply says deleted',
+        str_contains($view, $deleteCommand . "\n") && str_contains($view, $deleteCommands . "\n"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -592,6 +610,15 @@ VOLT;
     uu_check($t, '(l5) enabled: a row changed to another row\'s gateway is refused (the message is the other row\'s, '
         . 'shown on this one\'s gateway), and a delete that leaves a member with no resolver is refused; neither is '
         . 'saved, while a delete that leaves the model valid is; config.xml is unchanged', $wholeModel);
+
+    /* a setting's message that refuses a row names the setting, by the settings form's own label */
+    $labels = (string)shell_exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg(
+        'require_once "/usr/local/opnsense/mvc/script/load_phalcon.php";'
+        . '$c = "\\OPNsense\\UnboundUpstream\\Api\\SettingsController";'
+        . 'echo json_encode([$c::settingLabel("failback_delay"), $c::settingLabel("gateway_group"),'
+        . '$c::settingLabel("resolver"), $c::settingLabel("resolvers.resolver.x.address")]);'));
+    uu_check($t, '(l5) a setting\'s message in the dialog is prefixed with that setting\'s label on the settings form; a '
+        . 'row\'s is not', $labels === '["Failback delay (seconds)","Gateway group","Default resolver",null]');
 
     /* program() is an unanchored regex, and core's resolver log filter is program("unbound") */
     $conf = '/usr/local/etc/syslog-ng.conf.d/syslog-ng-local.conf';

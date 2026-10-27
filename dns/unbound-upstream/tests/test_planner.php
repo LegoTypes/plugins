@@ -444,6 +444,16 @@ uu_register_suite('planner', function (): int {
     $settledDown = uu_test_probe('down', '100.0 %', 300);
     $usable = ['wg-a' => uu_test_timer(500, null, $now - 60), 'wg-b' => uu_test_timer(500, null, $now - 60)];
 
+    // The live address drops "@port" and "#name" as the forwarded rule does, so the two never disagree.
+    uu_check($t, 'live address: a live root of one forwarder with @port or #name names its address, canonical, as '
+        . 'forwarded reads it; another address or more than one forwarder names none',
+        uu_try_case(fn (): bool => uu_plan_live_addr(['10.2.0.1@53'], ['10.2.0.1']) === '10.2.0.1'
+            && uu_plan_live_addr(['2001:DB8:A:0::53@53#dns.example'], ['2001:db8:a::53']) === '2001:db8:a::53'
+            && uu_state_forwarded(['10.2.0.1@53'], '10.2.0.1', false)
+            && uu_plan_live_addr(['10.2.0.9@53'], ['10.2.0.1']) === null
+            && uu_plan_live_addr(['10.2.0.1', '10.2.0.9'], ['10.2.0.1']) === null
+            && uu_plan_live_addr(null, ['10.2.0.1']) === null));
+
     // Entering from fallback needs failback_delay seconds of settled usable readings.
     $s = uu_test_snapshot();
     $p = uu_plan($s, uu_test_plan_state(null, ['wg-a' => uu_test_timer(60, null, $now - 60)]));

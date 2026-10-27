@@ -107,7 +107,7 @@ function uu_duration_text(int $seconds): string
 function uu_status_active(array $s, array $plan): string
 {
     $st = $plan['state'];
-    $own = fn (string $name): string => uu_ip_canonical($s['members'][$name]['resolver'] ?? '') ?? '';
+    $own = fn (string $name): string => uu_member_resolver($s, $name);
     if ($st['mode'] === 'tunnel') {
         $live = uu_plan_live_ours($s['unbound']['live_root'],
             array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))), $s['zone']);
