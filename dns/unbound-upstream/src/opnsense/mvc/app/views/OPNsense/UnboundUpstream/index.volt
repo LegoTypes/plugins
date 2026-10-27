@@ -125,7 +125,25 @@
             get: '/api/unboundupstream/settings/get_resolver/',
             set: '/api/unboundupstream/settings/set_resolver/',
             add: '/api/unboundupstream/settings/add_resolver/',
-            del: '/api/unboundupstream/settings/del_resolver/'
+            del: '/api/unboundupstream/settings/del_resolver/',
+            commands: {
+                /* core's own row delete fires settings-changed whatever the reply, so a refused delete would be
+                   applied too: this one fires it only for a row the reply says was deleted */
+                delete: {
+                    method: function (event, cell, uuid) {
+                        event.stopPropagation();
+                        var id = uuid || $(event.currentTarget).data('row-id');
+                        stdDialogRemoveItem("{{ lang._('Remove this per-member resolver?') }}", function () {
+                            ajaxCall('/api/unboundupstream/settings/del_resolver/' + id, {}, function (data, status) {
+                                $('#grid-resolvers').bootgrid('reload');
+                                if (status === 'success' && data && data.result === 'deleted') {
+                                    $(document).trigger('settings-changed');
+                                }
+                            });
+                        });
+                    }
+                }
+            }
         });
         $('#reconfigureAct').SimpleActionButton({
             onPreAction: function () {
@@ -137,16 +155,20 @@
         });
         /* a row the grid saved or deleted is applied at once, as Apply applies the settings it saves: evaluations
            read the saved rows every minute, and only Apply's filter reload renders the rules a new resolver needs,
-           so a row saved but not applied would fall back to Unbound's own forwarders */
+           so a row saved but not applied would fall back to Unbound's own forwarders; a refused add, edit or delete
+           fires no settings-changed (the delete through the grid's own command above) and is not applied */
         $(document).on('settings-changed', function () {
             ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {
                 if (status === 'success' && data && String(data.status).toLowerCase().trim() === 'ok') {
-                    $('#change_message_base_form').hide();
+                    /* applied: the Apply bar no longer shows changes as pending, as after core's own Apply */
+                    $('#change_message_base_form').hide()
+                        .parent('.alert').addClass('content-box').removeClass('alert-info');
                 } else {
                     BootstrapDialog.show({
                         type: BootstrapDialog.TYPE_WARNING,
                         title: "{{ lang._('Error reconfiguring service.') }}",
-                        message: $('<div/>').text(plain(data && (data.status_msg || data.status))),
+                        message: $('<div/>').text(plain(data
+                            && (data.status_msg || data.status || data.errorMessage))),
                         draggable: true
                     });
                 }
@@ -165,7 +187,9 @@
 <div class="content-box">
     <table class="table table-condensed">
         <tr><td><h3>{{ lang._('Per-member resolvers') }}</h3>
-            <p>{{ lang._('A row takes effect once saved or deleted. The settings above still need Apply.') }}</p>
+            <p>
+            {{ lang._('Each row is applied as soon as it is saved or deleted; the settings above still need Apply.') }}
+            </p>
         </td></tr>
         <tr><td>
             <table id="grid-resolvers" class="table table-condensed table-hover table-striped"

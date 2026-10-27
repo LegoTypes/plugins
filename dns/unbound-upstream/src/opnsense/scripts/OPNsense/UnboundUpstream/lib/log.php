@@ -127,37 +127,13 @@ function uu_status_active(array $s, array $plan): string
 }
 
 /**
- * `route -n get` of every address the status shows a route for: the active resolver (uu_status_active()), then each
- * address the plan's state holds, each once and in its own family (uu_route_get_args()); an address with no family
- * (no active resolver) is not read.
- *
- * @param array{settings: array{default: string}, tiers: list<list<string>>,
- *     members: array<string, array{resolver: string}>,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>}} $s
- * @param array{state: array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
- *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>}} $plan uu_plan() of the snapshot
- * @param callable(string): string $get `route -n get` with the arguments given: its output
- * @return array<string, string> address => its output
- */
-function uu_status_route_outs(array $s, array $plan, callable $get): array
-{
-    $outs = [];
-    foreach (array_merge([uu_status_active($s, $plan)], uu_state_footprint($plan['state'])) as $address) {
-        $args = uu_route_get_args($address);
-        if ($args !== null && !array_key_exists($address, $outs)) {
-            $outs[$address] = $get($args);
-        }
-    }
-    return $outs;
-}
-
-/**
  * The status page's document. The mode, member and timers are the plan's view of now (recovered
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
  * With one address every field reads as 1.3_2's did; routes, addresses and each member's resolver are 1.4's. route
- * is the active resolver's route; routes has each address of the state's map with its route and whether the
- * footprint block is rendered for it, and footprint is the first such address. The setting's addresses decide what
+ * is the active resolver's route; routes has each address of the state's map, and the active resolver when the map
+ * does not hold it, with its route and whether the footprint block is rendered for it, and footprint is the first such
+ * address in sorted order. A route's flags are the ones the snapshot's own read printed (route_flags), shown only for a
+ * present route, as 1.3_2 showed them: the status runs no command of its own. The setting's addresses decide what
  * is a footprint (uu_setting_addresses(), as the render reads them). The contract is uu_contract()'s verdict as 1.3_2
  * showed it: whether tunnel mode may run, its failures and its notes, which name each member it excludes.
  *
@@ -174,6 +150,7 @@ function uu_status_route_outs(array $s, array $plan, callable $get): array
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -201,7 +178,6 @@ function uu_status_route_outs(array $s, array $plan, callable $get): array
  *     reasons: list<string>, drain: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the setting's addresses
- * @param array<string, string> $routeOuts `route -n get` of each address, in its family (uu_status_route_outs())
  * @return array{enabled: bool, dry_run: bool, resolver: string, mode: string, member: ?string, tier: ?int,
  *     unbound: array{enabled: bool, running: bool, control_ok: bool}, live_root: ?list<string>,
  *     configured_root: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
@@ -220,7 +196,7 @@ function uu_status_route_outs(array $s, array $plan, callable $get): array
  *     contract: array{ok: bool, failures: list<string>, notes: list<string>},
  *     next: array{action: string, reasons: list<string>}}
  */
-function uu_status_doc(array $s, array $plan, array $blockTable, array $routeOuts): array
+function uu_status_doc(array $s, array $plan, array $blockTable): array
 {
     $st = $plan['state'];
     $tierOf = [];
@@ -253,15 +229,20 @@ function uu_status_doc(array $s, array $plan, array $blockTable, array $routeOut
     /* the addresses the footprint block is rendered for, as the render reads them: those the setting's rules do not
      * already cover */
     $footprints = array_column(uu_footprints_from_state($st, [], uu_setting_addresses($s))['footprints'], 'resolver');
-    $routeOf = function (string $address) use ($s, $routeOuts): array {
+    $routeOf = function (string $address) use ($s): array {
         $route = uu_plan_route($s, $address);
-        return $route + ['flags' => $route['present'] ? uu_status_route_flags($routeOuts[$address] ?? '') : []];
+        return $route + ['flags' => $route['present'] ? ($s['route_flags'][$address] ?? []) : []];
     };
+    $active = uu_status_active($s, $plan);
+    $routed = uu_state_footprint($st);
+    if ($active !== '' && !in_array($active, $routed, true)) {
+        $routed[] = $active;
+        sort($routed, SORT_STRING);
+    }
     $routes = [];
-    foreach (uu_state_footprint($st) as $address) {
+    foreach ($routed as $address) {
         $routes[$address] = $routeOf($address) + ['footprint' => in_array($address, $footprints, true)];
     }
-    $active = uu_status_active($s, $plan);
     $contract = uu_contract($s['contract_input']);
 
     return [

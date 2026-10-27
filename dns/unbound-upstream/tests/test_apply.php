@@ -34,6 +34,7 @@ require_once __DIR__ . '/scratch.php';
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,

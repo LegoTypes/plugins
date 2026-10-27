@@ -77,7 +77,8 @@ class SettingsController extends ApiMutableModelControllerBase
     /**
      * Delete per-member resolvers by id (one, or several comma-separated). The model is validated without them first,
      * as a Save would be: when it refuses (a member of a group with no Default left with no resolver), nothing is
-     * deleted and the refusal is shown.
+     * deleted and the refusal is shown, every distinct message on its own line. Core's delBase() is not used, since it
+     * saves without validating; its safe-delete check is not needed, as nothing refers to a resolver row.
      */
     public function delResolverAction($uuid)
     {

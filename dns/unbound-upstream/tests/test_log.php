@@ -7,8 +7,8 @@ declare(strict_types=1);
  * All rights reserved.
  * BSD 2-Clause License
  *
- * Status and logging: the blocked-count log line, the route flags, durations, the status
- * document and the route reads behind it.
+ * Status and logging: the blocked-count log line, the route flags, durations and the status
+ * document.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -65,11 +65,12 @@ uu_register_suite('log', function (): int {
     $st = uu_test_plan_state('wg-a', $timers);
     $st['checks'] = ['direct' => ['ok' => true, 'at' => 1760000000, 'member' => 'wg-a'], 'unbound' => null];
     $st['tls_applied'] = false;
+    /* the flags the snapshot's own read of the member route printed */
+    $route = uu_snapshot_fixture('route_get_member.txt');
+    $s['route_flags'] = ['10.2.0.1' => uu_status_route_flags($route)];
     $plan = uu_plan($s, $st);
     $armed = ['armed' => true, 'fill' => false, 'blocked' => 37];
-    $route = uu_snapshot_fixture('route_get_member.txt');
-    $routes = ['10.2.0.1' => $route];
-    $doc = uu_status_doc($s, $plan, $armed, $routes);
+    $doc = uu_status_doc($s, $plan, $armed);
     uu_check($t, 'status: every field',
         array_keys($doc) === ['enabled', 'dry_run', 'resolver', 'mode', 'member', 'tier', 'unbound', 'live_root',
             'configured_root', 'tls_applied', 'route', 'routes', 'rules_loaded', 'rules', 'footprint', 'addresses',
@@ -88,7 +89,7 @@ uu_register_suite('log', function (): int {
     $problem = 'no pass rule for wg-b (opt2)';
     $missing['rules'] = ['state' => 'missing', 'problems' => [$problem], 'verified_at' => 1792399500, 'record' => null];
     $missing['contract_input']['rules'] = ['state' => 'missing', 'problems' => [$problem]];
-    $d = uu_status_doc($missing, uu_plan($missing, $st), $armed, $routes);
+    $d = uu_status_doc($missing, uu_plan($missing, $st), $armed);
     uu_check($t, 'status: rules missing are not loaded, their problems carried and named in the contract',
         $d['rules_loaded'] === false
         && $d['rules'] === ['state' => 'missing', 'problems' => [$problem], 'verified_at' => 1792399500]
@@ -96,15 +97,15 @@ uu_register_suite('log', function (): int {
     $verifying = $s;
     $verifying['rules'] = ['state' => 'verifying', 'problems' => [], 'verified_at' => null, 'record' => null];
     $verifying['contract_input']['rules'] = ['state' => 'verifying', 'problems' => []];
-    $d = uu_status_doc($verifying, uu_plan($verifying, $st), $armed, $routes);
+    $d = uu_status_doc($verifying, uu_plan($verifying, $st), $armed);
     uu_check($t, 'status: verifying is not loaded, has no time, and the contract carries the note only',
         $d['rules_loaded'] === false && $d['rules'] === ['state' => 'verifying', 'problems' => [], 'verified_at' => null]
         && $d['contract']['ok']
         && $d['contract']['notes'] === ['firewall rules are being verified (the ruleset changed)']);
-    $d = uu_status_doc($s, $plan, ['armed' => false, 'fill' => true, 'blocked' => 0], $routes);
+    $d = uu_status_doc($s, $plan, ['armed' => false, 'fill' => true, 'blocked' => 0]);
     uu_check($t, 'status: a table that does not hold the resolver is not armed; its count is still the table\'s',
         $d['counter_armed'] === false && $d['blocked'] === 0);
-    $d = uu_status_doc($s, $plan, ['armed' => false, 'fill' => false, 'blocked' => null], $routes);
+    $d = uu_status_doc($s, $plan, ['armed' => false, 'fill' => false, 'blocked' => null]);
     uu_check($t, 'status: no table: not armed, no count',
         $d['counter_armed'] === false && $d['blocked'] === null);
     uu_check($t, 'status: members with tier, reading kind, verdict, health as a duration, last down, resolver-failed '
@@ -135,19 +136,19 @@ uu_register_suite('log', function (): int {
     $footprint = fn (array $doc): ?string => array_key_exists('footprint', $doc) ? $doc['footprint'] : 'absent';
     uu_check($t, '(l1) status: a footprint the disabled setting does not cover is named; one equal to the enabled '
         . 'setting is null',
-        $footprint(uu_status_doc($off, uu_plan($off, $fst), $armed, $routes)) === '192.0.2.1'
-        && $footprint(uu_status_doc($s, uu_plan($s, $same), $armed, $routes)) === null);
+        $footprint(uu_status_doc($off, uu_plan($off, $fst), $armed)) === '192.0.2.1'
+        && $footprint(uu_status_doc($s, uu_plan($s, $same), $armed)) === null);
     $lost = $s;
     $lost['contract_input']['group_found'] = false;
     uu_check($t, '(l1) status: a footprint is named beside another enabled resolver, or a group that is gone, and '
         . 'none recorded is null',
-        $footprint(uu_status_doc($s, uu_plan($s, $fst), $armed, $routes)) === '192.0.2.1'
-        && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $routes)) === $s['settings']['default']
+        $footprint(uu_status_doc($s, uu_plan($s, $fst), $armed)) === '192.0.2.1'
+        && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed)) === $s['settings']['default']
         && $footprint($doc) === null);
 
     uu_check($t, '(p16) status: a found group with no member, the Default recorded on its reject route: no footprint, '
         . 'and the counter armed for a table holding the Default',
-        uu_try_case(function () use ($s, $st, $routes, $footprint): bool {
+        uu_try_case(function () use ($s, $st, $footprint): bool {
             $bare = $s;
             $bare['tiers'] = [];
             $bare['members'] = [];
@@ -161,7 +162,7 @@ uu_register_suite('log', function (): int {
                 'forwarded' => false, 'released_at' => null]];
             $table = uu_block_table_view(['addresses' => 1, 'references' => 1, 'out_block' => 3], ['10.2.0.1'],
                 uu_setting_addresses($bare));
-            $doc = uu_status_doc($bare, uu_plan($bare, $recorded), $table, $routes);
+            $doc = uu_status_doc($bare, uu_plan($bare, $recorded), $table);
             return $footprint($doc) === null && $doc['counter_armed'] === true;
         }));
     /* (l1) the status's resolver is the active one: in tunnel mode the live root's address, else the member's
@@ -223,8 +224,9 @@ uu_register_suite('log', function (): int {
                     $active($pm, uu_test_plan_state(null)), $active($noA, uu_test_plan_state(null)),
                     $active($none, uu_test_plan_state(null)), $active($reversed, uu_test_plan_state(null)),
                     $active($configured, uu_test_plan_state(null)), $active($onAConfigured, $stA)];
-            $doc = uu_status_doc($onB, uu_plan($onB, $stB), ['armed' => true, 'fill' => false, 'blocked' => 0],
-                [uu_ip_canonical($b) ?? $b => uu_snapshot_fixture('route_get_member.txt')]);
+            $onB['route_flags'] = [uu_ip_canonical($b) ?? $b
+                => uu_status_route_flags(uu_snapshot_fixture('route_get_member.txt'))];
+            $doc = uu_status_doc($onB, uu_plan($onB, $stB), ['armed' => true, 'fill' => false, 'blocked' => 0]);
             $got[] = $doc['resolver'];
             $got[] = $doc['route'] === $onB['routes'][uu_ip_canonical($b)] + ['flags' => ['UP', 'GATEWAY', 'HOST',
                 'DONE', 'STATIC']];
@@ -241,7 +243,8 @@ uu_register_suite('log', function (): int {
 
     $gone = $s;
     $gone['unbound'] = ['enabled' => true, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
-    $doc = uu_status_doc($gone, uu_plan($gone, $st), ['armed' => false, 'fill' => false, 'blocked' => null], []);
+    $gone['route_flags'] = [];
+    $doc = uu_status_doc($gone, uu_plan($gone, $st), ['armed' => false, 'fill' => false, 'blocked' => null]);
     uu_check($t, 'status: Unbound not running is reported, with no blocked count and no route flags',
         $doc['unbound']['running'] === false && $doc['blocked'] === null && $doc['route']['flags'] === []
         && uu_test_reason_has($doc['next']['reasons'], 'Unbound not running'));
@@ -264,11 +267,11 @@ uu_register_suite('log', function (): int {
                  'released_at' => null];
 
     uu_check($t, '(l2) one IPv4 address in tunnel mode: every key and value 1.3_2 printed, byte for byte',
-        uu_try_case(fn (): bool => $as132(uu_status_doc($s, $plan, $armed, $routes)) === $printed('tunnel')));
+        uu_try_case(fn (): bool => $as132(uu_status_doc($s, $plan, $armed)) === $printed('tunnel')));
     uu_check($t, '(l2) …and the keys it adds are only routes, addresses and each member\'s resolver: the one address, '
         . 'its route as route shows it',
-        uu_try_case(function () use ($s, $plan, $armed, $routes, $printed, $memberFlags): bool {
-            $doc = uu_status_doc($s, $plan, $armed, $routes);
+        uu_try_case(function () use ($s, $plan, $armed, $printed, $memberFlags): bool {
+            $doc = uu_status_doc($s, $plan, $armed);
             $was = json_decode($printed('tunnel'), true);
             $added = fn (array $now, array $then): array => array_values(array_diff(array_keys($now),
                 array_keys($then)));
@@ -297,15 +300,15 @@ uu_register_suite('log', function (): int {
             $onB = uu_test_route(uu_test_in_tunnel($pm, 'wg-b'), $reject, $a);
             $stB = uu_test_plan_state('wg-b', [], 0, null, $b, $pm);
             $stB['addresses'][$a] = $rejected;
-            $outs = [$a => uu_snapshot_fixture("route_get_reject$six.txt"),
-                     $b => uu_snapshot_fixture("route_get_member$six.txt")];
+            $onB['route_flags'] = [$a => uu_status_route_flags(uu_snapshot_fixture("route_get_reject$six.txt")),
+                                  $b => uu_status_route_flags(uu_snapshot_fixture("route_get_member$six.txt"))];
             $view = ['armed' => true, 'fill' => false, 'blocked' => 0];
             /* wg-a's own row now names b too: a, no member's resolver any more, is held */
             $held = uu_test_resolver($onB, 'wg-a', $b);
             $stHeld = $stB;
             $stHeld['addresses'][$a]['released_at'] = $held['now'] - 10;
-            $docs = ['failover' => uu_status_doc($onB, uu_plan($onB, $stB), $view, $outs),
-                     'held' => uu_status_doc($held, uu_plan($held, $stHeld), $view, $outs), 'onB' => $onB];
+            $docs = ['failover' => uu_status_doc($onB, uu_plan($onB, $stB), $view),
+                     'held' => uu_status_doc($held, uu_plan($held, $stHeld), $view), 'onB' => $onB];
             return true;
         });
         $f = $docs['failover'] ?? [];
@@ -334,8 +337,8 @@ uu_register_suite('log', function (): int {
             $off['settings']['enabled'] = false;
             $st = uu_test_plan_state(null);
             $st['addresses'] = ['10.2.0.1' => $rejected];
-            $doc = uu_status_doc($off, uu_plan($off, $st), ['armed' => false, 'fill' => false, 'blocked' => null],
-                ['10.2.0.1' => uu_snapshot_fixture('route_get_reject.txt')]);
+            $off['route_flags'] = ['10.2.0.1' => uu_status_route_flags(uu_snapshot_fixture('route_get_reject.txt'))];
+            $doc = uu_status_doc($off, uu_plan($off, $st), ['armed' => false, 'fill' => false, 'blocked' => null]);
             return $doc['footprint'] === '10.2.0.1' && $as132($doc) === $printed('disabled')
                 && $doc['addresses'] === ['10.2.0.1'] && $doc['routes']['10.2.0.1']['footprint'] === true;
         }));
@@ -362,7 +365,8 @@ uu_register_suite('log', function (): int {
             if ($st5 === null) {
                 return false;
             }
-            $doc = uu_status_doc($s5, uu_plan($s5, $st5), $armed, ['10.2.0.1' => $route]);
+            $s5['route_flags'] = ['10.2.0.1' => uu_status_route_flags($route)];
+            $doc = uu_status_doc($s5, uu_plan($s5, $st5), $armed);
             return $as132($doc) === $printed('v5') && $doc['addresses'] === ['10.2.0.1']
                 && $doc['routes']['10.2.0.1'] === $doc['route'] + ['footprint' => false];
         }));
@@ -380,9 +384,10 @@ uu_register_suite('log', function (): int {
             $pm['members']['wg-b']['if'] = 'wg4';
             $on = uu_test_in_tunnel($pm, 'wg-a');
             $on['unbound']['live_root'] = ['2001:db8:a::53'];
+            $on['route_flags'] = ['2001:db8:a::53'
+                => uu_status_route_flags(uu_snapshot_fixture('route_get_member6.txt'))];
             $doc = uu_status_doc($on, uu_plan($on, uu_test_plan_state('wg-a', [], 0, null, $typed, $pm)),
-                ['armed' => true, 'fill' => false, 'blocked' => 0],
-                ['2001:db8:a::53' => uu_snapshot_fixture('route_get_member6.txt')]);
+                ['armed' => true, 'fill' => false, 'blocked' => 0]);
             $got = ['cleaned' => uu_settings_clean($raw)['settings']['default'], 'doc' => $doc];
             return true;
         });
@@ -396,45 +401,75 @@ uu_register_suite('log', function (): int {
             && $d['addresses'] === ['2001:db8:a::53'] && $d['route']['flags'] === $memberFlags);
     }
 
-    /* (l9) the route reads behind the status: the active resolver's and each address of the state's map, once
-     * each, each in its own family */
-    $reads = null;
-    $ok = uu_try_case(function () use (&$reads): bool {
-        $pm = uu_test_default(uu_test_snapshot(), '2001:db8:b::53');
-        $pm['members']['wg-a']['next_hop'] = 'fd00::3:2';
-        $pm['members']['wg-a']['if'] = 'wg3';
-        $pm['members']['wg-b']['next_hop'] = 'fd00::4:2';
-        $pm['members']['wg-b']['if'] = 'wg4';
-        $on = uu_test_in_tunnel($pm, 'wg-a');
-        /* an IPv4 address the Default named before, still held */
-        $st = uu_test_plan_state('wg-a', [], 0, null, '2001:db8:b::53', $pm);
-        $st['addresses']['198.51.100.10'] = ['route' => ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'],
-            'forwarded' => false, 'released_at' => $on['now'] - 10];
-        $calls = [];
-        $get = function (string $args) use (&$calls): string {
-            $calls[] = $args;
-            return 'out ' . count($calls);
-        };
-        $outs = uu_status_route_outs($on, uu_plan($on, $st), $get);
-        $none = $pm;
-        $none['settings']['default'] = '';
-        foreach (array_keys($none['members']) as $name) {
-            $none['members'][$name]['resolver'] = '';
-        }
-        $noCalls = 0;
-        $empty = uu_status_route_outs($none, uu_plan($none, uu_test_plan_state(null, [], 0, null, null)),
-            function (string $args) use (&$noCalls): string {
-                $noCalls++;
-                return '';
-            });
-        $reads = ['calls' => $calls, 'outs' => $outs, 'empty' => $empty, 'noCalls' => $noCalls];
+    /* (l2) dry run on in fallback, Unbound disabled and not running, the check through Unbound failed, the TLS flag
+     * applied, the rules missing with two problems and cacheflush on, and the Default's route absent while its read
+     * printed the default route's flags: every key and value 1.3_2 printed */
+    uu_check($t, '(l2) dry run in fallback with Unbound off, a failed check, two rule failures and a note, and an '
+        . 'absent route: every key and value 1.3_2 printed, byte for byte',
+        uu_try_case(function () use ($as132, $printed): bool {
+            $dry = uu_test_snapshot();
+            $dry['settings']['dry_run'] = true;
+            $dry['unbound'] = ['enabled' => false, 'pid_alive' => false, 'control_ok' => false, 'live_root' => null];
+            $problems = ['no pass rule for wg-a (opt1)', 'no pass rule for wg-b (opt2)'];
+            $dry['rules'] = ['state' => 'missing', 'problems' => $problems, 'verified_at' => 1792399500,
+                             'record' => null];
+            $dry['contract_input']['rules'] = ['state' => 'missing', 'problems' => $problems];
+            $dry['contract_input']['cacheflush'] = true;
+            $dry['route_flags'] = ['10.2.0.1' => uu_status_route_flags(uu_snapshot_fixture('route_get_default.txt'))];
+            $st = uu_test_plan_state(null);
+            $st['checks'] = ['direct' => ['ok' => true, 'at' => 1760000000, 'member' => 'wg-a'],
+                             'unbound' => ['ok' => false, 'at' => 1760000100, 'member' => 'wg-a']];
+            $st['tls_applied'] = true;
+            $doc = uu_status_doc($dry, uu_plan($dry, $st), ['armed' => false, 'fill' => false, 'blocked' => null]);
+            return $dry['route_flags']['10.2.0.1'] !== [] && $as132($doc) === $printed('dryrun');
+        }));
+
+    /* (l9) the active resolver has a row of its own when the map does not hold it: the map holds a and b, held, and
+     * every member is on c */
+    foreach (['IPv4' => ['198.51.100.10', '198.51.100.20', '198.51.100.30', ''],
+              'IPv6' => ['2001:db8:a::53', '2001:db8:b::53', '2001:db8:c::53', '6']] as $family => [$a, $b, $c, $six]) {
+        $doc = null;
+        $ok = uu_try_case(function () use ($a, $b, $c, $six, $reject, $rejected, &$doc): bool {
+            $on = uu_test_route(uu_test_route(uu_test_default(uu_test_snapshot(), $c), $reject, $a), $reject, $b);
+            $on['route_flags'] = [$a => uu_status_route_flags(uu_snapshot_fixture("route_get_reject$six.txt")),
+                                  $b => uu_status_route_flags(uu_snapshot_fixture("route_get_reject$six.txt")),
+                                  $c => uu_status_route_flags(uu_snapshot_fixture('route_get_default.txt'))];
+            $st = uu_test_plan_state(null);
+            $held = $rejected;
+            $held['released_at'] = $on['now'] - 10;
+            $st['addresses'] = [$b => $held, $a => $held];
+            $doc = uu_status_doc($on, uu_plan($on, $st), ['armed' => true, 'fill' => false, 'blocked' => 0]);
+            return true;
+        });
+        $absent = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false,
+                   'flags' => []];
+        uu_check($t, "(l9) $family, the map holding a and b and every member on c: c, the resolver, has its own row "
+            . '(absent, so no flags), beside a and b, each a footprint, in sorted order; addresses stay the map\'s',
+            $ok && $doc['resolver'] === $c && array_keys($doc['routes']) === [$a, $b, $c]
+            && $doc['routes'][$c] === $absent + ['footprint' => false] && $doc['route'] === $absent
+            && $doc['routes'][$a]['footprint'] === true && $doc['routes'][$b]['footprint'] === true
+            && $doc['routes'][$a]['flags'] === ['UP', 'HOST', 'REJECT', 'DONE', 'STATIC']
+            && $doc['addresses'] === [$a, $b]);
+    }
+
+    /* (l10) several footprints: the first in sorted order is the status's footprint, whatever the map's order */
+    $doc = null;
+    $ok = uu_try_case(function () use ($rejected, &$doc): bool {
+        $off = uu_test_snapshot();
+        $off['settings']['enabled'] = false;
+        $st = uu_test_plan_state(null);
+        $st['addresses'] = ['198.51.100.20' => $rejected, '198.51.100.10' => $rejected];
+        $doc = uu_status_doc($off, uu_plan($off, $st), ['armed' => false, 'fill' => false, 'blocked' => null]);
         return true;
     });
-    uu_check($t, '(l9) the status reads the active resolver\'s route with -inet6 and the held IPv4 address\'s with '
-        . '-inet, each once, keyed by address; no active resolver and no map: no read',
-        $ok && $reads['calls'] === ["-inet6 '2001:db8:b::53'", "-inet '198.51.100.10'"]
-        && $reads['outs'] === ['2001:db8:b::53' => 'out 1', '198.51.100.10' => 'out 2']
-        && $reads['empty'] === [] && $reads['noCalls'] === 0);
+    uu_check($t, '(l10) disabled with two addresses recorded in reverse order: the footprint is the sorted first, '
+        . 'both entries are footprints, and the active Default has its own row, no footprint',
+        $ok && $doc['footprint'] === '198.51.100.10'
+        && array_keys($doc['routes']) === ['10.2.0.1', '198.51.100.10', '198.51.100.20']
+        && $doc['routes']['198.51.100.10']['footprint'] === true
+        && $doc['routes']['198.51.100.20']['footprint'] === true
+        && $doc['routes']['10.2.0.1']['footprint'] === false
+        && $doc['addresses'] === ['198.51.100.10', '198.51.100.20']);
 
     return uu_tally_report('log', $t);
 });

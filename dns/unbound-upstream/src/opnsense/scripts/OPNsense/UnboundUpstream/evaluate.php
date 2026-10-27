@@ -291,6 +291,7 @@ function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -318,6 +319,7 @@ function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -360,10 +362,7 @@ function uu_status_main(): int
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
         uu_setting_addresses($s));
-    /* the route of the active resolver and of each address the state holds, each in its family */
-    $routes = uu_status_route_outs($s, $p,
-        fn (string $args): string => (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null'));
-    $doc = uu_status_doc($s, $p, $table, $routes);
+    $doc = uu_status_doc($s, $p, $table);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
     return 0;
 }
@@ -415,7 +414,7 @@ function uu_replay_main(string $path): int
     }
     $doc = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
     $keys = ['now', 'wall', 'settings', 'trigger', 'tiers', 'family', 'members', 'probes', 'named', 'stop', 'unbound',
-             'zone', 'routes', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
+             'zone', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
     /* the snapshot is evaluate.php record's own output: its top-level shape is checked, not every field, once a
      * recording made before 1.4 has been refused by name */
     $not = "$path is not a snapshot and state written by evaluate.php record";

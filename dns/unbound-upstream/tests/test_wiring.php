@@ -14,7 +14,8 @@ declare(strict_types=1);
  * unbound.conf all the while), which restart Unbound, swaps a do-ip6 line of unbound.conf under the evaluate lock and
  * puts it back, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
- * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
+ * one read as nobody and, under the evaluate lock, for two cron restarts and for status reads (a version 5 file, and
+ * one holding a gateway's monitor address), then puts the saved one, the crontab and
  * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes, and
  * runs the settings controller's resolver actions over a row it adds to the controller's model in memory only (no
  * action it runs saves).
@@ -229,7 +230,7 @@ uu_register_suite('wiring', function (): int {
             . "            get: '/api/unboundupstream/settings/get_resolver/',\n"
             . "            set: '/api/unboundupstream/settings/set_resolver/',\n"
             . "            add: '/api/unboundupstream/settings/add_resolver/',\n"
-            . "            del: '/api/unboundupstream/settings/del_resolver/'\n")
+            . "            del: '/api/unboundupstream/settings/del_resolver/',\n")
         && str_contains($view, "{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': "
             . "'DialogResolver',")
         && str_contains($index, "\$this->view->resolverForm = \$this->getForm('dialogResolver');"));
@@ -248,12 +249,53 @@ uu_register_suite('wiring', function (): int {
         && str_contains($view, 'footprints = data.footprint ? [data.footprint] : [];')
         && str_contains($view, "if (entry.footprint) {\n                        footprints.push(addr);")
         && str_contains($view, "plain(footprints.join(', '))"));
-    uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs, and the '
-        . 'page says so',
-        str_contains($view, "\$(document).on('settings-changed', function () {\n"
-            . "            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {")
-        && str_contains($view, "{{ lang._('A row takes effect once saved or deleted. The settings above still need "
-            . "Apply.') }}"));
+    /* the grid's apply handler as a whole: reconfigure; on its success the Apply bar no longer pending, else a warning
+     * with the reply's text set as text; the status refreshed either way */
+    $applyHandler = <<<'VOLT'
+        $(document).on('settings-changed', function () {
+            ajaxCall('/api/unboundupstream/service/reconfigure', {}, function (data, status) {
+                if (status === 'success' && data && String(data.status).toLowerCase().trim() === 'ok') {
+                    /* applied: the Apply bar no longer shows changes as pending, as after core's own Apply */
+                    $('#change_message_base_form').hide()
+                        .parent('.alert').addClass('content-box').removeClass('alert-info');
+                } else {
+                    BootstrapDialog.show({
+                        type: BootstrapDialog.TYPE_WARNING,
+                        title: "{{ lang._('Error reconfiguring service.') }}",
+                        message: $('<div/>').text(plain(data
+                            && (data.status_msg || data.status || data.errorMessage))),
+                        draggable: true
+                    });
+                }
+                refreshState();
+            });
+        });
+VOLT;
+    /* the grid's row delete: settings-changed only for a row the reply says was deleted */
+    $deleteCommand = <<<'VOLT'
+                delete: {
+                    method: function (event, cell, uuid) {
+                        event.stopPropagation();
+                        var id = uuid || $(event.currentTarget).data('row-id');
+                        stdDialogRemoveItem("{{ lang._('Remove this per-member resolver?') }}", function () {
+                            ajaxCall('/api/unboundupstream/settings/del_resolver/' + id, {}, function (data, status) {
+                                $('#grid-resolvers').bootgrid('reload');
+                                if (status === 'success' && data && data.result === 'deleted') {
+                                    $(document).trigger('settings-changed');
+                                }
+                            });
+                        });
+                    }
+                }
+VOLT;
+    uu_check($t, '(l5) a row the grid saves or deletes is applied at once through the reconfigure Apply runs: the '
+        . 'whole handler, its success and failure paths and the status refresh; and the page says so',
+        str_contains($view, $applyHandler . "\n")
+        && str_contains($view, "            {{ lang._('Each row is applied as soon as it is saved or deleted; the "
+            . "settings above still need Apply.') }}\n"));
+    uu_check($t, '(l5) a refused row delete is not applied: the grid\'s own delete command fires settings-changed only '
+        . 'for a deleted row',
+        str_contains($view, "            commands: {\n") && str_contains($view, $deleteCommand . "\n"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
     uu_check($t, 'the hook file is installed (overlay the tree first)', is_readable($inc));
     if (!is_readable($inc)) {
@@ -340,8 +382,9 @@ uu_register_suite('wiring', function (): int {
         $node->setNodes(['gateway' => $gateway, 'address' => '10.2.0.1']);
         return (string)$node->getAttribute('uuid');
     };
-    /* a POST of $post to $call, the config lock released after it as the end of a request releases it */
-    $post = function (array $post, callable $call): mixed {
+    /* a POST of $post to $call, the config lock released after it as the end of a request releases it; a
+     * UserException's message is the reply's refused */
+    $post = function (array $post, callable $call): array {
         $_SERVER['REQUEST_METHOD'] = 'POST';
         $_POST = $post;
         $_REQUEST = $post;
@@ -442,6 +485,20 @@ uu_register_suite('wiring', function (): int {
         $e5 = $enabled('10.2.0.1');
         $r5 = $addRow($e5, $a);
         $ctl['delete'] = [$post([], fn (): array => $e5->delResolverAction($r5)), $e5->saves];
+        $e6 = $enabled('10.2.0.1');
+        $ids = $addRow($e6, $a) . ',' . $addRow($e6, $b);
+        $ctl['deleteTwo'] = [$post([], fn (): array => $e6->delResolverAction($ids)), $e6->saves,
+            iterator_count($model($e6)->resolvers->resolver->iterateItems())];
+        $e7 = $enabled('');
+        $r7 = $addRow($e7, $a);
+        $addRow($e7, $b);
+        $addRow($e7, $byName[$outsider] ?? '');
+        $ctl['twoRefusals'] = [$post([], fn (): array => $e7->delResolverAction($r7)), $e7->saves];
+        $e8 = $enabled('10.2.0.1');
+        $addRow($e8, $byName[$outsider] ?? '');
+        $addRow($e8, $byName[$outsider] ?? '');
+        $ctl['onceEach'] = [$post(['resolver' => ['gateway' => $a, 'address' => '10.2.0.1']],
+            fn (): array => $e8->addResolverAction()), $e8->saves];
     } catch (\Throwable $e) {
         printf("  threw %s: %s\n", get_class($e), $e->getMessage());
         \OPNsense\Core\Config::getInstance()->unlock();
@@ -492,11 +549,20 @@ uu_register_suite('wiring', function (): int {
             'Enter the default resolver address, or one for every member of the group.'], 0]
         && ($ctl['delete'] ?? null) === [['result' => 'deleted'], 1]
         && $configChanged === false;
-    if ($ctl !== null && (!$nonMember || !$wholeModel)) {
-        foreach (['nonMember', 'member', 'second', 'noResolver', 'delete'] as $k) {
+    $notMember = 'Gateway ' . $outsider . ' is not a member of the selected group.';
+    $several = ($ctl['deleteTwo'] ?? null) === [['result' => 'deleted'], 1, 0]
+        && ($ctl['twoRefusals'] ?? null) === [['refused' => $notMember . "\n"
+            . 'Enter the default resolver address, or one for every member of the group.'], 0]
+        && ($ctl['onceEach'] ?? null) === [['result' => 'failed', 'validations' => ['resolver.gateway' =>
+            [$notMember, 'Gateway ' . $outsider . ' has more than one resolver row.']]], 0];
+    if ($ctl !== null && (!$nonMember || !$wholeModel || !$several)) {
+        foreach (['nonMember', 'member', 'second', 'noResolver', 'delete', 'deleteTwo', 'twoRefusals', 'onceEach']
+            as $k) {
             printf("  %s: %s\n", $k, json_encode($ctl[$k] ?? null));
         }
     }
+    uu_check($t, '(l5) enabled: a delete of two rows in one call deletes both with one save; a refused delete names '
+        . 'every distinct refusal, one per line; another row\'s message repeated is shown once', $several);
     uu_check($t, '(l5) enabled: a grid add of a non-member\'s row is refused on its gateway, as a Save refuses it, and '
         . 'nothing is saved; a member\'s row is saved', $nonMember);
     uu_check($t, '(l5) enabled: a row changed to another row\'s gateway is refused (the message is the other row\'s, '
@@ -818,11 +884,68 @@ uu_register_suite('wiring', function (): int {
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);
     uu_check($t, 'configctl state returns the status JSON', is_array($state) && isset($state['mode'], $state['members'])
         && $state['enabled'] === false);
+    $expected = is_array($state['addresses'] ?? null) ? $state['addresses'] : [];
+    if (is_string($state['resolver'] ?? null) && $state['resolver'] !== '' && !in_array($state['resolver'], $expected,
+        true)) {
+        $expected[] = $state['resolver'];
+        sort($expected, SORT_STRING);
+    }
     uu_check($t, '(l6) configctl state with the plugin disabled carries routes and addresses, an entry and a route per '
-        . 'address the state holds',
+        . 'address the state holds and for the active resolver',
         is_array($state) && array_key_exists('routes', $state) && array_key_exists('addresses', $state)
         && is_array($state['routes']) && is_array($state['addresses'])
-        && array_keys($state['routes']) === $state['addresses']);
+        && array_keys($state['routes']) === $expected);
+
+    /* (l6) the status's route is the snapshot's own read: a state holding a monitored gateway's monitor address, which
+     * dpinger keeps a host route to, shows that route present with the flags route(8) prints for it, HOST among
+     * them. The evaluate lock is held, so no evaluation replaces the hand-written file; the saved state is put back */
+    $monitor = '';
+    foreach ((new \OPNsense\Routing\Gateways())->gatewaysIndexedByName() as $gw) {
+        $address = (string)($gw['monitor'] ?? '');
+        if (empty($gw['monitor_disable']) && uu_ip_family($address) === 'inet'
+            && uu_parse_route_get((string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($address)
+                . ' 2>/dev/null'))['present']) {
+            $monitor = $address;
+            break;
+        }
+    }
+    $hostRoute = null;
+    $l6Aside = UU_STATE_PATH . '.l6';
+    $l6Had = file_exists(UU_STATE_PATH);
+    $l6Saved = $l6Had ? (string)file_get_contents(UU_STATE_PATH) : null;
+    $l6Lock = false;
+    try {
+        $l6Lock = $monitor === '' ? false : uu_test_evaluate_lock();
+        if ($l6Lock !== false) {
+            uu_test_state_aside(UU_STATE_PATH, $l6Aside, function (callable $place) use (&$hostRoute, $monitor,
+                $s9Script): void {
+                $held = uu_state_new();
+                $held['addresses'] = [$monitor => ['route' => null, 'forwarded' => false, 'released_at' => null]];
+                $place($held);
+                $doc = json_decode((string)shell_exec('/usr/local/bin/php -d log_errors=0 ' . $s9Script . ' status'),
+                    true);
+                $out = (string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($monitor) . ' 2>/dev/null');
+                $hostRoute = ['entry' => $doc['routes'][$monitor] ?? null, 'flags' => uu_status_route_flags($out)];
+            }, 'rename');
+        }
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        if ($l6Lock !== false) {
+            fclose($l6Lock);
+        }
+    }
+    $entry = $hostRoute['entry'] ?? null;
+    $l6Host = $monitor !== '' && is_array($entry) && $entry['present'] === true
+        && $entry['flags'] === $hostRoute['flags'] && in_array('HOST', $entry['flags'], true);
+    if (!$l6Host) {
+        printf("  monitor %s, entry %s, route -n get flags %s\n", $monitor === '' ? 'none with a host route' : $monitor,
+            json_encode($entry), json_encode($hostRoute['flags'] ?? null));
+    }
+    uu_check($t, '(l6) status over a state holding an address with a host route: present, with route(8)\'s flags',
+        $l6Host);
+    uu_check($t, '(l6) the saved state is back as it was', file_exists(UU_STATE_PATH) === $l6Had
+        && !file_exists($l6Aside) && ($l6Had ? (string)file_get_contents(UU_STATE_PATH) : null) === $l6Saved);
 
     /* core calls the monitor hook with no arguments at boot (rc.bootup), and plugins_configure clamps the declared
      * two to what it has: the hook must take one argument, or none, without throwing */

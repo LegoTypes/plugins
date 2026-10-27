@@ -379,6 +379,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -407,6 +408,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -753,6 +755,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int,
  *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
  *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
@@ -898,11 +901,16 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             $routed[$canonical] = true;
         }
     }
-    $read = function (string $address) use ($members): array {
+    /* each read's flags are kept as route(8) printed them, whatever route they describe: the status shows them for a
+     * present route */
+    $routeFlags = [];
+    $read = function (string $address) use ($members, &$routeFlags): array {
         $route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
         $routeArgs = uu_route_get_args($address);
         if ($routeArgs !== null) {
-            $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . $routeArgs . ' 2>/dev/null'));
+            $out = (string)shell_exec('/sbin/route -n get ' . $routeArgs . ' 2>/dev/null');
+            $route = uu_parse_route_get($out);
+            $routeFlags[$address] = uu_status_route_flags($out);
         }
         return $route + ['ours' => uu_route_ours($route, $members)];
     };
@@ -963,6 +971,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
         ],
         'zone' => $zone,
         'routes' => $routes,
+        'route_flags' => $routeFlags,
         'fib_sync_ms' => $fibSyncMs,
         'contract_input' => [
             'unbound_hooks_registered' => $hooks,

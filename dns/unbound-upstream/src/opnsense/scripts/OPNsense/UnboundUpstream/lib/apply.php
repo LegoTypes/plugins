@@ -154,6 +154,7 @@ final class UuApplyRun
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
      *         ours: bool}>,
+     *     route_flags: array<string, list<string>>,
      *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}}
      */
     private array $s;
@@ -235,6 +236,7 @@ final class UuApplyRun
      *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
      *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
      *         ours: bool}>,
+     *     route_flags: array<string, list<string>>,
      *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
      * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
      *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
@@ -1225,6 +1227,7 @@ final class UuApplyRun
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s the snapshot the plan was made from
  * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
@@ -1290,6 +1293,7 @@ function uu_apply(array $p, array $s, array $io): array
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
  * @param callable(string, int): void $log
  */
