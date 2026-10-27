@@ -186,17 +186,18 @@ function uu_evaluate(?string $stop, array $named): int
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    /* the footprint as the rules and the minute job read it: a recorded value that is no address is none, and
-     * never reaches a route or unbound-control argument */
-    $old = uu_state_footprint(uu_state_load(UU_STATE_PATH));
-    if ($old !== null && $old !== $settings['resolver']) {
+    /* the footprint as the rules and the minute job read it: the state's keys are addresses by construction */
+    foreach (uu_state_footprint(uu_state_load(UU_STATE_PATH)) as $old) {
+        if ($old === $settings['resolver']) {
+            continue;
+        }
         uu_log("resolver changed from $old to {$settings['resolver']}: undoing the route and forwarders of $old "
             . 'first');
         $previous = $settings;
         $previous['resolver'] = $old;
         uu_evaluate_once($previous, [], $causes['undo']);
         $st = uu_state_load(UU_STATE_PATH);
-        if ($st['resolver'] === $old) {
+        if (isset($st['addresses'][$old])) {
             uu_log("the route or forwarders of $old could not be undone: " . ($causes['run'] === null
                 ? "{$settings['resolver']} waits for the next evaluation"
                 : 'the stop ends there, with what the lines above say is left'), LOG_ERR);
@@ -237,8 +238,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     $previousSwitch = $st['last_switch'];
     try {
         $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
-            $settings['resolver'], $st['resolver']);
-        $s = uu_route_adopt($s, $st['route_installed']);
+            $settings['resolver'], $before[0] ?? null);
+        $s = uu_route_adopt($s, $st['addresses'][$settings['resolver']]['route'] ?? null);
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
         $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
@@ -272,16 +273,17 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
  * itself, both wait until its stop is over (uu_remove()). The state is read back, so a run that failed after a
  * checkpoint follows what it saved; nothing is thrown, so such a run still ends in its own error.
  *
+ * @param list<string> $before the footprint before the run
  * @param ?string $stop the run's UU_STOP_* cause, or null
  */
-function uu_footprint_follow(?string $before, bool $enabled, ?string $stop): void
+function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
 {
     try {
         $after = uu_state_footprint(uu_state_load(UU_STATE_PATH));
         $actions = uu_footprint_actions($before, $after, $enabled, $stop);
         if ($actions['reload']) {
-            uu_footprint_reload('the address the plugin last used changed from ' . ($before ?? 'none') . ' to '
-                . ($after ?? 'none'), 'uu_core_shell', 'uu_log');
+            uu_footprint_reload('the address the plugin last used changed from ' . uu_footprint_text($before) . ' to '
+                . uu_footprint_text($after), 'uu_core_shell', 'uu_log');
         }
         if ($actions['cron']) {
             uu_cron_regenerate();
@@ -386,10 +388,11 @@ function uu_status_main(): int
     $settings = uu_settings();
     $st = uu_state_load(UU_STATE_PATH);
     /* never lists the ruleset: the checksum and the counting table only */
-    $s = uu_route_adopt(uu_snapshot($settings, [], null, false), $st['route_installed']);
+    $s = uu_route_adopt(uu_snapshot($settings, [], null, false),
+        $st['addresses'][$settings['resolver']]['route'] ?? null);
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
-        $st['resolver']);
+        uu_state_footprint($st)[0] ?? null);
     $args = uu_route_get_args($settings['resolver']);
     $route = $args === null ? '' : (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null');
     $doc = uu_status_doc($s, $p, $table, $route);
@@ -454,7 +457,10 @@ function uu_replay_main(string $path): int
         echo "the recorded state is not this version's shape: planning from a fresh state\n";
         $st = uu_state_new();
     }
-    $s = uu_route_adopt(uu_snapshot_recorded($doc['snapshot']), $st['route_installed']);
+    $recordedSettings = $doc['snapshot']['settings'] ?? null;
+    $resolver = is_array($recordedSettings) && is_string($recordedSettings['resolver'] ?? null)
+        ? $recordedSettings['resolver'] : '';
+    $s = uu_route_adopt(uu_snapshot_recorded($doc['snapshot']), $st['addresses'][$resolver]['route'] ?? null);
     $p = uu_plan($s, $st);
     uu_apply_preview($p, $s, function (string $msg, int $prio): void {
         echo $msg, "\n";

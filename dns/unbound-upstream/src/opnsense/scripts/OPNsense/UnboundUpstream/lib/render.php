@@ -167,37 +167,34 @@ function uu_block_conf(string $to, string $label, string $descr, string $family)
 }
 
 /**
- * The footprint: the address the state records, when it is an IPv4 or IPv6 address and not the address the setting's
- * rules already go to ($settingResolver, '' when they render none), with the friendly interface of the plugin's route.
- * That interface is the one of the gateway record on the route's device with the route's next hop (compared in
- * canonical form), the first such record by name that has one; it is '' when the route is no member route or no
- * record names it, and the footprint then has its block only, since core renders an interface it does not know as a
- * placeholder that breaks the ruleset. A recorded address that is no address is no footprint but a problem, which
- * never quotes the address.
+ * The footprint: the first address the state records that is not the address the setting's rules already go to
+ * ($settingResolver, '' when they render none), with the friendly interface of the plugin's route to it. That
+ * interface is the one of the gateway record on the route's device with the route's next hop (compared in canonical
+ * form), the first such record by name that has one; it is '' when the route is no member route or no record names
+ * it, and the footprint then has its block only, since core renders an interface it does not know as a placeholder
+ * that breaks the ruleset.
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string} $state
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>} $state
  * @param array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
  * @return array{footprint: ?array{resolver: string, interface: string}, problem: ?string}
  */
 function uu_footprint_from_state(array $state, array $records, string $settingResolver): array
 {
-    $address = uu_state_footprint($state);
-    if ($address === null) {
-        return ['footprint' => null, 'problem' => $state['resolver'] === null ? null
-            : 'the address the plugin last used is not an IPv4 address'];
-    }
-    if ($address === $settingResolver) {
+    $others = array_values(array_filter(uu_state_footprint($state), fn (string $a): bool => $a !== $settingResolver));
+    if ($others === []) {
         return ['footprint' => null, 'problem' => null];
     }
+    $address = $others[0];
     $interface = '';
-    $route = $state['route_installed'];
+    $route = $state['addresses'][$address]['route'];
     if ($route !== null && $route['kind'] === 'member') {
         $names = array_map('strval', array_keys($records));
         sort($names, SORT_STRING);
@@ -245,7 +242,7 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
     $gateways = $settings['gateways'] ?? null;
     $recs = null;
     $recsFailed = false;
-    if ($gateways !== null || $read['state']['resolver'] !== null) {
+    if ($gateways !== null || uu_state_footprint($read['state']) !== []) {
         try {
             $recs = $records();
         } catch (\Throwable $e) {

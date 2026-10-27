@@ -291,13 +291,16 @@ function uu_remove_run(callable $evaluate, callable $run, callable $log): int
 
 /**
  * The error remove logs when an evaluation held the lock for UU_REMOVE_LOCK_WAIT_SECONDS, with the remedy: the
- * address the saved state records, else a placeholder.
+ * addresses the saved state records, else a placeholder; one delete command for each.
+ *
+ * @param list<string> $addresses
  */
-function uu_remove_timeout_text(?string $resolver): string
+function uu_remove_timeout_text(array $addresses): string
 {
-    $address = $resolver ?? '<resolver>';
-    return "the package is being removed while Unbound may still forward to $address over the plugin's route: once "
-        . 'it is removed, run configctl unbound restart, then ' . uu_route_delete_text($address);
+    $named = $addresses === [] ? ['<resolver>'] : $addresses;
+    return 'the package is being removed while Unbound may still forward to ' . implode(', ', $named)
+        . " over the plugin's route: once it is removed, run configctl unbound restart, then "
+        . implode('; ', array_map('uu_route_delete_text', $named));
 }
 
 /**
@@ -309,9 +312,9 @@ function uu_remove_timeout_remedy(string $statePath): string
 {
     try {
         $read = uu_state_read($statePath);
-        $resolver = $read['problem'] === null ? uu_state_footprint($read['state']) : null;
+        $addresses = $read['problem'] === null ? uu_state_footprint($read['state']) : [];
     } catch (\Throwable $e) {
-        $resolver = null;
+        $addresses = [];
     }
-    return uu_remove_timeout_text($resolver);
+    return uu_remove_timeout_text($addresses);
 }

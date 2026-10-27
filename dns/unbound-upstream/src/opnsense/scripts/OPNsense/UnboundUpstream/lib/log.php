@@ -118,11 +118,12 @@ function uu_duration_text(int $seconds): string
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the saved state's resolver

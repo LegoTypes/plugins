@@ -355,7 +355,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
 }
 
 /**
- * A live route equal to the one the plugin last installed (the state's route_installed) is the plugin's own even when
+ * A live route equal to the one the plugin last installed (the route record of the resolver's entry in the state's
+ * addresses) is the plugin's own even when
  * no current member explains it, so a group renamed or deleted in tunnel mode lets fallback and stop replace or delete
  * the plugin's stale route instead of reading it as foreign. evaluate.php applies it to every snapshot before planning;
  * a route matching neither stays foreign.

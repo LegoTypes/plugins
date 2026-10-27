@@ -18,7 +18,7 @@ declare(strict_types=1);
  *   when it failed or timed out; each probe is one `drill -D <name> @<server> SOA` tried UU_PROBE_TRIES times and
  *   passes on NOERROR with the ad flag; log takes a syslog priority; save writes the State (state.php) the run has
  *   reached, after every successful route or forwarder change and when an exception escapes, so the route record
- *   (state.php's route_installed) survives a failure partway through.
+ *   (the route record in state.php's addresses) survives a failure partway through.
  *
  * Every path keeps these:
  *   - a route is changed in place (change, or add when absent), never deleted and added: in the gap the resolver
@@ -108,11 +108,12 @@ final class UuApplyRun
      *     state: array{version: int, mode: string, member: ?string,
      *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
      *         resolver_failed_until: ?int, probe_failures: int,
-     *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+     *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
      *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
-     *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+     *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+     *             forwarded: bool, released_at: ?int}>},
      *     reasons: list<string>}
      */
     private array $p;
@@ -140,19 +141,28 @@ final class UuApplyRun
      * @var array{version: int, mode: string, member: ?string,
      *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
      *     probe_failures: int,
-     *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
-     *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
+     *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+     *         forwarded: bool, released_at: ?int}>}
      */
     private array $st;
     /** @var ?list<string> Unbound's live root as last read or set; null while unknown */
     private ?array $live;
-    /** this run sent forward_add . <resolver>, so Unbound may be on the resolver although the reply was lost */
-    private bool $maybeResolver = false;
-    /** @var array{present: bool, gateway: string, interface: string, reject: bool, ours: bool} */
-    private array $route;
+    /**
+     * @var array<string, bool> per address (its canonical form): Unbound is, or may be, forwarding to it. True once this
+     *     run sent forward_add for it, although the reply was lost, or a live root read names it; false only after a
+     *     read in this run that succeeded and names something else. A failed or unparseable read changes nothing.
+     */
+    private array $forwarded = [];
+    /** @var array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}> */
+    private array $routes = [];
+    /** @var array<string, ?array{kind: string, next_hop: string, if: string}> the route the plugin last installed */
+    private array $records = [];
+    /** the resolver's key in all three: its canonical form, else as typed (an address that is none is never recorded) */
+    private string $key;
     private bool $fibPending = false;
     /** an unbound-control call of this run got no answer (timeout or no channel) */
     private bool $silent = false;
@@ -168,11 +178,12 @@ final class UuApplyRun
      *     state: array{version: int, mode: string, member: ?string,
      *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
      *         resolver_failed_until: ?int, probe_failures: int,
-     *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+     *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
      *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
-     *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+     *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+     *             forwarded: bool, released_at: ?int}>},
      *     reasons: list<string>} $p
      * @param array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -196,10 +207,46 @@ final class UuApplyRun
         $this->s = $s;
         $this->io = $io;
         $this->st = $p['state'];
-        $this->live = $s['unbound']['live_root'];
-        $this->route = $s['route'];
         $this->resolver = $s['settings']['resolver'];
+        $this->key = uu_ip_canonical($this->resolver) ?? $this->resolver;
         $this->probe = $s['settings']['probe_name'];
+        $this->routes[$this->key] = $s['route'];
+        $this->records[$this->key] = $this->st['addresses'][$this->key]['route'] ?? null;
+        $this->forwarded[$this->key] = $this->st['addresses'][$this->key]['forwarded'] ?? false;
+        /* each recorded address is forwarded again as the live root read for this snapshot says, before any route call;
+         * a root that could not be read leaves the record as it was */
+        $live = $s['unbound']['live_root'];
+        if ($live !== null) {
+            $named = uu_apply_bare($live);
+            foreach (array_keys($this->st['addresses']) as $address) {
+                $this->st['addresses'][$address]['forwarded'] = in_array((string)$address, $named, true);
+            }
+        }
+        $this->setLive($live);
+    }
+
+    /**
+     * The resolver's route as this run last saw or made it.
+     *
+     * @return array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}
+     */
+    private function route(): array
+    {
+        return $this->routes[$this->key];
+    }
+
+    /**
+     * Take a live root read: it settles whether Unbound forwards to the resolver, unless it failed (null), which
+     * leaves what was known.
+     *
+     * @param ?list<string> $live
+     */
+    private function setLive(?array $live): void
+    {
+        $this->live = $live;
+        if ($live !== null) {
+            $this->forwarded[$this->key] = in_array($this->key, uu_apply_bare($live), true);
+        }
     }
 
     /**
@@ -208,11 +255,12 @@ final class UuApplyRun
      * @return array{version: int, mode: string, member: ?string,
      *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
      *     probe_failures: int,
-     *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+     *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
      *     last_switch: ?array{at: int, from: string, to: string, reason: string},
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
-     *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
+     *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+     *         forwarded: bool, released_at: ?int}>}
      */
     public function run(): array
     {
@@ -255,7 +303,7 @@ final class UuApplyRun
      */
     private function stop(): void
     {
-        $ours = $this->route['present'] && $this->route['ours'];
+        $ours = $this->route()['present'] && $this->route()['ours'];
         if (!$this->needsRestore() && !$ours && $this->st['mode'] === 'fallback' && $this->st['member'] === null) {
             return;
         }
@@ -318,7 +366,7 @@ final class UuApplyRun
             if ($live === null) {
                 continue;
             }
-            $this->live = $live;
+            $this->setLive($live);
             if (uu_apply_same($live, [$this->resolver])) {
                 $this->log('stop: Unbound restarted but still forwards to the resolver', LOG_ERR);
                 return false;
@@ -350,7 +398,7 @@ final class UuApplyRun
     {
         if ($this->s['stop'] === UU_STOP_REMOVE) {
             $this->routeReject();
-            if ($this->route['present'] && $this->route['ours'] && $this->route['reject']) {
+            if ($this->route()['present'] && $this->route()['ours'] && $this->route()['reject']) {
                 $this->log("stop: the package is being removed while Unbound may still forward to {$this->resolver}, "
                     . "so its queries to {$this->resolver} are rejected locally until Unbound restarts: run "
                     . 'configctl unbound restart, then ' . uu_route_delete_text($this->resolver), LOG_ERR);
@@ -364,7 +412,7 @@ final class UuApplyRun
             . 'queries would follow the default route)', LOG_ERR);
         $this->footprint();
         $disabled = !$this->s['settings']['enabled'];
-        if ($this->s['stop'] === UU_STOP_REQUEST && $disabled && $this->st['resolver'] !== null) {
+        if ($this->s['stop'] === UU_STOP_REQUEST && $disabled && isset($this->st['addresses'][$this->key])) {
             $this->log("the plugin is disabled but Unbound may still forward to {$this->resolver}: its block stays "
                 . 'until a stop restores the forwarders', LOG_WARNING);
         }
@@ -385,10 +433,10 @@ final class UuApplyRun
      */
     private function drainAndDelete(bool $wasOnResolver): void
     {
-        $ours = $this->route['present'] && $this->route['ours'];
-        if ($this->s['unbound']['pid_alive'] && ($ours || (!$this->route['present'] && $wasOnResolver))) {
+        $ours = $this->route()['present'] && $this->route()['ours'];
+        if ($this->s['unbound']['pid_alive'] && ($ours || (!$this->route()['present'] && $wasOnResolver))) {
             $this->routeReject();
-            if (!$this->route['reject']) {
+            if (!$this->route()['reject']) {
                 $this->log("stop: no reject route, so the resolver's route stays: Unbound may still retry the "
                     . 'resolver', LOG_ERR);
                 return;
@@ -542,7 +590,7 @@ final class UuApplyRun
             return false;
         }
         if ($this->live === null) {
-            return $this->st['mode'] === 'tunnel' || $this->maybeResolver;
+            return $this->st['mode'] === 'tunnel' || $this->forwarded[$this->key];
         }
         return uu_apply_same($this->live, [$this->resolver]);
     }
@@ -582,7 +630,6 @@ final class UuApplyRun
             return false;
         }
         $this->st['tls_applied'] = $zone['shape'] === 'one' && $zone['tls'];
-        $this->maybeResolver = false;
         $this->checkpoint();
         $this->log("forwarders: . -> $what (Unbound's configured root zone)");
         return true;
@@ -593,7 +640,7 @@ final class UuApplyRun
     {
         $this->fibWait();
         if (!uu_apply_same($this->live, [$this->resolver])) {
-            $this->maybeResolver = true;
+            $this->forwarded[$this->key] = true;
             $this->live = null;
             if (!$this->ucOk(['forward_add', '.', $this->resolver])) {
                 $this->log('unbound-control forward_add . ' . $this->resolver . ' failed', LOG_ERR);
@@ -618,10 +665,10 @@ final class UuApplyRun
             $this->log("$name has no gateway record: no route through it", LOG_ERR);
             return false;
         }
-        if (uu_plan_route_via($this->route, $m)) {
+        if (uu_plan_route_via($this->route(), $m)) {
             return true;
         }
-        if ($this->route['present'] && !$this->route['ours']) {
+        if ($this->route()['present'] && !$this->route()['ours']) {
             $this->log("the resolver's route is not ours: it is not replaced by one via $name", LOG_ERR);
             return false;
         }
@@ -631,9 +678,9 @@ final class UuApplyRun
             $this->log("route: {$this->resolver} via $name ({$m['next_hop']} on {$m['if']}) failed", LOG_ERR);
             return false;
         }
-        $this->route = ['present' => true, 'gateway' => $m['next_hop'], 'interface' => $m['if'], 'reject' => false,
-                        'ours' => true];
-        $this->st['route_installed'] = ['kind' => 'member', 'next_hop' => $m['next_hop'], 'if' => $m['if']];
+        $this->routes[$this->key] = ['present' => true, 'gateway' => $m['next_hop'], 'interface' => $m['if'],
+                                     'reject' => false, 'ours' => true];
+        $this->records[$this->key] = ['kind' => 'member', 'next_hop' => $m['next_hop'], 'if' => $m['if']];
         $this->checkpoint();
         $this->log("route: {$this->resolver} via $name ({$m['next_hop']} on {$m['if']})");
         return true;
@@ -641,11 +688,11 @@ final class UuApplyRun
 
     private function routeReject(): void
     {
-        if ($this->route['present'] && !$this->route['ours']) {
+        if ($this->route()['present'] && !$this->route()['ours']) {
             $this->log("the resolver's route is not ours: no reject route over it", LOG_WARNING);
             return;
         }
-        if ($this->route['present'] && $this->route['reject']) {
+        if ($this->route()['present'] && $this->route()['reject']) {
             return;
         }
         if (!$this->routeSet([$this->familyArg(), '-host', $this->resolver,
@@ -653,23 +700,25 @@ final class UuApplyRun
             $this->log("route: the reject route for {$this->resolver} failed", LOG_ERR);
             return;
         }
-        $this->route = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
-        $this->st['route_installed'] = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
+        $this->routes[$this->key] = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true,
+                                     'ours' => true];
+        $this->records[$this->key] = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
         $this->checkpoint();
         $this->log("route: {$this->resolver} rejected locally");
     }
 
     private function routeDelete(): void
     {
-        if (!$this->route['present'] || !$this->route['ours']) {
+        if (!$this->route()['present'] || !$this->route()['ours']) {
             return;
         }
         if (!($this->io['route'])('delete', [$this->familyArg(), '-host', $this->resolver])) {
             $this->log("route: deleting the route of {$this->resolver} failed", LOG_ERR);
             return;
         }
-        $this->route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
-        $this->st['route_installed'] = null;
+        $this->routes[$this->key] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                     'ours' => false];
+        $this->records[$this->key] = null;
         $this->checkpoint();
         $this->log("route: {$this->resolver} deleted");
     }
@@ -687,7 +736,7 @@ final class UuApplyRun
      */
     private function routeSet(array $args): bool
     {
-        $verb = $this->route['present'] ? 'change' : 'add';
+        $verb = $this->route()['present'] ? 'change' : 'add';
         $ok = ($this->io['route'])($verb, $args);
         if (!$ok && $verb === 'change') {
             /* the route went after the snapshot (its device was recreated): add it */
@@ -748,7 +797,7 @@ final class UuApplyRun
     {
         $out = ($this->io['uc'])(['forward']);
         $this->silent = $this->silent || $out === null;
-        $this->live = $out === null ? null : uu_parse_forward($out);
+        $this->setLive($out === null ? null : uu_parse_forward($out));
         return uu_apply_same($this->live, $want);
     }
 
@@ -823,16 +872,25 @@ final class UuApplyRun
     }
 
     /**
-     * Record the resolver address while the plugin's route refers to it or Unbound may forward to it, and null once
+     * Record the resolver address while the plugin's route refers to it or Unbound may forward to it, and drop it once
      * neither holds, so a later change of the resolver setting knows which address to undo. The route is this run's
-     * live view of it, not route_installed: a record can outlive a route the kernel deleted (device recreation), and it
-     * must not pin an address nothing refers to.
+     * live view of it, not the record: a record can outlive a route the kernel deleted (device recreation), and it
+     * must not pin an address nothing refers to. Tunnel mode is on the resolver by definition.
      */
     private function footprint(): void
     {
-        $on = ($this->route['present'] && $this->route['ours']) || $this->st['mode'] === 'tunnel'
-            || $this->maybeResolver || uu_apply_same($this->live, [$this->resolver]);
-        $this->st['resolver'] = $on ? $this->resolver : null;
+        if (uu_ip_canonical($this->resolver) === null) {
+            return;
+        }
+        $route = $this->route();
+        $tunnel = $this->st['mode'] === 'tunnel';
+        if (!($route['present'] && $route['ours']) && !$tunnel && !$this->forwarded[$this->key]) {
+            unset($this->st['addresses'][$this->key]);
+            return;
+        }
+        $this->st['addresses'][$this->key] = ['route' => $this->records[$this->key],
+            'forwarded' => $tunnel || $this->forwarded[$this->key],
+            'released_at' => $this->st['addresses'][$this->key]['released_at'] ?? null];
     }
 
     private function note(string $text): void
@@ -857,11 +915,12 @@ final class UuApplyRun
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>} $p uu_plan()
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,
@@ -880,11 +939,12 @@ final class UuApplyRun
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>}
  */
 function uu_apply(array $p, array $s, array $io): array
 {
@@ -918,11 +978,12 @@ function uu_apply(array $p, array $s, array $io): array
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>} $p
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, failback_delay: int,

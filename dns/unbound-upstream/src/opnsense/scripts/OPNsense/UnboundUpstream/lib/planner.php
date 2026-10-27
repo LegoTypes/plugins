@@ -69,7 +69,7 @@ function uu_plan_route_via(array $route, array $m): bool
  * @param array<string, bool> $usable
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int,
- *                                last_down: ?array{at: int, reason: string}}> $timers
+ *                                last_down: ?array{at: int, reason: string}, resolver: string}> $timers
  */
 function uu_plan_note(
     string $name,
@@ -101,22 +101,24 @@ function uu_plan_note(
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string} $st
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>} $st
  * @param list<string> $reasons
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>}
  */
 function uu_plan_result(
@@ -222,21 +224,23 @@ function uu_plan_stop_reason(array $s): ?string
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string} $st
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
  *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
  *         resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}>, control_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
  *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
- *         route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string},
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>}
  */
 function uu_plan(array $s, array $st): array

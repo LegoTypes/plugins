@@ -191,8 +191,9 @@ uu_register_suite('render', function (): int {
         $st = uu_state_new();
         $st['mode'] = 'tunnel';
         $st['member'] = 'wg-a';
-        $st['resolver'] = $resolver;
-        $st['route_installed'] = $route;
+        if ($resolver !== null) {
+            $st['addresses'][$resolver] = ['route' => $route, 'forwarded' => false, 'released_at' => null];
+        }
         return $st;
     };
     $on = fn (string $resolver): array => ['resolver' => $resolver, 'gateways' => ['wg-a', 'wg-b']];
@@ -347,12 +348,20 @@ uu_register_suite('render', function (): int {
             $r = $render($dir . '/state.json', $on('192.0.2.9'), $records);
             return $r['rules'] === $at($today) && $r['logged'] === [];
         }));
-    uu_check($t, '(r5) a recorded address that is not IPv4: today\'s rules, and one warning that never quotes it',
+    uu_check($t, '(r5) a recorded address that is no address: a version 5 file gives today\'s rules and no line; a '
+        . 'version 6 file with such a key is not this version\'s shape, one warning that never quotes it',
         uu_scratch_case(function (string $dir) use ($render, $stateOf, $onWg1, $records, $on, $at, $today): bool {
+            $v5 = ['version' => 5, 'mode' => 'tunnel', 'member' => 'wg-a', 'timers' => [], 'control_failures' => 0,
+                   'control_silent_since' => null, 'last_switch' => null,
+                   'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => null, 'blocked' => null,
+                   'route_installed' => $onWg1, 'resolver' => 'not-an-ip'];
+            file_put_contents($dir . '/state.json', json_encode($v5));
+            $old = $render($dir . '/state.json', $on('192.0.2.9'), $records);
             uu_state_save($dir . '/state.json', $stateOf('not-an-ip', $onWg1));
             $r = $render($dir . '/state.json', $on('192.0.2.9'), $records);
-            return $r['rules'] === $at($today) && count($r['logged']) === 1 && $r['logged'][0][0] === 'warning'
-                && str_contains($r['logged'][0][1], 'not an IPv4 address')
+            return $old['rules'] === $at($today) && $old['logged'] === []
+                && $r['rules'] === $at($today) && count($r['logged']) === 1 && $r['logged'][0][0] === 'warning'
+                && str_contains($r['logged'][0][1], 'not this version')
                 && !str_contains($r['logged'][0][1], 'not-an-ip');
         }));
     uu_check($t, '(r6) a directory at the state path: today\'s rules, and one warning naming "not a regular file"',
@@ -458,12 +467,34 @@ uu_register_suite('render', function (): int {
                 === ['footprint' => null, 'problem' => null]
             && uu_footprint_from_state($stateOf('192.0.2.1', $onWg1), $records, '192.0.2.9')['footprint']
                 === ['resolver' => '192.0.2.1', 'interface' => 'opt14']));
-    uu_check($t, 'footprint: a recorded value that is no address (a host name, an IPv4-mapped one) is a problem, not a footprint',
-        uu_try_case(fn (): bool
-            => uu_footprint_from_state($stateOf('resolver.example', $onWg1), $records, '')['footprint'] === null
-            && is_string(uu_footprint_from_state($stateOf('resolver.example', $onWg1), $records, '')['problem'])
-            && uu_footprint_from_state($stateOf('::ffff:192.0.2.1', $onWg1), $records, '')['footprint'] === null
-            && is_string(uu_footprint_from_state($stateOf('::ffff:192.0.2.1', $onWg1), $records, '')['problem'])));
+    uu_check($t, 'footprint: a version 5 file whose resolver is no address (a host name, an IPv4-mapped one) converts to '
+        . 'an empty map: no footprint and no problem',
+        uu_try_case(function () use ($records): bool {
+            $v5 = ['version' => 5, 'mode' => 'tunnel', 'member' => 'wg-a', 'timers' => [], 'control_failures' => 0,
+                   'control_silent_since' => null, 'last_switch' => null, 'checks' => ['direct' => null, 'unbound' => null],
+                   'tls_applied' => null, 'blocked' => null,
+                   'route_installed' => ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'],
+                   'resolver' => 'resolver.example'];
+            $named = uu_state_from_doc($v5);
+            $mapped = uu_state_from_doc(['resolver' => '::ffff:192.0.2.1'] + $v5);
+            return $named !== null && $mapped !== null
+                && uu_footprint_from_state($named, $records, '') === ['footprint' => null, 'problem' => null]
+                && uu_footprint_from_state($mapped, $records, '') === ['footprint' => null, 'problem' => null];
+        }));
+    uu_check($t, 'footprint: of several recorded addresses, the first in sorted order that is not the setting\'s',
+        uu_try_case(function () use ($records, $onWg1): bool {
+            $st = uu_state_new();
+            $st['addresses'] = [
+                '2001:db8:a::53' => ['route' => null, 'forwarded' => true, 'released_at' => null],
+                '192.0.2.1' => ['route' => $onWg1, 'forwarded' => false, 'released_at' => null],
+            ];
+            return uu_footprint_from_state($st, $records, '')['footprint']
+                === ['resolver' => '192.0.2.1', 'interface' => 'opt14']
+                && uu_footprint_from_state($st, $records, '192.0.2.1')['footprint']
+                === ['resolver' => '2001:db8:a::53', 'interface' => '']
+                && uu_footprint_from_state($st, $records, '2001:db8:a::53')['footprint']
+                === ['resolver' => '192.0.2.1', 'interface' => 'opt14'];
+        }));
     uu_check($t, 'wanted: a setting with an address that is not IPv4 covers no footprint, and its members come from '
         . 'the records',
         uu_scratch_case(function (string $dir) use ($stateOf, $onWg1, $records, $on): bool {

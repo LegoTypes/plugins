@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
 require_once __DIR__ . '/scratch.php';
 
 function uu_test_state_dir(): string
@@ -37,13 +38,13 @@ uu_register_suite('state', function (): int {
     $path = $dir . '/run/state.json';
 
     $new = uu_state_new();
-    uu_check($t, 'new state: version 5, fallback, no member, no timers, no failures, not silent, no switch',
-        UU_STATE_VERSION === 5 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
+    uu_check($t, 'new state: version 6, fallback, no member, no timers, no failures, not silent, no switch',
+        UU_STATE_VERSION === 6 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
         && $new['member'] === null && $new['timers'] === [] && $new['control_failures'] === 0
         && $new['control_silent_since'] === null && $new['last_switch'] === null);
-    uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count, no route installed, no resolver',
+    uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count, no address recorded',
         $new['checks'] === ['direct' => null, 'unbound' => null] && $new['tls_applied'] === null
-        && $new['blocked'] === null && $new['route_installed'] === null && $new['resolver'] === null);
+        && $new['blocked'] === null && $new['addresses'] === [] && count($new) === 11);
 
     uu_check($t, 'missing file loads as a new state', uu_state_load($path) === $new);
 
@@ -52,7 +53,7 @@ uu_register_suite('state', function (): int {
     $s['member'] = 'wg-a';
     $s['timers'] = ['wg-a' => ['usable_since' => 1200, 'counted' => 45, 'last_at' => 1245,
         'resolver_failed_until' => null, 'probe_failures' => 1,
-        'last_down' => ['at' => 5, 'reason' => 'x']]];
+        'last_down' => ['at' => 5, 'reason' => 'x'], 'resolver' => '10.2.0.1']];
     $s['control_failures'] = 2;
     $s['control_silent_since'] = 1300;
     $s['last_switch'] = ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'];
@@ -60,8 +61,8 @@ uu_register_suite('state', function (): int {
                     'unbound' => ['ok' => false, 'at' => 1760000002, 'member' => 'wg-a']];
     $s['tls_applied'] = false;
     $s['blocked'] = 12;
-    $s['route_installed'] = ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'];
-    $s['resolver'] = '10.2.0.1';
+    $s['addresses'] = ['10.2.0.1' => ['route' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
+                                      'forwarded' => true, 'released_at' => null]];
     uu_state_save($path, $s);
     uu_check($t, 'round trip returns the saved state', uu_state_load($path) === $s);
     uu_check($t, 'save creates the directory 0700',
@@ -143,38 +144,38 @@ uu_register_suite('state', function (): int {
         uu_state_load($path) === $new);
 
     $bad = $s;
-    $bad['route_installed']['kind'] = 'other';
+    $bad['addresses']['10.2.0.1']['route']['kind'] = 'other';
     file_put_contents($path, json_encode($bad));
     uu_check($t, 'a route record of an unknown kind loads as a new state', uu_state_load($path) === $new);
 
     $bad = $s;
-    unset($bad['route_installed']['if']);
+    unset($bad['addresses']['10.2.0.1']['route']['if']);
     file_put_contents($path, json_encode($bad));
     uu_check($t, 'a route record without its device loads as a new state', uu_state_load($path) === $new);
 
     $old = $s;
-    unset($old['checks'], $old['tls_applied'], $old['blocked'], $old['route_installed']);
+    unset($old['checks'], $old['tls_applied'], $old['blocked'], $old['addresses']);
     $old['version'] = 2;
     file_put_contents($path, json_encode($old));
     uu_check($t, 'a version 2 file (no checks, tls_applied, blocked) loads as a new state',
         uu_state_load($path) === $new);
 
     $old = $s;
-    unset($old['route_installed'], $old['resolver']);
+    unset($old['addresses']);
     $old['version'] = 3;
     file_put_contents($path, json_encode($old));
     uu_check($t, 'a version 3 file (no route_installed) loads as a new state', uu_state_load($path) === $new);
 
     $old = $s;
-    unset($old['resolver']);
+    unset($old['addresses']);
     $old['version'] = 4;
     file_put_contents($path, json_encode($old));
     uu_check($t, 'a version 4 file (no resolver) loads as a new state', uu_state_load($path) === $new);
 
     $bad = $s;
-    $bad['resolver'] = 10;
+    $bad['addresses'] = 10;
     file_put_contents($path, json_encode($bad));
-    uu_check($t, 'a non-string resolver loads as a new state', uu_state_load($path) === $new);
+    uu_check($t, 'a non-array addresses loads as a new state', uu_state_load($path) === $new);
 
     /* json_decode turns an all-digit gateway name into an int key; the timers must survive it */
     $digits = $s;
@@ -200,9 +201,12 @@ uu_register_suite('state', function (): int {
         && uu_state_from_doc(['version' => UU_STATE_VERSION]) === null);
 
     $v11 = json_decode((string)json_encode($s), true);
-    unset($v11['timers']['wg-a']['last_down']);
+    unset($v11['addresses'], $v11['timers']['wg-a']['last_down'], $v11['timers']['wg-a']['resolver']);
+    $v11['version'] = 5;
+    $v11['route_installed'] = null;
+    $v11['resolver'] = null;
     $from11 = is_array($v11) ? uu_state_from_doc($v11) : null;
-    uu_check($t, 'state: a 1.1 timer without last_down loads, last_down null',
+    uu_check($t, 'state: a 1.1 timer without last_down loads (in a version 5 file), last_down null',
         $from11 !== null && $from11['timers']['wg-a']['last_down'] === null
         && $from11['timers']['wg-a']['counted'] === 45);
     $rt = json_decode((string)json_encode($s), true);
@@ -288,63 +292,242 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'run dir: a regular file at the path throws',
         $refuses(fn (string $dir): bool => file_put_contents($dir . '/run', 'x') === 1));
 
-    // The footprint: one definition, and what an evaluation that changed it runs.
+    // State version 6: a map of the addresses the plugin may still be routed to.
+    $member = ['kind' => 'member', 'next_hop' => '2001:db8:a::2', 'if' => 'wg3'];
+    $rejected = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
+    $two = $new;
+    $two['mode'] = 'tunnel';
+    $two['member'] = 'wg-a6';
+    $two['addresses'] = [
+        '2001:db8:a::53' => ['route' => $member, 'forwarded' => true, 'released_at' => null],
+        '2001:db8:b::53' => ['route' => $rejected, 'forwarded' => false, 'released_at' => 9000],
+    ];
+    uu_state_save($path, $two);
+    uu_check($t, 'state v6 (s1): two entries, a member route forwarded and a reject route released, survive save and read',
+        uu_try_case(fn (): bool => uu_state_load($path) === $two
+            && uu_state_read($path) === ['state' => $two, 'problem' => null]));
+    uu_state_save($path, $new);
+    uu_check($t, 'state v6 (s2): an empty map is written as "addresses":[] and reads back empty (and {} reads too)',
+        uu_try_case(function () use ($path, $new): bool {
+            $text = (string)file_get_contents($path);
+            file_put_contents($path, str_replace('"addresses":[]', '"addresses":{}', $text));
+            return str_contains($text, '"addresses":[]') && uu_state_load($path) === $new;
+        }));
+    $malformed = [
+        'an entry with a fourth key' => function (array $d): array {
+            $d['addresses']['2001:db8:a::53']['extra'] = 1;
+            return $d;
+        },
+        'forwarded a string' => function (array $d): array {
+            $d['addresses']['2001:db8:a::53']['forwarded'] = 'yes';
+            return $d;
+        },
+        'released_at a string' => function (array $d): array {
+            $d['addresses']['2001:db8:b::53']['released_at'] = '9000';
+            return $d;
+        },
+        'a key that is not an address' => function (array $d): array {
+            $d['addresses']['resolver.example'] = $d['addresses']['2001:db8:a::53'];
+            return $d;
+        },
+        'a key that is an address in another spelling' => function (array $d): array {
+            $d['addresses']['2001:DB8:A::53'] = $d['addresses']['2001:db8:a::53'];
+            unset($d['addresses']['2001:db8:a::53']);
+            return $d;
+        },
+        'an IPv4-mapped key' => function (array $d): array {
+            $d['addresses']['::ffff:192.0.2.1'] = $d['addresses']['2001:db8:a::53'];
+            return $d;
+        },
+        'a route of an unknown kind' => function (array $d): array {
+            $d['addresses']['2001:db8:a::53']['route']['kind'] = 'other';
+            return $d;
+        },
+        'an entry without its route' => function (array $d): array {
+            unset($d['addresses']['2001:db8:a::53']['route']);
+            $d['addresses']['2001:db8:a::53']['extra'] = null;
+            return $d;
+        },
+        'a timer without resolver' => function (array $d): array {
+            $d['timers'] = ['wg-a6' => ['usable_since' => null, 'counted' => 0, 'last_at' => null,
+                'resolver_failed_until' => null, 'probe_failures' => 0, 'last_down' => null]];
+            return $d;
+        },
+        'a timer whose resolver is not a string' => function (array $d): array {
+            $d['timers'] = ['wg-a6' => ['usable_since' => null, 'counted' => 0, 'last_at' => null,
+                'resolver_failed_until' => null, 'probe_failures' => 0, 'last_down' => null, 'resolver' => 5]];
+            return $d;
+        },
+        'eleven keys plus one' => function (array $d): array {
+            $d['resolver'] = '2001:db8:a::53';
+            return $d;
+        },
+        'the old route_installed in place of addresses' => function (array $d): array {
+            unset($d['addresses']);
+            $d['route_installed'] = null;
+            return $d;
+        },
+    ];
+    foreach ($malformed as $what => $break) {
+        $doc = json_decode((string)json_encode($two), true);
+        uu_check($t, "state v6 (s3): $what is not this version's shape",
+            uu_try_case(function () use ($doc, $break, $path, $new): bool {
+                file_put_contents($path, json_encode($break($doc)));
+                return uu_state_from_doc($break($doc)) === null
+                    && uu_state_read($path) === ['state' => $new, 'problem' => 'not this version\'s shape'];
+            }));
+    }
+
+    // A version 5 file converts on read; nothing writes it back.
+    $v5 = [
+        'version' => 5, 'mode' => 'tunnel', 'member' => 'wg-a',
+        'timers' => ['wg-a' => ['usable_since' => 1200, 'counted' => 45, 'last_at' => 1245,
+            'resolver_failed_until' => 1400, 'probe_failures' => 1, 'last_down' => ['at' => 5, 'reason' => 'x']],
+                     'wg-b' => ['usable_since' => null, 'counted' => 0, 'last_at' => null,
+            'resolver_failed_until' => null, 'probe_failures' => 0]],
+        'control_failures' => 2, 'control_silent_since' => 1300,
+        'last_switch' => ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'],
+        'checks' => ['direct' => ['ok' => true, 'at' => 1760000001, 'member' => 'wg-a'], 'unbound' => null],
+        'tls_applied' => false, 'blocked' => 12,
+        'route_installed' => ['kind' => 'member', 'next_hop' => '10.2.0.4', 'if' => 'wg1'],
+        'resolver' => '10.2.0.1',
+    ];
+    $converted = uu_state_from_doc($v5);
+    uu_check($t, 'state v6 (s4): a version 5 tunnel-mode file converts to one forwarded entry with its route kept',
+        $converted !== null && $converted['version'] === 6 && $converted['mode'] === 'tunnel'
+        && $converted['member'] === 'wg-a' && $converted['control_failures'] === 2
+        && $converted['addresses'] === ['10.2.0.1' => ['route' => $v5['route_installed'], 'forwarded' => true,
+                                                        'released_at' => null]]
+        && $converted['blocked'] === 12 && $converted['tls_applied'] === false
+        && $converted['last_switch'] === $v5['last_switch'] && $converted['checks'] === $v5['checks']);
+    uu_check($t, 'state v6 (s4): each timer of a version 5 file gains resolver "" and last_down null when it had none',
+        $converted !== null && $converted['timers']['wg-a']['resolver'] === ''
+        && $converted['timers']['wg-a']['last_down'] === ['at' => 5, 'reason' => 'x']
+        && $converted['timers']['wg-a']['resolver_failed_until'] === 1400
+        && $converted['timers']['wg-b'] === ['usable_since' => null, 'counted' => 0, 'last_at' => null,
+            'resolver_failed_until' => null, 'probe_failures' => 0, 'last_down' => null, 'resolver' => '']);
+    uu_check($t, 'state v6 (s4): the converted route is adopted from a live route that matches it',
+        uu_try_case(function () use ($converted, $v5): bool {
+            if ($converted === null) {
+                return false;
+            }
+            $live = ['route' => ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
+                                 'ours' => false]];
+            $adopted = uu_route_adopt($live, $converted['addresses']['10.2.0.1']['route']);
+            $other = ['route' => ['gateway' => '10.2.0.5'] + $live['route']];
+            return $adopted['route']['ours'] === true
+                && uu_route_adopt($other, $converted['addresses']['10.2.0.1']['route']) === $other
+                && $v5['resolver'] === '10.2.0.1';
+        }));
+    $v5Fallback = $v5;
+    $v5Fallback['mode'] = 'fallback';
+    $v5Fallback['member'] = null;
+    $v5Fallback['route_installed'] = null;
+    $fromFallback = uu_state_from_doc($v5Fallback);
+    uu_check($t, 'state v6 (s5): a version 5 file with a resolver and no route record converts to one entry, route null, '
+        . 'not forwarded',
+        $fromFallback !== null && $fromFallback['addresses'] === ['10.2.0.1' => ['route' => null,
+            'forwarded' => false, 'released_at' => null]]);
+    $v5NoResolver = $v5;
+    $v5NoResolver['resolver'] = null;
+    $v5Named = $v5;
+    $v5Named['resolver'] = 'resolver.example';
+    $v5Upper = $v5;
+    $v5Upper['resolver'] = '2001:DB8:A:0::0053';
+    uu_check($t, 'state v6 (s6): a version 5 file with no resolver, or one that is no address, converts to an empty map '
+        . 'whatever route_installed says; an IPv6 one is keyed canonical',
+        uu_try_case(fn (): bool => (uu_state_from_doc($v5NoResolver)['addresses'] ?? null) === []
+            && (uu_state_from_doc($v5Named)['addresses'] ?? null) === []
+            && array_keys(uu_state_from_doc($v5Upper)['addresses'] ?? []) === ['2001:db8:a::53']));
+    uu_check($t, 'state v6: a version 5 file that is not exactly 1.3\'s shape is not converted',
+        uu_try_case(function () use ($v5): bool {
+            $extra = $v5 + ['addresses' => []];
+            $noResolver = $v5;
+            unset($noResolver['resolver']);
+            $badRoute = $v5;
+            $badRoute['route_installed']['kind'] = 'other';
+            $badTimer = $v5;
+            $badTimer['timers']['wg-a']['resolver'] = '';
+            return uu_state_from_doc($extra) === null && uu_state_from_doc($noResolver) === null
+                && uu_state_from_doc($badRoute) === null && uu_state_from_doc($badTimer) === null;
+        }));
+    uu_check($t, 'state v6 (s4): reading a version 5 file reports no problem and leaves the file as it was',
+        uu_scratch_case(function (string $dir) use ($v5, $converted): bool {
+            $text = (string)json_encode($v5);
+            file_put_contents($dir . '/state.json', $text);
+            $read = uu_state_read($dir . '/state.json');
+            uu_state_load($dir . '/state.json');
+            return $read === ['state' => $converted, 'problem' => null]
+                && file_get_contents($dir . '/state.json') === $text;
+        }));
+    $v5Doc = json_decode((string)json_encode($v5), true);
+    $v6Round = is_array($v5Doc) ? uu_state_from_doc($v5Doc) : null;
+    uu_check($t, 'state v6: a converted state saves and reads back as itself',
+        $v6Round !== null && uu_try_case(function () use ($v6Round, $path): bool {
+            uu_state_save($path, $v6Round);
+            return uu_state_load($path) === $v6Round;
+        }));
+
+    // The footprint: the map's keys, and what an evaluation that changed it runs.
     $recorded = uu_state_new();
-    $recorded['resolver'] = '192.0.2.1';
-    $named = uu_state_new();
-    $named['resolver'] = 'resolver.example';
-    uu_check($t, 'footprint: the recorded address when it is IPv4; none when nothing is recorded or it is not IPv4',
-        uu_try_case(fn (): bool => uu_state_footprint($recorded) === '192.0.2.1'
-            && uu_state_footprint(uu_state_new()) === null && uu_state_footprint($named) === null));
-    $recorded6 = uu_state_new();
-    $recorded6['resolver'] = '2001:DB8:A:0::53';
-    $mapped = uu_state_new();
-    $mapped['resolver'] = '::ffff:192.0.2.1';
-    uu_check($t, 'footprint: a recorded IPv6 address is a footprint, in its canonical form; an IPv4-mapped one is not',
-        uu_try_case(fn (): bool => uu_state_footprint($recorded6) === '2001:db8:a::53'
-            && uu_state_footprint($mapped) === null));
+    $recorded['addresses'] = ['192.0.2.1' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
+    uu_check($t, '(s7) footprint: the recorded addresses, sorted; none when the map is empty',
+        uu_try_case(fn (): bool => uu_state_footprint($recorded) === ['192.0.2.1']
+            && uu_state_footprint(uu_state_new()) === []
+            && uu_state_footprint($two) === ['2001:db8:a::53', '2001:db8:b::53']));
+    $reordered = $two;
+    $reordered['addresses'] = array_reverse($two['addresses'], true);
+    uu_check($t, '(s7) footprint: the order of the map does not matter',
+        uu_try_case(fn (): bool => uu_state_footprint($reordered) === uu_state_footprint($two)));
+    uu_check($t, '(s8) footprint text: none for the empty list, the address for one, a comma list for more',
+        uu_try_case(fn (): bool => uu_footprint_text([]) === 'none' && uu_footprint_text(['10.2.0.1']) === '10.2.0.1'
+            && uu_footprint_text(['192.0.2.1', '2001:db8:a::53']) === '192.0.2.1, 2001:db8:a::53'));
     /* the minute job is there while the plugin is enabled or a footprint is recorded: disabled, it comes and goes
      * with the footprint */
+    $a = ['192.0.2.1'];
+    $ab = ['192.0.2.1', '192.0.2.9'];
     $cases = [
-        'null → A, enabled: reload only' => [null, '192.0.2.1', true, true, false],
-        'null → A, disabled: reload, and cron so the job stays for it' => [null, '192.0.2.1', false, true, true],
-        'A → null, enabled: reload only' => ['192.0.2.1', null, true, true, false],
-        'A → null, disabled: reload, and cron so the job goes' => ['192.0.2.1', null, false, true, true],
-        'A → A, enabled: nothing' => ['192.0.2.1', '192.0.2.1', true, false, false],
-        'A → A, disabled: nothing' => ['192.0.2.1', '192.0.2.1', false, false, false],
-        'A → B, enabled: reload only' => ['192.0.2.1', '192.0.2.9', true, true, false],
-        'A → B, disabled: reload only, the job stays' => ['192.0.2.1', '192.0.2.9', false, true, false],
-        'null → null, enabled: nothing' => [null, null, true, false, false],
-        'null → null, disabled: nothing' => [null, null, false, false, false],
+        '[] → [A], enabled: reload only' => [[], $a, true, true, false],
+        '[] → [A], disabled: reload, and cron so the job stays for it' => [[], $a, false, true, true],
+        '[A] → [], enabled: reload only' => [$a, [], true, true, false],
+        '[A] → [], disabled: reload, and cron so the job goes' => [$a, [], false, true, true],
+        '[A] → [A], enabled: nothing' => [$a, $a, true, false, false],
+        '[A] → [A], disabled: nothing' => [$a, $a, false, false, false],
+        '[A] → [B], enabled: reload only' => [$a, ['192.0.2.9'], true, true, false],
+        '[A] → [B], disabled: reload only, the job stays' => [$a, ['192.0.2.9'], false, true, false],
+        '[A] → [A, B], enabled: reload only' => [$a, $ab, true, true, false],
+        '[A] → [A, B], disabled: reload only, the job stays' => [$a, $ab, false, true, false],
+        '[A, B] → [A], disabled: reload only, the job stays' => [$ab, $a, false, true, false],
+        '[] → [], enabled: nothing' => [[], [], true, false, false],
+        '[] → [], disabled: nothing' => [[], [], false, false, false],
     ];
     foreach ($cases as $what => [$before, $after, $enabled, $reload, $cron]) {
-        uu_check($t, "(e1) footprint $what",
+        uu_check($t, "(s7) footprint $what",
             uu_try_case(fn (): bool => uu_footprint_actions($before, $after, $enabled, null)
                 === ['reload' => $reload, 'cron' => $cron]));
     }
     /* a tick while the removal marker exists is an evaluation and follows the footprint; only remove
      * itself waits, and runs core's reload and cron restart after its stop */
     $marker = [
-        'a tick while the removal marker exists, A → null, enabled: reload' => [true, true, false],
-        'a tick while the removal marker exists, A → null, disabled: reload and cron' => [false, true, true],
+        'a tick while the removal marker exists, A → none, enabled: reload' => [true, true, false],
+        'a tick while the removal marker exists, A → none, disabled: reload and cron' => [false, true, true],
     ];
     foreach ($marker as $what => [$enabled, $reload, $cron]) {
         uu_check($t, "footprint $what",
-            uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, $enabled, UU_STOP_REMOVING)
+            uu_try_case(fn (): bool => uu_footprint_actions($a, [], $enabled, UU_STOP_REMOVING)
                 === ['reload' => $reload, 'cron' => $cron]));
     }
-    foreach (['A → null' => ['192.0.2.1', null], 'null → A' => [null, '192.0.2.1'],
-              'A → B' => ['192.0.2.1', '192.0.2.9']] as $what => [$before, $after]) {
+    foreach (['A → none' => [$a, []], 'none → A' => [[], $a], 'A → B' => [$a, ['192.0.2.9']]] as $what => [$before, $after]) {
         uu_check($t, "footprint $what in remove itself, enabled or disabled: nothing until its stop is over",
             uu_try_case(fn (): bool => uu_footprint_actions($before, $after, true, UU_STOP_REMOVE)
                 === ['reload' => false, 'cron' => false]
                 && uu_footprint_actions($before, $after, false, UU_STOP_REMOVE)
                 === ['reload' => false, 'cron' => false]));
     }
-    uu_check($t, 'footprint A → null in a requested stop or the undo of a replaced address: as an evaluation',
-        uu_try_case(fn (): bool => uu_footprint_actions('192.0.2.1', null, false, UU_STOP_REQUEST)
+    uu_check($t, 'footprint A → none in a requested stop or the undo of a replaced address: as an evaluation',
+        uu_try_case(fn (): bool => uu_footprint_actions($a, [], false, UU_STOP_REQUEST)
             === ['reload' => true, 'cron' => true]
-            && uu_footprint_actions('192.0.2.1', null, true, UU_STOP_RESOLVER)
+            && uu_footprint_actions($a, [], true, UU_STOP_RESOLVER)
             === ['reload' => true, 'cron' => false]));
 
     uu_test_state_cleanup($dir . '/run');

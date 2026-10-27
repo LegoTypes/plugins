@@ -16,12 +16,12 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/ch
 
 /**
  * @return array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int, probe_failures: int,
- *             last_down: ?array{at: int, reason: string}}
+ *             last_down: ?array{at: int, reason: string}, resolver: string}
  */
 function uu_test_timer(int $counted = 0, ?int $failedUntil = null, ?int $lastAt = null): array
 {
     return ['usable_since' => null, 'counted' => $counted, 'last_at' => $lastAt,
-            'resolver_failed_until' => $failedUntil, 'probe_failures' => 0, 'last_down' => null];
+            'resolver_failed_until' => $failedUntil, 'probe_failures' => 0, 'last_down' => null, 'resolver' => ''];
 }
 
 uu_register_suite('choose', function (): int {

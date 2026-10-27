@@ -309,7 +309,7 @@ uu_register_suite('wiring', function (): int {
         uu_run_dir();
         uu_test_state_aside(UU_STATE_PATH, $aside, function (callable $place) use (&$r9): void {
             $recorded = uu_state_new();
-            $recorded['resolver'] = '192.0.2.1';
+            $recorded['addresses'] = ['192.0.2.1' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
             $place($recorded);
             /* one line per read, so a php that dies on the second still shows the first */
             $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
@@ -334,7 +334,7 @@ uu_register_suite('wiring', function (): int {
     }
     uu_check($t, '(r9) as nobody, a state recording a footprint reads as missing: a fresh state and no problem '
         . '(root reads its footprint)',
-        ($r9['root']['state']['resolver'] ?? null) === '192.0.2.1'
+        array_keys($r9['root']['state']['addresses'] ?? []) === ['192.0.2.1']
         && array_key_exists('problem', $r9['root']) && $r9['root']['problem'] === null
         && is_array($nobody[0]) && array_key_exists('problem', $nobody[0]) && $nobody[0]['problem'] === null
         && ($nobody[0]['state'] ?? null) === $fresh);
@@ -348,9 +348,9 @@ uu_register_suite('wiring', function (): int {
 
     /* The state set aside is put back exactly, and a move aside that fails runs nothing and touches nothing */
     $savedState = uu_state_new();
-    $savedState['resolver'] = '192.0.2.7';
+    $savedState['addresses'] = ['192.0.2.7' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
     $mine = uu_state_new();
-    $mine['resolver'] = '192.0.2.1';
+    $mine['addresses'] = ['192.0.2.1' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
     uu_check($t, 'a move aside that fails: nothing runs, the saved state stays as it was, no aside file',
         uu_scratch_case(function (string $dir) use ($savedState, $mine): bool {
             $path = $dir . '/state.json';
@@ -429,7 +429,7 @@ uu_register_suite('wiring', function (): int {
         }
         uu_test_state_aside(UU_STATE_PATH, $e2Aside, function (callable $place) use (&$e2): void {
             $recorded = uu_state_new();
-            $recorded['resolver'] = '192.0.2.1';
+            $recorded['addresses'] = ['192.0.2.1' => ['route' => null, 'forwarded' => false, 'released_at' => null]];
             $place($recorded);
             $e2 = ['cron_with' => unboundupstream_cron()];
             shell_exec('/usr/local/sbin/configctl cron restart > /dev/null');
@@ -473,6 +473,82 @@ uu_register_suite('wiring', function (): int {
         file_exists(UU_STATE_PATH) === $e2Had && !file_exists($e2Aside)
         && ($e2Had ? (string)file_get_contents(UU_STATE_PATH) : null) === $e2Saved
         && (string)shell_exec('/usr/bin/crontab -l 2>/dev/null') === $e2Tab && uu_test_cron_running() === $e2Cron);
+
+    /* (s9) a status poll between the upgrade's post-install and the first tick reads 1.3's version 5 file: it prints
+     * what 1.3 printed for it, logs nothing, and leaves the file as it was (bytes and modification time). The evaluate
+     * lock is held, so no evaluation replaces the hand-written file; the saved state is put back */
+    $s9 = null;
+    $s9Aside = UU_STATE_PATH . '.s9';
+    $s9Had = file_exists(UU_STATE_PATH);
+    $s9Saved = $s9Had ? (string)file_get_contents(UU_STATE_PATH) : null;
+    $s9Lock = false;
+    $s9Script = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php';
+    try {
+        uu_run_dir();
+        $s9Lock = uu_test_evaluate_lock();
+        if ($s9Lock === false) {
+            throw new RuntimeException('an evaluation held the evaluate lock for 60 s');
+        }
+        uu_test_state_aside(UU_STATE_PATH, $s9Aside, function (callable $place) use (&$s9, $s9Script): void {
+            $v5 = [
+                'version' => 5, 'mode' => 'tunnel', 'member' => 'wg-a',
+                'timers' => ['wg-a' => ['usable_since' => 1200, 'counted' => 45, 'last_at' => 1245,
+                    'resolver_failed_until' => null, 'probe_failures' => 0, 'last_down' => null]],
+                'control_failures' => 0, 'control_silent_since' => null,
+                'last_switch' => ['at' => 1760000000, 'from' => 'fallback', 'to' => 'wg-a', 'reason' => 'member usable'],
+                'checks' => ['direct' => null, 'unbound' => null], 'tls_applied' => false, 'blocked' => null,
+                'route_installed' => ['kind' => 'member', 'next_hop' => '10.2.0.4', 'if' => 'wg1'],
+                'resolver' => '10.2.0.1',
+            ];
+            $place($v5);
+            /* an old modification time, so a rewrite shows even within the clock's second */
+            touch(UU_STATE_PATH, time() - 120);
+            clearstatcache(true, UU_STATE_PATH);
+            $bytes = (string)file_get_contents(UU_STATE_PATH);
+            $mtime = filemtime(UU_STATE_PATH);
+            $first = 'uu-wiring-s9a-' . bin2hex(random_bytes(4));
+            $last = 'uu-wiring-s9b-' . bin2hex(random_bytes(4));
+            $wait = function (string $mark): void {
+                $deadline = hrtime(true) + 5000000000;
+                while (substr_count(uu_test_log_dir('unboundupstream'), $mark) < 1 && hrtime(true) < $deadline) {
+                    usleep(200000);
+                }
+            };
+            uu_log($first);
+            $wait($first);
+            $docs = [];
+            for ($i = 0; $i < 2; $i++) {
+                $docs[] = json_decode((string)shell_exec('/usr/local/bin/php -d log_errors=0 ' . $s9Script
+                    . ' status'), true);
+            }
+            uu_log($last);
+            $wait($last);
+            $lines = explode("\n", uu_test_log_dir('unboundupstream'));
+            $at = fn (string $mark): int => (int)key(array_filter($lines, fn (string $l): bool => str_contains($l, $mark)));
+            clearstatcache(true, UU_STATE_PATH);
+            $s9 = ['docs' => $docs, 'between' => array_slice($lines, $at($first) + 1, $at($last) - $at($first) - 1),
+                   'same' => (string)file_get_contents(UU_STATE_PATH) === $bytes && filemtime(UU_STATE_PATH) === $mtime];
+        }, 'rename');
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        if ($s9Lock !== false) {
+            fclose($s9Lock);
+        }
+    }
+    $s9Docs = $s9['docs'] ?? [null, null];
+    if ($s9 !== null && $s9['between'] !== []) {
+        printf("  plugin log lines between the marks: %s\n", implode(' | ', array_slice($s9['between'], 0, 3)));
+    }
+    uu_check($t, '(s9) status twice over a version 5 tunnel-mode file prints its mode, member, last switch and footprint, '
+        . 'the same both times',
+        is_array($s9Docs[0]) && $s9Docs[0] === $s9Docs[1] && $s9Docs[0]['mode'] === 'tunnel'
+        && $s9Docs[0]['member'] === 'wg-a' && $s9Docs[0]['footprint'] === '10.2.0.1'
+        && $s9Docs[0]['last_switch']['to'] === 'wg-a' && is_string($s9Docs[0]['resolver']));
+    uu_check($t, '(s9) …without a plugin log line between the marks, and the file\'s bytes and modification time unchanged',
+        $s9 !== null && $s9['between'] === [] && $s9['same']);
+    uu_check($t, '(s9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $s9Had && !file_exists($s9Aside)
+        && ($s9Had ? (string)file_get_contents(UU_STATE_PATH) : null) === $s9Saved);
 
     $state = json_decode(trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream state')), true);
     uu_check($t, 'configctl state returns the status JSON', is_array($state) && isset($state['mode'], $state['members'])

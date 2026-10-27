@@ -141,15 +141,16 @@ function uu_test_in_tunnel(array $s, string $member): array
  *
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int,
- *                                last_down: ?array{at: int, reason: string}}> $timers
+ *                                last_down: ?array{at: int, reason: string}, resolver: string}> $timers
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
- *         last_down: ?array{at: int, reason: string}}>, control_failures: int, control_silent_since: ?int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int, control_silent_since: ?int,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
- *     route_installed: ?array{kind: string, next_hop: string, if: string}, resolver: ?string}
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>}
  */
 function uu_test_plan_state(
     ?string $member,
@@ -485,7 +486,8 @@ uu_register_suite('planner', function (): int {
     $tick['unbound']['control_ok'] = false;
     $tick['unbound']['live_root'] = null;
     $footprint = uu_test_plan_state('wg-a', $usable);
-    $footprint['resolver'] = $tick['settings']['resolver'];
+    $footprint['addresses'] = [$tick['settings']['resolver'] => ['route' => null, 'forwarded' => true,
+                                                                 'released_at' => null]];
     $d1 = uu_plan($tick, $footprint);
     $tick['now'] = $now + 60;
     $d2 = uu_plan($tick, $d1['state']);
@@ -520,7 +522,8 @@ uu_register_suite('planner', function (): int {
     $answering = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $answering['settings']['enabled'] = false;
     $counted = uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS + 2, $now - UU_ESCALATE_MIN_SECONDS);
-    $counted['resolver'] = $answering['settings']['resolver'];
+    $counted['addresses'] = [$answering['settings']['resolver'] => ['route' => null, 'forwarded' => true,
+                                                                    'released_at' => null]];
     $never = true;
     $st = $counted;
     foreach ([0, 60, 120, 180] as $offset) {

@@ -122,12 +122,12 @@ uu_register_suite('log', function (): int {
 
     /* (l1) the footprint: the address the plugin last used, when the setting does not cover it */
     $fst = $st;
-    $fst['resolver'] = '192.0.2.1';
-    $fst['route_installed'] = ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'];
+    $fst['addresses'] = ['192.0.2.1' => ['route' => ['kind' => 'member', 'next_hop' => '192.0.2.2', 'if' => 'wg1'],
+                                          'forwarded' => true, 'released_at' => null]];
     $off = $s;
     $off['settings']['enabled'] = false;
     $same = $st;
-    $same['resolver'] = $s['settings']['resolver'];
+    $same['addresses'] = [$s['settings']['resolver'] => ['route' => null, 'forwarded' => true, 'released_at' => null]];
     $footprint = fn (array $doc): ?string => array_key_exists('footprint', $doc) ? $doc['footprint'] : 'absent';
     uu_check($t, '(l1) status: a footprint the disabled setting does not cover is named; one equal to the enabled '
         . 'setting is null',

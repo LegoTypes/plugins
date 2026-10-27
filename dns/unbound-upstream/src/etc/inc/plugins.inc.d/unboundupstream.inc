@@ -164,7 +164,7 @@ function unboundupstream_footprint_recorded(): bool
             uu_logger('cron: the state file is ' . $read['problem'] . ': no footprint read, so the minute job follows '
                 . 'the enabled setting alone', 'warning');
         }
-        return uu_state_footprint($read['state']) !== null;
+        return uu_state_footprint($read['state']) !== [];
     } catch (\Throwable $e) {
         unboundupstream_log_error('cron: cannot read the state, so the minute job follows the enabled setting alone: ',
             $e->getMessage());
