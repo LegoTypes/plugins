@@ -390,10 +390,8 @@ function uu_status_main(): int
     $p = uu_plan($s, $st);
     $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
         $st['resolver']);
-    $family = uu_ip_family($settings['resolver']);
-    $route = $family === null ? ''
-        : (string)shell_exec('/sbin/route -n get ' . uu_family_arg($family) . ' ' . escapeshellarg($settings['resolver'])
-            . ' 2>/dev/null');
+    $args = uu_route_get_args($settings['resolver']);
+    $route = $args === null ? '' : (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null');
     $doc = uu_status_doc($s, $p, $table, $route);
     echo json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR), "\n";
     return 0;

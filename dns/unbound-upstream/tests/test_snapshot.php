@@ -129,6 +129,24 @@ uu_register_suite('snapshot', function (): int {
         !uu_route_ours(['gateway' => '', 'interface' => 'wg1', 'reject' => true] + $via, $members));
     uu_check($t, 'ours: a route on lo0 without REJECT is not ours',
         !uu_route_ours(['gateway' => '127.0.0.1', 'interface' => 'lo0'] + $via, $members));
+    $records = ['gw-a' => ['monitor' => '2001:DB8:A:0::53'], 'gw-b' => ['monitor' => '10.2.0.1'], 'gw-c' => [],
+                'gw-d' => ['monitor' => '']];
+    uu_check($t, '(t7) monitor match: the gateways whose monitor is the resolver, compared in canonical form, both families',
+        uu_try_case(fn (): bool => uu_resolver_monitors($records, '2001:db8:a::53') === ['gw-a']
+            && uu_resolver_monitors($records, '10.2.0.1') === ['gw-b'] && uu_resolver_monitors($records, '') === []
+            && uu_resolver_monitors($records, '2001:db8:a::54') === []));
+    $adopt = function (string $gateway, string $dev, string $hop, string $if): bool {
+        $s = ['route' => ['present' => true, 'gateway' => $gateway, 'interface' => $dev, 'reject' => false,
+                          'ours' => false],
+              'contract_input' => ['foreign_route' => true]];
+        $r = uu_route_adopt($s, ['kind' => 'member', 'next_hop' => $hop, 'if' => $if]);
+        return $r['route']['ours'] === true && $r['contract_input']['foreign_route'] === false;
+    };
+    uu_check($t, '(t7) adopt: a recorded member route is ours again when route(8) prints the next hop scoped or in '
+        . 'another spelling, and not when it is another hop',
+        uu_try_case(fn (): bool => $adopt('fe80::1%gif0', 'gif0', 'fe80::1', 'gif0')
+            && $adopt('FD00:0::3:2', 'wg3', 'fd00::3:2', 'wg3') && $adopt('10.2.0.4', 'wg1', '10.2.0.4', 'wg1')
+            && !$adopt('fe80::2%gif0', 'gif0', 'fe80::1', 'gif0') && !$adopt('fe80::1%gif0', 'gif1', 'fe80::1', 'gif0')));
     $gif = ['next_hop' => 'fe80::1', 'if' => 'gif0'] + $a;
     $viaGif = ['present' => true, 'gateway' => 'fe80::1%gif0', 'interface' => 'gif0', 'reject' => false];
     uu_check($t, '(t7) ours: a link-local gateway printed with its device scope is the member\'s next hop',

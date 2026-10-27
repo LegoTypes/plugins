@@ -51,7 +51,7 @@ function uu_ip_same(string $a, string $b): bool
 /**
  * Why an address cannot be a resolver: 'not an address' (no family, see uu_ip_family()), 'link-local' (169.254.0.0/16,
  * fe80::/10), 'multicast' (exactly 224.0.0.0/4 and ff00::/8), 'unspecified' (0.0.0.0, ::), 'loopback' (127.0.0.0/8,
- * ::1), or null. 240.0.0.0/4 and 255.255.255.255 are left to the model's other checks.
+ * ::1), or null. 240.0.0.0/4 and 255.255.255.255 are not refused, as in the model.
  */
 function uu_ip_problem(string $addr): ?string
 {
@@ -98,6 +98,26 @@ function uu_route_hop(string $hop, string $if): string
         return uu_next_hop($bare) . '%' . $if;
     }
     return $hop;
+}
+
+/**
+ * The `route delete` command that undoes a host route to an address, as the remedy texts print it: the IPv4 form has
+ * no family argument (as it always read); an IPv6 address needs -inet6, which route(8) otherwise refuses. A string
+ * with no family, a placeholder, gets the IPv4 form.
+ */
+function uu_route_delete_text(string $addr): string
+{
+    return 'route delete ' . (uu_ip_family($addr) === 'inet6' ? '-inet6 ' : '') . '-host ' . $addr;
+}
+
+/**
+ * The arguments of `route -n get` for a resolver: the family argument and the quoted address; null for a string with
+ * no family.
+ */
+function uu_route_get_args(string $resolver): ?string
+{
+    $family = uu_ip_family($resolver);
+    return $family === null ? null : uu_family_arg($family) . ' ' . escapeshellarg($resolver);
 }
 
 /** The address-family argument of route(8) for 'inet' or 'inet6'. */

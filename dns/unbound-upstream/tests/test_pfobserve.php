@@ -132,6 +132,8 @@ uu_register_suite('pfobserve', function (): int {
     $v = $verdict($edit('from (wg1) to 10.2.0.1 port = domain flags', 'from (wg1) to 10.2.0.10 port = domain flags'));
     uu_check($t, 'verdict: to 10.2.0.10 is not the resolver',
         !$v['loaded'] && $v['problems'] === ['wg-a pass: wrong address']);
+    uu_check($t, '(t5) show: a table address is listed canonical, whatever case or zeros pfctl printed',
+        uu_try_case(fn (): bool => uu_pf_show_addresses("   2001:DB8:0:0::53\n   10.2.0.1\n") === ['2001:db8::53', '10.2.0.1']));
     /* an IPv6 resolver: the same listing with its address, and the boundary after the last group */
     $vsr6 = str_replace(['inet ', '10.2.0.1'], ['inet6 ', '2001:db8::2:1'], $vsr);
     $verdict6 = fn (string $text): array => uu_rules_verdict($text, '2001:db8::2:1', $members);
@@ -148,11 +150,23 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, '(t5) verdict: 2001:db8::2:1:5 and 2001:db8::2:1 followed by a colon are not the resolver either',
         uu_try_case(fn (): bool => $verdict6(str_replace('inet6 from any to 2001:db8::2:1 label',
             'inet6 from any to 2001:db8::2:1:5 label', $vsr6))['problems'] === ['backstop block: wrong target']));
+    uu_check($t, '(t5) verdict: the pass to 2001:db8::2:1:5 or 2001:db8::2:1/64, and the backstop to the latter, are '
+        . 'not the resolver',
+        uu_try_case(function () use ($verdict6, $vsr6): bool {
+            $colon = $verdict6(str_replace('from (wg1) to 2001:db8::2:1 port', 'from (wg1) to 2001:db8::2:1:5 port', $vsr6));
+            $slash = $verdict6(str_replace('from (wg1) to 2001:db8::2:1 port', 'from (wg1) to 2001:db8::2:1/64 port',
+                $vsr6));
+            $block = $verdict6(str_replace('inet6 from any to 2001:db8::2:1 label', 'inet6 from any to 2001:db8::2:1/64 label',
+                $vsr6));
+            return $colon['problems'] === ['wg-a pass: wrong address'] && $slash['problems'] === ['wg-a pass: wrong address']
+                && $block['problems'] === ['backstop block: wrong target'];
+        }));
+    uu_check($t, '(t5) verdict: a resolver in a non-canonical spelling reads the canonical listing, pass and backstop',
+        uu_try_case(fn (): bool => uu_rules_verdict($vsr6, '2001:DB8:0::2:1', $members)
+            === ['loaded' => true, 'problems' => []]));
     uu_check($t, '(t5) verdict: to 10.2.0.10 is still not the resolver 10.2.0.1 in the backstop',
         uu_try_case(fn (): bool => $verdict(str_replace('inet from any to 10.2.0.1 label', 'inet from any to 10.2.0.10 label',
             $vsr))['problems'] === ['backstop block: wrong target']));
-    uu_check($t, '(t5) show: a table address is listed canonical, whatever case or zeros pfctl printed',
-        uu_try_case(fn (): bool => uu_pf_show_addresses("   2001:DB8:0:0::53\n   10.2.0.1\n") === ['2001:db8::53', '10.2.0.1']));
     $v = $verdict($edit('label "' . uu_label_pass('opt1') . '"', 'label "' . uu_label_pass('opt1') . '0"'));
     uu_check($t, 'verdict: a label that only starts with the member\'s is not its pass',
         !$v['loaded'] && $v['problems'] === ['no pass rule for wg-a (opt1)']);

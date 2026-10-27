@@ -353,7 +353,7 @@ final class UuApplyRun
             if ($this->route['present'] && $this->route['ours'] && $this->route['reject']) {
                 $this->log("stop: the package is being removed while Unbound may still forward to {$this->resolver}, "
                     . "so its queries to {$this->resolver} are rejected locally until Unbound restarts: run "
-                    . "configctl unbound restart, then route delete -host {$this->resolver}", LOG_ERR);
+                    . 'configctl unbound restart, then ' . uu_route_delete_text($this->resolver), LOG_ERR);
                 return;
             }
             $this->log("stop: the package is being removed while Unbound may still forward to {$this->resolver}, "

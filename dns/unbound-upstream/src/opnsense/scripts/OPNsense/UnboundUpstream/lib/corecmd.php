@@ -297,7 +297,7 @@ function uu_remove_timeout_text(?string $resolver): string
 {
     $address = $resolver ?? '<resolver>';
     return "the package is being removed while Unbound may still forward to $address over the plugin's route: once "
-        . "it is removed, run configctl unbound restart, then route delete -host $address";
+        . 'it is removed, run configctl unbound restart, then ' . uu_route_delete_text($address);
 }
 
 /**

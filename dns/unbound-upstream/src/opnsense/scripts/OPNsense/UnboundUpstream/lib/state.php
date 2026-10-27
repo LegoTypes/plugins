@@ -361,7 +361,8 @@ function uu_state_load(string $path): array
 /**
  * The plugin's footprint: the address the state records while the plugin's route or Unbound's live root may still
  * refer to it (so its block stays until a stop has really undone it), in its canonical form when that is an IPv4 or
- * IPv6 address, else null. The one definition the rendered rules, an evaluation's filter reload and the minute job share.
+ * IPv6 address, else null. The one definition the rendered rules, an evaluation's filter reload and the minute job
+ * share.
  *
  * @param array{resolver: ?string} $state
  */

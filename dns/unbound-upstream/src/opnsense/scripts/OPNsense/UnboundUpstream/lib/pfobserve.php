@@ -135,7 +135,7 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
                 $problems[] = $what . ': missing ' . $label;
             }
         }
-        if (!uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.:])')) {
+        if (!uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.:\/])')) {
             $problems[] = $what . ': wrong target';
         }
     }
@@ -154,7 +154,8 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
 function uu_rules_verdict(string $vsrOut, string $resolver, array $members): array
 {
     $problems = [];
-    $address = preg_quote(uu_ip_canonical($resolver) ?? $resolver, '/');
+    $canonical = uu_ip_canonical($resolver) ?? $resolver;
+    $address = preg_quote($canonical, '/');
     foreach ($members as $member) {
         $lines = uu_rules_lines($vsrOut, uu_label_pass($member['interface']));
         if ($lines === []) {
@@ -183,7 +184,7 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
                 } elseif (!uu_rules_has($line, '\bon ' . preg_quote($member['if'], '/') . '(?![\w.])')) {
                     $problems[] = $member['name'] . ' pass: not on ' . $member['if'];
                 }
-                if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.:])')) {
+                if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.:\/])')) {
                     $problems[] = $member['name'] . ' pass: wrong address';
                 }
                 if (!uu_rules_has($line, '\bport = (domain|53)\b')) {
@@ -200,7 +201,7 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
     array_push($problems, ...uu_rules_block_problems(
         uu_rules_lines($vsrOut, uu_label_backstop()),
         'backstop block',
-        $resolver
+        $canonical
     ));
     $problems = array_values(array_unique($problems));
     return ['loaded' => $problems === [], 'problems' => $problems];

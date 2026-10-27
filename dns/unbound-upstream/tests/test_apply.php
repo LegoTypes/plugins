@@ -1079,6 +1079,19 @@ uu_register_suite('apply', function (): int {
     $run = $stopAs($fp, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
     uu_check($t, '(a5) removal whose restart fails → the reject route over the member route as the last resort, never a delete, the resolver still recorded, logged',
         $run['action'] === 'stop' && $run['acts'] === [$restoreDot, 'restart', $fpReject] && $lastResort($run));
+    uu_check($t, '(a5) the removal\'s last-resort remedy names the IPv4 delete exactly as before',
+        uu_test_logged($run['calls'], LOG_ERR, 'being removed', 'configctl unbound restart, then route delete -host '
+            . '192.0.2.1')
+        && !uu_test_logged($run['calls'], LOG_ERR, '-inet6'));
+    $fp6 = uu_test_in_tunnel($v6Snapshot('fd00::3:2', 'wg3'), 'wg-a6');
+    $fp6['stop'] = UU_STOP_REMOVE;
+    $p = uu_plan($fp6, uu_test_plan_state('wg-a6', $usable6));
+    $r = uu_test_io($fp6, $all, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
+    uu_apply($p, $fp6, $r['io']);
+    uu_check($t, '(a5) the same for an IPv6 resolver → the remedy names route delete -inet6 -host, the form route(8) takes',
+        uu_test_logged($r['calls'], LOG_ERR, 'being removed', 'rejected locally',
+            'configctl unbound restart, then route delete -inet6 -host ' . $v6)
+        && !uu_test_logged($r['calls'], LOG_ERR, 'route delete -host'));
     $fpGap = $fp;
     $fpGap['route'] = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
     $run = $stopAs($fpGap, UU_STOP_REMOVE, ['uc_fail' => ['forward_add'], 'restart' => false, 'restarts' => true]);
@@ -1613,6 +1626,12 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'the lock-timeout remedy names the address the state records when it is built, read again each time',
         $ok && $both !== null && $has($both[0], 'route delete -host 192.0.2.1')
         && $has($both[1], 'route delete -host 192.0.2.9') && !$has($both[1], '192.0.2.1'));
+    uu_check($t, 'the lock-timeout text names route delete -inet6 -host for an IPv6 address, and the IPv4 form unchanged',
+        uu_try_case(fn (): bool => str_ends_with(uu_remove_timeout_text('2001:db8:a::53'),
+                'configctl unbound restart, then route delete -inet6 -host 2001:db8:a::53')
+            && str_ends_with(uu_remove_timeout_text('192.0.2.1'), 'configctl unbound restart, then route delete -host '
+                . '192.0.2.1')
+            && str_ends_with(uu_remove_timeout_text(null), 'then route delete -host <resolver>')));
     uu_check($t, 'no footprint recorded, a state that is not JSON, or no state file → the generic <resolver>',
         $has($remedy(fn (string $path) => uu_state_save($path, uu_state_new())), 'route delete -host <resolver>')
         && $has($remedy(fn (string $path) => file_put_contents($path, 'not json')), 'route delete -host <resolver>')

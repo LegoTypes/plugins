@@ -79,5 +79,15 @@ uu_register_suite('address', function (): int {
     uu_check($t, '(t3) family argument: -inet or -inet6',
         uu_try_case(fn (): bool => uu_family_arg('inet') === '-inet' && uu_family_arg('inet6') === '-inet6'));
 
+    uu_check($t, '(t3) route get arguments: the family argument and the quoted address, none without a family',
+        uu_try_case(fn (): bool => uu_route_get_args('2001:db8::53') === "-inet6 '2001:db8::53'"
+            && uu_route_get_args('10.2.0.1') === "-inet '10.2.0.1'" && uu_route_get_args('') === null
+            && uu_route_get_args('dns.example') === null && uu_route_get_args('::ffff:192.0.2.1') === null));
+    uu_check($t, '(t3) route delete text: the IPv4 form has no family argument, IPv6 needs -inet6, a placeholder reads '
+        . 'as IPv4',
+        uu_try_case(fn (): bool => uu_route_delete_text('192.0.2.1') === 'route delete -host 192.0.2.1'
+            && uu_route_delete_text('2001:db8:a::53') === 'route delete -inet6 -host 2001:db8:a::53'
+            && uu_route_delete_text('<resolver>') === 'route delete -host <resolver>'));
+
     return uu_tally_report('address', $t);
 });

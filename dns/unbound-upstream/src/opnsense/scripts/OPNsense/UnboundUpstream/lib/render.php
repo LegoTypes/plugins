@@ -169,10 +169,11 @@ function uu_block_conf(string $to, string $label, string $descr, string $family)
 /**
  * The footprint: the address the state records, when it is an IPv4 or IPv6 address and not the address the setting's
  * rules already go to ($settingResolver, '' when they render none), with the friendly interface of the plugin's route.
- * That interface is the one of the gateway record on the route's device with the route's next hop, the first such record by name that has
- * one; it is '' when the route is no member route or no record names it, and the footprint then has its block only,
- * since core renders an interface it does not know as a placeholder that breaks the ruleset. A recorded address that
- * is no address is no footprint but a problem, which never quotes the address.
+ * That interface is the one of the gateway record on the route's device with the route's next hop (compared in
+ * canonical form), the first such record by name that has one; it is '' when the route is no member route or no
+ * record names it, and the footprint then has its block only, since core renders an interface it does not know as a
+ * placeholder that breaks the ruleset. A recorded address that is no address is no footprint but a problem, which
+ * never quotes the address.
  *
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
@@ -204,7 +205,7 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
             $record = $records[$name];
             $opt = (string)($record['interface'] ?? '');
             if ($opt !== '' && (string)($record['if'] ?? '') === $route['if']
-                && (string)($record['gateway'] ?? '') === $route['next_hop']) {
+                && uu_next_hop((string)($record['gateway'] ?? '')) === uu_next_hop($route['next_hop'])) {
                 $interface = $opt;
                 break;
             }
@@ -217,12 +218,13 @@ function uu_footprint_from_state(array $state, array $records, string $settingRe
  * What to render. The state file at $statePath is read first, on its own; core's settings ($model) are read next, and
  * the gateway records ($records) only when the setting may render or the state records an address, so a disabled plugin
  * with no footprint reads no records. The setting renders when the settings and the records were both read and name it;
- * its rules go to the resolver only when that is an IPv4 or IPv6 address, in its canonical form, so a setting naming
- * anything else leaves the footprint its own
- * rules. A failed settings read renders the footprint as if the setting rendered nothing (its pass and its block); a
- * failed records read leaves the footprint its block alone, which error then names: DNS to that address is blocked
- * until a reload can read the records. Each failed read is part of error, which is null when every read needed
- * succeeded; a state file that cannot be read is no footprint, and its problem is footprint_problem.
+ * its rules go to the resolver only when that is an IPv4 or IPv6 address the model accepts (the same refusal as
+ * uu_settings_clean()), in its canonical form, so a setting naming anything else leaves the footprint its own rules.
+ * The resolver is returned as the setting has it; the hook canonicalizes it. A failed settings read renders the
+ * footprint as if the setting rendered nothing (its pass and its block); a failed records read leaves the footprint
+ * its block alone, which error then names: DNS to that address is blocked until a reload can read the records. Each
+ * failed read is part of error, which is null when every read needed succeeded; a state file that cannot be read is
+ * no footprint, and its problem is footprint_problem.
  *
  * @param callable(): array{resolver: string, gateways: ?list<string>} $model the settings: the resolver, and the
  *     group's gateway names when the plugin is on with a group found and a resolver set, else null
@@ -261,15 +263,14 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
         $members[] = ['name' => (string)$name, 'interface' => (string)($recs[$name]['interface'] ?? ''),
             'if' => (string)($recs[$name]['if'] ?? '')];
     }
-    $canonical = $enabled ? uu_ip_canonical($resolver) : null;
-    $setting = $canonical ?? '';
+    $setting = $enabled && uu_ip_problem($resolver) === null ? (uu_ip_canonical($resolver) ?? '') : '';
     $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
     if ($recsFailed && $found['footprint'] !== null) {
         /* the address passed uu_footprint_from_state()'s address check */
         $errors[] = 'DNS to ' . $found['footprint']['resolver']
             . ' is blocked until a filter reload can read the gateway records';
     }
-    return ['enabled' => $enabled, 'resolver' => $canonical ?? $resolver, 'members' => $members,
+    return ['enabled' => $enabled, 'resolver' => $resolver, 'members' => $members,
         'footprint' => $found['footprint'],
         'footprint_problem' => $read['problem'] !== null ? 'the state file is ' . $read['problem'] : $found['problem'],
         'error' => $errors === [] ? null : implode('; ', $errors)];
@@ -346,9 +347,12 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         }
         $resolver = '';
         if ($w['enabled']) {
-            $resolver = uu_ip_canonical($w['resolver']) ?? '';
-            if ($resolver === '') {
-                $emit('rules for the resolver setting not rendered: resolver is not an IPv4 or IPv6 address', 'err');
+            $refused = uu_ip_problem($w['resolver']);
+            if ($refused === null) {
+                $resolver = uu_ip_canonical($w['resolver']) ?? '';
+            } else {
+                $emit('rules for the resolver setting not rendered: resolver is '
+                    . ($refused === 'not an address' ? 'not an IPv4 or IPv6 address' : $refused), 'err');
             }
         }
         if ($w['footprint_problem'] !== null) {

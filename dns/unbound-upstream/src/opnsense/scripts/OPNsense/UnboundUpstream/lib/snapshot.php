@@ -35,10 +35,12 @@ function uu_load_core(): void
 
 /**
  * `route -n get <family> <resolver>`. Only a host route for the resolver itself counts: the answer's destination is the
- * address asked for and carries HOST. A default or other covering route (an answer for another destination) and the
- * two texts route(8) prints for no route at all (IPv4: "writing to routing socket: No such process" and "not in
- * table"; IPv6: "route has not been found"), neither of which has a destination, are absent. A REJECT host route
- * prints no gateway.
+ * address asked for and carries HOST. A default or other covering route (an answer for another destination) is
+ * absent, and so is any output without a destination. route(8) prints nothing on stdout for no route, a bad address
+ * or a wrong family argument (IPv4: "not in table", IPv6: "route has not been found", both on stderr, which the
+ * collectors drop), so those reach this parser as ''. Absent is the safe reading of a failure: apply only adds over an
+ * absent route, route(8) refuses an add over a route that is there, and apply never deletes a route it cannot see.
+ * A REJECT host route prints no gateway.
  *
  * @return array{present: bool, gateway: string, interface: string, reject: bool}
  */
@@ -172,6 +174,24 @@ function uu_group_tiers(array $group): array
         }
     }
     return $tiers;
+}
+
+/**
+ * The names of the gateways whose monitor address is the resolver, compared in canonical form; none for an empty or
+ * unusable resolver.
+ *
+ * @param array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape
+ * @return list<string>
+ */
+function uu_resolver_monitors(array $records, string $resolver): array
+{
+    $names = [];
+    foreach ($records as $name => $gw) {
+        if ($resolver !== '' && uu_ip_same((string)($gw['monitor'] ?? ''), $resolver)) {
+            $names[] = (string)$name;
+        }
+    }
+    return $names;
 }
 
 /**
@@ -407,8 +427,8 @@ function uu_route_adopt(array $s, ?array $installed): array
  * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
  * model's masks. A resolver that is not an IPv4 or IPv6 address, or is one the model refuses (link-local, multicast,
  * loopback, unspecified), is '' (unset) and any other is its canonical form, a probe name outside UU_PROBE_NAME_MASK
- * is '.', a failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per
- * substitution; none quotes the value.
+ * is '.', a failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One
+ * problem per substitution; none quotes the value.
  *
  * @param array{resolver: string, probe_name: string, failback_delay: string, group_uuid: string} $raw
  * @return array{settings: array{resolver: string, probe_name: string, failback_delay: int, group_uuid: string},
@@ -673,12 +693,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* gateway records: members of the group, and the monitor addresses of every gateway */
     $all = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true);
-    $resolverIsMonitor = [];
-    foreach ($all as $name => $gw) {
-        if ($resolver !== '' && uu_ip_same((string)($gw['monitor'] ?? ''), $resolver)) {
-            $resolverIsMonitor[] = (string)$name;
-        }
-    }
+    $resolverIsMonitor = uu_resolver_monitors($all, $resolver);
     $members = [];
     $unmonitored = [];
     foreach ($tiers as $tier) {
@@ -750,10 +765,9 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* the resolver's route */
     $route = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false];
-    $family = uu_ip_family($resolver);
-    if ($family !== null) {
-        $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . uu_family_arg($family) . ' '
-            . escapeshellarg($resolver) . ' 2>/dev/null'));
+    $routeArgs = uu_route_get_args($resolver);
+    if ($routeArgs !== null) {
+        $route = uu_parse_route_get((string)shell_exec('/sbin/route -n get ' . $routeArgs . ' 2>/dev/null'));
     }
     $ours = uu_route_ours($route, $members);
     $fibSyncMs = uu_parse_sysctl_int((string)shell_exec('/sbin/sysctl -n net.route.algo.fib_max_sync_delay_ms 2>/dev/null'));
