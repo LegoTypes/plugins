@@ -359,8 +359,9 @@ function uu_plan_configured_orphan(?array $live, array $zone, string $address, a
  * is not one the plugin did not make (the drain deletes only its own), and either map entries released at least
  * UU_OLD_ADDRESS_HOLD seconds ago while Unbound no longer forwards to them as this run's read settles it
  * (uu_state_forwarded()), or named by Unbound's own configured root zone (uu_plan_configured_orphan()) and on its
- * reject route, in the map or not (a lost state can leave the route alone): one on a member route keeps it, its
- * queries in the tunnel. Sorted.
+ * reject route: one on a member route keeps it, its queries in the tunnel. The snapshot reads routes only for the
+ * planner's addresses and the map's keys, so such an orphan is a map entry in practice; a lost state leaves its route
+ * to the owner. Sorted.
  *
  * @param array{now: int, settings: array{default: string}, members: array<string, array{resolver: string}>,
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}>,

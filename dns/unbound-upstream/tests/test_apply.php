@@ -2786,8 +2786,8 @@ uu_register_suite('apply', function (): int {
                 $deleteOf($f, $b)]
             && $runs[0]['st']['addresses'] === [$a => $entry($rejectRecord, true)]
             && uu_test_logged($runs[0]['calls'], LOG_WARNING, "stop: Unbound's configured root zone names $a, which "
-                . "stays closed as a member's resolver: its reject route stays, and Unbound's queries to it are "
-                . 'rejected locally')
+                . "stays closed as one of the plugin's resolvers: its reject route stays, and Unbound's queries to it "
+                . 'are rejected locally')
             && !uu_test_logged($runs[0]['calls'], LOG_WARNING, 'default route')
             && $runs[1]['calls']->getArrayCopy() === [] && $runs[2]['calls']->getArrayCopy() === []
             && $runs[2]['p']['drain'] === [] && $runs[2]['st']['addresses'][$a] === $entry($rejectRecord, true));
@@ -2824,16 +2824,65 @@ uu_register_suite('apply', function (): int {
             && $runs[1]['calls']->getArrayCopy() === []
             && $runs[1]['st']['addresses'][$a] === $entry($viaRecord($f, 'wg-a'), true));
 
-        /* (c5) the same release after a lost state: A on a reject route of the plugin's under the configured root [A],
-         * no entry for it; the plan lists it, and it is drained and deleted in that run */
+        /* (c8) an external restart has put Unbound on its configured root [A] while A, an orphan, is in its hold on its
+         * reject route: dry run undoes that for real (one flush, then the delete) and only previews after it; a live
+         * run drains it once and then calls nothing */
+        foreach (['dry run' => true, 'a live run' => false] as $what => $dry) {
+            $runs = null;
+            $ok = uu_try_case(function () use ($configuredOrphan, $applyRun, $with, $entry, $rejectRecord, $usable, $a,
+                                               $c, $now, $dry, &$runs): bool {
+                $gone = ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false, 'ours' => false];
+                $s = $configuredOrphan(true, false);
+                $s['settings']['dry_run'] = $dry;
+                $map = [$a => $entry($rejectRecord, false, $now - 10), $c => $entry($rejectRecord, false)];
+                if ($dry) {
+                    /* A's reject route is the only route of the plugin's: nothing else makes the run undo for real */
+                    $s = uu_test_route($s, $gone, $c);
+                    unset($map[$c]);
+                }
+                $first = $applyRun($s, $with(uu_test_plan_state(null, $usable), $map));
+                $runs = [$first, $applyRun(uu_test_route($s, $gone, $a), $first['st'])];
+                return true;
+            });
+            $dryOnly = fn (array $run): bool => array_filter($run['calls']->getArrayCopy(), fn (string $x): bool
+                => !str_starts_with($x, 'log ') || !str_contains($x, '[dry]')) === [];
+            uu_check($t, "(c8) $family, $what after an external restart onto the configured root [A], A an orphan on "
+                . 'its reject route: one flush, a drain, A deleted, the map without it; the next tick '
+                . ($dry ? 'only previews' : 'calls nothing'),
+                $ok && $runs !== null
+                && ($dry ? $runs[0]['acts'] === [$flushReq, $drain, $deleteOf($f, $a)]
+                    && $runs[0]['st']['addresses'] === [] && $dryOnly($runs[1])
+                    : $runs[0]['acts'] === [$flushReq, $drain, $deleteOf($f, $a)]
+                    && $runs[0]['st']['addresses'] === [$c => $entry($rejectRecord, false)]
+                    && $runs[1]['calls']->getArrayCopy() === []));
+        }
+
+        /* (a28) a switch after a lost state while the live root is [A], wg-a's own resolver, its route gone: A enters
+         * the map from the read alone, and still gets its reject route once Unbound is confirmed on B */
+        $run = null;
+        $ok = uu_try_case(function () use ($perMember, $f, $a, $b, $usable, $applyRun, &$run): bool {
+            $s = $perMember($f, $a, $b);
+            $s['unbound']['live_root'] = [$a];
+            $s['members']['wg-a']['force_down'] = true;
+            $run = $applyRun($s, uu_test_plan_state(null, $usable));
+            return true;
+        });
+        uu_check($t, "(a28) $family, a lost state, the live root [A] with A's route gone, a switch to wg-b: A gets its "
+            . 'reject route and keeps its entry',
+            $ok && $run !== null && $run['st']['member'] === 'wg-b'
+            && in_array("route add {$f['arg']} -host $a {$f['lo']} -reject", $run['acts'], true)
+            && ($run['st']['addresses'][$a] ?? null) === $entry($rejectRecord, false));
+
+        /* (c5) the planner's rule alone: A on a reject route of the plugin's under the configured root [A] with no
+         * entry for it is listed and drained (a real snapshot after a lost state never reads A's route) */
         $run = null;
         $ok = uu_try_case(function () use ($configuredOrphan, $applyRun, $usable, &$run): bool {
             $s = $configuredOrphan(true, false);
             $run = $applyRun($s, uu_test_plan_state(null, $usable));
             return true;
         });
-        uu_check($t, "(c5) $family, configured root [A] after a lost state, A on a reject route of the plugin's: the "
-            . 'plan drains it, and it is drained and deleted in that run; C stays on its reject route',
+        uu_check($t, "(c5) $family, the planner's rule: configured root [A], A on a reject route of the plugin's with "
+            . 'no entry: the plan drains it, and it is drained and deleted in that run; C stays on its reject route',
             $ok && $run !== null && $run['p']['action'] === 'none' && $run['p']['drain'] === [$a]
             && $run['acts'] === [$flushReq, $drain, $deleteOf($f, $a)]
             && $run['st']['addresses'] === [$c => $entry(null, false)]);

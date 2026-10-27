@@ -82,9 +82,11 @@ function uu_drill_passed(string $out): bool
  * Whether a stop has anything to undo, as the snapshot and the state show it: tunnel mode (or a member), a restore due
  * (the live root names an address of the plugin's and is not Unbound's configured root zone, uu_plan_restore_due(), or
  * with the live root unknown, one of them is recorded forwarded), or a route of the plugin's on an address Unbound no
- * longer forwards to, as the snapshot's read says (uu_state_forwarded()). A route the stop keeps by design, on an
- * address Unbound's configured root zone names, is nothing to undo, and a stopped Unbound needs no restore; an
- * orphan's reject route among them is released by the drain that follows every run (uu_plan_configured_orphan()).
+ * longer forwards to, as the snapshot's read says (uu_state_forwarded()), or an orphan's reject route that Unbound's
+ * own configured root zone names (uu_plan_configured_orphan()): the stop releases it, and dry run, which otherwise
+ * only previews, must undo it for real or it would leave every lookup rejected. A route the stop keeps by design, on
+ * any other address Unbound's configured root zone names, is nothing to undo, and a stopped Unbound needs no
+ * restore.
  * The one test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
  * route.
  *
@@ -103,12 +105,15 @@ function uu_apply_undo_due(array $st, array $s): bool
     }
     $pid = $s['unbound']['pid_alive'];
     $read = uu_state_snapshot_read($s['unbound']);
-    $addresses = array_values(array_unique(array_merge(uu_plan_addresses($s), array_map('strval',
-        array_keys($s['routes'])), array_map('strval', array_keys($st['addresses'])))));
+    $kept = uu_plan_addresses($s);
+    $addresses = array_values(array_unique(array_merge($kept, array_map('strval', array_keys($s['routes'])),
+        array_map('strval', array_keys($st['addresses'])))));
     foreach ($addresses as $address) {
         $forwarded = uu_state_forwarded($read, $address, $st['addresses'][$address]['forwarded'] ?? false);
         $route = uu_plan_route($s, $address);
-        if (($pid && $read === null && $forwarded) || ($route['present'] && $route['ours'] && !$forwarded)) {
+        if (($pid && $read === null && $forwarded) || ($route['present'] && $route['ours'] && !$forwarded)
+            || ($route['present'] && $route['ours'] && $route['reject']
+                && uu_plan_configured_orphan($read, $s['zone'], $address, $kept))) {
             return true;
         }
     }
@@ -552,8 +557,8 @@ final class UuApplyRun
     {
         $pid = $this->s['unbound']['pid_alive'];
         $rejected = [];
-        /* the routes kept because the restored root names their address: member routes, and reject routes of a
-         * planner address (it stays closed) */
+        /* the routes kept because the restored root names their address: member routes, and reject routes of one of
+         * the plugin's resolvers (a planner address: it stays closed) */
         $named = ['member' => [], 'reject' => []];
         foreach ($this->addresses() as $address) {
             $gap = !$this->route($address)['present'] && ($was[$address] ?? false);
@@ -589,8 +594,8 @@ final class UuApplyRun
         }
         if ($named['reject'] !== []) {
             $this->log("stop: Unbound's configured root zone names " . implode(', ', $named['reject']) . ', which '
-                . "stays closed as a member's resolver: its reject route stays, and Unbound's queries to it are "
-                . 'rejected locally' . $remedy($named['reject']), LOG_WARNING);
+                . "stays closed as one of the plugin's resolvers: its reject route stays, and Unbound's queries to it "
+                . 'are rejected locally' . $remedy($named['reject']), LOG_WARNING);
         }
         if ($rejected !== []) {
             if (!$this->ucOk(['flush_requestlist'])) {
