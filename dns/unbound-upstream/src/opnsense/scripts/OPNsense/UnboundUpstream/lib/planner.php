@@ -9,8 +9,8 @@ declare(strict_types=1);
  *
  * The planner. Pure: (snapshot, state) -> plan.
  *
- * Snapshot = array{now: int, wall: int, settings: array{enabled: bool, dry_run: bool, group: string, resolver: string,
- *                  default: string, rows: array<string, string>, failback_delay: int, probe_name: string},
+ * Snapshot = array{now: int, wall: int, settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *                  rows: array<string, string>, failback_delay: int, probe_name: string},
  *                  trigger: string, tiers: list<list<string>>, family: string, members: array<string, Member>,
  *                  probes: array<string, Probe>, named: list<string>, stop: ?string,
  *                  unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
@@ -18,20 +18,18 @@ declare(strict_types=1);
  *                  contract_input: ContractInput, rules: RulesCheck,
  *                  block_table: array{table: ?TableFacts, addresses: list<string>}}
  *   Route    = array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}
- *   now is monotonic seconds; settings.default is the Default resolver and settings.resolver the same address (kept
- *   while the rules read it), rows the per-member rows by gateway UUID; tiers come from the group (best first) and
- *   are empty when the group is gone; family is the group's (uu_group_family()); members and probes
- *   are keyed by gateway name (Member and Probe: verdict.php; a Member also carries its gateway's ipprotocol and its
- *   effective resolver, '' for none); named lists the gateways the monitor hook passed; stop is why this run stops
- *   whatever the settings say (a UU_STOP_* cause), or null; live_root is null when unbound-control did not answer;
- *   routes is `route -n get <address>` for every planner address (uu_plan_addresses(): the effective resolvers, or
- *   the Default when the group has no member) and every address the state's map holds, each with interface the
- *   device it leaves by (compared with Member.if) and ours whether the plugin made it;
- *   Zone is zone.php's; ContractInput is uu_contract()'s input (contract.php). rules is uu_rules_check()'s
- *   answer (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an
- *   evaluation saves), block_table the counting table's facts as pf printed them (table null: no such table);
- *   the caller turns it into uu_block_table_view()
- *   with the first address the saved state records, since the snapshot never reads the state file.
+ *   now is monotonic seconds; settings.default is the Default resolver, rows the per-member rows by gateway UUID; tiers
+ *   come from the group (best first) and are empty when the group is gone; family is the group's (uu_group_family());
+ *   members and probes are keyed by gateway name (Member and Probe: verdict.php; a Member also carries its gateway's
+ *   ipprotocol and its effective resolver, '' for none); named lists the gateways the monitor hook passed; stop is why
+ *   this run stops whatever the settings say (a UU_STOP_* cause), or null; live_root is null when unbound-control did
+ *   not answer; routes is `route -n get <address>` for every planner address (uu_plan_addresses(): the effective
+ *   resolvers, or the Default when the group has no member) and every address the state's map holds, each with
+ *   interface the device it leaves by (compared with Member.if) and ours whether the plugin made it; Zone is
+ *   zone.php's; ContractInput is uu_contract()'s input (contract.php). rules is uu_rules_check()'s answer
+ *   (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an evaluation
+ *   saves), block_table the counting table's facts as pf printed them (table null: no such table); the caller turns it
+ *   into uu_block_table_view() with the setting's addresses (uu_setting_addresses()).
  * Plan     = array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *                  escalate_restart: bool, state: State, reasons: list<string>, drain: list<string>}
  *   action: 'stop' (disabled, a stop cause, or Unbound not running), 'skip' (control channel silent), 'tunnel'
@@ -395,7 +393,7 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
 
 /**
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,

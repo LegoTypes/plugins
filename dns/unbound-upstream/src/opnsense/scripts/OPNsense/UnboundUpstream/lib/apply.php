@@ -145,7 +145,7 @@ final class UuApplyRun
     private array $p;
     /**
      * @var array{now: int, wall: int,
-     *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+     *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
      *         rows: array<string, string>, failback_delay: int, probe_name: string},
      *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
      *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -226,7 +226,7 @@ final class UuApplyRun
      *             forwarded: bool, released_at: ?int}>},
      *     reasons: list<string>, drain: list<string>} $p
      * @param array{now: int, wall: int,
-     *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+     *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
      *         rows: array<string, string>, failback_delay: int, probe_name: string},
      *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
      *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -1216,7 +1216,7 @@ final class UuApplyRun
  *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>, drain: list<string>} $p uu_plan()
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -1281,7 +1281,7 @@ function uu_apply(array $p, array $s, array $io): array
  *             forwarded: bool, released_at: ?int}>},
  *     reasons: list<string>, drain: list<string>} $p
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,

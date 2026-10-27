@@ -197,7 +197,7 @@ function uu_evaluate(?string $stop, array $named): int
  * when the run switched. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends
  * with changes the checksum anyway.
  *
- * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ * @param array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
  * @param list<string> $named
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
@@ -217,8 +217,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
     }
     $previousSwitch = $st['last_switch'];
     try {
-        $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
-            $settings['resolver'], $before[0] ?? null);
+        $want = uu_setting_addresses($s);
+        $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $want);
         $s = uu_route_adopt($s, $st['addresses']);
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
@@ -228,7 +228,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         if (uu_plan_stop_reason($s) === null) {
             /* the removal marker can appear while this run holds the lock: a deinstall's remove waits for it */
             if ($table['fill'] && !is_file(UU_REMOVING_PATH)) {
-                uu_block_table_fill($settings['resolver']);
+                uu_block_table_fill($want, 'uu_core_shell', 'uu_log');
             }
             $blocked = $table['blocked'];
             $line = uu_blocked_line($st['blocked'], $blocked);
@@ -274,34 +274,12 @@ function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
 }
 
 /**
- * Put the resolver back into the counting table, which the rules reference but which does not hold
- * exactly the resolver (a boot, a flush from Diagnostics, the first reload after enabling). The plugin's only pf
- * write, and in dry run too: the table is the counting block's upkeep, and the rules are rendered in dry run.
- */
-function uu_block_table_fill(string $resolver): void
-{
-    if (uu_ip_family($resolver) === null) {
-        return;
-    }
-    $out = [];
-    $rc = 0;
-    exec('/sbin/pfctl -t ' . escapeshellarg(UU_BLOCK_TABLE) . ' -T replace ' . escapeshellarg($resolver)
-        . ' 2>/dev/null', $out, $rc);
-    if ($rc === 0) {
-        uu_log("rules: the counting table holds $resolver again", LOG_NOTICE);
-    } else {
-        uu_log("rules: the counting table could not be filled with $resolver (pfctl exit $rc): blocked packets are "
-            . 'not counted until it is', LOG_WARNING);
-    }
-}
-
-/**
  * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
  * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
  * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -326,7 +304,7 @@ function uu_block_table_fill(string $resolver): void
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @param string $mode the saved state's mode
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -376,8 +354,8 @@ function uu_status_main(): int
     /* never lists the ruleset: the checksum and the counting table only */
     $s = uu_route_adopt(uu_snapshot($settings, [], null, false, uu_state_footprint($st)), $st['addresses']);
     $p = uu_plan($s, $st);
-    $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $settings['resolver'],
-        uu_state_footprint($st)[0] ?? null);
+    $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'],
+        uu_setting_addresses($s));
     /* the active resolver's route, in its family */
     $args = uu_route_get_args(uu_status_active($s, $p));
     $route = $args === null ? '' : (string)shell_exec('/sbin/route -n get ' . $args . ' 2>/dev/null');

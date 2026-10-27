@@ -9,7 +9,8 @@ declare(strict_types=1);
  *
  * Observing pf: the ruleset checksum, a table's counters, the verdict on the
  * plugin's rules read from the kernel's own listing by keyword, and that verdict kept once per checksum so the
- * 2.5 s ruleset listing is only paid after the ruleset changed. Pure apart from the record file.
+ * 2.5 s ruleset listing is only paid after the ruleset changed; and the counting table's upkeep (its view and its
+ * fill). Pure apart from the record file and the fill, which runs and logs through its callables.
  *
  * Record = array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}
  *   inputs is uu_rules_inputs() of what the verdict was made for; a record holds only for its checksum AND inputs
@@ -118,12 +119,30 @@ function uu_rules_has(string $line, string $pattern): bool
 }
 
 /**
- * The problems of one block rule (counting or backstop), empty when it is as rendered.
+ * Whether a rule line goes to an address or table: "to" and the target, bounded like a word that may not continue with
+ * a word character, a dot, a colon or a slash, so 10.2.0.1 is not 10.2.0.10 and 2001:db8::2:1 is not 2001:db8::2:1:5
+ * or 2001:db8::2:1/64.
+ */
+function uu_rules_to(string $line, string $target): bool
+{
+    return uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.:\/])');
+}
+
+/** Whether a rule line is in a family: the word inet or inet6 (inet is not the start of inet6). */
+function uu_rules_family(string $line, string $family): bool
+{
+    return uu_rules_has($line, '\b' . $family . '\b');
+}
+
+/**
+ * The problems of the lines under one block label (the counting blocks or the backstops), empty when each is as
+ * rendered: every line a quick logged out block to one of $targets, in that target's family when it is an address.
  *
  * @param list<string> $lines
+ * @param list<string> $targets
  * @return list<string>
  */
-function uu_rules_block_problems(array $lines, string $what, string $target): array
+function uu_rules_block_problems(array $lines, string $what, array $targets): array
 {
     if ($lines === []) {
         return [$what . ' missing'];
@@ -135,30 +154,36 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
                 $problems[] = $what . ': missing ' . $label;
             }
         }
-        if (!uu_rules_has($line, '\bto ' . preg_quote($target, '/') . '(?![\w.:\/])')) {
+        $to = array_values(array_filter($targets, fn (string $target): bool => uu_rules_to($line, $target)));
+        $family = $to === [] ? null : uu_ip_family($to[0]);
+        if ($to === []) {
             $problems[] = $what . ': wrong target';
+        } elseif ($family !== null && !uu_rules_family($line, $family)) {
+            $problems[] = $what . ': wrong family';
         }
     }
     return array_values(array_unique($problems));
 }
 
 /**
- * Whether the plugin's rules are in the listing, member by member (tcp and udp pass, by label) and block by block
- * (the counting block and the backstop), with the shape of each checked by keyword on its own line. A device, an
- * address or a target is bounded like a word that may not continue with a word character, a dot, a colon or a
- * slash (a device: a word character or a dot), so wg1 is not wg10 or wg1.65, 10.2.0.1 is not 10.2.0.10 and
- * 2001:db8::2:1 is not 2001:db8::2:1:5 or 2001:db8::2:1/64.
+ * Whether the plugin's rules are in the listing, member by member (tcp and udp pass, by the label of the member's
+ * interface and resolver) and block by block, with the shape of each checked by keyword on its own line: a pass out,
+ * quick, if-bound, on the member's device, in its resolver's family, to it, port 53; a counting block for each family
+ * of the setting's addresses, on the table; a backstop to each setting address, in its family, and to nothing else
+ * (with no backstop at all, the one problem is that it is missing). A device is
+ * bounded like a word that may not continue with a word character or a dot (wg1 is not wg10 or wg1.65), an address as
+ * uu_rules_to() bounds it. Every address is compared in canonical form, as pf prints it.
  *
- * @param list<array{name: string, interface: string, if: string}> $members
+ * @param list<array{name: string, interface: string, if: string, resolver: string}> $members uu_ruled_members()
+ * @param list<string> $settingAddresses uu_setting_addresses()
  * @return array{loaded: bool, problems: list<string>}
  */
-function uu_rules_verdict(string $vsrOut, string $resolver, array $members): array
+function uu_rules_verdict(string $vsrOut, array $members, array $settingAddresses): array
 {
     $problems = [];
-    $canonical = uu_ip_canonical($resolver) ?? $resolver;
-    $address = preg_quote($canonical, '/');
     foreach ($members as $member) {
-        $lines = uu_rules_lines($vsrOut, uu_label_pass($member['interface']));
+        $resolver = uu_ip_canonical($member['resolver']) ?? $member['resolver'];
+        $lines = uu_rules_lines($vsrOut, uu_label_pass($member['interface'], $resolver));
         if ($lines === []) {
             $problems[] = 'no pass rule for ' . $member['name'] . ' (' . $member['interface'] . ')';
             continue;
@@ -174,6 +199,7 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
             foreach ($protoLines as $line) {
                 $checks = [
                     'pass' => '\bpass\b', 'out' => '\bout\b', 'quick' => '\bquick\b',
+                    'if-bound' => '\bkeep state \([^)]*\bif-bound\b',
                 ];
                 foreach ($checks as $word => $pattern) {
                     if (!uu_rules_has($line, $pattern)) {
@@ -185,7 +211,10 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
                 } elseif (!uu_rules_has($line, '\bon ' . preg_quote($member['if'], '/') . '(?![\w.])')) {
                     $problems[] = $member['name'] . ' pass: not on ' . $member['if'];
                 }
-                if (!uu_rules_has($line, '\bto ' . $address . '(?![\w.:\/])')) {
+                if (!uu_rules_family($line, uu_ip_family($resolver) ?? 'inet')) {
+                    $problems[] = $member['name'] . ' pass: wrong family';
+                }
+                if (!uu_rules_to($line, $resolver)) {
                     $problems[] = $member['name'] . ' pass: wrong address';
                 }
                 if (!uu_rules_has($line, '\bport = (domain|53)\b')) {
@@ -194,32 +223,47 @@ function uu_rules_verdict(string $vsrOut, string $resolver, array $members): arr
             }
         }
     }
-    array_push($problems, ...uu_rules_block_problems(
-        uu_rules_lines($vsrOut, uu_label_block()),
-        'counting block',
-        '<' . UU_BLOCK_TABLE . '>'
-    ));
-    array_push($problems, ...uu_rules_block_problems(
-        uu_rules_lines($vsrOut, uu_label_backstop()),
-        'backstop block',
-        $canonical
-    ));
+    $setting = [];
+    foreach ($settingAddresses as $address) {
+        $setting[] = uu_ip_canonical($address) ?? $address;
+    }
+    $counting = uu_rules_lines($vsrOut, uu_label_block());
+    array_push($problems, ...uu_rules_block_problems($counting, 'counting block', ['<' . UU_BLOCK_TABLE . '>']));
+    foreach (['inet', 'inet6'] as $family) {
+        $needed = array_filter($setting, fn (string $address): bool => uu_ip_family($address) === $family);
+        $has = array_filter($counting, fn (string $line): bool => uu_rules_family($line, $family));
+        if ($counting !== [] && $needed !== [] && $has === []) {
+            $problems[] = 'counting block: no ' . $family . ' rule';
+        }
+    }
+    /* a setting address no backstop goes to is named only while every backstop goes to a setting address: a backstop
+     * to another address is the wrong target, which already says the set is wrong */
+    $backstops = uu_rules_lines($vsrOut, uu_label_backstop());
+    $backstopProblems = uu_rules_block_problems($backstops, 'backstop block', $setting);
+    array_push($problems, ...$backstopProblems);
+    $named = $backstops !== [] && !in_array('backstop block: wrong target', $backstopProblems, true);
+    foreach ($named ? $setting : [] as $address) {
+        if (array_filter($backstops, fn (string $line): bool => uu_rules_to($line, $address)) === []) {
+            $problems[] = 'backstop block for ' . $address . ' missing';
+        }
+    }
     $problems = array_values(array_unique($problems));
     return ['loaded' => $problems === [], 'problems' => $problems];
 }
 
 /**
- * What a verdict depends on besides the ruleset: the resolver and each ruled member's interface and device.
- * Order-independent over the members. Between a Save and its filter reload the checksum is unchanged while the
- * settings already differ, so a record is reused only for the same inputs.
+ * What a verdict depends on besides the ruleset: each ruled member's interface, device and resolver, as a set, and
+ * the Default. Order-independent over the members. Between a Save and its filter reload the checksum is unchanged
+ * while the settings already differ, so a record is reused only for the same inputs.
  *
- * @param list<array{name: string, interface: string, if: string}> $members
+ * @param list<array{interface: string, if: string, resolver: string}> $members
  */
-function uu_rules_inputs(string $resolver, array $members): string
+function uu_rules_inputs(array $members, string $default): string
 {
-    $pairs = array_map(fn (array $m): array => [$m['interface'], $m['if']], $members);
-    sort($pairs);
-    return md5(json_encode([$resolver, $pairs], JSON_THROW_ON_ERROR));
+    $triples = array_map(fn (array $m): array => [$m['interface'], $m['if'],
+        uu_ip_canonical($m['resolver']) ?? $m['resolver']], $members);
+    sort($triples);
+    return md5(json_encode([$triples, $default], JSON_THROW_ON_ERROR));
 }
 
 /**
@@ -336,22 +380,55 @@ function uu_rules_record_save(string $path, array $record): void
 }
 
 /**
- * The counting block's table as the status reads it. armed: the table holds exactly the resolver. fill: the table
- * is referenced by a rule but is not armed, so the evaluation fills it; never for an unreferenced table, and not
- * while the resolver the state recorded differs from the setting (the old address is undone first). blocked: the
+ * The counting blocks' table as the status reads it. armed: the table holds exactly the setting's addresses ($want,
+ * uu_setting_addresses()), compared as canonical sets, and there is one; a footprint is never in it (its literal block
+ * covers it), so an orphan in its hold neither arms nor stops the fill. fill: the table is referenced by a rule but is
+ * not armed, so the evaluation fills it; never for an unreferenced table or with no setting address. blocked: the
  * table's Out/Block packets, null without the table.
  *
  * @param ?array{addresses: int, references: int, out_block: int} $table
- * @param list<string> $addresses
+ * @param list<string> $addresses what `pfctl -T show` listed (uu_pf_show_addresses())
+ * @param list<string> $want
  * @return array{armed: bool, fill: bool, blocked: ?int}
  */
-function uu_block_table_view(?array $table, array $addresses, string $resolver, ?string $recordedResolver): array
+function uu_block_table_view(?array $table, array $addresses, array $want): array
 {
     if ($table === null) {
         return ['armed' => false, 'fill' => false, 'blocked' => null];
     }
-    $armed = $table['addresses'] === 1 && $addresses === [$resolver];
-    $fill = $table['references'] >= 1 && !$armed && $resolver !== ''
-        && ($recordedResolver === null || $recordedResolver === $resolver);
+    $set = function (array $list): array {
+        $canonical = array_values(array_unique(array_map(fn (string $a): string => uu_ip_canonical($a) ?? $a, $list)));
+        sort($canonical, SORT_STRING);
+        return $canonical;
+    };
+    $armed = $want !== [] && $set($addresses) === $set($want);
+    $fill = $table['references'] >= 1 && !$armed && $want !== [];
     return ['armed' => $armed, 'fill' => $fill, 'blocked' => $table['out_block']];
+}
+
+/**
+ * Put the setting's addresses back into the counting table, which the rules reference but which does not hold exactly
+ * them (a boot, a flush from Diagnostics, the first reload after enabling, a changed address): `pfctl -T replace`
+ * with the whole set, so a footprint's address leaves it. The plugin's only pf write, and in dry run too: the table is
+ * the counting blocks' upkeep, and the rules are rendered in dry run. Nothing for an empty list or one holding
+ * anything that is no address.
+ *
+ * @param list<string> $addresses canonical
+ * @param callable(string): array{rc: int, out: string} $run the command line through sh (uu_core_shell())
+ * @param callable(string, int): void $log
+ */
+function uu_block_table_fill(array $addresses, callable $run, callable $log): void
+{
+    if ($addresses === [] || in_array(null, array_map('uu_ip_family', $addresses), true)) {
+        return;
+    }
+    $list = implode(' ', $addresses);
+    $rc = $run('/sbin/pfctl -t ' . escapeshellarg(UU_BLOCK_TABLE) . ' -T replace '
+        . implode(' ', array_map('escapeshellarg', $addresses)) . ' 2>/dev/null')['rc'];
+    if ($rc === 0) {
+        $log("rules: the counting table holds $list again", LOG_NOTICE);
+    } else {
+        $log("rules: the counting table could not be filled with $list (pfctl exit $rc): blocked packets are "
+            . 'not counted until it is', LOG_WARNING);
+    }
 }

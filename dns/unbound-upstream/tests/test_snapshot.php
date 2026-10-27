@@ -15,6 +15,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
 require_once __DIR__ . '/test_verdict.php';
+require_once __DIR__ . '/test_pfobserve.php';
 require_once __DIR__ . '/scratch.php';
 
 function uu_snapshot_fixture(string $name): string
@@ -137,7 +138,7 @@ uu_register_suite('snapshot', function (): int {
             && uu_resolver_monitors($records, '2001:db8:a::54') === []));
     $adopt = function (string $gateway, string $dev, string $hop, string $if): bool {
         $route = ['present' => true, 'gateway' => $gateway, 'interface' => $dev, 'reject' => false, 'ours' => false];
-        $s = ['settings' => ['resolver' => '192.0.2.1'], 'routes' => ['192.0.2.1' => $route],
+        $s = ['settings' => ['default' => '192.0.2.1'], 'routes' => ['192.0.2.1' => $route],
               'contract_input' => ['foreign' => ['192.0.2.1']]];
         $r = uu_route_adopt($s, ['192.0.2.1' => ['route' => ['kind' => 'member', 'next_hop' => $hop, 'if' => $if],
                                                  'forwarded' => true, 'released_at' => null]]);
@@ -171,15 +172,22 @@ uu_register_suite('snapshot', function (): int {
     $c['name'] = 'wg-c';
     $c['interface'] = '';
     $c['if'] = '';
-    $ruled = uu_ruled_members(['wg-a' => $a, 'wg-c' => $c, 'wg-b' => $b]);
+    $ruledA = ['resolver' => '10.2.0.1'] + $a;
+    $ruledB = ['resolver' => '10.2.0.1'] + $b;
+    uu_check($t, 'ruled members: a member with no resolver gets no pass, so it is not asked for one; each '
+        . 'resolver is in its canonical form',
+        uu_try_case(fn (): bool => uu_ruled_members(['wg-a' => ['resolver' => '2001:DB8:A:0::53'] + $a,
+            'wg-b' => ['resolver' => ''] + $b])
+            === [['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1', 'resolver' => '2001:db8:a::53']]));
+    $ruled = uu_ruled_members(['wg-a' => $ruledA, 'wg-c' => ['resolver' => '10.2.0.1'] + $c, 'wg-b' => $ruledB]);
     uu_check($t, 'ruled members: name, interface and device of each member with an interface, in order',
-        $ruled === [['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1'],
-                    ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2']]);
+        $ruled === [['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1', 'resolver' => '10.2.0.1'],
+                    ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2', 'resolver' => '10.2.0.1']]);
 
     /* pf observation through a recording pfctl */
     $si = uu_snapshot_fixture('pfctl_si_v.txt');
     $sum = '0x86046332dac3627299e22fb166d0fef2';
-    $outputs = ['-si -v' => $si, '-vsr' => uu_snapshot_fixture('pfctl_vsr_12.txt'),
+    $outputs = ['-si -v' => $si, '-vsr' => uu_pfobserve_vsr12(),
                 '-vvsTables' => uu_snapshot_fixture('pfctl_vvsTables.txt'),
                 '-t ' . UU_BLOCK_TABLE . ' -T show' => "   10.2.0.1\n"];
     $observe = function (?array $record, bool $listRules, array $outputs) use ($ruled): array {
@@ -188,7 +196,7 @@ uu_register_suite('snapshot', function (): int {
             $calls[] = implode(' ', $args);
             return ['out' => $outputs[implode(' ', $args)] ?? '', 'err' => "No ALTQ support in kernel\n"];
         };
-        $o = uu_pf_observe('10.2.0.1', $ruled, $record, 1792400000, $listRules, $pfctl);
+        $o = uu_pf_observe($ruled, ['10.2.0.1'], '10.2.0.1', $record, 1792400000, $listRules, $pfctl);
         return [$o, $calls];
     };
     /* the runner returns stdout and stderr apart: stderr decides a listing's use and never reaches a parser */
@@ -205,9 +213,9 @@ uu_register_suite('snapshot', function (): int {
                 default => ['out' => "   10.2.0.1\n", 'err' => ''],
             };
         };
-        return [uu_pf_observe('10.2.0.1', $ruled, $record, 1792400000, true, $pfctl), $calls];
+        return [uu_pf_observe($ruled, ['10.2.0.1'], '10.2.0.1', $record, 1792400000, true, $pfctl), $calls];
     };
-    $whole = uu_snapshot_fixture('pfctl_vsr_12.txt');
+    $whole = uu_pfobserve_vsr12();
     $half = implode("\n", array_slice(explode("\n", $whole), 0, 8)) . "\n";
     $try = function (callable $case): bool {
         try {
@@ -282,7 +290,7 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'observe: the counting table\'s facts and addresses',
         $o['block_table'] === ['table' => ['addresses' => 1, 'references' => 1, 'out_block' => 6],
                                'addresses' => ['10.2.0.1']]);
-    $in = uu_rules_inputs('10.2.0.1', $ruled);
+    $in = uu_rules_inputs($ruled, '10.2.0.1');
     $record = ['checksum' => $sum, 'inputs' => $in, 'at' => 1792399000, 'loaded' => true, 'problems' => []];
     [$o, $calls] = $observe($record, false, $outputs);
     uu_check($t, 'observe, status with a record of the live checksum: its verdict and time, no listing',
@@ -301,7 +309,8 @@ uu_register_suite('snapshot', function (): int {
     [$o, $calls] = $observe($record, true, $outputs);
     uu_check($t, 'observe, evaluation with a record of the live checksum: no listing and nothing to save',
         !in_array('-vsr', $calls, true) && $o['rules']['state'] === 'loaded' && $o['rules']['record'] === null);
-    $otherInputs = ['inputs' => uu_rules_inputs('10.2.0.9', $ruled)] + $record;
+    $otherInputs = ['inputs' => uu_rules_inputs(array_map(fn (array $m): array => ['resolver' => '10.2.0.9'] + $m,
+        $ruled), '10.2.0.9')] + $record;
     [$o, $calls] = $observe($otherInputs, true, $outputs);
     uu_check($t, 'observe: the live checksum recorded for other inputs (another resolver) lists and records these',
         in_array('-vsr', $calls, true) && $o['rules']['record'] !== null && $o['rules']['record']['inputs'] === $in);
@@ -326,24 +335,24 @@ uu_register_suite('snapshot', function (): int {
     };
     /* each settings_clean case runs inside uu_try_case(), so on a version without it each fails on its own */
     uu_check($t, 'settings_clean: the defaults pass unchanged with no problem',
-        uu_try_case(fn (): bool => uu_settings_clean($good) === ['settings' => ['resolver' => '192.0.2.1',
+        uu_try_case(fn (): bool => uu_settings_clean($good) === ['settings' => [
             'default' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => 120,
             'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'], 'problems' => []]));
     uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
-        uu_try_case(fn (): bool => $one(['resolver' => '192.0.2.1/32'], 'resolver', '')
-            && $one(['resolver' => 'resolver.example'], 'resolver', '')
-            && $one(['resolver' => '::ffff:192.0.2.1'], 'resolver', '')));
+        uu_try_case(fn (): bool => $one(['resolver' => '192.0.2.1/32'], 'default', '')
+            && $one(['resolver' => 'resolver.example'], 'default', '')
+            && $one(['resolver' => '::ffff:192.0.2.1'], 'default', '')));
     uu_check($t, '(t10) settings_clean: an IPv6 resolver is kept in its canonical form with no problem',
-        uu_try_case(fn (): bool => $clean(['resolver' => '2001:DB8::53'])['settings']['resolver'] === '2001:db8::53'
+        uu_try_case(fn (): bool => $clean(['resolver' => '2001:DB8::53'])['settings']['default'] === '2001:db8::53'
             && $clean(['resolver' => '2001:DB8::53'])['problems'] === []
-            && $clean(['resolver' => '2001:DB8:A:0::53'])['settings']['resolver'] === '2001:db8:a::53'
+            && $clean(['resolver' => '2001:DB8:A:0::53'])['settings']['default'] === '2001:db8:a::53'
             && $clean(['resolver' => '192.0.2.1'])['problems'] === []));
     uu_check($t, '(t10) settings_clean: a link-local resolver is unset with one problem naming link-local, and a '
         . 'value that is no address says so',
         uu_try_case(function () use ($clean, $one): bool {
             $linkLocal = $clean(['resolver' => 'fe80::1']);
             $text = $clean(['resolver' => 'dns.example']);
-            return $one(['resolver' => 'fe80::1'], 'resolver', '')
+            return $one(['resolver' => 'fe80::1'], 'default', '')
                 && $linkLocal['problems'] === ['settings: the resolver is link-local; evaluating as unset']
                 && $text['problems'] === ['settings: the resolver is not an IPv4 or IPv6 address; evaluating as unset']
                 && $clean(['resolver' => '224.0.0.1'])['problems']
@@ -385,7 +394,7 @@ uu_register_suite('snapshot', function (): int {
                        'ours' => false];
             $viaWg4 = ['present' => true, 'gateway' => 'fd00::4:2', 'interface' => 'wg4', 'reject' => false,
                        'ours' => false];
-            $s = ['settings' => ['resolver' => '10.2.0.1'],
+            $s = ['settings' => ['default' => '10.2.0.1'],
                   'routes' => ['10.2.0.1' => $viaWg1, '2001:db8:b::53' => $viaWg4],
                   'contract_input' => ['foreign' => ['10.2.0.1', '2001:db8:b::53']]];
             $map = ['10.2.0.1' => ['route' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
@@ -409,7 +418,7 @@ uu_register_suite('snapshot', function (): int {
             $r = $clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [
                 ['gateway' => $gwA, 'address' => '2001:0DB8:B::0053'], ['gateway' => $gwB, 'address' => '192.0.2.9']]]);
             return $r['problems'] === [] && $r['settings']['default'] === '2001:db8:a::53'
-                && $r['settings']['resolver'] === '2001:db8:a::53'
+                && !array_key_exists('resolver', $r['settings'])
                 && $r['settings']['rows'] === [$gwA => '2001:db8:b::53', $gwB => '192.0.2.9'];
         }));
     uu_check($t, 'settings_clean: a row whose gateway is no id, or whose address is no address or one the model '

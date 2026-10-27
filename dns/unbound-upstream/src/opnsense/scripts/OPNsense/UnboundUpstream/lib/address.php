@@ -149,13 +149,60 @@ function uu_family_arg(string $family): string
 }
 
 /**
+ * The per-member rows as the scripts use them, checked again where they are used (a restored configuration bypasses
+ * the model's masks): gateway UUID => canonical address. A row whose gateway is not a UUID or whose address is refused
+ * (uu_resolver_refusal()) is dropped, as is a second row for one gateway, each with one problem that never quotes the
+ * value. The one rule the settings and the render share.
+ *
+ * @param list<array{gateway: string, address: string}> $raw
+ * @return array{rows: array<string, string>, problems: list<string>}
+ */
+function uu_rows_clean(array $raw): array
+{
+    $rows = [];
+    $problems = [];
+    foreach ($raw as $row) {
+        $address = uu_resolver_refusal($row['address']) === null ? uu_ip_canonical($row['address']) : null;
+        if ($address === null || preg_match('/^[0-9a-f-]{36}$/D', $row['gateway']) !== 1) {
+            $problems[] = 'settings: a per-member resolver row is not a gateway id and an IPv4 or IPv6 address; '
+                . 'ignored';
+        } elseif (isset($rows[$row['gateway']])) {
+            $problems[] = 'settings: two per-member resolver rows name one gateway; the second is ignored';
+        } else {
+            $rows[$row['gateway']] = $address;
+        }
+    }
+    return ['rows' => $rows, 'problems' => $problems];
+}
+
+/**
+ * Each gateway's name by its UUID, from gatewaysIndexedByName(true)'s records (core's Gateways model gives each
+ * configured gateway its uuid); a dynamic gateway's record has none and is left out, so no row can name it.
+ *
+ * @param array<array-key, array<string, mixed>> $records
+ * @return array<string, string>
+ */
+function uu_gateway_names(array $records): array
+{
+    $names = [];
+    foreach ($records as $name => $gw) {
+        $uuid = (string)($gw['uuid'] ?? '');
+        if ($uuid !== '') {
+            $names[$uuid] = (string)$name;
+        }
+    }
+    return $names;
+}
+
+/**
  * Each member's effective resolver: its own row's address, else the Default, else '' (none: never a candidate). A row
  * is keyed by its gateway's UUID, which the Gateways model resolves to a name; a row whose UUID names no gateway, or
  * a gateway that is not a member, changes nothing and gets a note, as does a member left with no resolver.
  *
  * @param list<string> $members the group's member names, in tier order
- * @param array<string, string> $rows gateway UUID => canonical address (uu_settings_clean())
+ * @param array<string, string> $rows gateway UUID => canonical address (uu_rows_clean())
  * @param array<string, string> $names gateway UUID => gateway name, for every gateway the Gateways model holds
+ *     (uu_gateway_names())
  * @param string $default the Default resolver, canonical, or ''
  * @return array{resolvers: array<string, string>, notes: list<string>}
  */

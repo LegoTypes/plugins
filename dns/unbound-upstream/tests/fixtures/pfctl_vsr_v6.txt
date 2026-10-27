@@ -1,0 +1,28 @@
+pass out quick on wg1 inet6 proto tcp from (wg1) to 2001:db8:a::53 port = domain flags S/SA keep state (if-bound) label "e5f0076abe8bbcdbdb9f85e867f5bb19"
+  [ Evaluations: 18        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg1 inet6 proto udp from (wg1) to 2001:db8:a::53 port = domain keep state (if-bound) label "e5f0076abe8bbcdbdb9f85e867f5bb19"
+  [ Evaluations: 9         Packets: 14        Bytes: 2716        States: 2     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 7     ]
+pass out quick on wg2 inet6 proto tcp from (wg2) to 2001:db8:b::53 port = domain flags S/SA keep state (if-bound) label "e0affe59892fb4ccbb43d63ef36ccf87"
+  [ Evaluations: 14        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+pass out quick on wg2 inet6 proto udp from (wg2) to 2001:db8:b::53 port = domain keep state (if-bound) label "e0affe59892fb4ccbb43d63ef36ccf87"
+  [ Evaluations: 0         Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop out log quick inet6 from any to <__unboundupstream_block> label "172df6b9154ad996a4f8022b74f4dcb1"
+  [ Evaluations: 14        Packets: 4         Bytes: 232         States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop out log quick inet6 from any to 2001:db8:a::53 label "14c042f39f5e157208f47ea86d530ba1"
+  [ Evaluations: 10        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]
+block drop out log quick inet6 from any to 2001:db8:b::53 label "14c042f39f5e157208f47ea86d530ba1"
+  [ Evaluations: 10        Packets: 0         Bytes: 0           States: 0     ]
+  [ Source Nodes: 0      Limit: 0      NAT/RDR: 0      Route: 0      ]
+  [ Inserted: uid 0 pid 0 State Creations: 0     ]

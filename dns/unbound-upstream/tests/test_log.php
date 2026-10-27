@@ -74,7 +74,7 @@ uu_register_suite('log', function (): int {
             'configured_root', 'tls_applied', 'route', 'rules_loaded', 'rules', 'footprint', 'counter_armed', 'blocked',
             'checks', 'members', 'last_switch', 'contract', 'next']);
     uu_check($t, 'status: the resolver, mode, member and its tier; live and configured roots; the TLS flag applied',
-        $doc['resolver'] === $s['settings']['resolver'] && $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
+        $doc['resolver'] === $s['settings']['default'] && $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
         && $doc['live_root'] === ['10.2.0.1'] && $doc['configured_root'] === $s['zone'] && $doc['tls_applied'] === false
         && $doc['unbound'] === ['enabled' => true, 'running' => true, 'control_ok' => true]);
     uu_check($t, 'status: the route with its flags',
@@ -127,7 +127,7 @@ uu_register_suite('log', function (): int {
     $off = $s;
     $off['settings']['enabled'] = false;
     $same = $st;
-    $same['addresses'] = [$s['settings']['resolver'] => ['route' => null, 'forwarded' => true, 'released_at' => null]];
+    $same['addresses'] = [$s['settings']['default'] => ['route' => null, 'forwarded' => true, 'released_at' => null]];
     $footprint = fn (array $doc): ?string => array_key_exists('footprint', $doc) ? $doc['footprint'] : 'absent';
     uu_check($t, '(l1) status: a footprint the disabled setting does not cover is named; one equal to the enabled '
         . 'setting is null',
@@ -138,7 +138,7 @@ uu_register_suite('log', function (): int {
     uu_check($t, '(l1) status: a footprint is named beside another enabled resolver, or a group that is gone, and '
         . 'none recorded is null',
         $footprint(uu_status_doc($s, uu_plan($s, $fst), $armed, $route)) === '192.0.2.1'
-        && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $route)) === $s['settings']['resolver']
+        && $footprint(uu_status_doc($lost, uu_plan($lost, $same), $armed, $route)) === $s['settings']['default']
         && $footprint($doc) === null);
 
     /* (l1) the status's resolver is the active one: in tunnel mode the live root's address, else the member's

@@ -252,34 +252,39 @@ function uu_route_ours(array $route, array $members): bool
 }
 
 /**
- * The members the renderer gives pass rules: those whose gateway record names an interface. Members
- * sharing an interface share its rules, so the verdict asks each for them.
+ * The members the renderer gives pass rules: those whose gateway record names an interface and that have a
+ * resolver, each with it in canonical form. Members sharing an interface and a resolver share its rules, so the
+ * verdict asks each for them.
  *
- * @param array<string, array{name: string, interface: string, if: string, next_hop: string, disabled: bool,
- *     force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
+ * @param array<string, array{name: string, interface: string, if: string, resolver: string, next_hop: string,
+ *     disabled: bool, force_down: bool, monitor_disable: bool, monitor: string, time_period: int, interval: int,
  *     loss_interval: int, losshigh: int}> $members
- * @return list<array{name: string, interface: string, if: string}>
+ * @return list<array{name: string, interface: string, if: string, resolver: string}>
  */
 function uu_ruled_members(array $members): array
 {
     $ruled = [];
     foreach ($members as $m) {
-        if ($m['interface'] !== '') {
-            $ruled[] = ['name' => $m['name'], 'interface' => $m['interface'], 'if' => $m['if']];
+        $resolver = uu_ip_canonical($m['resolver']);
+        if ($m['interface'] !== '' && $resolver !== null) {
+            $ruled[] = ['name' => $m['name'], 'interface' => $m['interface'], 'if' => $m['if'],
+                        'resolver' => $resolver];
         }
     }
     return $ruled;
 }
 
 /**
- * What pf says about the plugin's rules and its counting table, through pfctl. The rules come from
- * the record while its checksum is live and it was made for these inputs (uu_rules_inputs(): the resolver and the
- * members' interfaces and devices), except that an evaluation (listRules) never reuses a recorded fault: it lists
- * again while the fault stands, and a status call shows it. Otherwise an evaluation lists the ruleset (again when
+ * What pf says about the plugin's rules and its counting table, through pfctl. The rules come from the record while
+ * its checksum is live and it was made for these inputs (uu_rules_inputs(): the members' interfaces, devices and
+ * resolvers, and the Default), except that an evaluation (listRules) never reuses a recorded fault: it lists again
+ * while the fault stands, and a status call shows it. Otherwise an evaluation lists the ruleset (again when
  * a reload straddled the first listing or pfctl cut it short) and returns a record to save, and a status call
  * answers verifying. The table's addresses are read only while the table exists.
  *
- * @param list<array{name: string, interface: string, if: string}> $members uu_ruled_members()
+ * @param list<array{name: string, interface: string, if: string, resolver: string}> $members uu_ruled_members()
+ * @param list<string> $settingAddresses uu_setting_addresses(), the addresses the backstops and the table go to
+ * @param string $default the Default resolver, canonical, or ''
  * @param ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>} $record the saved
  *     verification
  * @param callable(list<string>): array{out: string, err: string} $pfctl runs /sbin/pfctl with these arguments and
@@ -288,18 +293,18 @@ function uu_ruled_members(array $members): array
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
  */
-function uu_pf_observe(string $resolver, array $members, ?array $record, int $wall, bool $listRules,
-    callable $pfctl): array
+function uu_pf_observe(array $members, array $settingAddresses, string $default, ?array $record, int $wall,
+    bool $listRules, callable $pfctl): array
 {
     $rules = uu_rules_check(
         $record,
-        uu_rules_inputs($resolver, $members),
+        uu_rules_inputs($members, $default),
         fn (): ?string => uu_pf_checksum($pfctl(['-si', '-v'])['out']),
         function () use ($pfctl): ?string {
             $run = $pfctl(['-vsr']);
             return uu_pf_listing_usable($run['err']) ? $run['out'] : null;
         },
-        fn (string $listing): array => uu_rules_verdict($listing, $resolver, $members),
+        fn (string $listing): array => uu_rules_verdict($listing, $members, $settingAddresses),
         $wall,
         $listRules
     );
@@ -362,7 +367,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  * every snapshot before planning; a route matching neither stays foreign.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -388,7 +393,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -440,16 +445,15 @@ function uu_route_adopt(array $s, array $addresses): array
 
 /**
  * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
- * model's masks. A Default resolver that is not an IPv4 or IPv6 address, or is one the model refuses (link-local,
- * multicast, loopback, unspecified), is '' (unset) and any other is its canonical form (resolver and default are the
- * same address), a per-member row whose gateway is not a UUID or whose address is refused the same way is dropped, as
- * is a second row for one gateway, a probe name outside UU_PROBE_NAME_MASK is '.', a failback_delay is clamped to
+ * model's masks. A Default resolver (the model's resolver field) that is not an IPv4 or IPv6 address, or is one the
+ * model refuses (link-local, multicast, loopback, unspecified), is '' (unset) and any other is its canonical form, the
+ * per-member rows are uu_rows_clean()'s, a probe name outside UU_PROBE_NAME_MASK is '.', a failback_delay is clamped to
  * 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per substitution; none quotes the
  * value.
  *
  * @param array{resolver: string, rows: list<array{gateway: string, address: string}>, probe_name: string,
  *     failback_delay: string, group_uuid: string} $raw
- * @return array{settings: array{resolver: string, default: string, rows: array<string, string>, probe_name: string,
+ * @return array{settings: array{default: string, rows: array<string, string>, probe_name: string,
  *     failback_delay: int, group_uuid: string}, problems: list<string>}
  *   rows: gateway UUID => canonical address
  */
@@ -466,18 +470,8 @@ function uu_settings_clean(array $raw): array
             $resolver = uu_ip_canonical($resolver) ?? '';
         }
     }
-    $rows = [];
-    foreach ($raw['rows'] as $row) {
-        $address = uu_resolver_refusal($row['address']) === null ? uu_ip_canonical($row['address']) : null;
-        if ($address === null || preg_match('/^[0-9a-f-]{36}$/D', $row['gateway']) !== 1) {
-            $problems[] = 'settings: a per-member resolver row is not a gateway id and an IPv4 or IPv6 address; '
-                . 'ignored';
-        } elseif (isset($rows[$row['gateway']])) {
-            $problems[] = 'settings: two per-member resolver rows name one gateway; the second is ignored';
-        } else {
-            $rows[$row['gateway']] = $address;
-        }
-    }
+    $rows = uu_rows_clean($raw['rows']);
+    array_push($problems, ...$rows['problems']);
     $probe = $raw['probe_name'];
     if (preg_match(UU_PROBE_NAME_MASK . 'D', $probe) !== 1) {
         $problems[] = 'settings: probe name is not a host name or "."; probing the root';
@@ -498,18 +492,18 @@ function uu_settings_clean(array $raw): array
         $problems[] = 'settings: gateway group is not an id; evaluating as none chosen';
         $uuid = '';
     }
-    return ['settings' => ['resolver' => $resolver, 'default' => $resolver, 'rows' => $rows, 'probe_name' => $probe,
+    return ['settings' => ['default' => $resolver, 'rows' => $rows['rows'], 'probe_name' => $probe,
                            'failback_delay' => $delay, 'group_uuid' => $uuid], 'problems' => $problems];
 }
 
 /**
  * The plugin's settings, cleaned by uu_settings_clean(). The group is the NAME of the gateway group the stored
- * UUID points at, '' when the group is gone or none is chosen. resolver is the Default (kept beside default while
- * apply, the rules and the status still read it), rows the per-member rows by gateway UUID. $warn logs each
+ * UUID points at, '' when the group is gone or none is chosen. default is the Default resolver, rows the per-member
+ * rows by gateway UUID. $warn logs each
  * substitution at LOG_WARNING: the evaluations pass it, status (polled every 30 s, so it would repeat the line) and
  * record do not.
  *
- * @return array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ * @return array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string}
  */
 function uu_settings(bool $warn = false): array
@@ -543,7 +537,6 @@ function uu_settings(bool $warn = false): array
         'enabled' => $mdl->enabled->isEqual('1'),
         'dry_run' => $mdl->dry_run->isEqual('1'),
         'group' => $group,
-        'resolver' => $clean['settings']['resolver'],
         'default' => $clean['settings']['default'],
         'rows' => $clean['settings']['rows'],
         'failback_delay' => $clean['settings']['failback_delay'],
@@ -686,7 +679,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
 /**
  * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
- * @param array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ * @param array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
@@ -696,7 +689,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  * @param list<string> $stateAddresses the saved state's map keys (uu_state_footprint()): routes covers them beside
  *     the planner's addresses (uu_plan_addresses()), so an address the plugin may still be routed to is read too
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -727,7 +720,6 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     uu_load_core();
     $now = intdiv(hrtime(true), 1000000000);
     $wall = time();
-    $resolver = $settings['resolver'];
 
     /* the group: tiers and trigger */
     $groups = (new \OPNsense\Routing\GatewayGroups())->getGroupsConfig();
@@ -775,15 +767,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
 
     /* each member's effective resolver: its row (by the gateway's UUID; a dynamic gateway has none) else the
      * Default */
-    $names = [];
-    foreach ($all as $name => $gw) {
-        $uuid = (string)($gw['uuid'] ?? '');
-        if ($uuid !== '') {
-            $names[$uuid] = (string)$name;
-        }
-    }
-    $effective = uu_member_resolvers(array_map('strval', array_keys($members)), $settings['rows'], $names,
-        $settings['default']);
+    $effective = uu_member_resolvers(array_map('strval', array_keys($members)), $settings['rows'],
+        uu_gateway_names($all), $settings['default']);
     $noNextHop = [];
     foreach ($members as $name => $m) {
         $members[$name]['resolver'] = $effective['resolvers'][$name] ?? '';
@@ -895,8 +880,10 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     }
 
     /* pf: the rules' verdict for the live checksum and the counting table */
-    $pf = uu_pf_observe($resolver, uu_ruled_members($members), uu_rules_record_load(UU_RULES_PATH), $wall,
-        $listRules, 'uu_pfctl_run');
+    $setting = uu_setting_addresses(['settings' => $settings, 'contract_input' => ['group_found' => $group !== null],
+        'members' => $members]);
+    $pf = uu_pf_observe(uu_ruled_members($members), $setting, $settings['default'], uu_rules_record_load(UU_RULES_PATH),
+        $wall, $listRules, 'uu_pfctl_run');
 
     return [
         'now' => $now,

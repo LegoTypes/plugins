@@ -315,14 +315,15 @@ uu_register_suite('wiring', function (): int {
             /* one line per read, so a php that dies on the second still shows the first */
             $code = 'require "/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php"; '
                 . 'echo json_encode(uu_state_read(UU_STATE_PATH)), PHP_EOL; '
-                . 'echo json_encode(uu_wanted_from(fn () => ["resolver" => "", "gateways" => null], fn () => [], '
+                . 'echo json_encode(uu_wanted_from(fn () => ["default" => "", "rows" => [], "gateways" => null], '
+                . 'fn () => [], '
                 . 'UU_STATE_PATH)), PHP_EOL;';
             $out = (string)shell_exec('/usr/bin/su -m nobody -c '
                 . escapeshellarg('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code)) . ' 2>&1');
             $lines = explode("\n", $out);
             $r9 = ['root' => uu_state_read(UU_STATE_PATH), 'out' => $out,
                    'nobody' => [json_decode($lines[0], true), json_decode($lines[1] ?? '', true)]];
-            $r9['root_wanted'] = uu_wanted_from(fn (): array => ['resolver' => '', 'gateways' => null],
+            $r9['root_wanted'] = uu_wanted_from(fn (): array => ['default' => '', 'rows' => [], 'gateways' => null],
                 fn (): array => [], UU_STATE_PATH);
         }, 'rename');
     } catch (\Throwable $e) {
@@ -341,9 +342,9 @@ uu_register_suite('wiring', function (): int {
         && ($nobody[0]['state'] ?? null) === $fresh);
     uu_check($t, '(r9) as nobody, the render\'s footprint read gives no footprint and nothing to log; as root, the '
         . 'footprint',
-        is_array($nobody[1]) && array_key_exists('footprint', $nobody[1]) && $nobody[1]['footprint'] === null
+        is_array($nobody[1]) && array_key_exists('footprints', $nobody[1]) && $nobody[1]['footprints'] === []
         && array_key_exists('footprint_problem', $nobody[1]) && $nobody[1]['footprint_problem'] === null
-        && ($r9['root_wanted']['footprint'] ?? null) === ['resolver' => '192.0.2.1', 'interface' => '']);
+        && ($r9['root_wanted']['footprints'] ?? null) === [['resolver' => '192.0.2.1', 'interface' => '']]);
     uu_check($t, '(r9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $had && !file_exists($aside)
         && ($had ? (string)file_get_contents(UU_STATE_PATH) : null) === $saved);
 
@@ -545,7 +546,7 @@ uu_register_suite('wiring', function (): int {
         . 'the same both times',
         is_array($s9Docs[0]) && $s9Docs[0] === $s9Docs[1] && $s9Docs[0]['mode'] === 'tunnel'
         && $s9Docs[0]['member'] === 'wg-a' && $s9Docs[0]['footprint'] === '10.2.0.1'
-        && $s9Docs[0]['last_switch']['to'] === 'wg-a' && $s9Docs[0]['resolver'] === uu_settings()['resolver']);
+        && $s9Docs[0]['last_switch']['to'] === 'wg-a' && $s9Docs[0]['resolver'] === uu_settings()['default']);
     uu_check($t, '(s9) …without a plugin log line between the marks, and the file\'s bytes and modification time unchanged',
         $s9 !== null && $s9['between'] === [] && $s9['same']);
     uu_check($t, '(s9) the saved state is back as it was', file_exists(UU_STATE_PATH) === $s9Had && !file_exists($s9Aside)
@@ -713,7 +714,6 @@ uu_register_suite('wiring', function (): int {
         if (is_array($doc) && is_array($doc['snapshot'] ?? null)) {
             $hop = ['kind' => 'member', 'next_hop' => '198.51.100.9', 'if' => 'wg9'];
             $doc['snapshot']['settings']['enabled'] = false;
-            $doc['snapshot']['settings']['resolver'] = '192.0.2.1';
             $doc['snapshot']['settings']['default'] = '192.0.2.1';
             $doc['snapshot']['settings']['rows'] = [];
             $doc['snapshot']['stop'] = null;

@@ -25,7 +25,7 @@ require_once __DIR__ . '/scratch.php';
  * a member's resolver through uu_test_resolver(), so the snapshot's copies agree.
  *
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -70,7 +70,7 @@ function uu_test_snapshot(): array
     return [
         'now' => 10000,
         'wall' => 1792400000,
-        'settings' => ['enabled' => true, 'dry_run' => false, 'group' => 'grp_test', 'resolver' => '10.2.0.1',
+        'settings' => ['enabled' => true, 'dry_run' => false, 'group' => 'grp_test',
                        'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'],
         'trigger' => 'downloss',
         'tiers' => [['wg-a'], ['wg-b']],
@@ -96,7 +96,7 @@ function uu_test_snapshot(): array
  * it points at the member.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -120,7 +120,7 @@ function uu_test_snapshot(): array
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -146,7 +146,7 @@ function uu_test_snapshot(): array
  */
 function uu_test_in_tunnel(array $s, string $member): array
 {
-    $resolver = $s['members'][$member]['resolver'] ?? $s['settings']['resolver'];
+    $resolver = $s['members'][$member]['resolver'] ?? $s['settings']['default'];
     $s['unbound']['live_root'] = [$resolver];
     return uu_test_route($s, ['present' => true, 'gateway' => $s['members'][$member]['next_hop'],
                               'interface' => $s['members'][$member]['if'], 'reject' => false, 'ours' => true],
@@ -158,7 +158,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  * it.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -183,7 +183,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @param array{present: bool, gateway: string, interface: string, reject: bool, ours: bool} $route
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -209,7 +209,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  */
 function uu_test_route(array $s, array $route, ?string $address = null): array
 {
-    $s['routes'][uu_ip_canonical($address ?? $s['settings']['resolver']) ?? ''] = $route;
+    $s['routes'][uu_ip_canonical($address ?? $s['settings']['default']) ?? ''] = $route;
     return $s;
 }
 
@@ -218,7 +218,7 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  * input), and the address's route read (absent) when the snapshot had none.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -242,7 +242,7 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -284,7 +284,7 @@ function uu_test_resolver(array $s, string $member, string $address): array
  * fresh state's addresses.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -308,7 +308,7 @@ function uu_test_resolver(array $s, string $member, string $address): array
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -336,7 +336,6 @@ function uu_test_default(array $s, string $address): array
 {
     $family = uu_ip_family($address) ?? '';
     $route = uu_plan_route($s, $s['settings']['default']);
-    $s['settings']['resolver'] = $address;
     $s['settings']['default'] = $address;
     $s['family'] = $family;
     $s['contract_input']['member_resolvers'] = [];
@@ -712,7 +711,7 @@ uu_register_suite('planner', function (): int {
     $tick['unbound']['control_ok'] = false;
     $tick['unbound']['live_root'] = null;
     $footprint = uu_test_plan_state('wg-a', $usable);
-    $footprint['addresses'] = [$tick['settings']['resolver'] => ['route' => null, 'forwarded' => true,
+    $footprint['addresses'] = [$tick['settings']['default'] => ['route' => null, 'forwarded' => true,
                                                                  'released_at' => null]];
     $d1 = uu_plan($tick, $footprint);
     $tick['now'] = $now + 60;
@@ -748,7 +747,7 @@ uu_register_suite('planner', function (): int {
     $answering = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
     $answering['settings']['enabled'] = false;
     $counted = uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS + 2, $now - UU_ESCALATE_MIN_SECONDS);
-    $counted['addresses'] = [$answering['settings']['resolver'] => ['route' => null, 'forwarded' => true,
+    $counted['addresses'] = [$answering['settings']['default'] => ['route' => null, 'forwarded' => true,
                                                                     'released_at' => null]];
     $never = true;
     $st = $counted;
@@ -1226,7 +1225,6 @@ uu_register_suite('planner', function (): int {
             $default = $clean['settings']['default'];
             $members = uu_member_resolvers(['wg-a', 'wg-b'], [], [], $default)['resolvers'];
             $s = $perMember();
-            $s['settings']['resolver'] = $default;
             $s['settings']['default'] = $default;
             $s = uu_test_resolver(uu_test_resolver($s, 'wg-a', $members['wg-a']), 'wg-b', $members['wg-b']);
             $s = uu_test_in_tunnel($s, 'wg-a');

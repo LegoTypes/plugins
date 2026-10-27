@@ -43,16 +43,32 @@ function uu_pfobserve_fixture(string $name): string
     return $text === false ? '' : $text;
 }
 
+/**
+ * The 1.3_2 capture pfctl_vsr_12.txt (members on opt1/wg1 and opt2/wg2, resolver 10.2.0.1) as this version's rules
+ * print: each pass under its interface-and-address label, with its states bound to the interface.
+ */
+function uu_pfobserve_vsr12(): string
+{
+    return str_replace(
+        ['label "' . md5('uu-pass-opt1') . '"', 'label "' . md5('uu-pass-opt2') . '"', 'keep state label'],
+        ['label "' . uu_label_pass('opt1', '10.2.0.1') . '"', 'label "' . uu_label_pass('opt2', '10.2.0.1') . '"',
+         'keep state (if-bound) label'],
+        uu_pfobserve_fixture('pfctl_vsr_12.txt')
+    );
+}
+
 uu_register_suite('pfobserve', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     $members = [
-        ['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1'],
-        ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2'],
+        ['name' => 'wg-a', 'interface' => 'opt1', 'if' => 'wg1', 'resolver' => '10.2.0.1'],
+        ['name' => 'wg-b', 'interface' => 'opt2', 'if' => 'wg2', 'resolver' => '10.2.0.1'],
     ];
     $resolver = '10.2.0.1';
+    $resolving = fn (array $members, string $resolver): array
+        => array_map(fn (array $m): array => ['resolver' => $resolver] + $m, $members);
     /* the plugin's own lines of a test VM listing (members on opt1/wg1 and opt2/wg2), with their counter lines */
-    $vsr = uu_pfobserve_fixture('pfctl_vsr_12.txt');
-    $verdict = fn (string $text): array => uu_rules_verdict($text, $resolver, $members);
+    $vsr = uu_pfobserve_vsr12();
+    $verdict = fn (string $text): array => uu_rules_verdict($text, $members, [$resolver]);
     /* every edit below must change the capture, or the case it builds would test nothing */
     $missed = [];
     $without = function (string $needle) use ($vsr, &$missed): string {
@@ -89,13 +105,135 @@ uu_register_suite('pfobserve', function (): int {
         uu_pf_show_addresses("   10.2.0.1\n   10.2.0.9\n") === ['10.2.0.1', '10.2.0.9']
         && uu_pf_show_addresses('') === []);
 
+    /* rules per member and address: a test VM listing of an IPv6 group whose members have resolvers of their own
+     * (wg-a6 on opt1/wg1 to 2001:db8:a::53, wg-b6 on opt2/wg2 to 2001:db8:b::53), with its counter lines */
+    $vsrV6 = uu_pfobserve_fixture('pfctl_vsr_v6.txt');
+    $members6 = [['name' => 'wg-a6', 'interface' => 'opt1', 'if' => 'wg1', 'resolver' => '2001:db8:a::53'],
+                 ['name' => 'wg-b6', 'interface' => 'opt2', 'if' => 'wg2', 'resolver' => '2001:db8:b::53']];
+    $setting6 = ['2001:db8:a::53', '2001:db8:b::53'];
+    /* every line of the listing that has all of the needles, edited; the case fails when no line has them */
+    $editV6 = function (array $needles, string $from, string $to) use ($vsrV6): ?string {
+        $hit = false;
+        $lines = array_map(function (string $line) use ($needles, $from, $to, &$hit): string {
+            foreach ($needles as $needle) {
+                if (!str_contains($line, $needle)) {
+                    return $line;
+                }
+            }
+            $hit = true;
+            return str_replace($from, $to, $line);
+        }, explode("\n", $vsrV6));
+        return $hit ? implode("\n", $lines) : null;
+    };
+    $verdictV6 = fn (?string $text): array => $text === null ? ['loaded' => true, 'problems' => ['no such line']]
+        : uu_rules_verdict($text, $members6, $setting6);
+    uu_check($t, '(v1) a listing of the per-member IPv6 rules reads loaded',
+        uu_try_case(fn (): bool => $vsrV6 !== '' && $verdictV6($vsrV6) === ['loaded' => true, 'problems' => []]));
+    uu_check($t, '(v2) a pass rendered inet to an IPv6 resolver reads "pass: wrong family"',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['on wg1 inet6 proto tcp'], ' inet6 ', ' inet '))
+            === ['loaded' => false, 'problems' => ['wg-a6 pass: wrong family']]));
+    uu_check($t, '(v2) with no backstop to one of two addresses, it is named missing',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['to 2001:db8:b::53 label "' . uu_label_backstop() . '"'],
+            'label "' . uu_label_backstop() . '"', 'label "' . uu_label_footprint() . '"'))
+            === ['loaded' => false, 'problems' => ['backstop block for 2001:db8:b::53 missing']]));
+    uu_check($t, '(v2) a counting block in the other family only reads "counting block: no inet6 rule"; a backstop in '
+        . 'the wrong family reads so',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['label "' . uu_label_block() . '"'], ' inet6 ', ' inet '))
+            === ['loaded' => false, 'problems' => ['counting block: no inet6 rule']]
+            && $verdictV6($editV6(['to 2001:db8:a::53 label "' . uu_label_backstop() . '"'], ' inet6 ', ' inet '))
+            === ['loaded' => false, 'problems' => ['backstop block: wrong family']]));
+    uu_check($t, '(v2) a backstop to an address outside the setting is the wrong target, and nothing more',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['to 2001:db8:b::53 label "' . uu_label_backstop() . '"'],
+            '2001:db8:b::53', '2001:db8:c::53'))
+            === ['loaded' => false, 'problems' => ['backstop block: wrong target']]));
+    uu_check($t, '(v2) one member\'s pass under the other\'s resolver is no pass of its own',
+        uu_try_case(fn (): bool => uu_rules_verdict($vsrV6, [['resolver' => '2001:db8:b::53'] + $members6[0],
+            $members6[1]], $setting6) === ['loaded' => false, 'problems' => ['no pass rule for wg-a6 (opt1)']]));
+    uu_check($t, 'a pass whose states are not if-bound reads "pass: missing if-bound", in either family; so does '
+        . '1.3_2\'s own listing under this version\'s labels',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['on wg2 inet6 proto udp'], ' (if-bound)', ''))
+            === ['loaded' => false, 'problems' => ['wg-b6 pass: missing if-bound']]
+            && uu_rules_verdict(str_replace(' (if-bound)', '', uu_pfobserve_vsr12()), $members, [$resolver])
+            === ['loaded' => false, 'problems' => ['wg-a pass: missing if-bound', 'wg-b pass: missing if-bound']]));
+    uu_check($t, 'if-bound among other state options still reads loaded',
+        uu_try_case(fn (): bool => $verdictV6($editV6(['on wg1 inet6 proto udp'], '(if-bound)',
+            '(max 10, if-bound, adaptive.start 6, adaptive.end 12)')) === ['loaded' => true, 'problems' => []]));
+    uu_check($t, '(v5) 1.3_2\'s capture with this version\'s labels reads loaded; under its own labels every pass is '
+        . 'missing',
+        uu_try_case(fn (): bool => uu_rules_verdict(uu_pfobserve_vsr12(), $members, [$resolver])
+            === ['loaded' => true, 'problems' => []]
+            && uu_rules_verdict(uu_pfobserve_fixture('pfctl_vsr_12.txt'), $members, [$resolver])['problems']
+            === ['no pass rule for wg-a (opt1)', 'no pass rule for wg-b (opt2)']));
+    uu_check($t, '(v7) a Default stored as 2001:DB8:A:0::53 reads the listing that prints 2001:db8:a::53 as loaded',
+        uu_try_case(fn (): bool => uu_rules_verdict($vsrV6, [['resolver' => '2001:DB8:A:0::53'] + $members6[0],
+            $members6[1]], ['2001:DB8:A:0::53', '2001:db8:b::53']) === ['loaded' => true, 'problems' => []]));
+    uu_check($t, '(v3) inputs change when one member\'s resolver changes, or the Default, never with the members\' '
+        . 'order',
+        uu_try_case(function () use ($members6): bool {
+            $in = uu_rules_inputs($members6, '');
+            $changed = $members6;
+            $changed[1]['resolver'] = '2001:db8:c::53';
+            return uu_rules_inputs(array_reverse($members6), '') === $in && uu_rules_inputs($changed, '') !== $in
+                && uu_rules_inputs($members6, '2001:db8:a::53') !== $in
+                && uu_rules_inputs([['resolver' => '2001:DB8:A::53'] + $members6[0], $members6[1]], '') === $in;
+        }));
+    $table2 = ['addresses' => 2, 'references' => 1, 'out_block' => 4];
+    uu_check($t, '(v4) table: {a, b} against the setting {b, a} is armed; {a} against {a, b} is filled',
+        uu_try_case(fn (): bool => uu_block_table_view($table2, ['2001:db8:a::53', '2001:db8:b::53'],
+            ['2001:db8:b::53', '2001:db8:a::53']) === ['armed' => true, 'fill' => false, 'blocked' => 4]
+            && uu_block_table_view($table2, ['2001:db8:a::53'], ['2001:db8:a::53', '2001:db8:b::53'])
+            === ['armed' => false, 'fill' => true, 'blocked' => 4]));
+    uu_check($t, '(v4) table: an unreferenced table never fills, whatever it holds; a listing in another spelling is '
+        . 'the same set',
+        uu_try_case(fn (): bool => uu_block_table_view(['references' => 0] + $table2, [], ['2001:db8:a::53'])['fill']
+            === false
+            && uu_block_table_view(['references' => 0] + $table2, ['192.0.2.1'], ['2001:db8:a::53'])['fill'] === false
+            && uu_block_table_view($table2, ['2001:DB8:A:0::53', '2001:db8:b::53'],
+                ['2001:db8:b::53', '2001:db8:a::53'])['armed']));
+    uu_check($t, '(v4) table: an orphan in its hold is no setting address: a table still holding it alone is filled, '
+        . 'one holding the setting is armed beside it, and one holding both is filled to leave it',
+        uu_try_case(fn (): bool => uu_block_table_view($table2, ['192.0.2.1'], ['192.0.2.9'])
+            === ['armed' => false, 'fill' => true, 'blocked' => 4]
+            && uu_block_table_view($table2, ['192.0.2.9'], ['192.0.2.9'])['armed']
+            && uu_block_table_view($table2, ['192.0.2.1', '192.0.2.9'], ['192.0.2.9'])
+            === ['armed' => false, 'fill' => true, 'blocked' => 4]));
+    uu_check($t, '(v4) table: an empty table with no setting address is never armed',
+        uu_try_case(fn (): bool => uu_block_table_view(['addresses' => 0] + $table2, [], [])
+            === ['armed' => false, 'fill' => false, 'blocked' => 4]));
+    /* the fill through a recording runner: each command line and each line logged */
+    $fill = function (array $addresses, int $rc): array {
+        $calls = [];
+        $logged = [];
+        uu_block_table_fill($addresses, function (string $cmd) use (&$calls, $rc): array {
+            $calls[] = $cmd;
+            return ['rc' => $rc, 'out' => ''];
+        }, function (string $msg, int $prio) use (&$logged): void {
+            $logged[] = [$prio, $msg];
+        });
+        return ['calls' => $calls, 'logged' => $logged];
+    };
+    uu_check($t, '(v6) fill, one address: 1.3_2\'s command, and its line or its failure line, byte for byte',
+        uu_try_case(fn (): bool => $fill(['10.2.0.1'], 0) === [
+                'calls' => ["/sbin/pfctl -t '__unboundupstream_block' -T replace '10.2.0.1' 2>/dev/null"],
+                'logged' => [[LOG_NOTICE, 'rules: the counting table holds 10.2.0.1 again']]]
+            && $fill(['10.2.0.1'], 1)['logged'] === [[LOG_WARNING, 'rules: the counting table could not be filled '
+                . 'with 10.2.0.1 (pfctl exit 1): blocked packets are not counted until it is']]));
+    uu_check($t, '(v6) fill, two addresses: one replace with both, the line naming both; nothing for none or for a '
+        . 'list with something that is no address',
+        uu_try_case(fn (): bool => $fill(['2001:db8:a::53', '2001:db8:b::53'], 0) === [
+                'calls' => ["/sbin/pfctl -t '__unboundupstream_block' -T replace '2001:db8:a::53' '2001:db8:b::53' "
+                    . '2>/dev/null'],
+                'logged' => [[LOG_NOTICE, 'rules: the counting table holds 2001:db8:a::53 2001:db8:b::53 again']]]
+            && $fill([], 0) === ['calls' => [], 'logged' => []]
+            && $fill(['192.0.2.9', '192.0.2.0/24'], 0) === ['calls' => [], 'logged' => []]));
+
     /* verdict */
     uu_check($t, 'verdict: the full set is loaded', $verdict($vsr) === ['loaded' => true, 'problems' => []]);
     uu_check($t, 'verdict: other rules in the listing change nothing',
         $verdict("block drop in log inet all label \"02f4bab031b57d1e30553ce08e0ec131\"\n" . $vsr
             . "\npass out on wan inet from (wan:network) to any keep state label \"1f2e3d4c5b6a79880918273645546372\"\n")
         === ['loaded' => true, 'problems' => []]);
-    $v = $verdict($without(uu_label_pass('opt2')));
+    $v = $verdict($without(uu_label_pass('opt2', '10.2.0.1')));
     uu_check($t, 'verdict: a member with no pass names it',
         !$v['loaded'] && $v['problems'] === ['no pass rule for wg-b (opt2)']);
     $v = $verdict($without('proto udp from (wg1)'));
@@ -135,8 +273,11 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, '(t5) show: a table address is listed canonical, whatever case or zeros pfctl printed',
         uu_try_case(fn (): bool => uu_pf_show_addresses("   2001:DB8:0:0::53\n   10.2.0.1\n") === ['2001:db8::53', '10.2.0.1']));
     /* an IPv6 resolver: the same listing with its address, and the boundary after the last group */
-    $vsr6 = str_replace(['inet ', '10.2.0.1'], ['inet6 ', '2001:db8::2:1'], $vsr);
-    $verdict6 = fn (string $text): array => uu_rules_verdict($text, '2001:db8::2:1', $members);
+    $vsr6 = str_replace(['inet ', '10.2.0.1', uu_label_pass('opt1', '10.2.0.1'), uu_label_pass('opt2', '10.2.0.1')],
+        ['inet6 ', '2001:db8::2:1', uu_label_pass('opt1', '2001:db8::2:1'), uu_label_pass('opt2', '2001:db8::2:1')],
+        $vsr);
+    $members6 = $resolving($members, '2001:db8::2:1');
+    $verdict6 = fn (string $text): array => uu_rules_verdict($text, $members6, ['2001:db8::2:1']);
     uu_check($t, '(t5) verdict: an IPv6 resolver\'s full set is loaded',
         uu_try_case(fn (): bool => $vsr6 !== $vsr && $verdict6($vsr6) === ['loaded' => true, 'problems' => []]));
     uu_check($t, '(t5) verdict: to 2001:db8::2:10 is not the resolver 2001:db8::2:1, in a pass and in the backstop',
@@ -162,15 +303,17 @@ uu_register_suite('pfobserve', function (): int {
                 && $block['problems'] === ['backstop block: wrong target'];
         }));
     uu_check($t, '(t5) verdict: a resolver in a non-canonical spelling reads the canonical listing, pass and backstop',
-        uu_try_case(fn (): bool => uu_rules_verdict($vsr6, '2001:DB8:0::2:1', $members)
+        uu_try_case(fn (): bool
+            => uu_rules_verdict($vsr6, $resolving($members, '2001:DB8:0::2:1'), ['2001:DB8:0::2:1'])
             === ['loaded' => true, 'problems' => []]));
     uu_check($t, '(t5) verdict: to 10.2.0.10 is still not the resolver 10.2.0.1 in the backstop',
         uu_try_case(fn (): bool => $verdict(str_replace('inet from any to 10.2.0.1 label', 'inet from any to 10.2.0.10 label',
             $vsr))['problems'] === ['backstop block: wrong target']));
-    $v = $verdict($edit('label "' . uu_label_pass('opt1') . '"', 'label "' . uu_label_pass('opt1') . '0"'));
+    $v = $verdict($edit('label "' . uu_label_pass('opt1', '10.2.0.1') . '"',
+        'label "' . uu_label_pass('opt1', '10.2.0.1') . '0"'));
     uu_check($t, 'verdict: a label that only starts with the member\'s is not its pass',
         !$v['loaded'] && $v['problems'] === ['no pass rule for wg-a (opt1)']);
-    $v = uu_rules_verdict($vsr, $resolver, [['if' => ''] + $members[0], $members[1]]);
+    $v = uu_rules_verdict($vsr, [['if' => ''] + $members[0], $members[1]], [$resolver]);
     uu_check($t, 'verdict: a member without a device is reported, not matched to any device',
         !$v['loaded'] && $v['problems'] === ['wg-a pass: no device']);
     /* the footprint's rules: the verdict reads neither, so the old address's rules
@@ -185,15 +328,17 @@ uu_register_suite('pfobserve', function (): int {
         uu_try_case(fn (): bool => $verdict($fpBlock(uu_label_backstop()))
             === ['loaded' => false, 'problems' => ['backstop block: wrong target']]));
     $fpPass = fn (string $label): string => $vsr
-        . "pass out quick on wg1 inet proto tcp from (wg1) to 192.0.2.1 port = domain flags S/SA keep state label "
-        . "\"{$label}\"\n"
-        . "pass out quick on wg1 inet proto udp from (wg1) to 192.0.2.1 port = domain keep state label \"{$label}\"\n";
+        . "pass out quick on wg1 inet proto tcp from (wg1) to 192.0.2.1 port = domain flags S/SA keep state (if-bound) "
+        . "label \"{$label}\"\n"
+        . "pass out quick on wg1 inet proto udp from (wg1) to 192.0.2.1 port = domain keep state (if-bound) label "
+        . "\"{$label}\"\n";
     uu_check($t, '(p3) a footprint pass to the old address on a member\'s device reads loaded under its own label',
         uu_try_case(fn (): bool
-            => $verdict($fpPass(uu_label_footprint_pass('opt1'))) === ['loaded' => true, 'problems' => []]));
+            => $verdict($fpPass(uu_label_footprint_pass('opt1', '192.0.2.1')))
+                === ['loaded' => true, 'problems' => []]));
     uu_check($t, '(p3) the same pass under the member\'s pass label reads "wg-a pass: wrong address" (why it gets '
         . 'its own)',
-        uu_try_case(fn (): bool => $verdict($fpPass(uu_label_pass('opt1')))
+        uu_try_case(fn (): bool => $verdict($fpPass(uu_label_pass('opt1', '10.2.0.1')))
             === ['loaded' => false, 'problems' => ['wg-a pass: wrong address']]));
     uu_check($t, 'fixture: every edit applies to the capture' . ($missed === [] ? '' : ': ' . implode(', ', $missed)),
         $missed === []);
@@ -202,15 +347,16 @@ uu_register_suite('pfobserve', function (): int {
             'counting block missing', 'backstop block missing']);
 
     /* inputs */
-    $in = uu_rules_inputs($resolver, $members);
+    $in = uu_rules_inputs($members, $resolver);
     $moved = $members;
     $moved[1]['if'] = 'wg7';
     uu_check($t, 'inputs: order-independent over the members',
-        uu_rules_inputs($resolver, array_reverse($members)) === $in);
+        uu_rules_inputs(array_reverse($members), $resolver) === $in);
     uu_check($t, 'inputs: change with the resolver, or a member\'s device or interface, or the members',
-        uu_rules_inputs('10.2.0.9', $members) !== $in && uu_rules_inputs($resolver, $moved) !== $in
-        && uu_rules_inputs($resolver, [['interface' => 'opt9'] + $members[0], $members[1]]) !== $in
-        && uu_rules_inputs($resolver, [$members[0]]) !== $in);
+        uu_rules_inputs($resolving($members, '10.2.0.9'), '10.2.0.9') !== $in
+        && uu_rules_inputs($moved, $resolver) !== $in
+        && uu_rules_inputs([['interface' => 'opt9'] + $members[0], $members[1]], $resolver) !== $in
+        && uu_rules_inputs([$members[0]], $resolver) !== $in);
 
     /* check */
     $good = ['loaded' => true, 'problems' => []];
@@ -239,7 +385,7 @@ uu_register_suite('pfobserve', function (): int {
     uu_check($t, 'check: an evaluation never reuses a recorded fault: it lists again and records the new verdict',
         $lists === 1 && $r === ['state' => 'loaded', 'problems' => [], 'verified_at' => 900,
             'record' => ['checksum' => '0xaa', 'inputs' => $in, 'at' => 900, 'loaded' => true, 'problems' => []]]);
-    $other = uu_rules_inputs('10.2.0.9', $members);
+    $other = uu_rules_inputs($resolving($members, '10.2.0.9'), '10.2.0.9');
     $lists = 0;
     $r = uu_rules_check($record, $other, $reads(['0xaa', '0xaa']), function () use (&$lists): string {
         $lists++;
@@ -399,24 +545,23 @@ uu_register_suite('pfobserve', function (): int {
     /* block table view */
     $armedTable = ['addresses' => 1, 'references' => 1, 'out_block' => 37];
     uu_check($t, 'table: empty is not armed and is filled',
-        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], $resolver, null)
-        === ['armed' => false, 'fill' => true, 'blocked' => 0]);
+        uu_try_case(fn (): bool => uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [],
+            [$resolver]) === ['armed' => false, 'fill' => true, 'blocked' => 0]));
     uu_check($t, 'table: armed with the resolver',
-        uu_block_table_view($armedTable, [$resolver], $resolver, $resolver)
-        === ['armed' => true, 'fill' => false, 'blocked' => 37]);
+        uu_try_case(fn (): bool => uu_block_table_view($armedTable, [$resolver], [$resolver])
+            === ['armed' => true, 'fill' => false, 'blocked' => 37]));
     uu_check($t, 'table: holding another address is not armed and is filled',
-        uu_block_table_view($armedTable, ['10.9.9.9'], $resolver, null)
-        === ['armed' => false, 'fill' => true, 'blocked' => 37]);
-    uu_check($t, 'table: no fill while the recorded resolver differs',
-        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], $resolver, '10.9.9.9')
-        === ['armed' => false, 'fill' => false, 'blocked' => 0]);
+        uu_try_case(fn (): bool => uu_block_table_view($armedTable, ['10.9.9.9'], [$resolver])
+            === ['armed' => false, 'fill' => true, 'blocked' => 37]));
     uu_check($t, 'table: no fill for an unreferenced table',
-        uu_block_table_view(['addresses' => 0, 'references' => 0, 'out_block' => 0], [], $resolver, null)
-        === ['armed' => false, 'fill' => false, 'blocked' => 0]);
+        uu_try_case(fn (): bool => uu_block_table_view(['addresses' => 0, 'references' => 0, 'out_block' => 0], [],
+            [$resolver]) === ['armed' => false, 'fill' => false, 'blocked' => 0]));
     uu_check($t, 'table: absent is not armed, no fill',
-        uu_block_table_view(null, [], $resolver, null) === ['armed' => false, 'fill' => false, 'blocked' => null]);
+        uu_try_case(fn (): bool => uu_block_table_view(null, [], [$resolver])
+            === ['armed' => false, 'fill' => false, 'blocked' => null]));
     uu_check($t, 'table: no fill without a resolver',
-        uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [], '', null)['fill'] === false);
+        uu_try_case(fn (): bool => uu_block_table_view(['addresses' => 0, 'references' => 1, 'out_block' => 0], [],
+            [])['fill'] === false));
 
     return uu_tally_report('pfobserve', $t);
 });

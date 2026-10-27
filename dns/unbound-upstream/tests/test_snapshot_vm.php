@@ -26,7 +26,7 @@ uu_register_suite('snapshot_vm', function (): int {
         printf("[SKIP] snapshot_vm: the test VM's proton_test_grp is not configured\n");
         return uu_tally_report('snapshot_vm', $t);
     }
-    $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp', 'resolver' => '10.2.0.1',
+    $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp',
                  'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'];
     $s = uu_snapshot($settings, [], null, false, []);
     uu_check($t, 'settings pass through, trigger is the group\'s', $s['settings'] === $settings && $s['trigger'] === 'downloss');
@@ -80,7 +80,7 @@ uu_register_suite('snapshot_vm', function (): int {
         str_contains($run['out'], 'Checksum:') && !str_contains($run['err'], 'Checksum:') && $temps() === $before);
     $live = uu_pf_checksum($run['out']);
     $r = $s['rules'];
-    $inputs = uu_rules_inputs($settings['resolver'], uu_ruled_members($s['members']));
+    $inputs = uu_rules_inputs(uu_ruled_members($s['members']), $settings['default']);
     uu_check($t, 'status snapshot: no listing, so verifying or the saved record\'s verdict, and no record to save',
         $r['record'] === null && ($saved !== null && $saved['checksum'] === $live
             && $saved['inputs'] === $inputs

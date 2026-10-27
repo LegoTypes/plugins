@@ -22,7 +22,7 @@ require_once __DIR__ . '/scratch.php';
  * The planner's test snapshot with Unbound's live root as Unbound prints it: bare addresses, its own order.
  *
  * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -62,7 +62,7 @@ function uu_test_apply_snapshot(): array
  * never-planned assertions see every case and where each starts.
  *
  * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
@@ -909,7 +909,7 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'a disabled tick with a silent channel short of the bound → the restore tried, no restart, the route stays, still tunnel',
         $p['action'] === 'stop' && !$p['escalate_restart'] && uu_test_acts($r['calls']) === [$restoreDot]
         && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a'
-        && uu_state_footprint($st) === [$silentStop['settings']['resolver']] && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
+        && uu_state_footprint($st) === [$silentStop['settings']['default']] && uu_test_logged($r['calls'], LOG_ERR, 'route stays'));
     $p = uu_plan($silentStop, $atBound);
     $r = uu_test_io($silentStop, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'],
         'restarts' => true]);
@@ -957,7 +957,7 @@ uu_register_suite('apply', function (): int {
     // Only a requested stop and the removal restart at once for a silent channel; every other stop waits
     // for the bound.
     $silentTail = [$restoreDot, 'restart', 'uc forward', $reject, $flushReq, $drain,
-        'route delete -inet -host ' . $silentTunnel['settings']['resolver']];
+        'route delete -inet -host ' . $silentTunnel['settings']['default']];
     $silentRoot = ['192.0.2.53', '2001:db8::53'];
     foreach ([UU_STOP_REQUEST => 'a requested stop', UU_STOP_REMOVE => 'the removal'] as $cause => $what) {
         $immediate = $silentTunnel;
@@ -1014,7 +1014,7 @@ uu_register_suite('apply', function (): int {
     $fpRefused = ['uc_fail' => ['forward_add'], 'restart_live' => $fpRoot];
     $stopAs = function (array $s, ?string $cause, array $o) use ($all, $usable): array {
         $s['stop'] = $cause;
-        $p = uu_plan($s, uu_test_plan_state('wg-a', $usable, 0, null, $s['settings']['resolver']));
+        $p = uu_plan($s, uu_test_plan_state('wg-a', $usable, 0, null, $s['settings']['default']));
         $r = uu_test_io($s, $all, $o);
         $st = uu_apply($p, $s, $r['io']);
         return ['action' => $p['action'], 'calls' => $r['calls'], 'acts' => uu_test_acts($r['calls']), 'st' => $st,

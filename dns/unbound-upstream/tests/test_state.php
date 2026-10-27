@@ -408,7 +408,7 @@ uu_register_suite('state', function (): int {
             }
             $route = ['present' => true, 'gateway' => '10.2.0.4', 'interface' => 'wg1', 'reject' => false,
                       'ours' => false];
-            $live = ['settings' => ['resolver' => '10.2.0.1'], 'routes' => ['10.2.0.1' => $route],
+            $live = ['settings' => ['default' => '10.2.0.1'], 'routes' => ['10.2.0.1' => $route],
                      'contract_input' => ['foreign' => ['10.2.0.1']]];
             $adopted = uu_route_adopt($live, $converted['addresses']);
             $otherRoute = ['gateway' => '10.2.0.5'] + $route;
