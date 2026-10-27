@@ -344,6 +344,16 @@ uu_register_suite('contract', function (): int {
                 'excluded' => ['wg-b']];
         }));
 
+    uu_check($t, '(r1) one failure refusing every member beside one about an address no member uses: only the first '
+        . 'is listed',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['foreign'] = ['10.2.0.1'];
+            $in['monitors'] = ['192.0.2.77' => ['wg-x']];
+            $c = uu_contract($in);
+            return !$c['ok'] && $c['failures'] === ['resolver route not ours'] && $c['notes'] === []
+                && $c['excluded'] === [];
+        }));
     uu_check($t, '(g4) group deleted, the Default a monitor with a route not ours: 1.3_2\'s three failures, in order',
         uu_try_case(function (): bool {
             $in = uu_test_contract_input();

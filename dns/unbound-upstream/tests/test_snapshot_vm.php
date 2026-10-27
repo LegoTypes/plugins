@@ -114,9 +114,11 @@ uu_register_suite('snapshot_vm', function (): int {
 
     /* (g12) an address the state alone holds, whose live route the plugin did not make: read into routes, and not
      * the contract's foreign (it is no planner address, so it excludes and refuses nothing). The route is a plain
-     * host route through loopback to a documentation address, added for this case and deleted after it */
+     * host route through loopback to a documentation address, added for this case and deleted after it, and before it
+     * too, so a route an interrupted earlier run left cannot stand in for this one */
     $g12 = null;
     try {
+        shell_exec('/sbin/route -q delete -host 198.51.100.77 > /dev/null 2>&1');
         shell_exec('/sbin/route -q add -host 198.51.100.77 127.0.0.1 > /dev/null 2>&1');
         $g12 = uu_snapshot($settings, [], null, false, ['198.51.100.77']);
     } catch (\Throwable $e) {

@@ -27,10 +27,11 @@ declare(strict_types=1);
  *
  * @param array{monitors: array<string, list<string>>, statics: array<string, list<string>>, foreign: list<string>,
  *     member_resolvers: array<string, string>} $c
+ * @param bool $anyResolver whether some member has a resolver (uu_contract() decides it once)
  * @return array{before: list<array{address: string, failure: string, members: list<string>}>,
  *     after: list<array{address: string, failure: string, members: list<string>}>}
  */
-function uu_contract_scoped(array $c): array
+function uu_contract_scoped(array $c, bool $anyResolver): array
 {
     $users = fn (string $address): array => array_map('strval', array_keys($c['member_resolvers'], $address, true));
     $before = [];
@@ -48,7 +49,6 @@ function uu_contract_scoped(array $c): array
     foreach ($c['foreign'] as $address) {
         $after[] = ['address' => $address, 'failure' => 'resolver route not ours'];
     }
-    $anyResolver = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '') !== [];
     $with = function (array $items) use ($users, $anyResolver): array {
         $out = [];
         foreach ($items as $item) {
@@ -86,7 +86,8 @@ function uu_contract(array $c): array
     $failures = [];
     $notes = [];
 
-    $scoped = uu_contract_scoped($c);
+    $resolvers = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '');
+    $scoped = uu_contract_scoped($c, $resolvers !== []);
     $scopedItems = array_merge($scoped['before'], $scoped['after']);
     $hit = [];
     foreach ($scopedItems as $item) {
@@ -94,7 +95,6 @@ function uu_contract(array $c): array
             $hit[$name] = true;
         }
     }
-    $resolvers = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '');
     /* with no member's resolver left, the items are the Default's: they refuse, as in 1.3 */
     $refused = $resolvers === [] ? $scopedItems !== [] : $hit !== [] && count($hit) === count($resolvers);
     $several = count(array_unique($resolvers)) > 1;
