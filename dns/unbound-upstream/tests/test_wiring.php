@@ -319,13 +319,10 @@ uu_register_suite('wiring', function (): int {
      * enabled on proton_test_grp in memory, every row change is checked against the whole model as a Save is: a
      * non-member's row, a second row for one gateway (the message lands on the other row) and a delete that leaves a
      * member with no resolver are refused unsaved; a member's row and a delete that leaves the model valid are saved.
-     * A copy of config.xml is taken first: should anything write it all the same, the copy is put back, core's Config
-     * reloads it, and the guard case fails */
+     * The stub has no write path; config.xml's md5 across the block is the guard that fails should anything write it */
     $ctl = null;
     $config = '/conf/config.xml';
     $configBefore = md5_file($config);
-    $configCopy = sys_get_temp_dir() . '/uu_wiring_config_' . bin2hex(random_bytes(6)) . '.xml';
-    $copied = copy($config, $configCopy);
     $configChanged = null;
     $saved = ['server' => $_SERVER, 'post' => $_POST, 'request' => $_REQUEST];
     $controller = fn (): object => new class extends \OPNsense\UnboundUpstream\Api\SettingsController {
@@ -453,22 +450,14 @@ uu_register_suite('wiring', function (): int {
         $_POST = $saved['post'];
         $_REQUEST = $saved['request'];
         $configChanged = md5_file($config) !== $configBefore;
-        if ($configChanged && $copied) {
+        if ($configChanged) {
             $plugin = @simplexml_load_file($config);
-            printf("  config.xml was written during the resolver actions; its plugin settings were %s; putting the "
-                . "copy back\n", preg_replace('/\s+/', ' ', (string)($plugin === false ? 'unreadable'
+            printf("  config.xml was written during the resolver actions; its plugin settings now read %s\n",
+                preg_replace('/\s+/', ' ', (string)($plugin === false ? 'unreadable'
                     : $plugin->OPNsense->UnboundUpstream->asXML())));
-            if (!copy($configCopy, $config)) {
-                printf("  the copy %s could not be put back\n", $configCopy);
-            }
-            \OPNsense\Core\Config::getInstance()->forceReload();
-        }
-        if ($copied && md5_file($config) === $configBefore) {
-            unlink($configCopy);
         }
     }
-    uu_check($t, '(l5) config.xml was not written by the resolver actions (a copy is put back when it was)',
-        $copied && $configChanged === false);
+    uu_check($t, '(l5) config.xml was not written by the resolver actions', $configChanged === false);
     $gwOption = $ctl['get']['resolver']['gateway'][$ctl['gateway'] ?? ''] ?? null;
     uu_check($t, '(l5) search_resolver lists the row with its member\'s name and address and searches both; '
         . 'get_resolver reads it, and with no id a new row\'s fields',
