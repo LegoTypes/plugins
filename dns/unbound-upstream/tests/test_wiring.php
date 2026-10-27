@@ -361,7 +361,8 @@ VOLT;
      * enabled on proton_test_grp in memory, every row change is checked against the whole model as a Save is: a
      * non-member's row, a second row for one gateway (the message lands on the other row) and a delete that leaves a
      * member with no resolver are refused unsaved; a member's row and a delete that leaves the model valid are saved.
-     * The stub has no write path; config.xml's md5 across the block is the guard that fails should anything write it */
+     * The stub has no write path; config.xml's md5 across the block is the guard that fails should anything write it,
+     * naming the backup the write left and the restore of the VM's base checkpoint that must come first */
     $ctl = null;
     $config = '/conf/config.xml';
     $configBefore = md5_file($config);
@@ -509,9 +510,11 @@ VOLT;
         $configChanged = md5_file($config) !== $configBefore;
         if ($configChanged) {
             $plugin = @simplexml_load_file($config);
-            printf("  config.xml was written during the resolver actions; its plugin settings now read %s\n",
-                preg_replace('/\s+/', ' ', (string)($plugin === false ? 'unreadable'
-                    : $plugin->OPNsense->UnboundUpstream->asXML())));
+            $backups = \OPNsense\Core\Config::getInstance()->getBackups();
+            printf("  config.xml was written during the resolver actions and is left written (its plugin settings now "
+                . "read %s; the write's backup is %s): restore the VM to the 'unbound-upstream base' checkpoint "
+                . "before anything else runs\n", preg_replace('/\s+/', ' ', (string)($plugin === false ? 'unreadable'
+                    : $plugin->OPNsense->UnboundUpstream->asXML())), (string)($backups[0] ?? 'none listed'));
         }
     }
     uu_check($t, '(l5) config.xml was not written by the resolver actions', $configChanged === false);
