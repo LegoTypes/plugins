@@ -263,7 +263,7 @@ function uu_wanted_from(callable $model, callable $records, string $statePath): 
         $members[] = ['name' => (string)$name, 'interface' => (string)($recs[$name]['interface'] ?? ''),
             'if' => (string)($recs[$name]['if'] ?? '')];
     }
-    $setting = $enabled && uu_ip_problem($resolver) === null ? (uu_ip_canonical($resolver) ?? '') : '';
+    $setting = $enabled && uu_resolver_refusal($resolver) === null ? (uu_ip_canonical($resolver) ?? '') : '';
     $found = uu_footprint_from_state($read['state'], $recs ?? [], $setting);
     if ($recsFailed && $found['footprint'] !== null) {
         /* the address passed uu_footprint_from_state()'s address check */
@@ -347,12 +347,11 @@ function uu_render_firewall(\OPNsense\Firewall\Plugin $fw, ?callable $wanted = n
         }
         $resolver = '';
         if ($w['enabled']) {
-            $refused = uu_ip_problem($w['resolver']);
+            $refused = uu_resolver_refusal($w['resolver']);
             if ($refused === null) {
                 $resolver = uu_ip_canonical($w['resolver']) ?? '';
             } else {
-                $emit('rules for the resolver setting not rendered: resolver is '
-                    . ($refused === 'not an address' ? 'not an IPv4 or IPv6 address' : $refused), 'err');
+                $emit('rules for the resolver setting not rendered: resolver is ' . $refused, 'err');
             }
         }
         if ($w['footprint_problem'] !== null) {

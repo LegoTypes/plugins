@@ -439,10 +439,9 @@ function uu_settings_clean(array $raw): array
     $problems = [];
     $resolver = $raw['resolver'];
     if ($resolver !== '') {
-        $refused = uu_ip_problem($resolver);
+        $refused = uu_resolver_refusal($resolver);
         if ($refused !== null) {
-            $problems[] = 'settings: the resolver is ' . ($refused === 'not an address' ? 'not an IPv4 or IPv6 address'
-                : $refused) . '; evaluating as unset';
+            $problems[] = 'settings: the resolver is ' . $refused . '; evaluating as unset';
             $resolver = '';
         } else {
             $resolver = uu_ip_canonical($resolver) ?? '';

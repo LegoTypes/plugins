@@ -80,6 +80,17 @@ function uu_ip_problem(string $addr): ?string
 }
 
 /**
+ * Why a setting's resolver is refused, as the sentence "the resolver is ..." finishes it: 'not an IPv4 or IPv6 address'
+ * for a value with no family, else uu_ip_problem()'s word; null when the address may be a resolver. The one decision
+ * the settings check, the render's reader and the hook share.
+ */
+function uu_resolver_refusal(string $addr): ?string
+{
+    $problem = uu_ip_problem($addr);
+    return $problem === 'not an address' ? 'not an IPv4 or IPv6 address' : $problem;
+}
+
+/**
  * A next hop for comparing: canonical, with a %scope dropped (route(8) prints a link-local hop as fe80::1%gif0). A
  * string that is no address (empty, dynamic) comes back as it is.
  */

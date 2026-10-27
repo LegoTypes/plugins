@@ -145,8 +145,9 @@ function uu_rules_block_problems(array $lines, string $what, string $target): ar
 /**
  * Whether the plugin's rules are in the listing, member by member (tcp and udp pass, by label) and block by block
  * (the counting block and the backstop), with the shape of each checked by keyword on its own line. A device, an
- * address or a target is bounded like a word that may not continue with a word character or a dot, so wg1 is
- * not wg10 or wg1.65 and 10.2.0.1 is not 10.2.0.10.
+ * address or a target is bounded like a word that may not continue with a word character, a dot, a colon or a
+ * slash (a device: a word character or a dot), so wg1 is not wg10 or wg1.65, 10.2.0.1 is not 10.2.0.10 and
+ * 2001:db8::2:1 is not 2001:db8::2:1:5 or 2001:db8::2:1/64.
  *
  * @param list<array{name: string, interface: string, if: string}> $members
  * @return array{loaded: bool, problems: list<string>}

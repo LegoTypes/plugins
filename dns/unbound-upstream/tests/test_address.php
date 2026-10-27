@@ -68,6 +68,15 @@ uu_register_suite('address', function (): int {
     uu_check($t, '(t2) problems: a documentation address of each family has none',
         uu_try_case(fn (): bool => $problem('2001:db8::53') === null && $problem('192.0.2.53') === null));
 
+    uu_check($t, '(t2) refusal wording: one sentence ending per problem kind, null for a usable address',
+        uu_try_case(fn (): bool => uu_resolver_refusal('dns.example') === 'not an IPv4 or IPv6 address'
+            && uu_resolver_refusal('') === 'not an IPv4 or IPv6 address'
+            && uu_resolver_refusal('::ffff:192.0.2.1') === 'not an IPv4 or IPv6 address'
+            && uu_resolver_refusal('fe80::1') === 'link-local' && uu_resolver_refusal('169.254.0.1') === 'link-local'
+            && uu_resolver_refusal('ff02::1') === 'multicast' && uu_resolver_refusal('224.0.0.1') === 'multicast'
+            && uu_resolver_refusal('::') === 'unspecified' && uu_resolver_refusal('0.0.0.0') === 'unspecified'
+            && uu_resolver_refusal('::1') === 'loopback' && uu_resolver_refusal('127.0.0.1') === 'loopback'
+            && uu_resolver_refusal('2001:db8::53') === null && uu_resolver_refusal('192.0.2.53') === null));
     uu_check($t, '(t3) route hop: a link-local next hop takes its device, any other is unchanged',
         uu_try_case(fn (): bool => uu_route_hop('fe80::1', 'gif0') === 'fe80::1%gif0'
             && uu_route_hop('FE80:0::1', 'gif0') === 'fe80::1%gif0'
