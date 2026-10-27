@@ -17,7 +17,13 @@ last line end at or before MAX_BYTES, so a line the cut falls in is dropped whol
 counts. A link, anything but a regular file, and a file that cannot be opened or read are skipped and counted.
 Prints one JSON object on stdout, {"texts": [...], "skipped": n}: each kept file's bytes, base64, in order, and the
 number of *.conf entries skipped, and exits 0; the caller reads any skip as a configuration it could not read,
-since the skipped file may hold the root zone. A DIR that is not reached this way is a failed read, never an empty
+since the skipped file may hold the root zone.
+
+    python3 -I zone_read.py --file PATH MAX_BYTES
+
+is the same for one file: PATH's directory is reached as DIR is, the file is opened and read as an entry is, and the
+JSON is the same, the text of that one file or skipped 1 (a link, anything but a regular file, a file that cannot be
+opened or read, a missing file). A DIR that is not reached this way is a failed read, never an empty
 one ("could not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on
 stdout, exit 1, as for any other failure, which names only the exception's type on stderr, never a file's text. A
 usage error exits 2.
@@ -78,9 +84,30 @@ def read_entry(dir_fd, name, max_bytes):
     return data
 
 
+def main_file(path, max_bytes):
+    """The --file form: the one file as the directory form prints it, or exit 1 when its directory is not reached."""
+    directory, name = os.path.split(path)
+    if name in ('', '.', '..'):
+        sys.stderr.write('zone_read.py: PATH names no file\n')
+        return 1
+    dir_fd = open_dir(directory)
+    if dir_fd is None:
+        sys.stderr.write('zone_read.py: PATH\'s directory not reached without following a link\n')
+        return 1
+    try:
+        data = read_entry(dir_fd, os.fsencode(name), max_bytes)
+    finally:
+        os.close(dir_fd)
+    texts = [] if data is None else [base64.b64encode(data).decode('ascii')]
+    sys.stdout.write(json.dumps({'texts': texts, 'skipped': 1 if data is None else 0}) + '\n')
+    return 0
+
+
 def main(argv):
+    if len(argv) == 4 and argv[1] == '--file' and argv[3].isdigit():
+        return main_file(argv[2], int(argv[3]))
     if len(argv) != 3 or not argv[2].isdigit():
-        sys.stderr.write('usage: zone_read.py DIR MAX_BYTES\n')
+        sys.stderr.write('usage: zone_read.py DIR MAX_BYTES | --file PATH MAX_BYTES\n')
         return 2
     max_bytes = int(argv[2])
     dir_fd = open_dir(argv[1])

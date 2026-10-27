@@ -157,3 +157,31 @@ function uu_root_zone(?array $texts): array
     return ['shape' => $problems === [] ? 'one' : 'unrestorable', 'addrs' => $addrs, 'tls' => $tls,
             'problems' => $problems];
 }
+
+/**
+ * What Unbound's generated unbound.conf says about the address families and the outgoing interface, which decide
+ * whether a resolver can be reached from the tunnel's own address. Per family the last "do-ip4:" / "do-ip6:" line
+ * wins, as Unbound reads it, and none means yes (Unbound's default, and the text of a file read in part), so only an
+ * explicit "no" refuses; a comment after the value is not part of it. outgoing_interface is any "outgoing-interface:"
+ * line with a value. A line is matched whole, so a similar name or a comment line says nothing. Pure.
+ *
+ * @return array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}
+ */
+function uu_unbound_conf_facts(string $text): array
+{
+    $doIp4 = true;
+    $doIp6 = true;
+    $outgoing = false;
+    foreach (preg_split('/\R/', $text) ?: [] as $line) {
+        if (preg_match('/^\s*do-ip([46]):\s*(yes|no)\s*(#.*)?$/D', $line, $m) === 1) {
+            if ($m[1] === '4') {
+                $doIp4 = $m[2] === 'yes';
+            } else {
+                $doIp6 = $m[2] === 'yes';
+            }
+        } elseif (preg_match('/^\s*outgoing-interface:\s*[^\s#]/', $line) === 1) {
+            $outgoing = true;
+        }
+    }
+    return ['do_ip4' => $doIp4, 'do_ip6' => $doIp6, 'outgoing_interface' => $outgoing];
+}

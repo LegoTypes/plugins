@@ -260,6 +260,22 @@ function uu_group_family(array $members, array $tiers): array
 }
 
 /**
+ * The addresses of a family other than the group's, in the order given: the resolvers the contract refuses by address.
+ * A group of no family (none found, or no member with a family) has none to mismatch.
+ *
+ * @param string $family the group's ('inet', 'inet6' or '')
+ * @param list<string> $addresses canonical
+ * @return list<string>
+ */
+function uu_family_mismatch(string $family, array $addresses): array
+{
+    if ($family === '') {
+        return [];
+    }
+    return array_values(array_filter($addresses, fn (string $address): bool => uu_ip_family($address) !== $family));
+}
+
+/**
  * The setting's addresses: the planner's addresses (uu_plan_addresses(): the members' effective resolvers, or the
  * Default when the group has no member) while the plugin is enabled and its group is found, as 1.3_2 rendered its
  * resolver; none otherwise, so a disabled plugin's recorded addresses stay footprints. They decide what is a

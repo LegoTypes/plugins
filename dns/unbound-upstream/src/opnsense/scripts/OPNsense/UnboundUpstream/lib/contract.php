@@ -18,6 +18,8 @@ declare(strict_types=1);
  * Contract = array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>}
  */
 
+require_once __DIR__ . '/address.php';
+
 /**
  * The address-scoped failures in 1.3's words, each with the address it is about and the members whose effective
  * resolver it is: every monitor match, then every static route, then every foreign route, the last apart since the
@@ -68,11 +70,18 @@ function uu_contract_scoped(array $c, bool $anyResolver): array
  *     unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
  *     resolver_notes: list<string>, no_next_hop: list<string>, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>} $c
+ *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *     unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *     mixed_family: bool, family_mismatch: list<string>} $c
  *   monitors and statics are keyed by address (the gateways whose monitor it is, the static routes it lies in),
  *   foreign lists the addresses whose route the plugin did not make, member_resolvers is each member's effective
  *   resolver ('' for none), resolver_notes uu_member_resolvers()'s notes, no_next_hop the members whose gateway
- *   record has no address to route through
+ *   record has no address to route through, unbound_conf uu_unbound_conf_facts() of the generated unbound.conf (null:
+ *   unreadable), group_family the group's family (uu_group_family()), mixed_family whether it has members of both,
+ *   family_mismatch the effective resolvers of the other family (uu_family_mismatch()). The whole-plugin failures
+ *   these add refuse tunnel mode for every member: the configuration would not send the group's family, an outgoing
+ *   interface is set, the group has both families, a resolver is of the other family, and Unbound's configured root
+ *   zone names an effective resolver (compared as the planner compares a live root with it: bare, canonical)
  * @return array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>}
  *   an address-scoped failure is a failure, in 1.3's words, when the members its addresses exclude are every member
  *   that has a resolver (or no member has one, and the failure is the Default's), with " (<address>)" appended only
@@ -139,6 +148,43 @@ function uu_contract(array $c): array
     } elseif ($zone['addrs'] === []) {
         /* fallback would forward_add an empty list */
         $failures[] = 'root zone has no forward-addr';
+    }
+
+    /* Unbound's own root zone is the owner's forwarding, which the plugin cannot tell from its own */
+    $effective = [];
+    foreach ($resolvers as $name => $address) {
+        $effective[uu_apply_bare([$address])[0]][] = (string)$name;
+    }
+    foreach (uu_apply_bare($zone['addrs']) as $address) {
+        if (isset($effective[$address])) {
+            $failures[] = "Unbound's root zone forwards to $address, the resolver of "
+                . implode(', ', $effective[$address]) . ': remove it from the zone or choose another resolver';
+        }
+    }
+
+    /* the generated configuration, read once: what it would not send, and a read that failed */
+    $conf = $c['unbound_conf'];
+    if ($conf === null) {
+        $failures[] = 'unbound.conf unreadable';
+    } else {
+        if ($c['group_family'] === 'inet' && !$conf['do_ip4']) {
+            $failures[] = "Unbound's generated configuration says do-ip4: no";
+        }
+        if ($c['group_family'] === 'inet6' && !$conf['do_ip6']) {
+            $failures[] = "Unbound's generated configuration says do-ip6: no (IPv6 is not allowed in System: "
+                . 'Settings: General)';
+        }
+        if ($conf['outgoing_interface']) {
+            $failures[] = "Unbound's Outgoing Network Interfaces is set: its queries would not leave from the "
+                . "tunnel's own address";
+        }
+    }
+    if ($c['mixed_family']) {
+        $failures[] = 'the group has IPv4 and IPv6 members';
+    }
+    foreach ($c['family_mismatch'] as $address) {
+        $failures[] = 'resolver ' . $address . (str_contains($address, ':') ? ' is IPv6 but the group is IPv4'
+            : ' is IPv4 but the group is IPv6');
     }
 
     if ($c['fib_sync_ms'] === null) {

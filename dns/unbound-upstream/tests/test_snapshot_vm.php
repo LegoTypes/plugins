@@ -65,6 +65,13 @@ uu_register_suite('snapshot_vm', function (): int {
         && $c['foreign'] === [] && $c['unmonitored_members'] === [] && $c['monitors'] === []
         && $c['statics'] === [] && $c['fib_sync_ms'] === 1000 && $c['zone'] === $s['zone']
         && $c['cacheflush'] === false);
+    /* (c6) the generated configuration, read as core wrote it, on a base that allows both families */
+    uu_check($t, '(c6) the live unbound.conf reads do-ip4 and do-ip6 on and no outgoing interface; the contract input '
+        . 'carries them with the group\'s family and no mix or mismatch',
+        uu_try_case(fn (): bool => uu_unbound_conf_facts((string)uu_conf_file_text())
+                === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
+            && $c['unbound_conf'] === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
+            && $c['group_family'] === 'inet' && $c['mixed_family'] === false && $c['family_mismatch'] === []));
     /* the constants are core's commands as this VM's core runs them, so a drift note means core changed */
     uu_check($t, 'contract input: core\'s filter reload, cron restart and unbound restart are the commands a removal falls back to',
         array_key_exists('core_commands', $c) && $c['core_commands'] === []);

@@ -41,7 +41,9 @@ require_once __DIR__ . '/scratch.php';
  *         resolver_notes: list<string>, no_next_hop: list<string>,
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -2619,13 +2621,14 @@ uu_register_suite('apply', function (): int {
             $runs = [$first, $applyRun($s, $first['st'])];
             return true;
         });
-        uu_check($t, "(i1) $family, configured root [A], from fallback with a candidate: one entry with no "
-            . 'forward_add (flush_infra and forward), tunnel mode on wg-a; the next tick only checks',
-            $ok && $runs !== null && $runs[0]['p']['action'] === 'tunnel'
-            && $runs[0]['acts'] === array_merge(["probe_direct $a .", "uc flush_infra $a", 'uc forward'], $through)
-            && $runs[0]['st']['mode'] === 'tunnel' && $runs[0]['st']['member'] === 'wg-a'
-            && $runs[1]['p']['action'] === 'none' && !$runs[1]['p']['reassert']
-            && $runs[1]['acts'] === array_merge(["probe_direct $a ."], $through)
+        uu_check($t, "(i1) $family, configured root [A], from fallback with a candidate: the contract refuses tunnel "
+            . 'mode (the zone names A), so neither tick enters it: nothing is called, logged or switched, and the '
+            . 'refusal is in the plan',
+            $ok && $runs !== null && $runs[0]['p']['action'] === 'none' && $runs[0]['st']['mode'] === 'fallback'
+            && $runs[0]['calls']->getArrayCopy() === [] && $runs[0]['acts'] === []
+            && uu_test_reason_has($runs[0]['p']['reasons'], "contract: Unbound's root zone forwards to $a,")
+            && $runs[1]['p']['action'] === 'none' && $runs[1]['calls']->getArrayCopy() === []
+            && $runs[1]['acts'] === []
             && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch']));
 
         /* (a26) tunnel mode's route repair reaching rejectOthers() with no checkpoint before it: wg-a's own resolver F,

@@ -146,6 +146,14 @@ uu_register_suite('address', function (): int {
             && uu_group_family(['wg-a' => $proto(''), 'wg-b' => $proto('inet')], [['wg-a'], ['wg-b']])
                 === ['family' => 'inet', 'mixed' => false]));
 
+    uu_check($t, '(c5) family mismatch: the addresses of the other family, in order; none for a group of no family',
+        uu_try_case(fn (): bool => uu_family_mismatch('inet', ['192.0.2.53', '2001:db8::53', '198.51.100.9',
+                '2001:db8::54']) === ['2001:db8::53', '2001:db8::54']
+            && uu_family_mismatch('inet6', ['192.0.2.53', '2001:db8::53', '198.51.100.9']) === ['192.0.2.53',
+                '198.51.100.9']
+            && uu_family_mismatch('inet', ['192.0.2.53']) === [] && uu_family_mismatch('inet6', []) === []
+            && uu_family_mismatch('', ['192.0.2.53', '2001:db8::53']) === []));
+
     uu_check($t, '(p15) next hop routable: an address of either family, a link-local one with its scope; never empty '
         . 'or dynamic',
         uu_try_case(fn (): bool => uu_next_hop_routable('10.2.0.2') && uu_next_hop_routable('fd00::3:2')

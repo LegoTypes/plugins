@@ -746,6 +746,41 @@ uu_register_suite('wiring', function (): int {
         $e5 !== null && $e5['rc'] === 0
         && str_contains($e5['out'], '[dry] would run: route -n delete -inet -host 192.0.2.1'));
 
+    /* (c7) core rewrites unbound.conf while the unbound_start hook's evaluation reads it: a read that lands mid-rewrite
+     * may be short (no do-ip line means yes) but never fails, or a restart would send the plugin to fallback for a
+     * minute. 20 reads 100 ms apart across a restart; Unbound is running again when the case ends */
+    $conf = '/var/unbound/unbound.conf';
+    clearstatcache(true, $conf);
+    $mtime = (int)filemtime($conf);
+    $unreadable = 0;
+    $wrong = [];
+    $running = false;
+    $ran = uu_try_case(function () use (&$unreadable, &$wrong, &$running): bool {
+        shell_exec('/usr/local/sbin/configctl unbound restart > /dev/null 2>&1 &');
+        for ($i = 0; $i < 20; $i++) {
+            $text = uu_conf_file_text();
+            if ($text === null) {
+                $unreadable++;
+            } else {
+                $facts = uu_unbound_conf_facts($text);
+                if (!$facts['do_ip4'] || $facts['outgoing_interface']) {
+                    $wrong[] = $facts;
+                }
+            }
+            usleep(100000);
+        }
+        for ($deadline = hrtime(true) + 60000000000; hrtime(true) < $deadline && !$running; usleep(500000)) {
+            $running = trim((string)shell_exec('/bin/pgrep -x unbound')) !== '' && file_exists('/var/run/unbound.pid');
+        }
+        return true;
+    });
+    clearstatcache(true, $conf);
+    printf("  c7: %d unreadable, %d wrong, unbound.conf %s\n", $unreadable, count($wrong),
+        (int)filemtime($conf) !== $mtime ? 'rewritten by the restart' : 'NOT rewritten');
+    uu_check($t, '(c7) 20 reads of unbound.conf across a configctl unbound restart: never unreadable, never do-ip4 '
+        . 'off or an outgoing interface, the restart rewrote the file, and Unbound runs again',
+        $ran && $unreadable === 0 && $wrong === [] && (int)filemtime($conf) !== $mtime && $running);
+
     $before = uu_test_evaluations();
     shell_exec('/usr/local/sbin/pluginctl -c unbound_start > /dev/null 2>&1');
     $seen = false;

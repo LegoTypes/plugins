@@ -386,7 +386,9 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         resolver_notes: list<string>, no_next_hop: list<string>,
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
@@ -412,7 +414,9 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         resolver_notes: list<string>, no_next_hop: list<string>,
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -577,8 +581,37 @@ function uu_live_root(): ?array
 function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR__ . '/../zone_read.py',
     int $seconds = UU_ZONE_READ_SECONDS): ?array
 {
+    $doc = uu_zone_read_run([$dir], $helper, $seconds);
+    return $doc === null || $doc['skipped'] > 0 ? null : $doc['texts'];
+}
+
+/**
+ * Unbound's generated unbound.conf (a single file, not a directory's *.conf), read as uu_zone_texts() reads a
+ * directory's: zone_read.py --file opens its directory without following a link and the file as a regular file only.
+ * Null when the read failed in any way uu_zone_texts() names (the helper cannot start, runs past $seconds, exits
+ * non-zero, prints what uu_zone_decode() refuses) and when the file is a link, anything but a regular file, missing
+ * or unreadable; the contract then refuses tunnel mode, since "could not look" is never "do-ip6 is on". It logs
+ * nothing. $path, $helper and $seconds are for the tests.
+ */
+function uu_conf_file_text(string $path = '/var/unbound/unbound.conf', string $helper = __DIR__ . '/../zone_read.py',
+    int $seconds = UU_ZONE_READ_SECONDS): ?string
+{
+    $doc = uu_zone_read_run(['--file', $path], $helper, $seconds);
+    return $doc === null || $doc['skipped'] > 0 || count($doc['texts']) !== 1 ? null : $doc['texts'][0];
+}
+
+/**
+ * zone_read.py run with $args (a DIR, or --file and a PATH) and UU_FILE_MAX_BYTES, from its argv (no shell), for at
+ * most $seconds, its stdout decoded (uu_zone_decode()); null for a helper that cannot start, runs past that (it is
+ * killed), exits non-zero or prints what the decoder refuses.
+ *
+ * @param list<string> $args
+ * @return ?array{texts: list<string>, skipped: int}
+ */
+function uu_zone_read_run(array $args, string $helper, int $seconds): ?array
+{
     $pipes = [];
-    $proc = @proc_open([UU_PYTHON, '-I', $helper, $dir, (string)UU_FILE_MAX_BYTES],
+    $proc = @proc_open([UU_PYTHON, '-I', $helper, ...$args, (string)UU_FILE_MAX_BYTES],
         [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'w']], $pipes);
     if (!is_resource($proc)) {
         return null;
@@ -615,8 +648,7 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
         }
         proc_close($proc);
     }
-    $doc = $exit === 0 ? uu_zone_decode($out) : null;
-    return $doc === null || $doc['skipped'] > 0 ? null : $doc['texts'];
+    return $exit === 0 ? uu_zone_decode($out) : null;
 }
 
 /**
@@ -708,7 +740,9 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *         resolver_notes: list<string>, no_next_hop: list<string>,
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
@@ -778,6 +812,9 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     }
     /* the planner's addresses: the effective resolvers, or the Default when the group has no member */
     $addresses = uu_plan_addresses(['settings' => $settings, 'members' => $members]);
+    /* the group's family, and the effective resolvers of the other one (the family of an address is its own) */
+    $groupFamily = uu_group_family($members, $tiers);
+    $mismatch = uu_family_mismatch($groupFamily['family'], $addresses);
     $monitors = [];
     foreach ($addresses as $address) {
         $monitoring = uu_resolver_monitors($all, $address);
@@ -826,6 +863,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $pidAlive = isvalidpid('/var/run/unbound.pid');
     $liveRoot = $pidAlive ? uu_live_root() : null;
     $zone = uu_root_zone(uu_zone_texts());
+    $confText = uu_conf_file_text();
+    $unboundConf = $confText === null ? null : uu_unbound_conf_facts($confText);
 
     /* the route of every planner address and every address the state's map holds; a foreign route is the contract's
      * only for a planner address (one the state alone holds excludes nobody) */
@@ -891,7 +930,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
         'settings' => $settings,
         'trigger' => $trigger,
         'tiers' => $tiers,
-        'family' => uu_group_family($members, $tiers)['family'],
+        'family' => $groupFamily['family'],
         'members' => $members,
         'probes' => $probes,
         'named' => $named,
@@ -924,6 +963,10 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             'group_found' => $group !== null,
             'members' => count($members),
             'core_commands' => uu_core_commands_changed(),
+            'unbound_conf' => $unboundConf,
+            'group_family' => $groupFamily['family'],
+            'mixed_family' => $groupFamily['mixed'],
+            'family_mismatch' => $mismatch,
         ],
         'rules' => $pf['rules'],
         'block_table' => $pf['block_table'],
