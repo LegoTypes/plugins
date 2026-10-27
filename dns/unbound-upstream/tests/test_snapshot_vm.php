@@ -72,6 +72,64 @@ uu_register_suite('snapshot_vm', function (): int {
                 === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
             && $c['unbound_conf'] === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
             && $c['group_family'] === 'inet' && $c['mixed_family'] === false && $c['family_mismatch'] === []));
+    /* a read that lands in a rewrite of the live file sees a prefix of it: none refuses what the whole does not */
+    uu_check($t, '(c6) no byte prefix of the live unbound.conf reports a refusal',
+        uu_try_case(function (): bool {
+            $text = (string)uu_conf_file_text();
+            for ($n = 0; $n <= strlen($text); $n++) {
+                $f = uu_unbound_conf_facts(substr($text, 0, $n));
+                if (!$f['do_ip4'] || !$f['do_ip6'] || $f['outgoing_interface']) {
+                    return false;
+                }
+            }
+            return $text !== '';
+        }));
+    /* the four contract inputs come from the snapshot's own reads: an IPv6 group with an IPv4 Default, and the same
+     * group with an IPv4 member added in memory (config.xml is put back and compared) */
+    $far6 = ['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp', 'default' => '10.2.0.1', 'rows' => [],
+             'failback_delay' => 120, 'probe_name' => '.'];
+    if (isset((new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()['uu_far6_grp'])) {
+        $v6 = uu_snapshot($far6, [], null, false, []);
+        uu_check($t, '(c6) an IPv6 group with an IPv4 Default: group_family inet6, the Default listed as a mismatch, '
+            . 'no mix, and the contract refuses by that address alone',
+            uu_try_case(fn (): bool => $v6['contract_input']['group_family'] === 'inet6'
+                && $v6['family'] === 'inet6' && $v6['contract_input']['family_mismatch'] === ['10.2.0.1']
+                && $v6['contract_input']['mixed_family'] === false
+                && uu_contract($v6['contract_input'])['failures']
+                    === ['resolver 10.2.0.1 is IPv4 but the group is IPv6']));
+        $v6ok = uu_snapshot(['default' => '2001:db8:a::53'] + $far6, [], null, false, []);
+        uu_check($t, '(c6) the same group with an IPv6 Default: nothing to refuse by address',
+            uu_try_case(fn (): bool => $v6ok['contract_input']['family_mismatch'] === []
+                && $v6ok['contract_input']['group_family'] === 'inet6'));
+        $configXml = fn (): string => (string)preg_replace('/ persisted_at="[^"]*"/', '',
+            (string)\OPNsense\Core\Config::getInstance()->object()->asXML());
+        $before = $configXml();
+        $mixed = null;
+        $node = null;
+        $item2 = '';
+        try {
+            foreach (\OPNsense\Core\Config::getInstance()->object()->xpath('//gateways/gateway_group') ?: [] as $g) {
+                if ((string)$g->name === 'uu_far6_grp') {
+                    $node = $g;
+                    $item2 = (string)$g->item2;
+                }
+            }
+            if ($node !== null) {
+                $node->item2 = $item2 . ',wg-test-429';
+                $mixed = uu_snapshot($far6, [], null, false, []);
+            }
+        } finally {
+            if ($node !== null) {
+                $node->item2 = $item2;
+            }
+        }
+        uu_check($t, '(c6) a group with an IPv6 and an IPv4 member: mixed_family, no per-address mismatch, and the '
+            . 'contract says so; config.xml is as it was',
+            uu_try_case(fn (): bool => $mixed !== null && $mixed['contract_input']['mixed_family'] === true
+                && $mixed['contract_input']['family_mismatch'] === []
+                && uu_contract($mixed['contract_input'])['failures'] === ['the group has IPv4 and IPv6 members']
+                && $configXml() === $before));
+    }
     /* the constants are core's commands as this VM's core runs them, so a drift note means core changed */
     uu_check($t, 'contract input: core\'s filter reload, cron restart and unbound restart are the commands a removal falls back to',
         array_key_exists('core_commands', $c) && $c['core_commands'] === []);

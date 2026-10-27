@@ -10,7 +10,9 @@ declare(strict_types=1);
  * The plugin's wiring on the test VM: the hook table, the hook order, the privileges,
  * configd's answers and the evaluate that Unbound's own start leads to (seen in configd's log). Needs the tree overlaid onto the VM (vm_overlay.sh) with the
  * plugin disabled; elsewhere it registers a suite that skips. Changes nothing lasting: it adds a minute job by hand
- * for stop's cron restart to remove, runs one pluginctl unbound_start, which restarts Unbound, writes two
+ * for stop's cron restart to remove, runs one pluginctl unbound_start and one configctl unbound restart (reading
+ * unbound.conf all the while), which restart Unbound, swaps a do-ip6 line of unbound.conf under the evaluate lock and
+ * puts it back, writes two
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
  * one read as nobody and, under the evaluate lock, for two cron restarts, then puts the saved one, the crontab and
  * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes.
@@ -746,40 +748,96 @@ uu_register_suite('wiring', function (): int {
         $e5 !== null && $e5['rc'] === 0
         && str_contains($e5['out'], '[dry] would run: route -n delete -inet -host 192.0.2.1'));
 
-    /* (c7) core rewrites unbound.conf while the unbound_start hook's evaluation reads it: a read that lands mid-rewrite
-     * may be short (no do-ip line means yes) but never fails, or a restart would send the plugin to fallback for a
-     * minute. 20 reads 100 ms apart across a restart; Unbound is running again when the case ends */
+    /* (c7) core rewrites unbound.conf in place while the unbound_start hook's evaluation reads it: a read that lands
+     * between the truncate and the write sees an empty or short file, which is never unreadable (the units pin that:
+     * an empty text, and no prefix refusing). Here 20 or more reads 100 ms apart straddle a real restart: the inode
+     * never changes, reads fall before and after the new mtime, none is unreadable or refuses, and the host Unbound
+     * (by its pid file, not the far end's jail) runs again, with the evaluation the restart queued done */
     $conf = '/var/unbound/unbound.conf';
+    $pidFile = '/var/run/unbound.pid';
     clearstatcache(true, $conf);
     $mtime = (int)filemtime($conf);
+    $inode = (int)fileinode($conf);
+    $evaluations = uu_test_evaluations();
+    $pidBefore = (string)@file_get_contents($pidFile);
     $unreadable = 0;
     $wrong = [];
+    $sides = ['before' => 0, 'after' => 0];
     $running = false;
-    $ran = uu_try_case(function () use (&$unreadable, &$wrong, &$running): bool {
-        shell_exec('/usr/local/sbin/configctl unbound restart > /dev/null 2>&1 &');
-        for ($i = 0; $i < 20; $i++) {
-            $text = uu_conf_file_text();
-            if ($text === null) {
-                $unreadable++;
-            } else {
-                $facts = uu_unbound_conf_facts($text);
-                if (!$facts['do_ip4'] || $facts['outgoing_interface']) {
-                    $wrong[] = $facts;
+    $evaluated = false;
+    $ran = false;
+    try {
+        $ran = uu_try_case(function () use ($conf, $mtime, $pidFile, $pidBefore, $evaluations, &$unreadable, &$wrong,
+                                            &$sides, &$running, &$evaluated): bool {
+            shell_exec('/usr/local/sbin/configctl unbound restart > /dev/null 2>&1 &');
+            for ($i = 0; $i < 100 && ($i < 20 || in_array(0, $sides, true)); $i++) {
+                clearstatcache(true, $conf);
+                $sides[(int)filemtime($conf) === $mtime ? 'before' : 'after']++;
+                $text = uu_conf_file_text();
+                if ($text === null) {
+                    $unreadable++;
+                } else {
+                    $facts = uu_unbound_conf_facts($text);
+                    if (!$facts['do_ip4'] || $facts['outgoing_interface']) {
+                        $wrong[] = $facts;
+                    }
                 }
+                usleep(100000);
             }
-            usleep(100000);
+            for ($deadline = hrtime(true) + 60000000000; hrtime(true) < $deadline && !$running; usleep(500000)) {
+                $now = (string)@file_get_contents($pidFile);
+                $running = $now !== '' && $now !== $pidBefore && isvalidpid($pidFile);
+            }
+            for ($deadline = hrtime(true) + 30000000000; hrtime(true) < $deadline && !$evaluated; usleep(500000)) {
+                $evaluated = uu_test_evaluations() > $evaluations;
+            }
+            return true;
+        });
+    } finally {
+        if (!isvalidpid($pidFile)) {
+            shell_exec('/usr/local/sbin/configctl unbound start > /dev/null 2>&1');
         }
-        for ($deadline = hrtime(true) + 60000000000; hrtime(true) < $deadline && !$running; usleep(500000)) {
-            $running = trim((string)shell_exec('/bin/pgrep -x unbound')) !== '' && file_exists('/var/run/unbound.pid');
-        }
-        return true;
-    });
+    }
     clearstatcache(true, $conf);
-    printf("  c7: %d unreadable, %d wrong, unbound.conf %s\n", $unreadable, count($wrong),
-        (int)filemtime($conf) !== $mtime ? 'rewritten by the restart' : 'NOT rewritten');
-    uu_check($t, '(c7) 20 reads of unbound.conf across a configctl unbound restart: never unreadable, never do-ip4 '
-        . 'off or an outgoing interface, the restart rewrote the file, and Unbound runs again',
-        $ran && $unreadable === 0 && $wrong === [] && (int)filemtime($conf) !== $mtime && $running);
+    printf("  c7: %d unreadable, %d wrong, reads before/after the rewrite %d/%d, inode %s\n", $unreadable,
+        count($wrong), $sides['before'], $sides['after'], (int)fileinode($conf) === $inode ? 'kept' : 'CHANGED');
+    uu_check($t, '(c7) reads of unbound.conf across a configctl unbound restart: never unreadable, never do-ip4 '
+        . 'off or an outgoing interface, on both sides of the rewrite, the inode kept, and the host Unbound runs '
+        . 'again with the restart\'s evaluation done',
+        $ran && $unreadable === 0 && $wrong === [] && $sides['before'] > 0 && $sides['after'] > 0
+        && (int)fileinode($conf) === $inode && (int)filemtime($conf) !== $mtime && $running && $evaluated);
+
+    /* (c6) the snapshot reads unbound.conf: with the file saying do-ip6: no, an IPv6 group is refused by the text.
+     * Unbound never rereads the file and core writes it anew at every start; the bytes are put back */
+    $lock = uu_test_evaluate_lock();
+    $original = (string)file_get_contents($conf);
+    $swapped = null;
+    $restored = false;
+    if ($lock !== false && str_contains($original, "\ndo-ip6: yes\n")
+        && isset((new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()['uu_far6_grp'])) {
+        try {
+            file_put_contents($conf, str_replace("\ndo-ip6: yes\n", "\ndo-ip6: no\n", $original));
+            $swapped = uu_try_case(function (): bool {
+                $s = uu_snapshot(['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp',
+                    'default' => '2001:db8:a::53', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'],
+                    [], null, false, []);
+                return ($s['contract_input']['unbound_conf'] ?? null) === ['do_ip4' => true, 'do_ip6' => false,
+                        'outgoing_interface' => false]
+                    && in_array("Unbound's generated configuration says do-ip6: no (IPv6 is not allowed in System: "
+                        . 'Settings: General)', uu_contract($s['contract_input'])['failures'], true);
+            });
+        } finally {
+            file_put_contents($conf, $original);
+            clearstatcache(true, $conf);
+            $restored = file_get_contents($conf) === $original;
+        }
+    }
+    if ($lock !== false) {
+        fclose($lock);
+    }
+    uu_check($t, '(c6) a live unbound.conf with do-ip6: no gives the snapshot do_ip6 false and the contract refuses '
+        . 'an IPv6 group by the text; the file is put back byte for byte',
+        $swapped === true && $restored);
 
     $before = uu_test_evaluations();
     shell_exec('/usr/local/sbin/pluginctl -c unbound_start > /dev/null 2>&1');

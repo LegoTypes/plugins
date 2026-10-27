@@ -47,6 +47,9 @@ const UU_FILE_MAX_BYTES = 1048576;        /* the most read of a state, record or
                                            * zone_read.py) */
 const UU_PYTHON = '/usr/local/bin/python3'; /* core's interpreter, the one configd runs on (rc.d/configd) */
 const UU_ZONE_READ_SECONDS = 5;           /* zone_read.py is killed after this long; it takes tens of ms */
+const UU_CONF_MAX_FILES = 64;             /* the files unbound.conf and its includes may make (lib/snapshot.php) */
+const UU_CONF_MAX_BYTES = 8388608;        /* and their bytes together; past either, the configuration is unreadable */
+const UU_CONF_MAX_DEPTH = 4;              /* include: lines within included files */
 const UU_RULES_LIST_PAIRS = 2;            /* checksum-listing-checksum tries before a straddled listing is given up */
 const UU_STOP_REQUEST = 'request';        /* Snapshot.stop: evaluate.php stop (the service's stop, or a Save) */
 const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being removed */

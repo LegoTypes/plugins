@@ -150,7 +150,9 @@ function uu_contract(array $c): array
         $failures[] = 'root zone has no forward-addr';
     }
 
-    /* Unbound's own root zone is the owner's forwarding, which the plugin cannot tell from its own */
+    /* Unbound's own root zone is the owner's forwarding, which the plugin cannot tell from its own. The addresses are
+     * the members' effective resolvers (uu_plan_addresses()'s set whenever the group has members, canonical already;
+     * a group with none is refused anyway) */
     $effective = [];
     foreach ($resolvers as $name => $address) {
         $effective[uu_apply_bare([$address])[0]][] = (string)$name;
@@ -158,7 +160,7 @@ function uu_contract(array $c): array
     foreach (uu_apply_bare($zone['addrs']) as $address) {
         if (isset($effective[$address])) {
             $failures[] = "Unbound's root zone forwards to $address, the resolver of "
-                . implode(', ', $effective[$address]) . ': remove it from the zone or choose another resolver';
+                . implode(', ', $effective[$address]) . ': the plugin cannot tell that forwarding from its own';
         }
     }
 
@@ -183,8 +185,8 @@ function uu_contract(array $c): array
         $failures[] = 'the group has IPv4 and IPv6 members';
     }
     foreach ($c['family_mismatch'] as $address) {
-        $failures[] = 'resolver ' . $address . (str_contains($address, ':') ? ' is IPv6 but the group is IPv4'
-            : ' is IPv4 but the group is IPv6');
+        $failures[] = 'resolver ' . $address . ($c['group_family'] === 'inet6' ? ' is IPv4 but the group is IPv6'
+            : ' is IPv6 but the group is IPv4');
     }
 
     if ($c['fib_sync_ms'] === null) {

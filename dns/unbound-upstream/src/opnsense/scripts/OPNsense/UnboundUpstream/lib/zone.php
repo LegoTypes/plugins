@@ -159,11 +159,14 @@ function uu_root_zone(?array $texts): array
 }
 
 /**
- * What Unbound's generated unbound.conf says about the address families and the outgoing interface, which decide
- * whether a resolver can be reached from the tunnel's own address. Per family the last "do-ip4:" / "do-ip6:" line
- * wins, as Unbound reads it, and none means yes (Unbound's default, and the text of a file read in part), so only an
- * explicit "no" refuses; a comment after the value is not part of it. outgoing_interface is any "outgoing-interface:"
- * line with a value. A line is matched whole, so a similar name or a comment line says nothing. Pure.
+ * What Unbound's configuration (unbound.conf with its included files spliced in, uu_conf_expanded_text()) says about
+ * the address families and the outgoing interface, which decide whether a resolver can be reached from the tunnel's
+ * own address. Per family the last "do-ip4:" / "do-ip6:" line wins, as Unbound reads it, and none means yes (Unbound's
+ * default, and the text of a file read in part), so only an explicit "no" refuses; a comment after the value and
+ * quotes around it are not part of it. The value on the next line is not read (core never writes it).
+ * outgoing_interface is any "outgoing-interface:" line: Unbound accepts the keyword only with a value (on that
+ * line, or after a comment on the next ones), so the keyword alone means set. A line is matched whole, so a similar
+ * name or a comment line says nothing. Pure.
  *
  * @return array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}
  */
@@ -173,15 +176,28 @@ function uu_unbound_conf_facts(string $text): array
     $doIp6 = true;
     $outgoing = false;
     foreach (preg_split('/\R/', $text) ?: [] as $line) {
-        if (preg_match('/^\s*do-ip([46]):\s*(yes|no)\s*(#.*)?$/D', $line, $m) === 1) {
+        if (preg_match('/^\s*do-ip([46]):\s*(["\']?)(yes|no)\2\s*(#.*)?$/D', $line, $m) === 1) {
             if ($m[1] === '4') {
-                $doIp4 = $m[2] === 'yes';
+                $doIp4 = $m[3] === 'yes';
             } else {
-                $doIp6 = $m[2] === 'yes';
+                $doIp6 = $m[3] === 'yes';
             }
-        } elseif (preg_match('/^\s*outgoing-interface:\s*[^\s#]/', $line) === 1) {
+        } elseif (preg_match('/^\s*outgoing-interface:/', $line) === 1) {
             $outgoing = true;
         }
     }
     return ['do_ip4' => $doIp4, 'do_ip6' => $doIp6, 'outgoing_interface' => $outgoing];
+}
+
+/**
+ * The path or glob an "include:" (or "include-toplevel:") line names, quotes removed, or null for any other line. A
+ * comment after it is not part of it. Pure.
+ */
+function uu_conf_include_target(string $line): ?string
+{
+    $value = '(?:"([^"]+)"|\'([^\']+)\'|([^\s#"\']+))';
+    if (preg_match("/^\\s*include(?:-toplevel)?:\\s*$value\\s*(#.*)?\$/D", $line, $m, PREG_UNMATCHED_AS_NULL) !== 1) {
+        return null;
+    }
+    return $m[1] ?? $m[2] ?? $m[3];
 }

@@ -345,6 +345,7 @@ uu_register_suite('zone', function (): int {
                 && $fileRun($dir . '/none.conf') === [0, '{"texts": [], "skipped": 1}']
                 && $fileRun($dir . '/link/d.conf') === [1, '']
                 && $fileRun($dir . '/nodir/d.conf') === [1, '']
+                && $fileRun($dir . '/') === [1, '']
                 && $fileRun('a.conf') === [1, ''];
         })));
     uu_check($t, '(c1) zone_read.py --file: a file over MAX_BYTES is cut after its last line end, as an entry is; '
@@ -356,8 +357,9 @@ uu_register_suite('zone', function (): int {
                 && $helperRun($dir) === [0, '{"texts": ["YWEKYmIKY2MK", "eA=="], "skipped": 0}']
                 && $fileRun($dir . '/a.conf', 'x') === [2, ''];
         })));
-    uu_check($t, '(c1) uu_conf_file_text: a regular file is its text; a link, a directory, a missing file, a link '
-        . 'in the directory path and a helper that fails or runs past its limit are null',
+    uu_check($t, '(c1) uu_conf_file_text: a regular file is its text; an empty file is the empty string (what a read '
+        . 'between the truncate and the write of a rewrite gets), never null; a link, a directory, a missing file, a '
+        . 'link in the directory path and a helper that fails or runs past its limit are null',
         uu_try_case(fn (): bool => uu_scratch_case(function (string $dir): bool {
             file_put_contents($dir . '/a.conf', "server:\n  do-ip6: no\n");
             symlink($dir . '/a.conf', $dir . '/b.conf');
@@ -366,9 +368,11 @@ uu_register_suite('zone', function (): int {
             file_put_contents($dir . '/real/d.conf', "y\n");
             symlink($dir . '/real', $dir . '/link');
             file_put_contents($dir . '/slow.py', "import time\ntime.sleep(30)\n");
+            file_put_contents($dir . '/empty.conf', '');
             $t0 = hrtime(true);
             $slow = uu_conf_file_text($dir . '/a.conf', $dir . '/slow.py', 1);
             return uu_conf_file_text($dir . '/a.conf') === "server:\n  do-ip6: no\n"
+                && uu_conf_file_text($dir . '/empty.conf') === ''
                 && uu_conf_file_text($dir . '/b.conf') === null && uu_conf_file_text($dir . '/c.conf') === null
                 && uu_conf_file_text($dir . '/none.conf') === null && uu_conf_file_text($dir . '/link/d.conf') === null
                 && uu_conf_file_text($dir . '/a.conf', $dir . '/nohelper.py') === null
@@ -394,15 +398,163 @@ uu_register_suite('zone', function (): int {
     uu_check($t, '(c2) conf facts: a comment line and a line that only looks like the option are no line',
         uu_try_case(fn (): bool => $facts("# do-ip6: no\n#do-ip4: no\n") === $yes
             && $facts("xdo-ip6: no\ndo-ip6-extra: no\ndo-ip6: maybe\n") === $yes));
-    uu_check($t, '(c2) conf facts: outgoing-interface with a value is set, in any amount of indentation, once or '
-        . 'more; a comment, a bare option and a similar name are not',
+    uu_check($t, '(c2) conf facts: the outgoing-interface keyword is set whatever follows it on the line (Unbound '
+        . 'takes the value from the next line after a comment), once or more, in any indentation; a comment, a similar '
+        . 'name and a quoted look-alike are not',
         uu_try_case(fn (): bool => $facts("outgoing-interface: 192.0.2.1\n")['outgoing_interface'] === true
             && $facts("server:\n    outgoing-interface:\t2001:db8::1\n")['outgoing_interface'] === true
             && $facts("outgoing-interface: 192.0.2.1\noutgoing-interface: 192.0.2.2\n")['outgoing_interface'] === true
+            && $facts("outgoing-interface: # none\n192.0.2.1\n")['outgoing_interface'] === true
+            && $facts("outgoing-interface:\n192.0.2.1\n")['outgoing_interface'] === true
             && $facts("# outgoing-interface: 192.0.2.1\n")['outgoing_interface'] === false
-            && $facts("outgoing-interface:\n")['outgoing_interface'] === false
-            && $facts("outgoing-interface: # none\n")['outgoing_interface'] === false
-            && $facts("outgoing-interface-x: 192.0.2.1\n")['outgoing_interface'] === false));
+            && $facts("outgoing-interface-x: 192.0.2.1\n")['outgoing_interface'] === false
+            && $facts("private-address: outgoing-interface: x\n")['outgoing_interface'] === false));
+    uu_check($t, '(c2) conf facts: a quoted value is the value',
+        uu_try_case(fn (): bool => $facts("do-ip6: \"no\"\n")['do_ip6'] === false
+            && $facts("do-ip4: 'no'\n")['do_ip4'] === false && $facts("do-ip6: \"yes\"\n")['do_ip6'] === true
+            && $facts("do-ip6: \"no'\n")['do_ip6'] === true));
+    /* a read that lands in a rewrite sees a prefix of the file: no prefix of a core-shaped configuration reports a
+     * refusal the whole file does not */
+    $sweep = function (string $text): bool {
+        $whole = uu_unbound_conf_facts($text);
+        for ($n = 0; $n <= strlen($text); $n++) {
+            $f = uu_unbound_conf_facts(substr($text, 0, $n));
+            if (($f['do_ip4'] === false && $whole['do_ip4'] !== false)
+                || ($f['do_ip6'] === false && $whole['do_ip6'] !== false)
+                || ($f['outgoing_interface'] && !$whole['outgoing_interface'])) {
+                printf("  a prefix of %d bytes refuses what the whole file does not\n", $n);
+                return false;
+            }
+        }
+        return true;
+    };
+    $core = uu_test_fixture('unbound_core.conf');
+    uu_check($t, '(c2) conf facts: no prefix of a core-shaped configuration refuses (do-ip4 yes, do-ip6 yes)',
+        uu_try_case(fn (): bool => $core !== '' && $sweep($core)
+            && uu_unbound_conf_facts($core) === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]));
+    $refusing = str_replace("do-ip6: yes\n", "do-ip6: no\n", $core) . "outgoing-interface: 192.0.2.1\n";
+    uu_check($t, '(c2) conf facts: no prefix of a configuration with do-ip6: no and an outgoing interface refuses '
+        . 'what the whole does not, and the whole refuses both',
+        uu_try_case(fn (): bool => $sweep($refusing)
+            && uu_unbound_conf_facts($refusing) === ['do_ip4' => true, 'do_ip6' => false, 'outgoing_interface' => true]
+            && $sweep("server:\n  do-ip4: no\n  do-ip6: no # c\n")));
+
+    /* (m5) the include lines core writes, and the configuration with them spliced in, in Unbound's order */
+    uu_check($t, '(m5) include lines: the three core writes, quotes, a comment and include-toplevel; no other line',
+        uu_try_case(fn (): bool => uu_conf_include_target('include: /var/unbound/advanced.conf')
+                === '/var/unbound/advanced.conf'
+            && uu_conf_include_target('include: /var/unbound/etc/*.conf') === '/var/unbound/etc/*.conf'
+            && uu_conf_include_target("  include:\t\"/x y/*.conf\"  # c") === '/x y/*.conf'
+            && uu_conf_include_target("include: '/z.conf'") === '/z.conf'
+            && uu_conf_include_target('include-toplevel: rel.conf') === 'rel.conf'
+            && uu_conf_include_target('# include: /x.conf') === null && uu_conf_include_target('include:') === null
+            && uu_conf_include_target('include-x: /x.conf') === null
+            && uu_conf_include_target('private-address: include: /x') === null));
+    $expanded = function (callable $setup, string $main = ''): ?array {
+        $result = null;
+        uu_scratch_case(function (string $dir) use ($setup, $main, &$result): bool {
+            mkdir($dir . '/etc');
+            $text = $main !== '' ? $main : uu_test_fixture('unbound_core.conf');
+            file_put_contents($dir . '/unbound.conf', str_replace('/var/unbound', $dir, $text));
+            file_put_contents($dir . '/advanced.conf', '');
+            file_put_contents($dir . '/private_domains.conf', '');
+            file_put_contents($dir . '/host_entries.conf', '');
+            $setup($dir);
+            $text = uu_conf_expanded_text($dir . '/unbound.conf');
+            $result = ['text' => $text, 'facts' => $text === null ? null : uu_unbound_conf_facts($text)];
+            return true;
+        });
+        return $result;
+    };
+    $base = ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false];
+    uu_check($t, '(m5) no custom files: the facts are unbound.conf\'s own and no include line is left in the text',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $r = $expanded(function (string $dir): void {
+            });
+            return $r !== null && $r['facts'] === $base && !str_contains((string)$r['text'], 'include:')
+                && str_contains((string)$r['text'], "do-ip4: yes\ndo-ip6: yes\n");
+        }));
+    uu_check($t, '(m5) a custom file with do-ip6: no after core\'s yes refuses an IPv6 group; a do-ip4: no likewise',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $six = $expanded(fn (string $dir) => file_put_contents($dir . '/etc/custom.conf', "do-ip6: no\n"));
+            $four = $expanded(fn (string $dir) => file_put_contents($dir . '/etc/custom.conf',
+                "server:\ndo-ip4: no\n"));
+            return $six !== null && $six['facts'] === array_replace($base, ['do_ip6' => false])
+                && $four !== null && $four['facts'] === array_replace($base, ['do_ip4' => false]);
+        }));
+    uu_check($t, '(m5) a custom outgoing-interface refuses',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $r = $expanded(fn (string $dir) => file_put_contents($dir . '/etc/o.conf',
+                "outgoing-interface: 192.0.2.1\n"));
+            return $r !== null && $r['facts'] === array_replace($base, ['outgoing_interface' => true]);
+        }));
+    uu_check($t, '(m5) the last line in Unbound\'s order wins: files in sorted order, an include before core\'s '
+        . 'line is overridden by it, a later include overrides it',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $sorted = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/b.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/etc/a.conf', "do-ip6: no\n");
+            });
+            $reverse = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/a.conf', "do-ip6: yes\n");
+                file_put_contents($dir . '/etc/b.conf', "do-ip6: no\n");
+            });
+            $early = $expanded(fn (string $dir) => file_put_contents($dir . '/advanced.conf', "do-ip6: no\n"));
+            $late = $expanded(fn (string $dir) => file_put_contents($dir . '/host_entries.conf', "do-ip6: no\n"));
+            return $sorted !== null && $sorted['facts'] === $base
+                && $reverse !== null && $reverse['facts'] === array_replace($base, ['do_ip6' => false])
+                && $early !== null && $early['facts'] === $base
+                && $late !== null && $late['facts'] === array_replace($base, ['do_ip6' => false]);
+        }));
+    uu_check($t, '(m5) an included file\'s own includes are followed, and a relative one is taken from '
+        . 'unbound.conf\'s directory',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $r = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/a.conf', "include: nested.txt\n");
+                file_put_contents($dir . '/nested.txt', "do-ip6: no\n");
+            });
+            return $r !== null && $r['facts'] === array_replace($base, ['do_ip6' => false]);
+        }));
+    uu_check($t, '(m5) a relative include and a dot file: taken from unbound.conf\'s directory; the dot file is not '
+        . 'matched',
+        uu_try_case(function () use ($expanded, $base): bool {
+            $r = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/etc/a.conf', "do-ip4: no\n");
+                file_put_contents($dir . '/etc/.hidden.conf', "outgoing-interface: 192.0.2.1\n");
+            }, "do-ip6: yes\ninclude: etc/*.conf\n");
+            return $r !== null && $r['facts'] === array_replace($base, ['do_ip4' => false]);
+        }));
+    uu_check($t, '(m5) unreadable (null): a link among the included files, a directory matched, a path that is '
+        . 'missing, a loop, more files or bytes than the bounds, and unbound.conf itself missing; a glob with no '
+        . 'match is not',
+        uu_try_case(function () use ($expanded): bool {
+            $link = $expanded(function (string $dir): void {
+                file_put_contents($dir . '/target.txt', "do-ip6: yes\n");
+                symlink($dir . '/target.txt', $dir . '/etc/l.conf');
+            });
+            $directory = $expanded(fn (string $dir) => mkdir($dir . '/etc/d.conf'));
+            $missing = $expanded(fn (string $dir) => null, "include: /nonexistent-dir/x.conf\n");
+            $loop = $expanded(fn (string $dir) => file_put_contents($dir . '/etc/a.conf',
+                "include: " . $dir . "/etc/a.conf\n"));
+            $many = $expanded(function (string $dir): void {
+                for ($i = 0; $i < UU_CONF_MAX_FILES; $i++) {
+                    file_put_contents(sprintf('%s/etc/f%03d.conf', $dir, $i), "\n");
+                }
+            });
+            $bytes = $expanded(function (string $dir): void {
+                for ($i = 0; $i < 9; $i++) {
+                    file_put_contents(sprintf('%s/etc/b%d.conf', $dir, $i),
+                        str_repeat(str_repeat('#', 1022) . "\n", 1000));
+                }
+            });
+            $none = $expanded(fn (string $dir) => null, "include: /nonexistent-dir/*.conf\ndo-ip6: no\n");
+            return $link !== null && $link['text'] === null && $directory !== null && $directory['text'] === null
+                && $missing !== null && $missing['text'] === null && $loop !== null && $loop['text'] === null
+                && $many !== null && $many['text'] === null && $bytes !== null && $bytes['text'] === null
+                && $none !== null && $none['facts'] === ['do_ip4' => true, 'do_ip6' => false,
+                    'outgoing_interface' => false]
+                && uu_conf_expanded_text('/nonexistent-dir/unbound.conf') === null;
+        }));
 
     return uu_tally_report('zone', $t);
 });

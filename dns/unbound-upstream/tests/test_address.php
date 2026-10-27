@@ -146,13 +146,20 @@ uu_register_suite('address', function (): int {
             && uu_group_family(['wg-a' => $proto(''), 'wg-b' => $proto('inet')], [['wg-a'], ['wg-b']])
                 === ['family' => 'inet', 'mixed' => false]));
 
-    uu_check($t, '(c5) family mismatch: the addresses of the other family, in order; none for a group of no family',
-        uu_try_case(fn (): bool => uu_family_mismatch('inet', ['192.0.2.53', '2001:db8::53', '198.51.100.9',
-                '2001:db8::54']) === ['2001:db8::53', '2001:db8::54']
-            && uu_family_mismatch('inet6', ['192.0.2.53', '2001:db8::53', '198.51.100.9']) === ['192.0.2.53',
-                '198.51.100.9']
-            && uu_family_mismatch('inet', ['192.0.2.53']) === [] && uu_family_mismatch('inet6', []) === []
-            && uu_family_mismatch('', ['192.0.2.53', '2001:db8::53']) === []));
+    uu_check($t, '(c5) family mismatch: the addresses of the other family, in order; none for a group of no '
+        . 'family or of both (its family is only its first member\'s)',
+        uu_try_case(function (): bool {
+            $v4 = ['family' => 'inet', 'mixed' => false];
+            $v6 = ['family' => 'inet6', 'mixed' => false];
+            return uu_family_mismatch($v4, ['192.0.2.53', '2001:db8::53', '198.51.100.9', '2001:db8::54'])
+                    === ['2001:db8::53', '2001:db8::54']
+                && uu_family_mismatch($v6, ['192.0.2.53', '2001:db8::53', '198.51.100.9']) === ['192.0.2.53',
+                    '198.51.100.9']
+                && uu_family_mismatch($v4, ['192.0.2.53']) === [] && uu_family_mismatch($v6, []) === []
+                && uu_family_mismatch(['family' => '', 'mixed' => false], ['192.0.2.53', '2001:db8::53']) === []
+                && uu_family_mismatch(['family' => 'inet6', 'mixed' => true], ['192.0.2.53', '2001:db8::53']) === []
+                && uu_family_mismatch(['family' => 'inet', 'mixed' => true], ['192.0.2.53', '2001:db8::53']) === [];
+        }));
 
     uu_check($t, '(p15) next hop routable: an address of either family, a link-local one with its scope; never empty '
         . 'or dynamic',

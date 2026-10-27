@@ -2582,7 +2582,8 @@ uu_register_suite('apply', function (): int {
 
         /* (i1) Unbound's configured root zone is exactly [A], the resolver: its live root [A] is Unbound's own and no
          * tunnel mode, so a disabled plugin's stop and the no-candidate fallback leave tunnel mode once, then nothing
-         * repeats: no line, no call, no new switch, no notification; with a candidate the entry needs no forward_add */
+         * repeats: no line, no call, no new switch, no notification; with a candidate the contract refuses the entry
+         * (the zone names A), so that stays fallback too */
         $configuredA = function (?string $stop, bool $enabled, bool $down) use ($named, $a, $settledDown): array {
             $s = uu_test_in_tunnel($named([$a], $stop, $enabled), 'wg-a');
             if (!$down) {

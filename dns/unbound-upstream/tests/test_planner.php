@@ -1495,7 +1495,7 @@ uu_register_suite('planner', function (): int {
             && uu_test_reason_has($plans[1]['reasons'], 'contract:')
             && $plans[2]['action'] === 'none' && !$plans[2]['route_repair']
             && $plans[2]['reasons'] === ["contract: Unbound's root zone forwards to $a, the resolver of wg-a, wg-b: "
-                . 'remove it from the zone or choose another resolver']);
+                . 'the plugin cannot tell that forwarding from its own']);
     }
 
     return uu_tally_report('planner', $t);

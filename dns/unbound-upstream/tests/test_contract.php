@@ -405,9 +405,17 @@ uu_register_suite('contract', function (): int {
                 'outgoing_interface' => true]]))['failures'] === [$ipv6Text,
                 "Unbound's Outgoing Network Interfaces is set: its queries would not leave from the tunnel's "
                 . 'own address']));
-    uu_check($t, '(c4) an unreadable unbound.conf (null) refuses with its own text and nothing about the families',
+    uu_check($t, '(c4) an unreadable unbound.conf (null) refuses with its own text and nothing about the families, '
+        . 'whatever the group\'s family (none included)',
         uu_try_case(fn (): bool => $refused(['unbound_conf' => null])['failures'] === ['unbound.conf unreadable']
-            && $refused($ipv6(['unbound_conf' => null]))['failures'] === ['unbound.conf unreadable']));
+            && $refused($ipv6(['unbound_conf' => null]))['failures'] === ['unbound.conf unreadable']
+            && $refused(['group_family' => '', 'unbound_conf' => null])['failures']
+                === ['unbound.conf unreadable']));
+    uu_check($t, '(c4) an outgoing interface refuses a group of no family too',
+        uu_try_case(fn (): bool => $refused(['group_family' => '', 'unbound_conf' => ['do_ip4' => true,
+            'do_ip6' => true, 'outgoing_interface' => true]])['failures']
+            === ["Unbound's Outgoing Network Interfaces is set: its queries would not leave from the tunnel's own "
+                . 'address']));
     uu_check($t, '(c5) a group of both families refuses with the text',
         uu_try_case(fn (): bool => $refused(['mixed_family' => true])['failures']
             === ['the group has IPv4 and IPv6 members']));
@@ -418,20 +426,22 @@ uu_register_suite('contract', function (): int {
             && $refused(['family_mismatch' => ['2001:db8::53', '2001:db8::54']])['failures']
                 === ['resolver 2001:db8::53 is IPv6 but the group is IPv4',
                     'resolver 2001:db8::54 is IPv6 but the group is IPv4']));
-    uu_check($t, '(c5) the new failures come after the others in a fixed order: zone, configuration, family',
+    uu_check($t, '(c5) the new failures come after the others in a fixed order: zone, configuration, family; '
+        . 'a mismatch alone is by address',
         uu_try_case(fn (): bool => $refused(['group_found' => false, 'mixed_family' => true,
-                'unbound_conf' => null, 'family_mismatch' => ['2001:db8::53'],
+                'unbound_conf' => null,
                 'zone' => ['shape' => 'unrestorable', 'addrs' => [], 'tls' => false, 'problems' => ['x']]])['failures']
             === ['root zone cannot be restored: x', 'unbound.conf unreadable',
-                'the group has IPv4 and IPv6 members', 'resolver 2001:db8::53 is IPv6 but the group is IPv4',
-                'group not found']));
+                'the group has IPv4 and IPv6 members', 'group not found']
+            && $refused(['family_mismatch' => ['192.0.2.53'], 'group_family' => 'inet6'])['failures']
+                === ['resolver 192.0.2.53 is IPv4 but the group is IPv6']));
 
     /* Unbound's configured root zone naming an effective resolver: the plugin could not tell its own forwarding from
      * the owner's, so tunnel mode is refused as a whole */
     $zoneOf = fn (array $addrs): array => ['zone' => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false,
         'problems' => []]];
     $named = fn (string $address, string $members): string => "Unbound's root zone forwards to $address, the resolver "
-        . "of $members: remove it from the zone or choose another resolver";
+        . "of $members: the plugin cannot tell that forwarding from its own";
     uu_check($t, '(z5) an IPv4 configured zone naming the Default refuses, naming the address and every member '
         . 'using it, whatever port and name the zone gives',
         uu_try_case(function () use ($refused, $zoneOf, $named): bool {

@@ -261,18 +261,21 @@ function uu_group_family(array $members, array $tiers): array
 
 /**
  * The addresses of a family other than the group's, in the order given: the resolvers the contract refuses by address.
- * A group of no family (none found, or no member with a family) has none to mismatch.
+ * A group of no family (none found, or no member with a family) has none to mismatch, and neither has a group of both
+ * (its "family" is only its first member's, so a mismatch would name a member's correct resolver; the contract refuses
+ * the mix itself).
  *
- * @param string $family the group's ('inet', 'inet6' or '')
+ * @param array{family: string, mixed: bool} $group uu_group_family()
  * @param list<string> $addresses canonical
  * @return list<string>
  */
-function uu_family_mismatch(string $family, array $addresses): array
+function uu_family_mismatch(array $group, array $addresses): array
 {
-    if ($family === '') {
+    if ($group['family'] === '' || $group['mixed']) {
         return [];
     }
-    return array_values(array_filter($addresses, fn (string $address): bool => uu_ip_family($address) !== $family));
+    return array_values(array_filter($addresses,
+        fn (string $address): bool => uu_ip_family($address) !== $group['family']));
 }
 
 /**

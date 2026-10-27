@@ -23,10 +23,11 @@ since the skipped file may hold the root zone.
 
 is the same for one file: PATH's directory is reached as DIR is, the file is opened and read as an entry is, and the
 JSON is the same, the text of that one file or skipped 1 (a link, anything but a regular file, a file that cannot be
-opened or read, a missing file). A DIR that is not reached this way is a failed read, never an empty
-one ("could not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on
-stdout, exit 1, as for any other failure, which names only the exception's type on stderr, never a file's text. A
-usage error exits 2.
+opened or read, a missing file).
+
+In both forms a DIR (or a PATH's directory) that is not reached this way is a failed read, never an empty one ("could
+not look" must not read as "no root zone", which restores as recursion over the WAN): nothing on stdout, exit 1, as for
+any other failure, which names only the exception's type on stderr, never a file's text. A usage error exits 2.
 """
 
 import base64
