@@ -579,6 +579,12 @@ uu_register_suite('zone', function (): int {
                 file_put_contents($dir . '/etc/c.conf', "do-ip6: yes\n");
                 file_put_contents($dir . '/etc/b.conf', "do-ip6: no\n");
             }, "include: /var/unbound/etc/{a,c,b}.conf\n");
+            $crossed = $expanded(function (string $dir): void {
+                mkdir($dir . '/d1');
+                mkdir($dir . '/d2');
+                file_put_contents($dir . '/d1/b.conf', "do-ip6: no\n");
+                file_put_contents($dir . '/d2/a.conf', "do-ip6: yes\n");
+            }, "include: /var/unbound/{d2/a,d1/b}.conf\n");
             $gone = $expanded($files, "include: /var/unbound/etc/{a1,nothere}.conf\n");
             return $question !== null && $question['facts'] === ['do_ip4' => false, 'do_ip6' => false,
                     'outgoing_interface' => false]
@@ -586,6 +592,7 @@ uu_register_suite('zone', function (): int {
                 && $order !== null && $order['facts'] === array_replace($base, ['do_ip6' => false])
                 && $reverse !== null && $reverse['facts'] === array_replace($base, ['do_ip6' => false])
                 && $three !== null && $three['facts'] === $base
+                && $crossed !== null && $crossed['facts'] === $base
                 && $gone !== null && $gone['facts'] === $base;
         }));
     uu_check($t, '(m5) a chain of five distinct files is followed (no depth bound); a leading ~ and a wildcard in a '
