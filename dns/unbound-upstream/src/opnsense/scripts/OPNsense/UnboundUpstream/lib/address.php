@@ -214,7 +214,8 @@ function uu_group_family(array $members, array $tiers): array
 /**
  * The setting's addresses: the members' effective resolvers, which decide what is a footprint, what the rules render
  * and what the counting table holds; none while the plugin is disabled or its group is not found, so a disabled
- * plugin's recorded addresses stay footprints. Canonical, each once, sorted. The one home of this rule.
+ * plugin's recorded addresses stay footprints. Canonical, each once, sorted. The one home of this rule; the planner's
+ * own set is uu_plan_addresses(), which keeps the Default when the group is gone.
  *
  * @param array{settings: array{enabled: bool}, contract_input: array{group_found: bool},
  *     members: array<string, array{resolver: string}>} $s the Snapshot (planner.php), or the same fields
@@ -224,6 +225,38 @@ function uu_setting_addresses(array $s): array
 {
     if (!$s['settings']['enabled'] || !$s['contract_input']['group_found']) {
         return [];
+    }
+    $addresses = [];
+    foreach ($s['members'] as $m) {
+        $address = uu_ip_canonical($m['resolver']);
+        if ($address !== null) {
+            $addresses[$address] = true;
+        }
+    }
+    $addresses = array_map('strval', array_keys($addresses));
+    sort($addresses, SORT_STRING);
+    return $addresses;
+}
+
+/**
+ * The planner's addresses: what the plugin must keep fail-closed whatever the setting, as 1.3_2 kept its one resolver
+ * whatever the group. They are the members' effective resolvers, or, when the snapshot has no member (the group is
+ * not found, or has none), the Default when it is an address. Canonical, each once, sorted. The one home of this set:
+ * the snapshot reads the route, the monitors and the static routes of these addresses (and their foreign routes are
+ * the contract's), and the planner takes from it the addresses the live root may name, those that keep their reject
+ * route outside tunnel mode, and those never drained. An orphan is an address the state holds outside this set, so
+ * its release (released_at) is judged against it too. Distinct from uu_setting_addresses(), which is empty while the
+ * plugin is disabled or the group is not found.
+ *
+ * @param array{settings: array{default: string}, members: array<string, array{resolver: string}>} $s the Snapshot
+ *     (planner.php), or the same fields
+ * @return list<string>
+ */
+function uu_plan_addresses(array $s): array
+{
+    if ($s['members'] === []) {
+        $default = uu_ip_canonical($s['settings']['default']);
+        return $default === null ? [] : [$default];
     }
     $addresses = [];
     foreach ($s['members'] as $m) {

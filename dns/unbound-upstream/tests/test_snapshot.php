@@ -378,6 +378,28 @@ uu_register_suite('snapshot', function (): int {
             return count($r['problems']) === 2 && !str_contains(implode(' ', $r['problems']), 'secret');
         }));
 
+    uu_check($t, '(g11) adopt per address: the Default\'s route and a row\'s address, each matching its record and '
+        . 'explained by no member, are both the plugin\'s; foreign empties; route follows the Default\'s only',
+        uu_try_case(function (): bool {
+            $viaWg1 = ['present' => true, 'gateway' => '10.2.0.2', 'interface' => 'wg1', 'reject' => false,
+                       'ours' => false];
+            $viaWg4 = ['present' => true, 'gateway' => 'fd00::4:2', 'interface' => 'wg4', 'reject' => false,
+                       'ours' => false];
+            $s = ['settings' => ['resolver' => '10.2.0.1'], 'route' => $viaWg1,
+                  'routes' => ['10.2.0.1' => $viaWg1, '2001:db8:b::53' => $viaWg4],
+                  'contract_input' => ['foreign' => ['10.2.0.1', '2001:db8:b::53']]];
+            $map = ['10.2.0.1' => ['route' => ['kind' => 'member', 'next_hop' => '10.2.0.2', 'if' => 'wg1'],
+                                   'forwarded' => true, 'released_at' => null],
+                    '2001:db8:b::53' => ['route' => ['kind' => 'member', 'next_hop' => 'fd00::4:2', 'if' => 'wg4'],
+                                         'forwarded' => false, 'released_at' => null]];
+            $both = uu_route_adopt($s, $map);
+            $rowOnly = uu_route_adopt($s, ['2001:db8:b::53' => $map['2001:db8:b::53']]);
+            return $both['routes']['10.2.0.1']['ours'] && $both['routes']['2001:db8:b::53']['ours']
+                && $both['contract_input']['foreign'] === [] && $both['route'] === $both['routes']['10.2.0.1']
+                && $rowOnly['routes']['2001:db8:b::53']['ours'] && !$rowOnly['route']['ours']
+                && !$rowOnly['routes']['10.2.0.1']['ours'] && $rowOnly['contract_input']['foreign'] === ['10.2.0.1'];
+        }));
+
     // The per-member rows, cleaned as the Default is.
     $gwA = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6a';
     $gwB = '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d6b';

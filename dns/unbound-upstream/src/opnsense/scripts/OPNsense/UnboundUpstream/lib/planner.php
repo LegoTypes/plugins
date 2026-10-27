@@ -24,7 +24,8 @@ declare(strict_types=1);
  *   are keyed by gateway name (Member and Probe: verdict.php; a Member also carries its gateway's ipprotocol and its
  *   effective resolver, '' for none); named lists the gateways the monitor hook passed; stop is why this run stops
  *   whatever the settings say (a UU_STOP_* cause), or null; live_root is null when unbound-control did not answer;
- *   routes is `route -n get <address>` for every effective resolver and every address the state's map holds, route
+ *   routes is `route -n get <address>` for every planner address (uu_plan_addresses(): the effective resolvers, or
+ *   the Default when the group has no member) and every address the state's map holds, route
  *   the Default's, interface the device it leaves by (compared with Member.if) and ours whether the plugin made it;
  *   Zone is zone.php's; ContractInput is uu_contract()'s input (contract.php). rules is uu_rules_check()'s
  *   answer (pfobserve.php; its state and problems are also ContractInput.rules, and record is the verification an
@@ -40,8 +41,9 @@ declare(strict_types=1);
  *   checks; a member the contract excludes (no resolver, no next hop, an address-scoped failure) is never in it.
  *   reassert and route_repair are the reconcile and are only set with 'none': reassert when the live root is not
  *   the current member's resolver, route_repair when that resolver's route is not via the member, or another address
- *   the map holds (outside tunnel mode: any the setting names or the map holds) lacks its reject route while Unbound
- *   no longer forwards to it. drain lists the orphans due for theirs (uu_plan_drain()); a stop and a skip have none.
+ *   the map holds (outside tunnel mode: any planner address, uu_plan_addresses(), or any the map holds) lacks its
+ *   reject route while Unbound no longer forwards to it. drain lists the orphans due for theirs (uu_plan_drain());
+ *   a stop and a skip have none.
  *   state carries the mode and member
  *   planned against (recovered from the live root and route when the state file was lost), the advanced timers,
  *   control_failures and control_silent_since; apply records switches and last_switch. escalate_restart is section
@@ -284,22 +286,28 @@ function uu_plan_needs_reject(array $route, ?array $entry, ?array $read, string 
 }
 
 /**
- * The orphans due for their drain: map entries that are no member's effective resolver, that Unbound no longer
- * forwards to, released at least UU_OLD_ADDRESS_HOLD seconds ago. Sorted.
+ * The orphans due for their drain: map entries outside the planner's addresses (uu_plan_addresses()), that Unbound
+ * no longer forwards to as this run's read settles it (uu_state_forwarded()), released at least UU_OLD_ADDRESS_HOLD
+ * seconds ago, and whose live route is not one the plugin did not make (the drain deletes only its own). Sorted.
  *
+ * @param array{now: int, settings: array{default: string}, members: array<string, array{resolver: string}>,
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool, ours: bool}>} $s
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses the state's map
- * @param array<string, string> $resolvers each member's effective resolver (uu_plan_resolvers())
+ * @param ?list<string> $read the snapshot's live root read (uu_state_snapshot_read())
  * @return list<string>
  */
-function uu_plan_drain(array $addresses, array $resolvers, int $now): array
+function uu_plan_drain(array $s, array $addresses, ?array $read): array
 {
+    $kept = uu_plan_addresses($s);
     $drain = [];
     foreach ($addresses as $address => $entry) {
         $address = (string)$address;
         $released = $entry['released_at'];
-        if ($released !== null && $now - $released >= UU_OLD_ADDRESS_HOLD && !$entry['forwarded']
-            && !in_array($address, $resolvers, true)) {
+        $route = uu_plan_route($s, $address);
+        if ($released !== null && $s['now'] - $released >= UU_OLD_ADDRESS_HOLD
+            && !uu_state_forwarded($read, $address, $entry['forwarded']) && !in_array($address, $kept, true)
+            && !($route['present'] && !$route['ours'])) {
             $drain[] = $address;
         }
     }
@@ -388,13 +396,15 @@ function uu_plan(array $s, array $st): array
         }
     }
     $resolverOf = uu_plan_resolvers($s);
+    /* the address each member's timer last followed: the resolver it had before a Save changed it */
+    $followed = array_map(fn (array $timer): string => $timer['resolver'], $st['timers']);
     $st['timers'] = uu_timers_follow_resolvers(
         uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall']), $resolverOf);
 
     /* when the state file does not say tunnel, the live root decides the mode; with the control
      * channel silent there is no live root, and our route via a member is the evidence instead */
     $liveRoot = $s['unbound']['live_root'];
-    $liveAddr = uu_plan_live_addr($liveRoot, array_merge(array_values($resolverOf),
+    $liveAddr = uu_plan_live_addr($liveRoot, array_merge(uu_plan_addresses($s),
         array_map('strval', array_keys($st['addresses']))));
     $current = $st['mode'] === 'tunnel' ? $st['member'] : null;
     if ($current === null && ($liveAddr !== null || $liveRoot === null)) {
@@ -491,11 +501,12 @@ function uu_plan(array $s, array $st): array
     $st['control_failures'] = 0;
     $st['control_silent_since'] = null;
 
-    $drain = uu_plan_drain($st['addresses'], $resolverOf, $now);
-    /* outside tunnel mode every address the setting names or the map holds needs its reject route */
     $read = uu_state_snapshot_read($s['unbound']);
+    $drain = uu_plan_drain($s, $st['addresses'], $read);
+    /* outside tunnel mode every planner address (uu_plan_addresses()) and every address the map holds needs its
+     * reject route */
     $rejectRepair = false;
-    foreach (array_unique(array_merge(uu_setting_addresses($s), array_map('strval', array_keys($st['addresses']))))
+    foreach (array_unique(array_merge(uu_plan_addresses($s), array_map('strval', array_keys($st['addresses']))))
         as $address) {
         $rejectRepair = $rejectRepair
             || uu_plan_needs_reject(uu_plan_route($s, $address), $st['addresses'][$address] ?? null, $read, $address);
@@ -538,8 +549,12 @@ function uu_plan(array $s, array $st): array
     /* the current member is the target, so it has a resolver (a member with none is no candidate) */
     $resolver = $resolverOf[$current] ?? '';
     if ($liveAddr !== null && $liveAddr !== $resolver) {
-        /* a Save changed the current member's resolver: a switch to the same member, never a stop first */
-        $reasons[] = "resolver of $current changed from $liveAddr to $resolver: switching in place";
+        /* a Save changed the current member's resolver (its timer followed the live address), or the live root names
+         * another address: a switch to the same member with its own resolver, never a stop first */
+        $prev = $followed[$current] ?? '';
+        $reasons[] = $prev !== '' && uu_ip_same($prev, $liveAddr)
+            ? "resolver of $current changed from $liveAddr to $resolver: switching in place"
+            : "live root is $liveAddr, not $current's resolver $resolver: switching in place";
         return uu_plan_result('tunnel', $candidates, false, false, false, $st, $reasons, $drain);
     }
     $m = $s['members'][$current] ?? null;

@@ -21,7 +21,9 @@ declare(strict_types=1);
 /**
  * The address-scoped failures in 1.3's words, each with the address it is about and the members whose effective
  * resolver it is: every monitor match, then every static route, then every foreign route, the last apart since the
- * contract lists it after the unmonitored members. An address no member uses excludes nobody and is left out.
+ * contract lists it after the unmonitored members. While some member has a resolver, an address no member uses
+ * excludes nobody and is left out; while none has one, every item is kept (with no members, the snapshot reads only
+ * the Default's, as 1.3_2 read its one resolver whatever the group).
  *
  * @param array{monitors: array<string, list<string>>, statics: array<string, list<string>>, foreign: list<string>,
  *     member_resolvers: array<string, string>} $c
@@ -46,11 +48,12 @@ function uu_contract_scoped(array $c): array
     foreach ($c['foreign'] as $address) {
         $after[] = ['address' => $address, 'failure' => 'resolver route not ours'];
     }
-    $with = function (array $items) use ($users): array {
+    $anyResolver = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '') !== [];
+    $with = function (array $items) use ($users, $anyResolver): array {
         $out = [];
         foreach ($items as $item) {
             $members = $users($item['address']);
-            if ($members !== []) {
+            if ($members !== [] || !$anyResolver) {
                 $out[] = $item + ['members' => $members];
             }
         }
@@ -72,8 +75,11 @@ function uu_contract_scoped(array $c): array
  *   record has no address to route through
  * @return array{ok: bool, failures: list<string>, notes: list<string>, excluded: list<string>}
  *   an address-scoped failure is a failure, in 1.3's words, when the members its addresses exclude are every member
- *   that has a resolver, with " (<address>)" appended only when the members have more than one address between
- *   them; otherwise each excluded member gets the note "<name> excluded: <failure>" and the others still run
+ *   that has a resolver (or no member has one, and the failure is the Default's), with " (<address>)" appended only
+ *   when the members have more than one address between them; otherwise each excluded member gets the note
+ *   "<name> excluded: <failure>" and the others still run. excluded lists a member with no resolver or no next hop
+ *   whatever else applies (with that note only), and a member with only an address-scoped failure while the others
+ *   still have a candidate (not while the scoped failures refuse)
  */
 function uu_contract(array $c): array
 {
@@ -81,14 +87,16 @@ function uu_contract(array $c): array
     $notes = [];
 
     $scoped = uu_contract_scoped($c);
+    $scopedItems = array_merge($scoped['before'], $scoped['after']);
     $hit = [];
-    foreach (array_merge($scoped['before'], $scoped['after']) as $item) {
+    foreach ($scopedItems as $item) {
         foreach ($item['members'] as $name) {
             $hit[$name] = true;
         }
     }
     $resolvers = array_filter($c['member_resolvers'], fn (string $address): bool => $address !== '');
-    $refused = $hit !== [] && count($hit) === count($resolvers);
+    /* with no member's resolver left, the items are the Default's: they refuse, as in 1.3 */
+    $refused = $resolvers === [] ? $scopedItems !== [] : $hit !== [] && count($hit) === count($resolvers);
     $several = count(array_unique($resolvers)) > 1;
     $scopedFailures = fn (array $items): array => array_map(
         fn (array $item): string => $item['failure'] . ($several ? " ({$item['address']})" : ''), $items);
@@ -163,7 +171,7 @@ function uu_contract(array $c): array
             $notes[] = "$name has no next hop: not a candidate";
         } elseif (!$refused && isset($hit[$name])) {
             $excluded[] = $name;
-            foreach (array_merge($scoped['before'], $scoped['after']) as $item) {
+            foreach ($scopedItems as $item) {
                 if (in_array($name, $item['members'], true)) {
                     $notes[] = "$name excluded: {$item['failure']}";
                 }

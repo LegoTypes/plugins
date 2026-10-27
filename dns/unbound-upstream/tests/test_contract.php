@@ -344,5 +344,18 @@ uu_register_suite('contract', function (): int {
                 'excluded' => ['wg-b']];
         }));
 
+    uu_check($t, '(g4) group deleted, the Default a monitor with a route not ours: 1.3_2\'s three failures, in order',
+        uu_try_case(function (): bool {
+            $in = uu_test_contract_input();
+            $in['group_found'] = false;
+            $in['members'] = 0;
+            $in['member_resolvers'] = [];
+            $in['monitors'] = ['10.2.0.1' => ['wg-x']];
+            $in['foreign'] = ['10.2.0.1'];
+            $c = uu_contract($in);
+            return !$c['ok'] && $c['notes'] === [] && $c['excluded'] === []
+                && $c['failures'] === ['resolver is the monitor of wg-x', 'resolver route not ours', 'group not found'];
+        }));
+
     return uu_tally_report('contract', $t);
 });

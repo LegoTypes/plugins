@@ -701,7 +701,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *     the saved one is a fault (it is verified again), or a listing was cut short: an evaluation's snapshot, never
  *     a status call's
  * @param list<string> $stateAddresses the saved state's map keys (uu_state_footprint()): routes covers them beside
- *     every member's effective resolver, so an address the plugin may still be routed to is read too
+ *     the planner's addresses (uu_plan_addresses()), so an address the plugin may still be routed to is read too
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, resolver: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
@@ -799,8 +799,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             $noNextHop[] = (string)$name;
         }
     }
-    $addresses = array_values(array_unique(array_filter($effective['resolvers'],
-        fn (string $address): bool => $address !== '')));
+    /* the planner's addresses: the effective resolvers, or the Default when the group has no member */
+    $addresses = uu_plan_addresses(['settings' => $settings, 'members' => $members]);
     $monitors = [];
     foreach ($addresses as $address) {
         $monitoring = uu_resolver_monitors($all, $address);
@@ -850,8 +850,9 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $liveRoot = $pidAlive ? uu_live_root() : null;
     $zone = uu_root_zone(uu_zone_texts());
 
-    /* the route of every effective resolver and every address the state's map holds, and the Default's (route,
-     * which apply, the table and the status still read) */
+    /* the route of every planner address and every address the state's map holds, and the Default's (route, which
+     * apply, the table and the status still read); a foreign route is the contract's only for a planner address (one
+     * the state alone holds excludes nobody) */
     $routed = [];
     foreach ($addresses as $address) {
         $routed[$address] = true;
@@ -876,14 +877,14 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     sort($keys, SORT_STRING);
     foreach ($keys as $address) {
         $routes[$address] = $read($address);
-        if ($routes[$address]['present'] && !$routes[$address]['ours']) {
+        if ($routes[$address]['present'] && !$routes[$address]['ours'] && in_array($address, $addresses, true)) {
             $foreign[] = $address;
         }
     }
     $route = $routes[$resolver] ?? $read($resolver);
     $fibSyncMs = uu_parse_sysctl_int((string)shell_exec('/sbin/sysctl -n net.route.algo.fib_max_sync_delay_ms 2>/dev/null'));
 
-    /* static routes that cover an effective resolver */
+    /* static routes that cover a planner address */
     $statics = [];
     if ($addresses !== []) {
         foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $r) {

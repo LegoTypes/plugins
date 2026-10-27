@@ -551,6 +551,7 @@ uu_register_suite('state', function (): int {
         uu_try_case(fn (): bool => uu_state_forwarded(['2001:db8:a::53@53#dns.example'], '2001:db8:a::53', false)
             && uu_state_forwarded(['192.0.2.53', '2001:DB8:A:0::53'], '2001:db8:a::53', false)
             && uu_state_forwarded(['10.2.0.1'], '10.2.0.1', false)
+            && uu_state_forwarded(['192.0.2.53#dns.example'], '192.0.2.53', false)
             && !uu_state_forwarded(['192.0.2.53@853#dns.example'], '10.2.0.1', true)
             && !uu_state_forwarded([], '10.2.0.1', true)));
     uu_check($t, 'forwarded: a read that failed keeps what was recorded',

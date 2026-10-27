@@ -108,6 +108,30 @@ uu_register_suite('snapshot_vm', function (): int {
         && $gone['contract_input']['group_found'] === false && $gone['contract_input']['members'] === 0);
     $none = uu_snapshot(['group' => ''] + $settings, [], null, false, []);
     uu_check($t, 'no group set: group_found false', $none['contract_input']['group_found'] === false);
+    uu_check($t, '(g5) a group that does not exist: the Default\'s route is still read, as the planner\'s one address',
+        array_keys($gone['routes']) === ['10.2.0.1'] && $gone['route'] === $gone['routes']['10.2.0.1']
+        && $gone['contract_input']['member_resolvers'] === [] && $gone['contract_input']['foreign'] === []);
+
+    /* (g12) an address the state alone holds, whose live route the plugin did not make: read into routes, and not
+     * the contract's foreign (it is no planner address, so it excludes and refuses nothing). The route is a plain
+     * host route through loopback to a documentation address, added for this case and deleted after it */
+    $g12 = null;
+    try {
+        shell_exec('/sbin/route -q add -host 198.51.100.77 127.0.0.1 > /dev/null 2>&1');
+        $g12 = uu_snapshot($settings, [], null, false, ['198.51.100.77']);
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        shell_exec('/sbin/route -q delete -host 198.51.100.77 > /dev/null 2>&1');
+    }
+    $g12Route = $g12['routes']['198.51.100.77'] ?? null;
+    if ($g12 !== null && ($g12Route === null || $g12Route['ours'] || !$g12Route['present'])) {
+        printf("  route read: %s\n", json_encode($g12Route));
+    }
+    uu_check($t, '(g12) a state-only address with a route not the plugin\'s is read, and is not the contract\'s '
+        . 'foreign route',
+        $g12 !== null && is_array($g12Route) && $g12Route['present'] && !$g12Route['ours']
+        && $g12['contract_input']['foreign'] === []);
 
     uu_check($t, '(t8) static routes: an address in a network of its own family, a bare address as a host, /0 everything',
         uu_try_case(fn (): bool => uu_in_static('2001:db8:a::53', '2001:db8:a::/48')

@@ -1066,8 +1066,10 @@ uu_register_suite('planner', function (): int {
         . 'stop',
         uu_try_case(function () use ($perMember, $onA, $a6): bool {
             $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            /* the evaluation before the Save: wg-a's timer follows its resolver then */
+            $before = uu_plan($s, $onA($s))['state'];
             $s = uu_test_resolver($s, 'wg-a', '2001:db8:c::53');
-            $p = uu_plan($s, $onA($s));
+            $p = uu_plan($s, $before);
             return $p['action'] === 'tunnel' && ($p['candidates'][0] ?? '') === 'wg-a'
                 && $p['candidates'] === ['wg-a', 'wg-b'] && $p['state']['mode'] === 'tunnel'
                 && $p['state']['member'] === 'wg-a' && !$p['reassert'] && !$p['route_repair']
@@ -1158,10 +1160,11 @@ uu_register_suite('planner', function (): int {
                 && !$p['route_repair'];
         }));
     uu_check($t, '(p11) drain: an entry that is some member\'s effective resolver again is never due, whatever its '
-        . 'released_at; nor one Unbound is recorded forwarding to',
-        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $now, $b6): bool {
+        . 'released_at; nor one the live root still names',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $now, $a6, $b6): bool {
             $s = uu_test_in_tunnel($perMember(), 'wg-a');
             $s = uu_test_route($s, $rejectRoute, $b6);
+            $s['unbound']['live_root'] = [$a6, '2001:db8:c::53'];
             $st = $onA($s);
             $st['addresses'][$b6] = $mapEntry(['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'], false, $now - 900);
             $st['addresses']['2001:db8:c::53'] = $mapEntry(null, true, $now - 900);
@@ -1313,6 +1316,143 @@ uu_register_suite('planner', function (): int {
             return uu_setting_addresses($off) === [] && uu_setting_addresses($lost) === []
                 && uu_setting_addresses($empty) === []
                 && $off['members']['wg-a']['resolver'] === $a6 && $lost['members']['wg-b']['resolver'] === $b6;
+        }));
+
+    // The planner's addresses: the effective resolvers, or the Default when the group has no member.
+    $gone = uu_test_snapshot();
+    $gone['tiers'] = [];
+    $gone['members'] = [];
+    $gone['probes'] = [];
+    $gone['contract_input']['group_found'] = false;
+    $gone['contract_input']['members'] = 0;
+    $gone['contract_input']['member_resolvers'] = [];
+    $memberRoute = ['present' => true, 'gateway' => '10.2.0.2', 'interface' => 'wg1', 'reject' => false,
+                    'ours' => false];
+    $rejectRecord = ['kind' => 'reject', 'next_hop' => '', 'if' => 'lo0'];
+    uu_check($t, '(g0) planner addresses: the members\' effective resolvers (canonical, once, sorted, never the '
+        . 'Default no member uses); with no member, the Default; none for no address at all',
+        uu_try_case(function () use ($perMember, $gone, $b6): bool {
+            $rows = uu_test_resolver(uu_test_resolver($perMember(), 'wg-a', '2001:DB8:E::53'), 'wg-b', $b6);
+            $none = uu_test_resolver(uu_test_resolver($perMember(), 'wg-a', ''), 'wg-b', '');
+            $noDefault = $gone;
+            $noDefault['settings']['default'] = '';
+            $spelled = $gone;
+            $spelled['settings']['default'] = '2001:DB8:A:0::53';
+            return uu_plan_addresses($rows) === [$b6, '2001:db8:e::53'] && uu_plan_addresses($none) === []
+                && uu_plan_addresses($gone) === ['10.2.0.1'] && uu_plan_addresses($noDefault) === []
+                && uu_plan_addresses($spelled) === ['2001:db8:a::53']
+                && uu_plan_addresses(uu_test_snapshot()) === ['10.2.0.1'];
+        }));
+    uu_check($t, '(g1) group deleted, state file lost, Unbound still forwarding to the Default over a route no member '
+        . 'explains → fallback, with 1.3_2\'s three reasons exactly',
+        uu_try_case(function () use ($gone, $memberRoute): bool {
+            $s = uu_test_route($gone, $memberRoute);
+            $s['unbound']['live_root'] = ['10.2.0.1'];
+            $s['contract_input']['foreign'] = ['10.2.0.1'];
+            $p = uu_plan($s, uu_state_new());
+            return $p['action'] === 'fallback' && $p['state']['mode'] === 'tunnel' && $p['state']['member'] === null
+                && $p['reasons'] === [
+                    'live root is the resolver but our route is via no member: tunnel mode with no member',
+                    'contract: resolver route not ours', 'contract: group not found (grp_test)'];
+        }));
+    uu_check($t, '(g2) group deleted, fallback, an empty map and no route for the Default → its reject route is '
+        . 'planned, as in 1.3_2',
+        uu_try_case(function () use ($gone): bool {
+            $p = uu_plan($gone, uu_test_plan_state(null));
+            return $p['action'] === 'none' && $p['route_repair'] && !$p['reassert']
+                && $p['reasons'] === ['contract: group not found (grp_test)'];
+        }));
+    uu_check($t, '(g3) group deleted, the Default on its reject route in the map: never drained, released or not',
+        uu_try_case(function () use ($gone, $mapEntry, $rejectRoute, $rejectRecord, $now): bool {
+            $s = uu_test_route($gone, $rejectRoute);
+            $ok = true;
+            foreach ([$now - 60, null] as $released) {
+                $st = uu_test_plan_state(null);
+                $st['addresses'] = ['10.2.0.1' => $mapEntry($rejectRecord, false, $released)];
+                $p = uu_plan($s, $st);
+                $ok = $ok && $p['action'] === 'none' && $p['drain'] === [] && !$p['route_repair'];
+            }
+            return $ok;
+        }));
+    uu_check($t, '(g3) an orphan with no release time is never drained',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $rejectRecord): bool {
+            $s = uu_test_route(uu_test_in_tunnel($perMember(), 'wg-a'), $rejectRoute, '2001:db8:c::53');
+            $st = $onA($s);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry($rejectRecord, false);
+            return uu_plan($s, $st)['drain'] === [];
+        }));
+    uu_check($t, '(g0) with members, a Default that every member\'s row replaces is neither a planner address nor '
+        . 'repaired',
+        uu_try_case(function () use ($perMember, $mapEntry, $rejectRoute, $rejectRecord, $a6, $b6): bool {
+            $s = uu_test_resolver($perMember(), 'wg-a', '2001:db8:e::53');
+            $s = uu_test_route($s, $rejectRoute, '2001:db8:e::53');
+            $s = uu_test_route($s, $rejectRoute, $b6);
+            $s = uu_test_route($s, ['present' => false, 'gateway' => '', 'interface' => '', 'reject' => false,
+                                    'ours' => false], $a6);
+            $st = uu_test_plan_state(null, ['wg-a' => uu_test_timer(0), 'wg-b' => uu_test_timer(0)]);
+            $st['addresses'] = ['2001:db8:e::53' => $mapEntry($rejectRecord, false), $b6 => $mapEntry($rejectRecord,
+                false)];
+            $p = uu_plan($s, $st);
+            return $s['settings']['default'] === $a6 && !in_array($a6, uu_plan_addresses($s), true)
+                && $p['action'] === 'none' && !$p['route_repair'];
+        }));
+
+    uu_check($t, '(g6) drain: an orphan whose live route the plugin did not make is never drained',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRecord, $now): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, ['present' => true, 'gateway' => '192.0.2.99', 'interface' => 'igc0',
+                                    'reject' => false, 'ours' => false], '2001:db8:c::53');
+            $st = $onA($s);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry($rejectRecord, false, $now - 600);
+            $p = uu_plan($s, $st);
+            return $p['drain'] === [] && !$p['route_repair'];
+        }));
+    uu_check($t, '(g7) drain: a stale recorded forwarded true is settled by this run\'s read, as the reject repair '
+        . 'settles it: an orphan the live root no longer names is due',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $rejectRoute, $rejectRecord, $now): bool {
+            $s = uu_test_route(uu_test_in_tunnel($perMember(), 'wg-a'), $rejectRoute, '2001:db8:c::53');
+            $st = $onA($s);
+            $st['addresses']['2001:db8:c::53'] = $mapEntry($rejectRecord, true, $now - 600);
+            $named = $s;
+            $named['unbound']['live_root'] = ['2001:db8:a::53', '2001:db8:c::53'];
+            return uu_plan($s, $st)['drain'] === ['2001:db8:c::53'] && uu_plan($named, $st)['drain'] === [];
+        }));
+
+    uu_check($t, '(g8) tunnel on wg-a with the live root another member\'s address: a switch back in place, the reason '
+        . 'saying the live root is not wg-a\'s resolver (it did not change)',
+        uu_try_case(function () use ($perMember, $onA, $a6, $b6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $before = uu_plan($s, $onA($s))['state'];
+            $s['unbound']['live_root'] = [$b6];
+            $p = uu_plan($s, $before);
+            return $p['action'] === 'tunnel' && $p['state']['member'] === 'wg-a'
+                && $p['reasons'] === ["live root is $b6, not wg-a's resolver $a6: switching in place"];
+        }));
+    uu_check($t, '(g8) a resolver change whose timer has no address yet (converted from 1.3) cannot say what it '
+        . 'changed from: the live-root wording',
+        uu_try_case(function () use ($perMember, $onA, $a6): bool {
+            $s = uu_test_resolver(uu_test_in_tunnel($perMember(), 'wg-a'), 'wg-a', '2001:db8:c::53');
+            $p = uu_plan($s, $onA($s));
+            return $p['action'] === 'tunnel'
+                && $p['reasons'] === ["live root is $a6, not wg-a's resolver 2001:db8:c::53: switching in place"];
+        }));
+    uu_check($t, '(g9) tunnel on wg-a after an Unbound restart (live root the configured list), wg-b\'s address still '
+        . 'on its member route with forwarded true recorded → reassert and reject it, both reasons in order',
+        uu_try_case(function () use ($perMember, $onA, $mapEntry, $routeVia, $a6, $b6): bool {
+            $s = uu_test_in_tunnel($perMember(), 'wg-a');
+            $s = uu_test_route($s, $routeVia($s, 'wg-b'), $b6);
+            $s['unbound']['live_root'] = $s['zone']['addrs'];
+            $st = $onA($s);
+            $st['addresses'][$b6] = $mapEntry(['kind' => 'member', 'next_hop' => 'fd00::4:2', 'if' => 'wg4'], true);
+            $p = uu_plan($s, $st);
+            return $p['action'] === 'none' && $p['reassert'] && $p['route_repair']
+                && $p['reasons'] === ["live root is not the resolver: reassert $a6 via wg-a",
+                    "route of $b6 is missing or not its reject route: reject $b6 locally"];
+        }));
+    uu_check($t, '(g10) a member with no timer yet has its resolver recorded after one plan',
+        uu_try_case(function () use ($perMember, $a6, $b6): bool {
+            $timers = uu_plan($perMember(), uu_test_plan_state(null))['state']['timers'];
+            return ($timers['wg-a']['resolver'] ?? null) === $a6 && ($timers['wg-b']['resolver'] ?? null) === $b6;
         }));
 
     return uu_tally_report('planner', $t);
