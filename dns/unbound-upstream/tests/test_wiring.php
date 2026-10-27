@@ -189,6 +189,21 @@ function uu_test_clear_of_tick(int $margin): bool
     return false;
 }
 
+/**
+ * The evidence line of the resolver action cases' config.xml guard. The suite cannot undo a write (a real save also
+ * leaves a backup and fires the config syshook), so the line names the backup the write left and the restore that must
+ * come before anything else runs.
+ *
+ * @param string $plugin the plugin's section of the written config.xml, or 'unreadable'
+ * @param string $backup the newest config backup's path (Config::getBackups()[0]), or 'none listed'
+ */
+function uu_test_config_written_line(string $plugin, string $backup): string
+{
+    return 'config.xml was written during the resolver actions and is left written (its plugin settings now read '
+        . (string)preg_replace('/\s+/', ' ', $plugin) . "; the write's backup is $backup): restore the VM to the "
+        . "'unbound-upstream base' checkpoint before anything else runs";
+}
+
 uu_register_suite('wiring', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     if (!is_executable('/usr/local/sbin/configctl') || !is_readable('/usr/local/etc/inc/plugins.inc')) {
@@ -511,13 +526,19 @@ VOLT;
         if ($configChanged) {
             $plugin = @simplexml_load_file($config);
             $backups = \OPNsense\Core\Config::getInstance()->getBackups();
-            printf("  config.xml was written during the resolver actions and is left written (its plugin settings now "
-                . "read %s; the write's backup is %s): restore the VM to the 'unbound-upstream base' checkpoint "
-                . "before anything else runs\n", preg_replace('/\s+/', ' ', (string)($plugin === false ? 'unreadable'
-                    : $plugin->OPNsense->UnboundUpstream->asXML())), (string)($backups[0] ?? 'none listed'));
+            printf("  %s\n", uu_test_config_written_line(
+                (string)($plugin === false ? 'unreadable' : $plugin->OPNsense->UnboundUpstream->asXML()),
+                (string)($backups[0] ?? 'none listed')));
         }
     }
     uu_check($t, '(l5) config.xml was not written by the resolver actions', $configChanged === false);
+    $written = uu_test_config_written_line("<UnboundUpstream>\n  <enabled>1</enabled>\n</UnboundUpstream>",
+        '/conf/backup/config-1793000000.0001.xml');
+    uu_check($t, '(l5) the guard\'s line, should it fire, names the backup the write left and the restore of the base '
+        . 'checkpoint that must come before anything else',
+        str_contains($written, "the write's backup is /conf/backup/config-1793000000.0001.xml")
+        && str_contains($written, "restore the VM to the 'unbound-upstream base' checkpoint before anything else runs")
+        && str_contains($written, '<UnboundUpstream> <enabled>1</enabled> </UnboundUpstream>'));
     $gwOption = $ctl['get']['resolver']['gateway'][$ctl['gateway'] ?? ''] ?? null;
     uu_check($t, '(l5) search_resolver lists the row with its member\'s name and address and searches both; '
         . 'get_resolver reads it, and with no id a new row\'s fields',
