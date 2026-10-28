@@ -479,7 +479,7 @@ uu_register_suite('log', function (): int {
         uu_try_case(fn (): bool => uu_status_doc(uu_test_snapshot(), uu_plan(uu_test_snapshot(), uu_test_plan_state(null)),
             ['armed' => false, 'fill' => false, 'blocked' => null])['fail_closed'] === $fcNone));
     $fcView = ['refuse' => 'armed', 'scope' => 'selected', 'nets' => ['192.0.2.0/24', '2001:db8:1::/64'],
-               'problem' => null, 'restarted' => null];
+               'problem' => null, 'restarted' => null, 'unwritable' => 0];
     $fcSnap = function (string $loaded, array $viewZones) {
         $v = uu_test_snapshot();
         $v['settings']['fail_closed'] = ['lan'];
@@ -540,6 +540,31 @@ uu_register_suite('log', function (): int {
     uu_check($t, 'status label: a selection without a net reads no net yet, and each note follows',
         $lab('selected', [], 'lifted', null, ['no IPv6 net yet for lan', 'second'])
             === 'no net yet: lifted; no IPv6 net yet for lan; second');
+    uu_check($t, 'status label: a set with no view loaded reads not loaded, never lifted',
+        $lab('selected', ['192.0.2.0/24'], 'none', null) === '192.0.2.0/24: not loaded'
+        && $lab('all', [], 'none', null) === 'every client: not loaded');
+    uu_check($t, 'status: the records the view file could not carry are a note, not a fault',
+        uu_try_case(function () use ($fcSnap, $fcView): bool {
+            $v = $fcSnap('zones', ['.' => 'refuse']);
+            $st = uu_test_plan_state(null);
+            $st['view'] = ['unwritable' => 2] + $fcView;
+            $fc = uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
+                ['fail_closed'];
+            $note = '2 local record(s) are not written into the view file; the next evaluation copies them into the '
+                . 'view';
+            return $fc['problem'] === null && $fc['notes'] === ['no IPv6 net yet for lan', $note]
+                && $fc['label'] === "192.0.2.0/24, 2001:db8:1::/64: armed; no IPv6 net yet for lan; $note";
+        }));
+    uu_check($t, 'status: a view reply of no known shape is named in the notes, the state\'s refuse kept',
+        uu_try_case(function () use ($fcSnap, $fcView): bool {
+            $v = $fcSnap('unreadable', []);
+            $st = uu_test_plan_state(null);
+            $st['view'] = $fcView;
+            $fc = uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
+                ['fail_closed'];
+            return $fc['refuse'] === 'armed'
+                && $fc['notes'] === ['no IPv6 net yet for lan', "Unbound's list of the view's zones could not be read"];
+        }));
 
     return uu_tally_report('log', $t);
 });

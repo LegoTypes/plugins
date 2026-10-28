@@ -206,6 +206,10 @@ uu_register_suite('views', function (): int {
             === ['.' => 'refuse', 'example.internal.' => 'static']
             && uu_view_parse_list("") === [] && uu_view_parse_list("a b c\n") === null
             && uu_view_parse_list("lonely\n") === null));
+    uu_check($t, 'parse_list: the daemon\'s error reply is no zone list, though its two words fit the shape',
+        uu_try_case(fn (): bool => uu_view_parse_list("error failed\n") === null
+            && uu_view_parse_list("error unknown command 'view_list_local_zones'\n") === null
+            && uu_view_parse_list("errors.example. static\n") === ['errors.example.' => 'static']));
 
     /* local data */
     $rec = 'nas.example.internal. 3600 IN A 192.0.2.10';
@@ -360,8 +364,9 @@ uu_register_suite('views', function (): int {
     $fsPlan = fn (array $over = []): array => array_merge(['active' => true, 'armed' => true, 'keep' => false,
         'zones' => $fsZones, 'mirror' => [], 'problem' => null], $over);
     $fsRecord = fn (string $refuse = 'lifted', ?string $problem = null, ?string $restarted = null,
-        array $nets = ['192.0.2.0/24'], string $scope = 'selected'): array => ['refuse' => $refuse, 'scope' => $scope,
-        'nets' => $nets, 'problem' => $problem, 'restarted' => $restarted];
+        array $nets = ['192.0.2.0/24'], string $scope = 'selected', int $unwritable = 0): array => ['refuse' => $refuse,
+        'scope' => $scope, 'nets' => $nets, 'problem' => $problem, 'restarted' => $restarted,
+        'unwritable' => $unwritable];
     /* the step with the defaults of a staying run: Unbound running and enabled, no dry run, no stop, no removal, no
      * cacheflush */
     $fsStep = fn (array $view, array $plan, array $record, array $flags = []): array => uu_view_file_step($view, $plan,
@@ -527,7 +532,7 @@ uu_register_suite('views', function (): int {
             $v = $fsView(['file' => $one, 'copy' => $one]);
             $st = ['view' => $fsRecord('armed')];
             $plan = fn (?string $stop, bool $upgrade): array => uu_plan_view(['stop' => $stop, 'upgrade' => $upgrade,
-                'view' => $v], $st);
+                'view' => $v]);
             $fault = 'Fail closed: the view file was kept (x)';
             $step = fn (?string $stop, bool $upgrade): array => $fsStep($v, $plan($stop, $upgrade),
                 $fsRecord('armed', $fault), ['stopping' => true]);
@@ -608,15 +613,46 @@ uu_register_suite('views', function (): int {
                 $fsPlan(['active' => false, 'armed' => null]), $fsRecord('lifted', UU_VIEW_FOREIGN . 'view:'));
             return $cleared === [] && count($kept) === 2 && $empty['record']['problem'] === null;
         }));
-    uu_check($t, 'file step: a record the file cannot carry is left to the reconcile and counted',
+    uu_check($t, 'file step: a record the file cannot carry is left to the reconcile and counted, never a problem',
         uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsStep, $one): bool {
             $data = ['nas.example.internal. 3600 IN A 192.0.2.10', 'q.example.internal. 3600 IN TXT "it\'s"',
                 't.example.internal. 3600 IN TXT "v=spf1 -all"'];
             $r = $fsStep($fsView(['data' => $data, 'file' => $one, 'copy' => $one]), $fsPlan(), $fsRecord());
+            /* the next tick: the file holds what it can, the count stands */
+            $next = $fsStep($fsView(['data' => $data, 'file' => $r['write'], 'copy' => $one]), $fsPlan(),
+                $r['record']);
+            /* the set emptied: no file, nothing to count */
+            $gone = $fsStep($fsView(['scope' => 'none', 'nets' => [], 'data' => $data, 'file' => $r['write'],
+                'copy' => $one]), $fsPlan(['active' => false, 'armed' => false]), $r['record']);
             return $r['write'] !== null && !$r['restart'] && str_contains($r['write'], "local-data: 't.example.internal.")
                 && !str_contains($r['write'], 'q.example.internal.')
-                && $r['record'] === $fsRecord('lifted', 'Fail closed: 1 local record(s) could not be copied into the '
-                    . 'view');
+                && $r['record'] === $fsRecord('lifted', null, null, ['192.0.2.0/24'], 'selected', 1)
+                && $next['write'] === null && $next['record'] === $r['record']
+                && $gone['delete'] && $gone['record']['unwritable'] === 0;
+        }));
+    uu_check($t, 'file step: a stuck fault with one unwritable record stays the problem',
+        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsStep, $one): bool {
+            $data = ['nas.example.internal. 3600 IN A 192.0.2.10', 'q.example.internal. 3600 IN TXT "it\'s"'];
+            $out = [];
+            foreach (['Fail closed stuck: error failed', 'Fail closed not armed: no answer'] as $fault) {
+                $r = $fsStep($fsView(['data' => $data, 'file' => $one, 'copy' => $one]), $fsPlan(),
+                    $fsRecord('armed', $fault));
+                $out[] = [$r['record']['problem'], $r['record']['unwritable']];
+            }
+            return $out === [['Fail closed stuck: error failed', 1], ['Fail closed not armed: no answer', 1]];
+        }));
+    uu_check($t, 'file step: a removal restarts for node lines the guard holds, its restart the last one',
+        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsStep, $one): bool {
+            /* a disable tick deleted the file and its restart was reported failed: the lifted copy is still loaded */
+            $v = $fsView(['scope' => 'none', 'nets' => [], 'view_zones' => ['localhost.' => 'noview'], 'copy' => $one]);
+            $failed = $fsRecord('none', UU_VIEW_RESTART_FAILED, hash('sha256', ''), [], 'none');
+            $plan = $fsPlan(['active' => false, 'armed' => false]);
+            $tick = $fsStep($v, $plan, $failed, ['stopping' => true]);
+            $removal = $fsStep($v, $plan, $failed, ['stopping' => true, 'removal' => true]);
+            return !$tick['restart'] && $tick['record']['problem'] === UU_VIEW_RESTART_FAILED
+                && $removal['restart'] && $removal['line'] === 'fail closed: the refused nets changed (192.0.2.0/24 '
+                    . '-> none): restarting Unbound'
+                && $removal['record'] === $fsRecord('none', null, hash('sha256', ''), [], 'none');
         }));
     uu_check($t, 'text: the rendered file passes the shape check, and every line of another shape fails it',
         uu_try_case(function () use ($one, $fsFile): bool {

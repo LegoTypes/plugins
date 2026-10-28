@@ -160,7 +160,8 @@ function uu_remove_marker(): void
  * remove under the lock: the removal's stop, then core's filter reload and cron restart, which run even when the
  * stop failed, so the rules and the minute job follow whatever footprint it saved; a stop that throws before it can
  * act restarts Unbound first (uu_remove_run()). pkg sets PKG_UPGRADE in the pre-deinstall's environment on an
- * upgrade: that stop keeps the fail-closed view, refuse and file, through the upgrade window.
+ * upgrade: that stop arms a lifted set before its restore and keeps the fail-closed view, refuse and file, through
+ * the upgrade window.
  */
 function uu_remove(): int
 {
@@ -197,9 +198,9 @@ function uu_evaluate(?string $stop, array $named, bool $upgrade = false): int
  * Snapshot (with the routes of every address the loaded state holds), the rules' verification saved when this run
  * made one, plan, apply, the view's file step (uu_view_file_follow()), the counting table's upkeep and blocked-count
  * line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
- * (uu_footprint_follow()), then the notification when the run switched or left the fail-closed view with a new
- * problem. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with changes
- * the checksum anyway.
+ * (uu_footprint_follow()), then the notification when the run switched or changed the fail-closed view's problem
+ * (a cleared one included). A stop never lists the ruleset: it plans without the contract, and the filter reload it
+ * ends with changes the checksum anyway.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
@@ -279,7 +280,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -290,7 +292,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}}
  */
 function uu_view_file_follow(array $p, array $s, array $st): array
 {

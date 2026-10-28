@@ -216,7 +216,8 @@ function uu_block_conf(string $to, string $label, string $descr, string $family)
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $state
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $state
  * @param ?array<array-key, array<string, mixed>> $records gatewaysIndexedByName()'s shape, or null when it could not
  *     be read
  * @param list<string> $settingAddresses

@@ -754,7 +754,9 @@ function uu_zone_decode(string $stdout): ?array
 }
 
 /**
- * The interface addresses and devices the selected interfaces' networks come from, as core has them.
+ * The interface addresses and devices the selected interfaces' networks come from, as core has them: each interface
+ * id's device from the MVC configuration object, as the settings model reads it (never the legacy global, which a
+ * config.inc loaded inside a function leaves empty).
  *
  * @return array{details: array<string, array{ipv4: list<array{ipaddr: string, subnetbits: int}>,
  *     ipv6: list<array{ipaddr: string, subnetbits: int, link-local: bool}>}>, devices: array<string, string>}
@@ -762,26 +764,17 @@ function uu_zone_decode(string $stdout): ?array
 function uu_view_core_interfaces(): array
 {
     uu_load_core();
-    /* config.inc parses the configuration into a global at its first load, and uu_load_core() loads it inside a
-     * function, where that variable is a local one (and a read of a missing section makes it an empty one): read it into the
-     * global here */
-    global $config;
-    if (empty($config['interfaces'])) {
-        $config = parse_config();
-    }
-    $devices = [];
-    foreach (legacy_config_get_interfaces() as $id => $conf) {
-        $devices[(string)$id] = (string)($conf['if'] ?? '');
-    }
-    return ['details' => legacy_interfaces_details(), 'devices' => $devices];
+    return ['details' => legacy_interfaces_details(),
+            'devices' => \OPNsense\UnboundUpstream\UnboundUpstream::interfaceDevices()];
 }
 
 /**
  * What the view reads give: view_list_local_zones and view_list_local_data of the plugin's view (loaded zones, absent,
- * unsupported or silent; a reply of another shape is silent too, so it is never acted on), and with $zones the four
- * daemon lists the mirror is built from (list_local_zones, list_forwards, list_stubs, list_local_data), read
- * whenever the view is not silent, an absent or unsupported view included, since the file step needs the zones to
- * render. Everything else in the view is passed through.
+ * unsupported, silent when either got no answer, or unreadable when the daemon answered in none of those shapes: never
+ * acted on, like silence, but named apart, since the daemon did answer), and with $zones the four daemon lists the
+ * mirror is built from (list_local_zones, list_forwards, list_stubs, list_local_data), read whenever the view answered
+ * in a known shape, an absent or unsupported view included, since the file step needs the zones to render. Everything
+ * else in the view is passed through.
  *
  * @param array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
@@ -811,14 +804,17 @@ function uu_view_read(array $view, callable $uc, bool $zones = false): array
         $view['loaded'] = 'absent';
     } else {
         $listed = uu_view_parse_list($reply);
-        $records = $listed === null ? null : uu_view_data_list($uc(['view_list_local_data', UU_VIEW_NAME]));
+        $dataReply = $listed === null ? null : $uc(['view_list_local_data', UU_VIEW_NAME]);
+        $records = $dataReply === null ? null : uu_view_data_list($dataReply);
         if ($listed !== null && $records !== null) {
             $view['loaded'] = 'zones';
             $view['view_zones'] = $listed;
             $view['view_data'] = $records;
+        } elseif ($listed === null || $dataReply !== null) {
+            $view['loaded'] = 'unreadable';
         }
     }
-    if ($zones && $view['loaded'] !== 'silent') {
+    if ($zones && !in_array($view['loaded'], ['silent', 'unreadable'], true)) {
         $view['zones'] = uu_view_zone_list($uc(['list_local_zones']), $uc(['list_forwards']), $uc(['list_stubs']));
         $view['data'] = uu_view_data_list($uc(['list_local_data']));
     }

@@ -163,7 +163,7 @@ function unboundupstream_footprint_recorded(): bool
         $read = uu_state_read(UU_STATE_PATH);
         if ($read['problem'] !== null) {
             uu_logger('cron: the state file is ' . $read['problem'] . ': no footprint read, so the minute job follows '
-                . 'the enabled setting alone', 'warning');
+                . 'the enabled setting and the view file', 'warning');
         }
         return uu_state_footprint($read['state']) !== []
             || uu_state_view_footprint($read['state'], uu_view_file_present());

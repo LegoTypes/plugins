@@ -434,12 +434,16 @@ function uu_view_mirror(array $zones, array $records): array
 }
 
 /**
- * view_list_local_zones' reply: "<name> <type>" per line. Null for a line of another shape.
+ * view_list_local_zones' reply: "<name> <type>" per line. Null for a line of another shape, and for the daemon's error
+ * reply ("error ..."), whose two words would read as a zone.
  *
  * @return ?array<string, string>
  */
 function uu_view_parse_list(string $out): ?array
 {
+    if (str_starts_with(ltrim($out), 'error ')) {
+        return null;
+    }
     $zones = [];
     foreach (uu_view_lines($out) as $line) {
         if (preg_match('/^(\S+) (\S+)$/D', $line, $m) !== 1) {
@@ -468,7 +472,7 @@ function uu_view_record_line(string $record): ?string
 
 /**
  * The mirrored records the file cannot carry (uu_view_record_line()): the view gets them at run time only, from the
- * reconcile.
+ * reconcile, which is no fault; the file step counts them in the record (unwritable) and the status notes it.
  *
  * @param array<string, list<string>> $mirror
  * @return list<string>
@@ -645,11 +649,12 @@ function uu_view_step_problem(?string $problem): bool
  * - Else the file rendered from core's ACL nodes and Unbound's zones and records, only from reads that all answered,
  *   only when the text passes its shape check and fits what the plugin reads back (UU_FILE_MAX_BYTES; else the file
  *   kept, and why), and written when its bytes differ. A record the file cannot carry (uu_view_unwritable()) is left
- *   to the reconcile, and counted in the problem.
+ *   to the reconcile, and counted in the record's unwritable, never a problem: the reconcile copies it into the view.
  * Unbound restarts only when the file on disk after the step (no file: no node lines) names other ACL nodes than the
  * copy Unbound loaded, while it runs and is enabled, and never twice for the same node lines (restarted holds their
  * hash until the copy holds them): a start that did not load them, or did not drop a deleted file's copy, is reported,
- * not repeated. The restart is the remedy for the planner's
+ * not repeated, but for a removal, whose restart is the last the plugin can make. The restart is the remedy for the
+ * planner's
  * "restart Unbound to load the view", and refuse is then armed (the file's refuse of "."), or none without a file. The
  * problem is this run's reason, else apply's fault (uu_view_step_problem() says which are not the step's). Dry run
  * writes, deletes and restarts nothing: its line says what would be done. Pure.
@@ -660,13 +665,14 @@ function uu_view_step_problem(?string $problem): bool
  *     file_present: bool} $view
  * @param array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *     mirror: array<string, list<string>>, problem: ?string} $planView
- * @param array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string} $record
- *     the state's view record as apply left it
+ * @param array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string,
+ *     unwritable: int} $record the state's view record as apply left it
  * @param string $mode the state's mode as apply left it
  * @param bool $stopping uu_plan_stop_reason() is not null
  * @param bool $removal the run is the package's removal (UU_STOP_REMOVE), the last the plugin makes
  * @return array{write: ?string, delete: bool, restart: bool, line: ?string,
- *     record: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
+ *     record: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string,
+ *     unwritable: int}}
  */
 function uu_view_file_step(array $view, array $planView, array $record, string $mode, bool $unboundRunning,
     bool $unboundEnabled, bool $dry, bool $stopping, bool $removal, bool $cacheflush): array
@@ -684,11 +690,13 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     $unwanted = uu_view_file_unwanted($view['scope'], $stopping, $planView['keep']);
     $foreign = $view['acl']['foreign'] ?? [];
     $write = null;
-    $skipped = 0;
+    $unwritable = $record['unwritable'];
     if ($unwanted) {
         /* the record says armed after apply (a lift that failed, or none tried), and the live view may still hold
-         * the refuse of ".": this run's read showed it, or a running Unbound did not answer */
-        $refused = $record['refuse'] === 'armed' && ($planView['armed'] === true || $view['loaded'] === 'silent');
+         * the refuse of ".": this run's read showed it, or a running Unbound did not answer or gave a reply of no
+         * known shape */
+        $refused = $record['refuse'] === 'armed'
+            && ($planView['armed'] === true || in_array($view['loaded'], ['silent', 'unreadable'], true));
         if ($exists && !$removal && ($refused || ($stopping && $mode === 'tunnel'))) {
             return $step;
         }
@@ -699,6 +707,7 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         $after = null;
         $delete = $view['file_present'];
         $reason = $planView['problem'];
+        $unwritable = 0;
     } elseif (!$unboundRunning || ($view['scope'] === 'selected' && $view['nets'] === [])) {
         return $step;
     } else {
@@ -726,7 +735,7 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         $write = $after === $view['file'] ? null : $after;
         $delete = false;
         $reason = $planView['problem'];
-        $skipped = count(uu_view_unwritable($mirror));
+        $unwritable = count(uu_view_unwritable($mirror));
     }
     /* one rule for every restart: the node lines of the file on disk after the step (none without a file) against
      * the copy's, which Unbound loaded; core's start empties and refills /var/unbound/etc, so a restart is also what
@@ -737,9 +746,10 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     $restart = $unboundRunning && $unboundEnabled && $differs;
     $restarted = $differs ? $record['restarted'] : null;
     $render = !$unwanted && $view['loaded'] !== 'unsupported' && $foreign === [];
-    if ($restart && $record['restarted'] === $hash) {
+    if ($restart && $record['restarted'] === $hash && !$removal) {
         /* this run would restart for the node lines the last restart (or its failed attempt) was for, and the copy
-         * still differs: reported, never repeated, so a restart that failed yet happened is no outage a minute */
+         * still differs: reported, never repeated, so a restart that failed yet happened is no outage a minute. A
+         * removal restarts all the same: nothing after it would drop a lifted copy that a reload could arm again */
         $restart = false;
         $reason = match (true) {
             $record['problem'] === UU_VIEW_RESTART_FAILED => UU_VIEW_RESTART_FAILED,
@@ -751,9 +761,6 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         $restarted = $hash;
         $reason = $render ? null : $reason;
     }
-    if ($reason === null && $skipped > 0) {
-        $reason = "Fail closed: $skipped local record(s) could not be copied into the view";
-    }
     $list = function (?string $file): string {
         $nets = uu_view_refused_nets($file);
         return $nets === [] ? 'none' : implode(', ', $nets);
@@ -762,7 +769,7 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     /* with no file wanted the view no longer refuses (else it was held above): nothing is armed, and only this run's
      * reason is left to report */
     $final = $unwanted ? ['refuse' => 'none', 'scope' => $view['scope'], 'nets' => [], 'problem' => $reason,
-        'restarted' => $restarted] : null;
+        'restarted' => $restarted, 'unwritable' => 0] : null;
     if ($dry) {
         $would = [];
         if ($write !== null) {
@@ -794,6 +801,7 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
             'nets' => uu_view_refused_nets($after),
             'problem' => $problem($reason),
             'restarted' => $restarted,
+            'unwritable' => $unwritable,
         ],
     ];
 }

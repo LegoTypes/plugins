@@ -488,6 +488,36 @@ uu_register_suite('apply', function (): int {
         && $pTick['action'] === 'stop' && $pTick['view']['keep'] && $rTick['calls']->getArrayCopy() === []
         && $stTick['view']['refuse'] === 'armed');
 
+    /* the upgrade starts healthy: tunnel mode, the set lifted */
+    $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $s['stop'] = UU_STOP_REMOVE;
+    $s['upgrade'] = true;
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    /* a tick while the removal marker exists, after a removal stop that could not restore: still tunnel mode */
+    $sTick = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $sTick['stop'] = UU_STOP_REMOVING;
+    $rTick = uu_test_io($sTick, $all);
+    $stTick = uu_apply(uu_plan($sTick, uu_test_plan_state('wg-a', $usable)), $sTick, $rTick['io']);
+    $rFail = uu_test_io($s, $all, ['uc_fail' => ['view_local_zone']]);
+    $stFail = uu_apply($p, $s, $rFail['io']);
+    $stopTail = [$restoreDot, 'uc forward', $reject, $flushReq, $drain, 'route delete -inet -host 10.2.0.1'];
+    uu_check($t, 'apply: an upgrade stop from tunnel mode arms before the restore (and a tick of the removal; a failed '
+        . 'arm still restores)',
+        $p['action'] === 'stop' && $p['view']['keep'] && $p['view']['armed'] === false
+        && uu_test_acts($r['calls']) === array_merge($armCalls, $stopTail)
+        && $st['mode'] === 'fallback' && $st['view']['refuse'] === 'armed' && $st['view']['problem'] === null
+        && $hasLine($r['calls'], LOG_ERR, "fail closed: $vNet refused (the package is being upgraded)")
+        && !uu_test_logged($r['calls'], LOG_ERR, 'fail closed: lifted')
+        && uu_test_acts($rTick['calls']) === array_merge($armCalls, $stopTail)
+        && $stTick['view']['refuse'] === 'armed'
+        && $hasLine($rTick['calls'], LOG_ERR,
+            "fail closed: $vNet refused (the package is being removed: its removal marker exists)")
+        && uu_test_acts($rFail['calls']) === array_merge(["uc view_local_zone $vName . refuse",
+            "uc view_list_local_zones $vName"], $stopTail)
+        && $stFail['mode'] === 'fallback' && $stFail['view']['problem'] === 'Fail closed not armed: error failed');
+
     $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), true);
     $s['settings']['enabled'] = false;
     $p = uu_plan($s, $armedState(uu_test_plan_state('wg-a', $usable)));
@@ -506,14 +536,51 @@ uu_register_suite('apply', function (): int {
     $p2 = uu_plan($s2, $st);
     $r2 = uu_test_io($s2, $all);
     $st2 = uu_apply($p2, $s2, $r2['io']);
-    uu_check($t, 'apply: a failed lift is retried and reported stuck',
+    uu_check($t, 'apply: a failed lift is retried and reported stuck (its zone calls tried past the refused one, and '
+        . 'the reconcile puts them back at their armed class while "." stays refused)',
         uu_test_acts($r['calls']) === array_merge([$toWgA, $wait, $probe, $toResolver, 'uc flush_infra 10.2.0.1',
-            'uc forward', "uc view_local_zone_remove $vName .", "uc view_list_local_zones $vName"], $through)
+            'uc forward'], $liftCalls, $through, ["uc view_local_zone $vName corp.example. static",
+            "uc view_local_zone $vName lab.example. refuse"])
         && $st['mode'] === 'tunnel' && $st['member'] === 'wg-a' && $st['view']['refuse'] === 'armed'
         && $st['view']['problem'] === 'Fail closed stuck: error failed'
         && $hasLine($r['calls'], LOG_ERR, 'Fail closed stuck: error failed')
         && $p2['action'] === 'none' && $viewActs($r2['calls']) === $liftCalls
         && $st2['view']['refuse'] === 'lifted' && $st2['view']['problem'] === null);
+
+    $corpLift = "view_local_zone $vName corp.example. noview";
+    $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), true);
+    $s['settings']['enabled'] = false;
+    $p = uu_plan($s, $armedState(uu_test_plan_state('wg-a', $usable)));
+    $r = uu_test_io($s, $all, ['uc_fail' => [$corpLift]]);
+    $st = uu_apply($p, $s, $r['io']);
+    $rLost = uu_test_io($s, $all, ['uc_lost' => ['view_local_zone']]);
+    uu_apply($p, $s, $rLost['io']);
+    uu_check($t, 'apply: a lift goes past a zone Unbound refused to set noview, and stops only at one with no answer',
+        $p['action'] === 'stop' && $viewActs($r['calls']) === $liftCalls
+        && $st['view']['refuse'] === 'lifted'
+        && $hasLine($r['calls'], LOG_ERR, 'fail closed: lifted (disabled in settings)')
+        && $viewActs($rLost['calls']) === ["uc view_local_zone_remove $vName .", "uc $corpLift",
+            "uc view_list_local_zones $vName"]);
+
+    $noNet = function (?string $file) use ($bothDown, $viewed): array {
+        $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+        $s['view']['nets'] = [];
+        $s['view']['file'] = $file;
+        return $s;
+    };
+    $lines = [];
+    foreach ([UU_VIEW_BEGIN . "\nserver:\n    access-control-view: 198.51.100.0/24 $vName\n" . UU_VIEW_END . "\n", null]
+        as $file) {
+        $s = $noNet($file);
+        $r = uu_test_io($s, $all);
+        uu_apply(uu_plan($s, uu_test_plan_state('wg-a', $usable)), $s, $r['io']);
+        $lines[] = array_values(array_filter($r['calls']->getArrayCopy(), fn (string $c): bool
+            => str_starts_with($c, 'log ' . LOG_ERR . ' fail closed: ')));
+    }
+    uu_check($t, 'apply: the refused-set line of a selection without a net names the nets the file refuses, else the '
+        . 'selected interfaces',
+        $lines === [['log ' . LOG_ERR . ' fail closed: 198.51.100.0/24 refused (no usable member)'],
+            ['log ' . LOG_ERR . ' fail closed: the selected interfaces (no net yet) refused (no usable member)']]);
 
     $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), true);
     $p = uu_plan($s, $armedState(uu_test_plan_state('wg-a', $usable)));
@@ -695,7 +762,7 @@ uu_register_suite('apply', function (): int {
     $st = uu_apply($p, $s, $r['io']);
     uu_check($t, 'apply: a lift that finds the view no longer loaded records none, not stuck',
         uu_test_acts($r['calls']) === array_merge([$toWgA, $wait, $probe, $toResolver, 'uc flush_infra 10.2.0.1',
-            'uc forward', "uc view_local_zone_remove $vName .", "uc view_list_local_zones $vName"], $through)
+            'uc forward'], $liftCalls, $through)
         && $st['view']['refuse'] === 'none' && $st['view']['problem'] === null
         && $hasLine($r['calls'], LOG_ERR, 'fail closed: lifted (wg-a)'));
 

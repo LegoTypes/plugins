@@ -124,7 +124,8 @@ function uu_plan_note(
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  * @param list<string> $reasons
  * @param list<string> $drain
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
@@ -138,7 +139,8 @@ function uu_plan_note(
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *             restarted: ?string, unwritable: int}},
  *     reasons: list<string>, drain: list<string>}
  */
 function uu_plan_result(
@@ -400,20 +402,18 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
 /**
  * The fail-closed view's share of an evaluation (spec 3.3, 3.4, 3.8): whether there is a view to act on, whether the
  * loaded view holds the refuse of ".", whether a stop keeps it, the daemon's zones and the records the mirror keeps
- * in the view, and why it cannot be armed. A view read that is not a loaded view's zones (silent, skipped, absent,
- * unsupported) leaves armed unknown, and a silent read is never acted on.
+ * in the view, and why it cannot be armed. A view read that is not a loaded view's zones (silent, unreadable, skipped,
+ * absent, unsupported) leaves armed unknown, and a silent or unreadable read is never acted on.
  *
  * @param array{stop: ?string, upgrade: bool,
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
  *         copy: ?string, file_present: bool}} $s
- * @param array{view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
- *     restarted: ?string}} $st the state, which the view's share does not read
  * @return array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *     mirror: array<string, list<string>>, problem: ?string}
  */
-function uu_plan_view(array $s, array $st): array
+function uu_plan_view(array $s): array
 {
     $view = $s['view'];
     $selected = $view['scope'] !== 'none';
@@ -483,7 +483,8 @@ function uu_plan_view(array $s, array $st): array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
@@ -495,7 +496,8 @@ function uu_plan_view(array $s, array $st): array
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *             restarted: ?string, unwritable: int}},
  *     reasons: list<string>, drain: list<string>}
  */
 function uu_plan_steps(array $s, array $st): array
@@ -770,7 +772,8 @@ function uu_plan_steps(array $s, array $st): array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
@@ -782,12 +785,13 @@ function uu_plan_steps(array $s, array $st): array
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *             restarted: ?string, unwritable: int}},
  *     reasons: list<string>, drain: list<string>,
  *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *         mirror: array<string, list<string>>, problem: ?string}}
  */
 function uu_plan(array $s, array $st): array
 {
-    return uu_plan_steps($s, $st) + ['view' => uu_plan_view($s, $st)];
+    return uu_plan_steps($s, $st) + ['view' => uu_plan_view($s)];
 }

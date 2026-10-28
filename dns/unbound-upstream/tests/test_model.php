@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
+require_once __DIR__ . '/scratch.php';
 
 /**
  * Field names with a validation message, after applying $values to a fresh model.
@@ -141,6 +142,28 @@ uu_register_suite('model', function (): int {
         && !in_array('fail_closed_networks', uu_test_model_refused(
             ['fallback' => '0', 'fail_closed_networks' => '0.0.0.0/0']
         ), true));
+    uu_check($t, "model: a selected interface's address is found through the configuration object, with the legacy "
+        . 'global empty (as config.inc leaves it when a function loaded it)',
+        uu_try_case(function (): bool {
+            $had = array_key_exists('config', $GLOBALS);
+            $saved = $GLOBALS['config'] ?? null;
+            $GLOBALS['config'] = [];
+            try {
+                $refused = uu_test_model_field(uu_test_model_messages(['fallback' => '1', 'fail_closed' => 'lan']),
+                    'fail_closed');
+            } finally {
+                if ($had) {
+                    $GLOBALS['config'] = $saved;
+                } else {
+                    unset($GLOBALS['config']);
+                }
+            }
+            if ($refused !== []) {
+                printf("  fail_closed refused: %s\n", implode('; ', $refused));
+            }
+            return $refused === []
+                && (\OPNsense\UnboundUpstream\UnboundUpstream::interfaceDevices()['lan'] ?? '') !== '';
+        }));
     uu_check(
         $t,
         'defaults: disabled, dry run on, failback 120, probe ".", notify off with no URL',

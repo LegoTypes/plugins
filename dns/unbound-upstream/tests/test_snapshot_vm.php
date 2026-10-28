@@ -288,12 +288,18 @@ uu_register_suite('snapshot_vm', function (): int {
                 usleep(500000);
             }
             /* the evaluation core's start queues must be over before the next suite reads the state: quiet once no
-             * evaluation ran for two samples in a row */
+             * evaluation ran for two samples in a row; still running at 60 s is a FAIL with what runs */
             $idle = 0;
+            $running = '';
             $deadline = hrtime(true) + 60000000000;
             while ($idle < 2 && hrtime(true) < $deadline) {
                 sleep(1);
-                $idle = trim((string)shell_exec("/bin/pgrep -f 'UnboundUpstream/evaluate[.]php'")) === '' ? $idle + 1 : 0;
+                $running = trim((string)shell_exec("/bin/pgrep -lf 'UnboundUpstream/evaluate[.]php'"));
+                $idle = $running === '' ? $idle + 1 : 0;
+            }
+            uu_check($t, "snapshot_vm: the evaluation Unbound's restart queued is over within 60 s", $idle >= 2);
+            if ($idle < 2) {
+                printf("  still running at 60 s: %s\n", str_replace("\n", '; ', $running));
             }
             $viewCleanup = !file_exists($viewConf) && !file_exists(UU_VIEW_FILE);
         }

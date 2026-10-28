@@ -479,7 +479,7 @@ uu_register_suite('state', function (): int {
             $short = $v6;
             unset($short['blocked']);
             return $converted === $s && $s['view'] === ['refuse' => 'none', 'scope' => 'none', 'nets' => [],
-                'problem' => null, 'restarted' => null] && uu_state_from_doc($extra) === null
+                'problem' => null, 'restarted' => null, 'unwritable' => 0] && uu_state_from_doc($extra) === null
                 && uu_state_from_doc($short) === null;
         }));
     uu_check($t, 'state: a view record of another shape is refused',
@@ -490,7 +490,8 @@ uu_register_suite('state', function (): int {
             }
             $bad = [];
             foreach ([['refuse', 'maybe'], ['refuse', null], ['scope', 7], ['nets', 'x'], ['nets', [4]],
-                      ['nets', ['a' => 'x']], ['problem', 3], ['restarted', 7]] as [$key, $value]) {
+                      ['nets', ['a' => 'x']], ['problem', 3], ['restarted', 7], ['unwritable', -1],
+                      ['unwritable', '1'], ['unwritable', null]] as [$key, $value]) {
                 $variant = $doc;
                 $variant['view'][$key] = $value;
                 $bad[] = uu_state_from_doc($variant);
@@ -499,6 +500,8 @@ uu_register_suite('state', function (): int {
             unset($missing['view']['problem']);
             $noRestarted = $doc;
             unset($noRestarted['view']['restarted']);
+            $noUnwritable = $doc;
+            unset($noUnwritable['view']['unwritable']);
             $extra = $doc;
             $extra['view']['more'] = 1;
             $notArray = $doc;
@@ -507,9 +510,10 @@ uu_register_suite('state', function (): int {
             unset($absent['view']);
             $armed = $doc;
             $armed['view'] = ['refuse' => 'armed', 'scope' => 'set', 'nets' => ['192.0.2.0/24'], 'problem' => 'x',
-                'restarted' => hash('sha256', '')];
+                'restarted' => hash('sha256', ''), 'unwritable' => 2];
             return array_filter($bad, fn (?array $r): bool => $r !== null) === []
                 && uu_state_from_doc($missing) === null && uu_state_from_doc($noRestarted) === null
+                && uu_state_from_doc($noUnwritable) === null
                 && uu_state_from_doc($extra) === null
                 && uu_state_from_doc($notArray) === null && uu_state_from_doc($absent) === null
                 && (uu_state_from_doc($armed)['view'] ?? null) === $armed['view'];
@@ -532,7 +536,7 @@ uu_register_suite('state', function (): int {
             $st = uu_state_from_doc($v5);
             return $st !== null && $st['version'] === 7
                 && $st['view'] === ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null,
-                    'restarted' => null];
+                    'restarted' => null, 'unwritable' => 0];
         }));
 
     // The footprint: the map's keys, and what an evaluation that changed it runs.

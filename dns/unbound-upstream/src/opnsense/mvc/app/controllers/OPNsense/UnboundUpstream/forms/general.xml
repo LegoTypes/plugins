@@ -9,7 +9,7 @@
         <id>unboundupstream.dry_run</id>
         <label>Dry run</label>
         <type>checkbox</type>
-        <help>Decide and log only: Unbound's forwarders and the resolvers' routes are left alone. The block and pass rules are still loaded.</help>
+        <help>Decide and log only: Unbound's forwarders and the resolvers' routes are left alone. The block and pass rules are still loaded. A fail-closed view file left by a real run is deleted only once dry run is off.</help>
     </field>
     <field>
         <id>unboundupstream.gateway_group</id>
@@ -45,7 +45,7 @@
         <id>unboundupstream.fail_closed</id>
         <label>Fail closed on</label>
         <type>select_multiple</type>
-        <help>Clients on these interfaces get REFUSED for internet names while no member is usable; local names still resolve. A client querying from an IPv6 link-local address is not covered.</help>
+        <help>Clients on these interfaces get REFUSED for internet names while no member is usable; local names still resolve. A client querying from an IPv6 link-local address is not covered. A point-to-point interface (a /32 or /128 address) contributes only its own address; list its peers under Fail closed for networks.</help>
     </field>
     <field>
         <id>unboundupstream.fail_closed_networks</id>

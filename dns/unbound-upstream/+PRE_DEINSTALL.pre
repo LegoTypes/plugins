@@ -7,8 +7,9 @@
 # reject route (never deleted, so no query leaves by the default route) and an error names the remedy. remove then
 # reloads the filter and restarts cron through configd, else core's own scripts. The || true stays: pkg must not be
 # left half-way by a removal that failed, and the plugin log says what remove could not do.
-# On an upgrade (pkg sets PKG_UPGRADE) the stop keeps the fail-closed view's file and refuse, so the set stays refused
-# through the upgrade window. Should the upgrade fail, a downgrade to 1.4 follow, or the removal not finish, the
+# On an upgrade (pkg sets PKG_UPGRADE) the stop arms the fail-closed set before it restores the root (from tunnel
+# mode, where the set was lifted) and keeps the view's file and refuse, so the set stays refused through the upgrade
+# window. Should the upgrade fail, a downgrade to 1.4 follow, or the removal not finish, the
 # recovery commands are in the plugin log first: the delete keeps the view from loading again, and core's restart
 # drops it (core's start empties and refills /var/unbound/etc, so its copy goes too).
 # Logged only while the file exists, so an owner with nothing selected gets no new line.

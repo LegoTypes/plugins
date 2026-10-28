@@ -26,7 +26,8 @@ uu_register_suite('notify', function (): int {
     uu_check($t, 'due: a switch back to the same place at a later time is a new switch',
         uu_notify_due($a, ['at' => 1200] + $a, null, null));
 
-    $view = ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null, 'restarted' => null];
+    $view = ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null, 'restarted' => null,
+             'unwritable' => 0];
     $body = json_decode(uu_notify_body(['mode' => 'fallback', 'member' => null, 'last_switch' => $b,
         'view' => $view], true), true);
     uu_check($t, 'body: the last switch, then the saved mode and member, as JSON',
@@ -96,7 +97,8 @@ uu_register_suite('notify', function (): int {
         uu_try_case(fn (): bool => uu_notify_failure_line('http:///x', 'HTTP 404')
             === 'the notify URL: HTTP 404 (see the Notify URL on the page)'));
 
-    $armedView = ['refuse' => 'armed', 'scope' => 'all', 'nets' => [], 'problem' => null, 'restarted' => null];
+    $armedView = ['refuse' => 'armed', 'scope' => 'all', 'nets' => [], 'problem' => null, 'restarted' => null,
+                  'unwritable' => 1];
     $failed = ['problem' => 'Fail closed not armed: restart Unbound to load the view'] + $armedView;
     uu_check($t, 'notify: a failed arm notifies',
         uu_notify_due($a, $a, null, $failed['problem']) && uu_notify_due(null, null, null, $failed['problem'])
@@ -104,7 +106,11 @@ uu_register_suite('notify', function (): int {
         && !uu_notify_due($a, $a, null, null)
         && uu_notify_due($a, $a, $failed['problem'], 'Fail closed: the Unbound restart for the view file failed'));
     $shown = ['scope' => 'all', 'nets' => [], 'refuse' => 'armed', 'problem' => $failed['problem']];
-    uu_check($t, 'notify: the body carries fail_closed without the internal hash',
+    uu_check($t, 'notify: a cleared problem notifies, its body\'s problem null',
+        uu_notify_due($a, $a, $failed['problem'], null)
+        && json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a,
+            'view' => $armedView], false), true)['fail_closed']['problem'] === null);
+    uu_check($t, 'notify: the body carries fail_closed without the internal hash or the unwritable count',
         json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a,
             'view' => ['restarted' => 'abc123'] + $failed], true), true)['fail_closed'] === $shown);
     uu_check($t, 'notify: a problem before any switch is sent without last_switch',

@@ -177,7 +177,8 @@ function uu_status_active(array $s, array $plan): string
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *             restarted: ?string, unwritable: int}},
  *     reasons: list<string>, drain: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the setting's addresses
@@ -281,17 +282,28 @@ function uu_status_doc(array $s, array $plan, array $blockTable): array
 }
 
 /**
- * The status document's fail_closed: the state's record with the live refuse, the settings' selection, the
- * snapshot's notes, and the label the page shows as it is (uu_status_fail_closed_label()).
+ * The status document's fail_closed: the state's record with the live refuse, the settings' selection, the notes
+ * (the snapshot's, then a view whose zones Unbound answered in no known shape, then the records the view file could
+ * not carry, which the reconcile copies into the view), and the label the page shows as it is
+ * (uu_status_fail_closed_label()).
  *
  * @param array{settings: array{fail_closed: list<string>, fail_closed_networks: list<string>},
  *     view: array{loaded: string, view_zones: array<string, string>, notes: list<string>}} $s
- * @param array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string} $view
+ * @param array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *     restarted: ?string, unwritable: int} $view
  * @return array{scope: string, interfaces: list<string>, networks: list<string>, nets: list<string>,
  *     refuse: string, problem: ?string, notes: list<string>, label: string}
  */
 function uu_status_fail_closed(array $s, array $view): array
 {
+    $notes = $s['view']['notes'];
+    if ($s['view']['loaded'] === 'unreadable') {
+        $notes[] = "Unbound's list of the view's zones could not be read";
+    }
+    if ($view['unwritable'] > 0) {
+        $notes[] = $view['unwritable'] . ' local record(s) are not written into the view file; the next evaluation '
+            . 'copies them into the view';
+    }
     $fc = [
         'scope' => $view['scope'],
         'interfaces' => $s['settings']['fail_closed'],
@@ -299,7 +311,7 @@ function uu_status_fail_closed(array $s, array $view): array
         'nets' => $view['nets'],
         'refuse' => uu_status_refuse($s['view'], $view['refuse']),
         'problem' => $view['problem'],
-        'notes' => $s['view']['notes'],
+        'notes' => $notes,
     ];
     return $fc + ['label' => uu_status_fail_closed_label($fc)];
 }
@@ -308,7 +320,7 @@ function uu_status_fail_closed(array $s, array $view): array
  * What the page's "Fail closed" row reads: off for no set; else the refused nets (every client, or "no net yet"
  * for a selection without one), then the state, then each note. A problem outranks the refuse: "Fail closed stuck: "
  * reads stuck, "Fail closed not armed: " not armed, any other view fault is shown as a fault; with no problem the
- * state is armed or lifted.
+ * state is armed, lifted, or not loaded (no view loaded: Unbound down, or its start still to come).
  *
  * @param array{scope: string, nets: list<string>, refuse: string, problem: ?string, notes: list<string>} $fc
  */
@@ -319,7 +331,11 @@ function uu_status_fail_closed_label(array $fc): string
     }
     $set = $fc['scope'] === 'all' ? 'every client' : ($fc['nets'] === [] ? 'no net yet' : implode(', ', $fc['nets']));
     if ($fc['problem'] === null) {
-        $state = $fc['refuse'] === 'armed' ? 'armed' : 'lifted';
+        $state = match ($fc['refuse']) {
+            'armed' => 'armed',
+            'none' => 'not loaded',
+            default => 'lifted',
+        };
     } elseif (preg_match('/^Fail closed( stuck| not armed)?: (.*)$/s', $fc['problem'], $m) === 1) {
         $state = ($m[1] === '' ? 'fault' : ltrim($m[1])) . ': ' . $m[2];
     } else {

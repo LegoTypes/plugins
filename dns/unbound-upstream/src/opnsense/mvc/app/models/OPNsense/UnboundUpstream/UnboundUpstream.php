@@ -30,13 +30,13 @@ namespace OPNsense\UnboundUpstream;
 
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
+use OPNsense\Core\Config;
 use OPNsense\Firewall\Util;
 use OPNsense\Interfaces\Settings;
 use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
 use OPNsense\Routes\Route;
 
-require_once 'config.inc';
 require_once 'interfaces.lib.inc';
 
 class UnboundUpstream extends BaseModel
@@ -84,10 +84,7 @@ class UnboundUpstream extends BaseModel
             return;
         }
         $details = legacy_interfaces_details();
-        $devices = [];
-        foreach (legacy_config_get_interfaces() as $id => $conf) {
-            $devices[(string)$id] = (string)($conf['if'] ?? '');
-        }
+        $devices = self::interfaceDevices();
         /**
          * @return list<string> the interface's live networks, link-local addresses left out
          */
@@ -132,6 +129,26 @@ class UnboundUpstream extends BaseModel
                 $messages->appendMessage(new Message($problem, $this->fail_closed_networks->__reference));
             }
         }
+    }
+
+    /**
+     * Each interface id's device, from the MVC configuration object: the same map in the web GUI's process, in a
+     * configd script and in the plugin's evaluation, whichever of them loaded config.inc and where (the legacy global
+     * it fills is empty when it was loaded inside a function).
+     *
+     * @return array<string, string> interface id => device
+     */
+    public static function interfaceDevices(): array
+    {
+        $devices = [];
+        $interfaces = Config::getInstance()->object()->interfaces;
+        if ($interfaces === null) {
+            return $devices;
+        }
+        foreach ($interfaces->children() as $id => $node) {
+            $devices[(string)$id] = (string)$node->if;
+        }
+        return $devices;
     }
 
     /**

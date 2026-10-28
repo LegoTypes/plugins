@@ -402,7 +402,8 @@ function uu_test_default(array $s, string $address): array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}}
  */
 function uu_test_plan_state(
     ?string $member,

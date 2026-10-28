@@ -525,6 +525,21 @@ uu_register_suite('snapshot', function (): int {
         $v['loaded'] === 'silent' && $calls->getArrayCopy() === ['view_list_local_zones unboundupstream']
         && $v['zones'] === null);
 
+    $unreadable = [];
+    foreach ([['view_list_local_zones' => "error failed\n"],
+              ['view_list_local_zones' => "a reply of three words\n"],
+              ['view_list_local_zones' => $zonesReply, 'view_list_local_data' => "nas.example. 3600\n"]] as $replies) {
+        [$uc, $calls] = $recorder($replies + ['list_local_zones' => "localhost. transparent\n"]);
+        $v = uu_view_snapshot($viewSettings(), true, $uc, $viewDetails, null, $noFile);
+        $unreadable[] = [$v['loaded'], count($calls), $v['zones'], $v['view_zones']];
+    }
+    [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply]);
+    $v = uu_view_snapshot($viewSettings(), true, $uc, $viewDetails, null, $noFile);
+    uu_check($t, 'snapshot: a reply of no known shape is unreadable, not silent, and lists nothing more; no answer to '
+        . 'the data list is silent',
+        $unreadable === [['unreadable', 1, null, []], ['unreadable', 1, null, []], ['unreadable', 2, null, []]]
+        && $v['loaded'] === 'silent' && count($calls) === 2);
+
     [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply, 'view_list_local_data' => $dataReply]);
     $v = uu_view_snapshot($viewSettings(), false, $uc, $viewDetails, null, $noFile);
     uu_check($t, 'snapshot: zones false never lists',

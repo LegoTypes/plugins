@@ -17,15 +17,15 @@ require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/snapshot.php';
 
 /**
- * Whether a run changed the last switch (a run that switched nothing keeps the saved one unchanged), or left the
- * fail-closed view with a problem that appeared or changed.
+ * Whether a run changed the last switch (a run that switched nothing keeps the saved one unchanged), or changed the
+ * fail-closed view's problem: one that appeared, changed or cleared (the body's null problem says it cleared).
  *
  * @param ?array{at: int, from: string, to: string, reason: string} $before
  * @param ?array{at: int, from: string, to: string, reason: string} $after
  */
 function uu_notify_due(?array $before, ?array $after, ?string $problemBefore, ?string $problemAfter): bool
 {
-    return ($after !== null && $after !== $before) || ($problemAfter !== null && $problemAfter !== $problemBefore);
+    return ($after !== null && $after !== $before) || $problemAfter !== $problemBefore;
 }
 
 /**
@@ -33,7 +33,8 @@ function uu_notify_due(?array $before, ?array $after, ?string $problemBefore, ?s
  * one), then the saved mode and member and the view record as fail_closed, without the internal hash.
  *
  * @param array{mode: string, member: ?string, last_switch: ?array{at: int, from: string, to: string, reason: string},
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  * @param bool $switched whether the run saved a new switch
  */
 function uu_notify_body(array $st, bool $switched): string
@@ -155,7 +156,8 @@ function uu_notify_failure_line(string $url, string $error): string
  * run saved a new switch.
  *
  * @param array{mode: string, member: ?string, last_switch: ?array{at: int, from: string, to: string, reason: string},
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *         restarted: ?string, unwritable: int}} $st
  */
 function uu_notify_switch(array $st, bool $switched): void
 {
