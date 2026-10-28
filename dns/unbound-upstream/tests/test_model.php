@@ -107,6 +107,35 @@ uu_register_suite('model', function (): int {
     require_once $class;
 
     $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    uu_check($t, 'model: fallback defaults to 1', $m->fallback->isEqual('1'));
+    uu_check($t, 'model: fail_closed and fail_closed_networks default empty',
+        $m->fail_closed->isEmpty() && $m->fail_closed_networks->isEmpty());
+    $problems = fn (string $net, array $members = []): array
+        => \OPNsense\UnboundUpstream\UnboundUpstream::failClosedProblems([$net], $members);
+    $loopback = ' overlaps the loopback network: the firewall\'s own lookups would be refused';
+    $listed = ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead';
+    uu_check($t, 'failClosedProblems: host bits set ask for the network address',
+        $problems('192.0.2.1/24') === ['192.0.2.1/24: enter the network address']);
+    uu_check($t, 'failClosedProblems: the default routes cannot be listed',
+        $problems('0.0.0.0/0') === ['0.0.0.0/0' . $listed] && $problems('::/0') === ['::/0' . $listed]);
+    uu_check($t, 'failClosedProblems: a network overlapping the loopback network is refused',
+        $problems('127.0.0.0/16') === ['127.0.0.0/16' . $loopback]
+        && $problems('::1/128') === ['::1/128' . $loopback]
+        && $problems('::ffff:127.0.0.0/104') === ['::ffff:127.0.0.0/104' . $loopback]
+        && $problems('0.0.0.0/1') === ['0.0.0.0/1' . $loopback]);
+    uu_check($t, 'failClosedProblems: a network overlapping a member interface network is refused',
+        $problems('198.51.100.0/24', ['opt2' => ['198.51.100.0/25']])
+            === ['198.51.100.0/24 overlaps the network of opt2, a member of the gateway group']
+        && $problems('203.0.113.0/24', ['opt2' => ['198.51.100.0/25']]) === []);
+    uu_check($t, 'failClosedProblems: the tailnet ranges are fine',
+        $problems('100.64.0.0/10') === [] && $problems('fd7a:115c:a1e0::/48') === []);
+    uu_check($t, 'model: the networks field refuses host bits and a default route while fallback is on',
+        in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '192.0.2.1/24']), true)
+        && in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '0.0.0.0/0']), true)
+        && !in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '100.64.0.0/10']), true)
+        && !in_array('fail_closed_networks', uu_test_model_refused(
+            ['fallback' => '0', 'fail_closed_networks' => '0.0.0.0/0']
+        ), true));
     uu_check(
         $t,
         'defaults: disabled, dry run on, failback 120, probe ".", notify off with no URL',

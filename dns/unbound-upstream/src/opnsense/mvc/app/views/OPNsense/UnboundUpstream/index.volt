@@ -115,9 +115,16 @@
             });
         }
 
+        /* the two fail-closed rows mean nothing while the fallback is off */
+        function toggleFailClosed() {
+            var on = $('#unboundupstream\\.fallback').is(':checked');
+            $('#unboundupstream\\.fail_closed, #unboundupstream\\.fail_closed_networks').closest('tr').toggle(on);
+        }
+        $('#unboundupstream\\.fallback').on('change', toggleFailClosed);
         mapDataToFormUI({'frm_general': '/api/unboundupstream/settings/get'}).done(function () {
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
+            toggleFailClosed();
         });
         /* the per-member resolvers: each row is saved by its own dialog, then applied (below) */
         /* core's row delete fires settings-changed whatever the reply, so a refused delete would be applied too;

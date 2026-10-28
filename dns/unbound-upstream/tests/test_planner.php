@@ -1260,7 +1260,8 @@ uu_register_suite('planner', function (): int {
         . 'member\'s resolver and the plan agree, no reassert and no route repair',
         uu_try_case(function () use ($perMember, $onA, $a6): bool {
             $clean = uu_settings_clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [], 'probe_name' => '.',
-                'failback_delay' => '120', 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60']);
+                'failback_delay' => '120', 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60',
+                'fallback' => '1', 'fail_closed' => '', 'fail_closed_networks' => '']);
             $default = $clean['settings']['default'];
             $members = uu_member_resolvers(['wg-a', 'wg-b'], [], [], $default)['resolvers'];
             $s = $perMember();

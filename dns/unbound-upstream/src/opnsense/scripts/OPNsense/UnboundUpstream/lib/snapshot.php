@@ -459,10 +459,15 @@ function uu_route_adopt(array $s, array $addresses): array
  * 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per substitution; none quotes the
  * value.
  *
+ * fallback is false only for "0"; fail_closed and fail_closed_networks are the model's comma lists, sorted with
+ * duplicates removed, the networks in canonical form and a value that is no network dropped with its own problem.
+ *
  * @param array{resolver: string, rows: list<array{gateway: string, address: string}>, probe_name: string,
- *     failback_delay: string, group_uuid: string} $raw
+ *     failback_delay: string, group_uuid: string, fallback: string, fail_closed: string,
+ *     fail_closed_networks: string} $raw
  * @return array{settings: array{default: string, rows: array<string, string>, probe_name: string,
- *     failback_delay: int, group_uuid: string}, problems: list<string>}
+ *     failback_delay: int, group_uuid: string, fallback: bool, fail_closed: list<string>,
+ *     fail_closed_networks: list<string>}, problems: list<string>}
  *   rows: gateway UUID => canonical address
  */
 function uu_settings_clean(array $raw): array
@@ -500,8 +505,25 @@ function uu_settings_clean(array $raw): array
         $problems[] = 'settings: gateway group is not an id; evaluating as none chosen';
         $uuid = '';
     }
+    $interfaces = array_values(array_unique(array_filter(explode(',', $raw['fail_closed']), 'strlen')));
+    sort($interfaces);
+    $networks = [];
+    foreach (array_filter(explode(',', $raw['fail_closed_networks']), 'strlen') as $entry) {
+        $parts = explode('/', $entry);
+        $addr = count($parts) === 2 ? uu_ip_canonical($parts[0]) : null;
+        if ($addr === null || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1
+            || (int)$parts[1] > (str_contains($addr, ':') ? 128 : 32)) {
+            $problems[] = 'settings: fail-closed network ' . $entry . ' is not a network; ignored';
+            continue;
+        }
+        $networks[$addr . '/' . (int)$parts[1]] = true;
+    }
+    $networks = array_keys($networks);
+    sort($networks);
     return ['settings' => ['default' => $resolver, 'rows' => $rows['rows'], 'probe_name' => $probe,
-                           'failback_delay' => $delay, 'group_uuid' => $uuid], 'problems' => $problems];
+                           'failback_delay' => $delay, 'group_uuid' => $uuid, 'fallback' => $raw['fallback'] !== '0',
+                           'fail_closed' => $interfaces, 'fail_closed_networks' => $networks],
+            'problems' => $problems];
 }
 
 /**
@@ -512,7 +534,8 @@ function uu_settings_clean(array $raw): array
  * record do not.
  *
  * @return array{enabled: bool, dry_run: bool, group: string, default: string,
- *     rows: array<string, string>, failback_delay: int, probe_name: string}
+ *     rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *     fail_closed: list<string>, fail_closed_networks: list<string>}
  */
 function uu_settings(bool $warn = false): array
 {
@@ -528,6 +551,9 @@ function uu_settings(bool $warn = false): array
         'probe_name' => $mdl->probe_name->getValue(),
         'failback_delay' => $mdl->failback_delay->getValue(),
         'group_uuid' => $mdl->gateway_group->getValue(),
+        'fallback' => $mdl->fallback->getValue(),
+        'fail_closed' => $mdl->fail_closed->getValue(),
+        'fail_closed_networks' => $mdl->fail_closed_networks->getValue(),
     ]);
     if ($warn) {
         foreach ($clean['problems'] as $problem) {
@@ -549,6 +575,9 @@ function uu_settings(bool $warn = false): array
         'rows' => $clean['settings']['rows'],
         'failback_delay' => $clean['settings']['failback_delay'],
         'probe_name' => $clean['settings']['probe_name'],
+        'fallback' => $clean['settings']['fallback'],
+        'fail_closed' => $clean['settings']['fail_closed'],
+        'fail_closed_networks' => $clean['settings']['fail_closed_networks'],
     ];
 }
 

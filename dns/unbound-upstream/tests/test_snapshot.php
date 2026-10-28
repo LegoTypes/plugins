@@ -327,17 +327,33 @@ uu_register_suite('snapshot', function (): int {
                          'record' => null] && !in_array('-vsr', $calls, true));
 
     $good = ['resolver' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => '120',
-             'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'];
+             'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60', 'fallback' => '1', 'fail_closed' => '',
+             'fail_closed_networks' => ''];
     $clean = fn (array $over): array => uu_settings_clean($over + $good);
     $one = function (array $over, string $key, string|int $want) use ($clean): bool {
         $r = $clean($over);
         return $r['settings'][$key] === $want && count($r['problems']) === 1;
     };
+    uu_check($t, 'settings: fail-closed lists cleaned',
+        uu_try_case(fn (): bool => $clean(['fail_closed' => 'opt3,opt1,opt3'])['settings']['fail_closed']
+                === ['opt1', 'opt3']
+            && $clean(['fail_closed_networks' => '2001:DB8::/48,192.0.2.0/24'])['settings']['fail_closed_networks']
+                === ['192.0.2.0/24', '2001:db8::/48']));
+    uu_check($t, 'settings: an unparseable network is dropped with a problem line',
+        uu_try_case(function () use ($clean): bool {
+            $r = $clean(['fail_closed_networks' => 'bogus,192.0.2.0/24']);
+            return $r['settings']['fail_closed_networks'] === ['192.0.2.0/24']
+                && $r['problems'] === ['settings: fail-closed network bogus is not a network; ignored'];
+        }));
+    uu_check($t, 'settings: fallback "0" is false',
+        uu_try_case(fn (): bool => $clean(['fallback' => '0'])['settings']['fallback'] === false
+            && $clean(['fallback' => '1'])['settings']['fallback'] === true));
     /* each settings_clean case runs inside uu_try_case(), so on a version without it each fails on its own */
     uu_check($t, 'settings_clean: the defaults pass unchanged with no problem',
         uu_try_case(fn (): bool => uu_settings_clean($good) === ['settings' => [
             'default' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => 120,
-            'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60'], 'problems' => []]));
+            'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60', 'fallback' => true, 'fail_closed' => [],
+            'fail_closed_networks' => []], 'problems' => []]));
     uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
         uu_try_case(fn (): bool => $one(['resolver' => '192.0.2.1/32'], 'default', '')
             && $one(['resolver' => 'resolver.example'], 'default', '')

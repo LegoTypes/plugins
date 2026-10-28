@@ -376,7 +376,7 @@ uu_register_suite('log', function (): int {
         $got = null;
         $ok = uu_try_case(function () use ($typed, &$got): bool {
             $raw = ['resolver' => $typed, 'rows' => [], 'probe_name' => '.', 'failback_delay' => '120',
-                    'group_uuid' => ''];
+                    'group_uuid' => '', 'fallback' => '1', 'fail_closed' => '', 'fail_closed_networks' => ''];
             /* the snapshot as it would carry the typed form, were it not cleaned */
             $pm = uu_test_default(uu_test_snapshot(), $typed);
             $pm['members']['wg-a']['next_hop'] = 'fd00::3:2';

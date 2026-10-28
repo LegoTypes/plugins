@@ -36,6 +36,9 @@ use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
 use OPNsense\Routes\Route;
 
+require_once 'config.inc';
+require_once 'interfaces.lib.inc';
+
 class UnboundUpstream extends BaseModel
 {
     /**
@@ -52,10 +55,13 @@ class UnboundUpstream extends BaseModel
         if ($this->notify->isEqual('1') && $this->notify_url->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Enter the URL to notify.'), $this->notify_url->__reference));
         }
+        $gateways = new Gateways();
+        if ($this->fallback->isEqual('1')) {
+            $this->checkFailClosed($messages, $gateways);
+        }
         if (!$this->enabled->isEqual('1')) {
             return $messages;
         }
-        $gateways = new Gateways();
         if ($this->gateway_group->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Select a gateway group.'), $this->gateway_group->__reference));
         } else {
@@ -63,6 +69,159 @@ class UnboundUpstream extends BaseModel
         }
         $this->checkResolvers($messages, $gateways);
         return $messages;
+    }
+
+    /**
+     * The interfaces and networks that fail closed, against the gateway group's member interfaces and the live
+     * addresses; run only while the fallback is on, since off refuses every client anyway.
+     */
+    private function checkFailClosed(object $messages, Gateways $model): void
+    {
+        $gateways = $model->gatewaysIndexedByName(true);
+        $details = legacy_interfaces_details();
+        $devices = [];
+        foreach (legacy_config_get_interfaces() as $id => $conf) {
+            $devices[(string)$id] = (string)($conf['if'] ?? '');
+        }
+        $nets = static function (string $id) use ($details, $devices): array {
+            $out = [];
+            foreach ($details[$devices[$id] ?? '']['ipv4'] ?? [] as $addr) {
+                $out[] = $addr['ipaddr'] . '/' . $addr['subnetbits'];
+            }
+            foreach ($details[$devices[$id] ?? '']['ipv6'] ?? [] as $addr) {
+                if (empty($addr['link-local'])) {
+                    $out[] = $addr['ipaddr'] . '/' . $addr['subnetbits'];
+                }
+            }
+            return $out;
+        };
+        $memberNets = [];
+        foreach (array_keys($this->findGroup()['members'] ?? []) as $name) {
+            $id = (string)($gateways[$name]['interface'] ?? '');
+            if ($id !== '') {
+                $memberNets[$id] = $nets($id);
+            }
+        }
+
+        $field = $this->fail_closed->__reference;
+        foreach (array_filter(explode(',', $this->fail_closed->getValue())) as $id) {
+            if ($id === 'lo0') {
+                $messages->appendMessage(new Message(gettext('The loopback interface cannot fail closed'), $field));
+            } elseif (isset($memberNets[$id])) {
+                $messages->appendMessage(new Message(
+                    sprintf(gettext('%s is a member of the gateway group'), $id),
+                    $field
+                ));
+            } elseif ($nets($id) === []) {
+                $messages->appendMessage(new Message(sprintf(gettext('%s has no address'), $id), $field));
+            }
+        }
+
+        /* the field's own Strict has already refused host bits with core's message */
+        $listed = array_filter(explode(',', $this->fail_closed_networks->getValue()));
+        foreach (self::failClosedProblems($listed, $memberNets) as $problem) {
+            if (!str_ends_with($problem, ': enter the network address')) {
+                $messages->appendMessage(new Message($problem, $this->fail_closed_networks->__reference));
+            }
+        }
+    }
+
+    /**
+     * What is wrong with the networks listed to fail closed, in the order the page shows it. Pure: the callers pass
+     * in the live networks of the gateway group's member interfaces. A string that is no network is the field's own
+     * validation.
+     *
+     * @param list<string> $networks as entered, "address/length"
+     * @param array<string, list<string>> $memberNets interface id => its live networks
+     * @return list<string>
+     */
+    public static function failClosedProblems(array $networks, array $memberNets): array
+    {
+        $problems = [];
+        foreach ($networks as $net) {
+            $parsed = self::parseNetwork($net);
+            if ($parsed === null) {
+                continue;
+            }
+            [$packed, $len] = $parsed;
+            if (self::hostBitsSet($packed, $len)) {
+                $problems[] = $net . ': enter the network address';
+            } elseif ($len === 0) {
+                $problems[] = $net . ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead';
+            } elseif (self::touchesLoopback($packed, $len)) {
+                $problems[] = $net . ' overlaps the loopback network: the firewall\'s own lookups would be refused';
+            } else {
+                foreach ($memberNets as $id => $theirs) {
+                    foreach ($theirs as $their) {
+                        $other = self::parseNetwork($their);
+                        if ($other !== null && self::overlaps($packed, $len, $other[0], $other[1])) {
+                            $problems[] = sprintf(
+                                '%s overlaps the network of %s, a member of the gateway group',
+                                $net,
+                                $id
+                            );
+                            break 2;
+                        }
+                    }
+                }
+            }
+        }
+        return $problems;
+    }
+
+    /**
+     * @return array{string, int}|null the packed address and the prefix length, null when it is no network
+     */
+    private static function parseNetwork(string $net): ?array
+    {
+        $parts = explode('/', $net);
+        if (count($parts) !== 2 || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1) {
+            return null;
+        }
+        $packed = inet_pton($parts[0]);
+        if ($packed === false || (int)$parts[1] > strlen($packed) * 8) {
+            return null;
+        }
+        return [$packed, (int)$parts[1]];
+    }
+
+    private static function hostBitsSet(string $packed, int $len): bool
+    {
+        for ($bit = $len; $bit < strlen($packed) * 8; $bit++) {
+            if ((ord($packed[intdiv($bit, 8)]) >> (7 - $bit % 8) & 1) === 1) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether two networks of the same family share an address: their first min(length) bits agree.
+     */
+    private static function overlaps(string $a, int $lenA, string $b, int $lenB): bool
+    {
+        if (strlen($a) !== strlen($b)) {
+            return false;
+        }
+        for ($bit = 0; $bit < min($lenA, $lenB); $bit++) {
+            $mask = 1 << (7 - $bit % 8);
+            if ((ord($a[intdiv($bit, 8)]) & $mask) !== (ord($b[intdiv($bit, 8)]) & $mask)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Whether a network overlaps 127.0.0.0/8, ::1/128 or ::ffff:127.0.0.0/104, the addresses of Unbound's loopback
+     * nodes.
+     */
+    private static function touchesLoopback(string $packed, int $len): bool
+    {
+        $mapped = str_repeat("\0", 10) . "\xff\xff\x7f" . str_repeat("\0", 3);
+        return self::overlaps($packed, $len, "\x7f\0\0\0", 8)
+            || self::overlaps($packed, $len, str_repeat("\0", 15) . "\x01", 128)
+            || self::overlaps($packed, $len, $mapped, 104);
     }
 
     /**

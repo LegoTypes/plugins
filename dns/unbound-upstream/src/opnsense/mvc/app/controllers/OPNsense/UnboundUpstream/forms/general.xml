@@ -36,6 +36,26 @@
         <help>The name used to check that the resolver answers; "." asks for the root.</help>
     </field>
     <field>
+        <id>unboundupstream.fallback</id>
+        <label>Fall back to Unbound's own forwarders</label>
+        <type>checkbox</type>
+        <help>While no member is usable, Unbound uses its own forwarders (Query Forwarding or DNS over TLS) for every client except those set to fail closed below. Off: every client gets REFUSED instead. The firewall's own lookups always fall back.</help>
+    </field>
+    <field>
+        <id>unboundupstream.fail_closed</id>
+        <label>Fail closed on</label>
+        <type>select_multiple</type>
+        <help>Clients on these interfaces get REFUSED for internet names while no member is usable; local names still resolve. A client querying from an IPv6 link-local address is not covered.</help>
+    </field>
+    <field>
+        <id>unboundupstream.fail_closed_networks</id>
+        <label>Fail closed for networks</label>
+        <type>select_multiple</type>
+        <style>tokenize</style>
+        <allownew>true</allownew>
+        <help>Source networks routed to the firewall whose clients use it for DNS, such as a Tailscale tailnet (100.64.0.0/10 and fd7a:115c:a1e0::/48). They get REFUSED for internet names while no member is usable; local names still resolve. A tailnet only fails closed if the firewall is its only global nameserver.</help>
+    </field>
+    <field>
         <id>unboundupstream.notify</id>
         <label>Notify on switch</label>
         <type>checkbox</type>
