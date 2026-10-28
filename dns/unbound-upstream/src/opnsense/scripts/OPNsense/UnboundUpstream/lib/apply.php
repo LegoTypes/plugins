@@ -107,7 +107,9 @@ function uu_drill_passed(string $out): bool
  * route.
  * The plan's view adds the view work of a stop: the refuse armed, or the file or its copy on disk, even with nothing
  * left of 1.4's to undo (a disable while in fallback). A plan whose view is kept (an upgrade, a tick of the removal)
- * has none, and null is 1.4's answer.
+ * has only the arm: a loaded set read without the refuse while the file is on disk (the upgrade window's mark; a
+ * removal deletes the file), which stop() arms before its restore, also in fallback mode after an arm that failed. An
+ * unknown read is no work, and null is 1.4's answer.
  *
  * @param array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
  *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>} $st
@@ -117,11 +119,14 @@ function uu_drill_passed(string $out): bool
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     view: array{copy: ?string, file_present: bool}} $s
- * @param ?array{armed: ?bool, keep: bool} $view the plan's view
+ * @param ?array{active: bool, armed: ?bool, keep: bool} $view the plan's view
  */
 function uu_apply_undo_due(array $st, array $s, ?array $view = null): bool
 {
     if ($st['mode'] === 'tunnel' || $st['member'] !== null) {
+        return true;
+    }
+    if ($view !== null && $view['keep'] && $view['active'] && $view['armed'] === false && $s['view']['file_present']) {
         return true;
     }
     if ($view !== null && !$view['keep']
@@ -467,9 +472,10 @@ final class UuApplyRun
      * The configured forwarders back if Unbound may be on one of the plugin's addresses, then the view's refuse
      * lifted (unless the stop keeps the view: an upgrade, a tick of the removal; after a restart over the plugin's
      * file the view is read back first, since the restart armed it), then every route the plugin made
-     * drained and deleted, ignoring any orphan's hold. A stop that keeps the view arms a loaded set first, as
-     * fallback() does, so the set stays refused through the upgrade window also when it starts in tunnel mode: the
-     * restore runs whatever the arm's outcome. A restore that failed ends in a restart (restartForStop()), and
+     * drained and deleted, ignoring any orphan's hold. A stop that keeps the view arms a loaded set first while the
+     * file is kept (the upgrade window; a removal deleted it), as fallback() does, so the set stays refused through
+     * the window also when it starts in tunnel mode or after an arm that failed: the restore runs whatever the arm's
+     * outcome. A restore that failed ends in a restart (restartForStop()), and
      * when that fails too, in stopIncomplete(), which keeps the refuse. Nothing is logged while there is nothing to
      * undo (uu_apply_undo_due()), which the minute job's ticks would otherwise repeat.
      */
@@ -484,7 +490,8 @@ final class UuApplyRun
         if ($this->st['mode'] === 'tunnel' && $this->st['member'] !== null) {
             $was[$this->resolverOf($this->st['member'])] = true;
         }
-        if ($this->p['view']['keep'] && $this->p['view']['active'] && $this->viewArmed !== true) {
+        if ($this->p['view']['keep'] && $this->p['view']['active'] && $this->viewArmed !== true
+            && $this->s['view']['file_present']) {
             $this->wantArmed = true;
             $this->arm($this->s['upgrade'] ? 'the package is being upgraded'
                 : (uu_plan_stop_reason($this->s) ?? 'stop'));

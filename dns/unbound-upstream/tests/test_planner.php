@@ -548,6 +548,12 @@ uu_register_suite('planner', function (): int {
         && uu_apply_undo_due($st, $s, $idle) && uu_apply_undo_due($st, $sCopy, $idle)
         && !uu_apply_undo_due($st, $s) && !uu_apply_undo_due($st, $s, ['keep' => true] + $armedView)
         && !uu_apply_undo_due($st, $sCopy, ['keep' => true] + $armedView));
+    $kept = ['keep' => true, 'armed' => false] + $armedView;
+    uu_check($t, 'plan: a kept view is due only for its arm: loaded without the refuse, the file on disk',
+        uu_apply_undo_due($st, $s, $kept) && !uu_apply_undo_due($st, $sCopy, $kept)
+        && !uu_apply_undo_due($st, uu_test_snapshot(), $kept)
+        && !uu_apply_undo_due($st, $s, ['armed' => null] + $kept)
+        && !uu_apply_undo_due($st, $s, ['active' => false] + $kept));
 
     // 1.4's plans carry the same fields, with the set empty.
     $plans = [];

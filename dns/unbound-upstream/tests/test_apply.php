@@ -518,6 +518,51 @@ uu_register_suite('apply', function (): int {
             "uc view_list_local_zones $vName"], $stopTail)
         && $stFail['mode'] === 'fallback' && $stFail['view']['problem'] === 'Fail closed not armed: error failed');
 
+    /* in fallback mode with the arm failed earlier, nothing of 1.4's left to undo */
+    $notArmed = uu_test_plan_state(null, $usable);
+    $notArmed['view']['refuse'] = 'lifted';
+    $notArmed['view']['problem'] = 'Fail closed not armed: error failed';
+    $keptStops = [];
+    $keptLines = [];
+    foreach ([[UU_STOP_REMOVE, true], [UU_STOP_REMOVING, false]] as [$cause, $upgrade]) {
+        $s = $viewed(uu_test_apply_snapshot(), false);
+        $s['stop'] = $cause;
+        $s['upgrade'] = $upgrade;
+        $p = uu_plan($s, $notArmed);
+        $r = uu_test_io($s, $all);
+        $st = uu_apply($p, $s, $r['io']);
+        $keptStops[] = [$p['action'], uu_test_acts($r['calls']) === $armCalls, $st['mode'], $st['view']['refuse'],
+            $st['view']['problem'], !uu_test_logged($r['calls'], LOG_ERR, 'fail closed: lifted')];
+        $keptLines[] = $r['calls'];
+    }
+    uu_check($t, 'apply: an upgrade stop in fallback mode arms a set whose arm failed, finds nothing to restore and lifts '
+        . 'nothing (and a tick of the removal)',
+        $keptStops === [['stop', true, 'fallback', 'armed', null, true], ['stop', true, 'fallback', 'armed', null, true]]
+        && $hasLine($keptLines[0], LOG_ERR, "fail closed: $vNet refused (the package is being upgraded)")
+        && $hasLine($keptLines[1], LOG_ERR,
+            "fail closed: $vNet refused (the package is being removed: its removal marker exists)"));
+
+    /* a removal (no PKG_UPGRADE) that could not restore stayed in tunnel mode with the set lifted, and its file step
+     * deleted the file; a tick runs while the removal marker exists */
+    $gone = function (array $s): array {
+        $s['stop'] = UU_STOP_REMOVING;
+        $s['view']['file'] = null;
+        $s['view']['file_present'] = false;
+        return $s;
+    };
+    $s = $gone($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    $sQuiet = $gone($viewed(uu_test_apply_snapshot(), false));
+    $rQuiet = uu_test_io($sQuiet, $all);
+    uu_apply(uu_plan($sQuiet, uu_test_plan_state(null, $usable)), $sQuiet, $rQuiet['io']);
+    uu_check($t, 'apply: a tick of the removal never arms a set whose file a removal deleted (and in fallback mode '
+        . 'logs nothing)',
+        $p['action'] === 'stop' && $p['view']['keep'] && $p['view']['armed'] === false && $viewActs($r['calls']) === []
+        && uu_test_acts($r['calls']) === $stopTail && $st['view']['refuse'] !== 'armed'
+        && $rQuiet['calls']->getArrayCopy() === []);
+
     $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), true);
     $s['settings']['enabled'] = false;
     $p = uu_plan($s, $armedState(uu_test_plan_state('wg-a', $usable)));
