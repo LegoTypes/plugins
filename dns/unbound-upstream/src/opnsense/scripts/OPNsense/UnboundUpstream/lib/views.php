@@ -18,9 +18,9 @@ declare(strict_types=1);
  * Nodes = array{view: list<string>, access: list<Net>}
  */
 
+require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/address.php';
 
-const UU_VIEW_NAME = 'unboundupstream';
 const UU_VIEW_BEGIN = '# Rendered by os-unbound-upstream. Do not edit.';
 const UU_VIEW_END = '# End of os-unbound-upstream.';
 

@@ -206,7 +206,8 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 {
     $st = uu_state_load(UU_STATE_PATH);
     $before = uu_state_footprint($st);
-    $s = uu_snapshot($settings, $named, $stop, $stop === null, $before);
+    $s = uu_snapshot($settings, $named, $stop, $stop === null, $before, true,
+        $stop === UU_STOP_REMOVE && getenv('PKG_UPGRADE') !== false);
     if ($s['rules']['record'] !== null) {
         try {
             uu_rules_record_save(UU_RULES_PATH, $s['rules']['record']);
@@ -273,86 +274,6 @@ function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
     }
 }
 
-/**
- * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
- * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
- * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo.
- *
- * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
- *     trigger: string, tiers: list<list<string>>, family: string,
- *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
- *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
- *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
- *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>, stop: ?string,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
- *         ours: bool}>,
- *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int,
- *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
- *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
- *         resolver_notes: list<string>, no_next_hop: list<string>,
- *         rules: array{state: string, problems: list<string>},
- *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
- *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
- * @param string $mode the saved state's mode
- * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
- *     trigger: string, tiers: list<list<string>>, family: string,
- *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
- *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
- *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
- *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>, stop: ?string,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
- *         ours: bool}>,
- *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int,
- *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
- *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
- *         resolver_notes: list<string>, no_next_hop: list<string>,
- *         rules: array{state: string, problems: list<string>},
- *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
- *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
- */
-function uu_wait_control(array $s, string $mode): array
-{
-    $u = $s['unbound'];
-    if ($u['control_ok'] || !$u['pid_alive'] || (uu_plan_stop_reason($s) !== null && $mode !== 'tunnel')) {
-        return $s;
-    }
-    $deadline = hrtime(true) + UU_CONTROL_WAIT_SECONDS * 1000000000;
-    while (hrtime(true) < $deadline) {
-        sleep(1);
-        $live = uu_live_root();
-        if ($live !== null) {
-            $s['unbound']['control_ok'] = true;
-            $s['unbound']['live_root'] = $live;
-            break;
-        }
-    }
-    return $s;
-}
-
 function uu_status_main(): int
 {
     $settings = uu_settings();
@@ -414,7 +335,7 @@ function uu_replay_main(string $path): int
     }
     $doc = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
     $keys = ['now', 'wall', 'settings', 'trigger', 'tiers', 'family', 'members', 'probes', 'named', 'stop', 'unbound',
-             'zone', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'rules', 'block_table'];
+             'zone', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'rules', 'block_table', 'upgrade', 'view'];
     /* the snapshot is evaluate.php record's own output: its top-level shape is checked, not every field, once a
      * recording made before 1.4 has been refused by name */
     $not = "$path is not a snapshot and state written by evaluate.php record";

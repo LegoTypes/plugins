@@ -1128,6 +1128,37 @@ VOLT;
     uu_check($t, 'evaluate.php replay of an earlier 1.4 recording without route_flags plans and exits 0',
         $flaglessPlans);
 
+    /* a 1.4 recording, made before the snapshot kept the fail-closed view and the upgrade flag, converts and
+     * replays: this box's own recording with both taken out, in a scratch directory that is removed */
+    $oldView = null;
+    $oldViewDir = uu_scratch_dir();
+    try {
+        $rec = "$oldViewDir/recording.json";
+        $out = [];
+        $rc = 0;
+        exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' record ' . escapeshellarg($rec) . ' > /dev/null 2>&1',
+            $out, $rc);
+        $doc = $rc === 0 ? json_decode((string)file_get_contents($rec), true) : null;
+        if (is_array($doc) && is_array($doc['snapshot'] ?? null) && array_key_exists('view', $doc['snapshot'])
+            && array_key_exists('upgrade', $doc['snapshot'])) {
+            unset($doc['snapshot']['view'], $doc['snapshot']['upgrade']);
+            file_put_contents($rec, json_encode($doc, JSON_THROW_ON_ERROR));
+            $out = [];
+            exec('/usr/local/bin/php -d log_errors=0 ' . $script . ' replay ' . escapeshellarg($rec) . ' 2>&1',
+                $out, $rc);
+            $oldView = ['rc' => $rc, 'out' => implode("\n", $out)];
+        } else {
+            printf("  record exited %d and wrote no snapshot with view and upgrade\n", $rc);
+        }
+    } finally {
+        uu_scratch_remove($oldViewDir);
+    }
+    $oldViewPlans = $oldView !== null && $oldView['rc'] === 0 && str_contains($oldView['out'], '"plan"');
+    if ($oldView !== null && !$oldViewPlans) {
+        printf("  replay exited %d:\n%s\n", $oldView['rc'], $oldView['out']);
+    }
+    uu_check($t, 'replay: a 1.4 recording converts and replays', $oldViewPlans);
+
     /* (p18) record reads the route of every address the saved state holds, beside the effective resolvers: a state
      * holding an address no member uses is placed under the evaluate lock (record takes none, and no evaluation
      * acts on the placed state) and put back */

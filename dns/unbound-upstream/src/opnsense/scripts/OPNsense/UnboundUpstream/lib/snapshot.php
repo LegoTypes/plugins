@@ -21,6 +21,8 @@ require_once __DIR__ . '/zone.php';
 require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/pfobserve.php';
 require_once __DIR__ . '/state.php';
+require_once __DIR__ . '/views.php';
+require_once __DIR__ . '/apply.php';
 
 /** Core's PHP library, loaded when a collector needs it so the parsers load anywhere. */
 function uu_load_core(): void
@@ -394,7 +396,12 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
@@ -423,7 +430,12 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}}
  */
 function uu_route_adopt(array $s, array $addresses): array
 {
@@ -739,10 +751,122 @@ function uu_zone_decode(string $stdout): ?array
 }
 
 /**
+ * The interface addresses and devices the selected interfaces' networks come from, as core has them.
+ *
+ * @return array{details: array<string, array{ipv4: list<array{ipaddr: string, subnetbits: int}>,
+ *     ipv6: list<array{ipaddr: string, subnetbits: int, link-local: bool}>}>, devices: array<string, string>}
+ */
+function uu_view_core_interfaces(): array
+{
+    uu_load_core();
+    $devices = [];
+    foreach (legacy_config_get_interfaces() as $id => $conf) {
+        $devices[(string)$id] = (string)($conf['if'] ?? '');
+    }
+    return ['details' => legacy_interfaces_details(), 'devices' => $devices];
+}
+
+/**
+ * What the view reads give: view_list_local_zones and view_list_local_data of the plugin's view (loaded zones, absent,
+ * unsupported or silent; a reply of another shape is silent too, so it is never acted on), and with $zones the four
+ * daemon lists the mirror is built from (list_local_zones, list_forwards, list_stubs, list_local_data), read unless
+ * the channel was silent. Everything else in the view is passed through.
+ *
+ * @param array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string} $view
+ * @param callable(list<string>): ?string $uc
+ * @return array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string}
+ */
+function uu_view_read(array $view, callable $uc, bool $zones = false): array
+{
+    $view['loaded'] = 'silent';
+    $view['view_zones'] = [];
+    $view['view_data'] = [];
+    $view['zones'] = null;
+    $view['data'] = null;
+    $reply = $uc(['view_list_local_zones', UU_VIEW_NAME]);
+    if ($reply === null) {
+        return $view;
+    }
+    $head = ltrim($reply);
+    if (str_starts_with($head, 'error unknown command')) {
+        $view['loaded'] = 'unsupported';
+    } elseif (str_starts_with($head, 'no view with name')) {
+        $view['loaded'] = 'absent';
+    } else {
+        $listed = uu_view_parse_list($reply);
+        $records = $listed === null ? null : uu_view_data_list($uc(['view_list_local_data', UU_VIEW_NAME]));
+        if ($listed !== null && $records !== null) {
+            $view['loaded'] = 'zones';
+            $view['view_zones'] = $listed;
+            $view['view_data'] = $records;
+        }
+    }
+    if ($zones && $view['loaded'] !== 'silent') {
+        $view['zones'] = uu_view_zone_list($uc(['list_local_zones']), $uc(['list_forwards']), $uc(['list_stubs']));
+        $view['data'] = uu_view_data_list($uc(['list_local_data']));
+    }
+    return $view;
+}
+
+/**
+ * The fail-closed view as the snapshot keeps it: the set (the selected interfaces' networks, the listed ones), core's
+ * ACL nodes and the plugin's copy from the expanded configuration, the rendered file, and what the view reads give
+ * (uu_view_read()). With an empty set and neither a file nor a copy, or with Unbound not running, no view command
+ * runs: loaded is skipped.
+ *
+ * @param array{fallback?: bool, fail_closed?: list<string>, fail_closed_networks?: list<string>} $settings the
+ *     settings; one without the keys (a caller from before the view) is an empty set with the fallback on
+ * @param callable(list<string>): ?string $uc
+ * @param callable(): array{details: array<string, array{ipv4: list<array{ipaddr: string, subnetbits: int}>,
+ *     ipv6: list<array{ipaddr: string, subnetbits: int, link-local: bool}>}>, devices: array<string, string>} $details
+ *     legacy_interfaces_details() by device, and each interface id's device; read only for a selected interface
+ * @param ?string $expanded uu_conf_expanded_text()
+ * @param callable(string): array{text: ?string, problem: ?string} $readFile uu_read_regular_file()
+ * @return array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string}
+ */
+function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $details, ?string $expanded,
+    callable $readFile, bool $pidAlive = true): array
+{
+    $selected = $settings['fail_closed'] ?? [];
+    $ifaceNets = ['nets' => [], 'notes' => []];
+    if ($selected !== []) {
+        $core = $details();
+        $ifaceNets = uu_view_iface_nets($core['details'], $selected, $core['devices']);
+    }
+    $set = uu_view_set($settings['fallback'] ?? true, $selected, $ifaceNets['nets'],
+        $settings['fail_closed_networks'] ?? []);
+    $acl = $expanded === null ? null : uu_view_acl_parse($expanded);
+    $view = [
+        'scope' => $set['scope'],
+        'nets' => $set['nets'],
+        'notes' => $ifaceNets['notes'],
+        'acl' => $acl,
+        'zones' => null,
+        'data' => null,
+        'loaded' => 'skipped',
+        'view_zones' => [],
+        'view_data' => [],
+        'file' => $readFile(UU_VIEW_FILE)['text'],
+        'copy' => $expanded === null ? null : uu_view_block($expanded),
+    ];
+    if (!$pidAlive || ($set['scope'] === 'none' && $view['file'] === null && $view['copy'] === null)) {
+        return $view;
+    }
+    return uu_view_read($view, $uc, $zones);
+}
+
+/**
  * A snapshot evaluate.php record wrote, in this version's shape for replay: a recording made before 1.3 has no
  * contract_input.core_commands, which reads as nothing drifted, since that version did not check; an earlier 1.4
  * recording has no route_flags, which reads as no flags read (only the status shows them), placed right after routes
- * so the top-level order is this version's. A recording made before 1.4 (a route and no routes) is refused: it has
+ * so the top-level order is this version's; one made before 1.5 has no view and no upgrade, which read as no view
+ * command run and no upgrade, last. A recording made before 1.4 (a route and no routes) is refused: it has
  * one resolver's route and none of the per-member fields, and a recording is a diagnostic of one box at one time, so
  * it is recorded again rather than converted. Anything else is as recorded; replay checks the top-level shape.
  *
@@ -764,6 +888,11 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
         $snapshot = array_slice($snapshot, 0, $after, true) + ['route_flags' => []]
             + array_slice($snapshot, $after, null, true);
     }
+    if (!array_key_exists('view', $snapshot)) {
+        $snapshot += ['upgrade' => false, 'view' => ['scope' => 'none', 'nets' => [], 'notes' => [], 'acl' => null,
+            'zones' => null, 'data' => null, 'loaded' => 'skipped', 'view_zones' => [], 'view_data' => [],
+            'file' => null, 'copy' => null]];
+    }
     return $snapshot;
 }
 
@@ -779,6 +908,9 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *     a status call's
  * @param list<string> $stateAddresses the saved state's map keys (uu_state_footprint()): routes covers them beside
  *     the planner's addresses (uu_plan_addresses()), so an address the plugin may still be routed to is read too
+ * @param bool $zones whether the view reads also list the daemon's zones and records (an evaluation's snapshot, never
+ *     a status call's)
+ * @param bool $upgrade whether this run is a package upgrade's deinstall (pkg's PKG_UPGRADE is set)
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
@@ -805,9 +937,15 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}}
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}}
  */
-function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules, array $stateAddresses): array
+function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules, array $stateAddresses,
+    bool $zones = false, bool $upgrade = false): array
 {
     /* pfctl's stderr file goes in the run directory, and a status after a boot runs before any evaluation made it */
     uu_run_dir();
@@ -925,6 +1063,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $zone = uu_root_zone(uu_zone_texts());
     $confText = uu_conf_expanded_text();
     $unboundConf = $confText === null ? null : uu_unbound_conf_facts($confText);
+    $view = uu_view_snapshot($settings, $zones, 'uu_uc_run', 'uu_view_core_interfaces', $confText,
+        'uu_read_regular_file', $pidAlive);
 
     /* the route of every planner address and every address the state's map holds; a foreign route is the contract's
      * only for a planner address (one the state alone holds excludes nobody) */
@@ -1036,5 +1176,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
         ],
         'rules' => $pf['rules'],
         'block_table' => $pf['block_table'],
+        'upgrade' => $upgrade,
+        'view' => $view,
     ];
 }

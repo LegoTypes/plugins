@@ -92,6 +92,9 @@ function uu_test_snapshot(): array
         'rules' => ['state' => 'loaded', 'problems' => [], 'verified_at' => 1792399000, 'record' => null],
         'block_table' => ['table' => ['addresses' => 1, 'references' => 1, 'out_block' => 37],
                           'addresses' => ['10.2.0.1']],
+        'upgrade' => false,
+        'view' => ['scope' => 'none', 'nets' => [], 'notes' => [], 'acl' => null, 'zones' => null, 'data' => null,
+                   'loaded' => 'skipped', 'view_zones' => [], 'view_data' => [], 'file' => null, 'copy' => null],
     ];
 }
 

@@ -14,6 +14,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/apply.php';
 require_once __DIR__ . '/test_verdict.php';
 require_once __DIR__ . '/test_pfobserve.php';
 require_once __DIR__ . '/scratch.php';
@@ -470,16 +471,126 @@ uu_register_suite('snapshot', function (): int {
         uu_try_case(function (): bool {
             $rec = ['routes' => [], 'route_flags' => ['10.2.0.1' => ['UP', 'HOST']],
                     'contract_input' => ['core_commands' => ['cron restart']]];
-            return uu_snapshot_recorded($rec, '/root/new.json') === $rec;
+            $read = uu_snapshot_recorded($rec, '/root/new.json');
+            return array_slice($read, 0, 3) === $rec && array_keys($read) === [...array_keys($rec), 'upgrade', 'view'];
         }));
     uu_check($t, 'recorded: an earlier 1.4 recording with no route_flags gains none read, right after routes',
         uu_try_case(function (): bool {
             $rec = ['now' => 10000, 'routes' => ['10.2.0.1' => ['present' => false]], 'fib_sync_ms' => 1000,
                     'contract_input' => ['core_commands' => []]];
             $read = uu_snapshot_recorded($rec, '/root/earlier.json');
-            return array_keys($read) === ['now', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input']
+            return array_keys($read) === ['now', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'upgrade', 'view']
                 && $read['route_flags'] === [] && $read['routes'] === $rec['routes'];
         }));
+
+
+    /* the fail-closed view the snapshot reads */
+    $viewSettings = fn (array $over = []): array => $over + ['fallback' => true, 'fail_closed' => ['lan'],
+        'fail_closed_networks' => []];
+    $viewDetails = fn (): array => ['details' => ['igc1' => [
+        'ipv4' => [['ipaddr' => '192.0.2.1', 'subnetbits' => 24]], 'ipv6' => []]], 'devices' => ['lan' => 'igc1']];
+    $noFile = fn (string $path): array => ['text' => null, 'problem' => null];
+    $zonesReply = "localhost. transparent\n127.in-addr.arpa. nodefault\n. refuse\n";
+    $dataReply = "host.example. 3600 IN A 192.0.2.9\n";
+    $recorder = function (array $replies): array {
+        $calls = new ArrayObject();
+        $uc = function (array $args) use ($calls, $replies): ?string {
+            $calls[] = implode(' ', $args);
+            return $replies[$args[0]] ?? null;
+        };
+        return [$uc, $calls];
+    };
+
+    [$uc, $calls] = $recorder([]);
+    $v = uu_view_snapshot($viewSettings(['fail_closed' => []]), true, $uc, $viewDetails, "server:\n", $noFile);
+    uu_check($t, 'snapshot: an empty set with no file reads nothing',
+        $v['loaded'] === 'skipped' && $calls->getArrayCopy() === [] && $v['scope'] === 'none' && $v['nets'] === []
+        && $v['file'] === null && $v['copy'] === null && $v['zones'] === null && $v['data'] === null
+        && $v['view_zones'] === [] && $v['view_data'] === []);
+
+    [$uc, $calls] = $recorder(['view_list_local_zones' => "no view with name: unboundupstream\n"]);
+    $v = uu_view_snapshot($viewSettings(), false, $uc, $viewDetails, "server:\n", $noFile);
+    uu_check($t, 'snapshot: no view with name is absent',
+        $v['loaded'] === 'absent' && $calls->getArrayCopy() === ['view_list_local_zones unboundupstream']
+        && $v['nets'] === ['192.0.2.0/24'] && $v['scope'] === 'selected' && $v['view_zones'] === []);
+
+    [$uc, $calls] = $recorder(['view_list_local_zones' => "error unknown command 'view_list_local_zones'\n"]);
+    $v = uu_view_snapshot($viewSettings(), false, $uc, $viewDetails, null, $noFile);
+    uu_check($t, 'snapshot: error unknown command is unsupported',
+        $v['loaded'] === 'unsupported' && $v['acl'] === null && $v['copy'] === null);
+
+    [$uc, $calls] = $recorder([]);
+    $v = uu_view_snapshot($viewSettings(), true, $uc, $viewDetails, null, $noFile);
+    uu_check($t, 'snapshot: silence is silent and lists nothing more',
+        $v['loaded'] === 'silent' && $calls->getArrayCopy() === ['view_list_local_zones unboundupstream']
+        && $v['zones'] === null);
+
+    [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply, 'view_list_local_data' => $dataReply]);
+    $v = uu_view_snapshot($viewSettings(), false, $uc, $viewDetails, null, $noFile);
+    uu_check($t, 'snapshot: zones false never lists',
+        $v['loaded'] === 'zones' && $calls->getArrayCopy() === ['view_list_local_zones unboundupstream',
+            'view_list_local_data unboundupstream'] && $v['zones'] === null && $v['data'] === null
+        && $v['view_zones'] === ['localhost.' => 'transparent', '127.in-addr.arpa.' => 'nodefault', '.' => 'refuse']
+        && $v['view_data'] === ['host.example. 3600 IN A 192.0.2.9']);
+
+    [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply, 'view_list_local_data' => $dataReply,
+        'list_local_zones' => "localhost. transparent\n127.in-addr.arpa. nodefault\n",
+        'list_forwards' => ". IN forward 192.0.2.53\n", 'list_stubs' => "\n",
+        'list_local_data' => "nas.example. 3600 IN A 192.0.2.8\n"]);
+    $v = uu_view_snapshot($viewSettings(), true, $uc, $viewDetails, null, $noFile);
+    uu_check($t, 'snapshot: zones true reads the daemon lists too',
+        $v['loaded'] === 'zones' && count($calls) === 6 && $v['data'] === ['nas.example. 3600 IN A 192.0.2.8']
+        && $v['zones'] === ['127.in-addr.arpa.' => 'nodefault', 'localhost.' => 'transparent']);
+
+    [$uc, $calls] = $recorder([]);
+    $v = uu_view_snapshot($viewSettings(), true, $uc, $viewDetails, null, $noFile, false);
+    uu_check($t, "snapshot: Unbound's pid not alive reads no view",
+        $v['loaded'] === 'skipped' && $calls->getArrayCopy() === [] && $v['nets'] === ['192.0.2.0/24']);
+
+    [$uc, $calls] = $recorder(['view_list_local_zones' => "no view with name: unboundupstream\n"]);
+    $fileCopy = "server:\n    access-control: 0.0.0.0/0 allow\n    access-control: ::/0 allow\n"
+        . UU_VIEW_BEGIN . "\nserver:\n" . UU_VIEW_END . "\n";
+    $withFile = fn (string $path): array => ['text' => $path === UU_VIEW_FILE ? "rendered\n" : null,
+        'problem' => null];
+    $v = uu_view_snapshot($viewSettings(['fail_closed' => []]), false, $uc, $viewDetails, $fileCopy, $withFile);
+    uu_check($t, 'snapshot: a file or copy on disk reads the view with an empty set; core\'s ACL and the copy are kept',
+        $v['loaded'] === 'absent' && $v['file'] === "rendered\n" && $v['copy'] === UU_VIEW_BEGIN . "\nserver:\n"
+            . UU_VIEW_END . "\n"
+        && $v['acl'] === ['nodes' => [['net' => '0.0.0.0/0', 'action' => 'allow'],
+            ['net' => '::/0', 'action' => 'allow']], 'foreign' => []]);
+
+    $waitState = [
+        'settings' => ['enabled' => true], 'stop' => null,
+        'unbound' => ['enabled' => true, 'pid_alive' => true, 'control_ok' => false, 'live_root' => null],
+        'view' => ['scope' => 'selected', 'nets' => ['192.0.2.0/24'], 'notes' => [], 'acl' => null, 'zones' => null,
+            'data' => null, 'loaded' => 'silent', 'view_zones' => [], 'view_data' => [], 'file' => null,
+            'copy' => null]];
+    [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply, 'view_list_local_data' => $dataReply,
+        'list_local_zones' => "localhost. transparent\n127.in-addr.arpa. nodefault\n",
+        'list_forwards' => "\n", 'list_stubs' => "\n", 'list_local_data' => "\n"]);
+    $answers = [null, null, ['192.0.2.53']];
+    $liveRoot = function () use (&$answers): ?array {
+        return array_shift($answers);
+    };
+    $w = uu_wait_control($waitState, 'fallback', $liveRoot, $uc, function (): void {
+    });
+    uu_check($t, 'snapshot: a channel that answers after the wait reads the view',
+        $w['unbound']['control_ok'] && $w['view']['loaded'] === 'zones' && $w['view']['data'] === []
+        && $w['view']['view_zones']['.'] === 'refuse' && count($calls) === 6);
+
+    [$uc, $calls] = $recorder([]);
+    $answers = [null, null, ['192.0.2.53']];
+    $skipped = $waitState;
+    $skipped['view']['loaded'] = 'skipped';
+    $w = uu_wait_control($skipped, 'fallback', $liveRoot, $uc, function (): void {
+    });
+    uu_check($t, 'snapshot: a recovered channel with no view to read runs no view command',
+        $w['unbound']['control_ok'] && $w['view']['loaded'] === 'skipped' && $calls->getArrayCopy() === []);
+
+    $converted = uu_snapshot_recorded(['routes' => [], 'contract_input' => ['core_commands' => []]], '/root/r.json');
+    uu_check($t, 'recorded: a 1.4 recording gains upgrade false and a skipped view with scope none, last',
+        $converted['upgrade'] === false && $converted['view']['loaded'] === 'skipped'
+        && $converted['view']['scope'] === 'none' && array_slice(array_keys($converted), -2) === ['upgrade', 'view']);
 
     return uu_tally_report('snapshot', $t);
 });

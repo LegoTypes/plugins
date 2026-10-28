@@ -1486,3 +1486,104 @@ function uu_live_io(string $statePath): array
         },
     ];
 }
+
+/**
+ * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
+ * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
+ * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo. A channel that answers after the wait
+ * gets the view read again (uu_view_read(), with the daemon lists), unless the snapshot ran no view command: the
+ * evaluation an Unbound start queues must see the view as loaded.
+ * $liveRoot, $uc and $sleep are for the tests.
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param string $mode the saved state's mode
+ * @return array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}}
+ */
+function uu_wait_control(array $s, string $mode, ?callable $liveRoot = null, ?callable $uc = null,
+    ?callable $sleep = null): array
+{
+    $u = $s['unbound'];
+    if ($u['control_ok'] || !$u['pid_alive'] || (uu_plan_stop_reason($s) !== null && $mode !== 'tunnel')) {
+        return $s;
+    }
+    $liveRoot ??= 'uu_live_root';
+    $uc ??= 'uu_uc_run';
+    $sleep ??= 'sleep';
+    $deadline = hrtime(true) + UU_CONTROL_WAIT_SECONDS * 1000000000;
+    while (hrtime(true) < $deadline) {
+        $sleep(1);
+        $live = $liveRoot();
+        if ($live !== null) {
+            $s['unbound']['control_ok'] = true;
+            $s['unbound']['live_root'] = $live;
+            if ($s['view']['loaded'] !== 'skipped') {
+                $s['view'] = uu_view_read($s['view'], $uc, true);
+            }
+            break;
+        }
+    }
+    return $s;
+}
+
