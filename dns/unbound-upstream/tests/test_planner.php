@@ -12,6 +12,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/planner.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/apply.php';
 require_once __DIR__ . '/test_verdict.php';
 require_once __DIR__ . '/test_zone.php';
 require_once __DIR__ . '/test_choose.php';
@@ -447,6 +448,115 @@ uu_register_suite('planner', function (): int {
     $now = 10000;
     $settledDown = uu_test_probe('down', '100.0 %', 300);
     $usable = ['wg-a' => uu_test_timer(500, null, $now - 60), 'wg-b' => uu_test_timer(500, null, $now - 60)];
+
+    // The view sub-plan.
+    $viewOf = function (array $over, array $stateOver = [], ?string $stop = null, bool $upgrade = false): ?array {
+        $s = uu_test_snapshot();
+        $s['view'] = $over + $s['view'];
+        $s['stop'] = $stop;
+        $s['upgrade'] = $upgrade;
+        try {
+            return uu_plan($s, uu_test_plan_state(null) + $stateOver)['view'];
+        } catch (\Throwable $e) {
+            printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+            return null;
+        }
+    };
+    $zonesRead = ['scope' => 'private', 'nets' => ['192.0.2.0/24'], 'loaded' => 'zones',
+                  'view_zones' => ['.' => 'refuse', 'corp.example.' => 'static'],
+                  'zones' => ['corp.example.' => 'transparent', 'lan.example.' => 'inform', 'x.example.' => 'static'],
+                  'data' => ['host.corp.example. 3600 IN A 192.0.2.5']];
+    $v = $viewOf([]);
+    uu_check($t, 'plan: an empty set plans no view work',
+        is_array($v) && $v === ['active' => false, 'armed' => null, 'keep' => false, 'zones' => [], 'mirror' => [],
+                               'problem' => null]);
+    $v = $viewOf($zonesRead);
+    uu_check($t, 'plan: a set read as loaded is active and armed when the view holds the refuse of .',
+        is_array($v) && $v['active'] && $v['armed'] === true && $v['problem'] === null && !$v['keep']
+        && $v['zones'] === $zonesRead['zones'] && array_keys($v['mirror']) === ['corp.example.', 'lan.example.']
+        && $v['mirror']['corp.example.'] === ['host.corp.example. 3600 IN A 192.0.2.5']);
+    $v = $viewOf(['view_zones' => ['.' => 'static', 'corp.example.' => 'static']]
+        + $zonesRead);
+    uu_check($t, 'plan: a view without the refuse of . is not armed (a . of another type is not it either)',
+        is_array($v) && $v['active'] && $v['armed'] === false);
+    $v = $viewOf(['view_zones' => []] + $zonesRead);
+    uu_check($t, 'plan: a loaded view with no zones is not armed', is_array($v) && $v['armed'] === false);
+    $v = $viewOf(['scope' => 'none'] + $zonesRead);
+    uu_check($t, 'plan: scope none with the view still loaded is not active, armed is read, zones are handed on',
+        is_array($v) && !$v['active'] && $v['armed'] === true && $v['zones'] === $zonesRead['zones']
+        && $v['problem'] === null);
+    $silent = ['loaded' => 'silent', 'view_zones' => [], 'view_data' => [], 'zones' => null, 'data' => null]
+        + $zonesRead;
+    $v = $viewOf($silent);
+    uu_check($t, 'plan: a silent view read is unknown: armed null, nothing to reconcile, no problem',
+        is_array($v) && !$v['active'] && $v['armed'] === null && $v['zones'] === [] && $v['mirror'] === []
+        && $v['problem'] === null);
+    $v = $viewOf(['loaded' => 'skipped', 'view_zones' => [], 'zones' => null,
+        'data' => null] + $zonesRead);
+    uu_check($t, 'plan: a skipped view read is unknown too', is_array($v) && !$v['active'] && $v['armed'] === null);
+    $v = $viewOf(['data' => null] + $zonesRead);
+    uu_check($t, 'plan: zones without data hand on neither zones nor a mirror',
+        is_array($v) && $v['zones'] === [] && $v['mirror'] === []);
+    $v = $viewOf(['zones' => null] + $zonesRead);
+    uu_check($t, 'plan: data without zones hand on neither zones nor a mirror',
+        is_array($v) && $v['zones'] === [] && $v['mirror'] === []);
+    $v = $viewOf(['loaded' => 'unsupported', 'view_zones' => [], 'view_data' => []]
+        + $zonesRead);
+    uu_check($t, 'plan: Unbound without view commands refuses a non-empty set',
+        is_array($v) && !$v['active'] && $v['armed'] === null
+        && $v['problem'] === 'Fail closed not armed: Unbound has no view support');
+    $v = $viewOf(['scope' => 'none', 'loaded' => 'unsupported', 'view_zones' => [],
+        'view_data' => []] + $zonesRead);
+    uu_check($t, 'plan: Unbound without view commands is no problem for an empty set',
+        is_array($v) && $v['problem'] === null);
+    $v = $viewOf(['acl' => ['nodes' => [], 'foreign' => ['view: other',
+        'access-control-view: 192.0.2.0/24 other']]] + $zonesRead);
+    uu_check($t, 'plan: a view the plugin does not own is named with its lines',
+        is_array($v) && $v['problem'] === 'Fail closed not armed: a view the plugin does not own covers '
+            . 'view: other, access-control-view: 192.0.2.0/24 other');
+    $v = $viewOf(['loaded' => 'absent', 'view_zones' => [], 'view_data' => [],
+        'file' => '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf'] + $zonesRead);
+    uu_check($t, 'plan: a written file with the view not loaded asks for an Unbound restart',
+        is_array($v) && !$v['active'] && $v['armed'] === null
+        && $v['problem'] === 'Fail closed not armed: restart Unbound to load the view');
+    $v = $viewOf(['loaded' => 'absent', 'view_zones' => [], 'view_data' => [],
+        'file' => null] + $zonesRead);
+    uu_check($t, 'plan: no file and no view loaded is no problem', is_array($v) && $v['problem'] === null);
+    $v = $viewOf($zonesRead, [], null, true);
+    uu_check($t, 'plan: an upgrade keeps the view', is_array($v) && $v['keep']);
+    $v = $viewOf($zonesRead, [], UU_STOP_REMOVING);
+    uu_check($t, 'plan: a removing tick keeps the view', is_array($v) && $v['keep']);
+    $v = $viewOf($zonesRead, [], UU_STOP_REMOVE);
+    uu_check($t, 'plan: the removal itself does not keep the view', is_array($v) && !$v['keep']);
+
+    // Undo is due for view work even with no route and no forwarder left.
+    $s = uu_test_snapshot();
+    $st = uu_test_plan_state(null);
+    $armedView = ['active' => true, 'armed' => true, 'keep' => false, 'zones' => [], 'mirror' => [], 'problem' => null];
+    $idle = ['active' => false, 'armed' => false, 'keep' => false, 'zones' => [], 'mirror' => [], 'problem' => null];
+    $s['view']['file'] = '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf';
+    $sCopy = uu_test_snapshot();
+    $sCopy['view']['copy'] = '# copy';
+    uu_check($t, 'plan: undo is due for an armed view with no route left',
+        !uu_apply_undo_due($st, uu_test_snapshot()) && !uu_apply_undo_due($st, uu_test_snapshot(), null)
+        && !uu_apply_undo_due($st, uu_test_snapshot(), $idle)
+        && uu_apply_undo_due($st, uu_test_snapshot(), $armedView)
+        && uu_apply_undo_due($st, $s, $idle) && uu_apply_undo_due($st, $sCopy, $idle)
+        && !uu_apply_undo_due($st, $s) && !uu_apply_undo_due($st, $s, ['keep' => true] + $armedView)
+        && !uu_apply_undo_due($st, $sCopy, ['keep' => true] + $armedView));
+
+    // 1.4's plans carry the same fields, with the set empty.
+    $plans = [];
+    foreach ([uu_test_snapshot(), uu_test_in_tunnel(uu_test_snapshot(), 'wg-a')] as $snap) {
+        $plans[] = uu_plan($snap, uu_test_plan_state(null));
+        $stopped = $snap;
+        $stopped['stop'] = UU_STOP_REQUEST;
+        $plans[] = uu_plan($stopped, uu_test_plan_state(null));
+    }
+    uu_check($t, "plan: 1.4's plans are unchanged with the set empty",
+        count(array_filter($plans, fn (array $p): bool => array_keys($p) === ['action', 'candidates', 'reassert',
+            'route_repair', 'escalate_restart', 'state', 'reasons', 'drain', 'view']
+            && $p['view']['active'] === false && $p['view']['problem'] === null)) === count($plans));
 
     // The live address drops "@port" and "#name" as the forwarded rule does, so the two never disagree.
     uu_check($t, 'live address: a live root of one forwarder with @port or #name names its address, canonical, as '

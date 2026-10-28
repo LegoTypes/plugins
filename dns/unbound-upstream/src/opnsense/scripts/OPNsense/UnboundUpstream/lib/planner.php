@@ -56,6 +56,7 @@ require_once __DIR__ . '/verdict.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/contract.php';
+require_once __DIR__ . '/views.php';
 
 /**
  * Whether the kernel route is the one tunnel mode through this member needs.
@@ -397,6 +398,50 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
 }
 
 /**
+ * The fail-closed view's share of an evaluation (spec 3.3, 3.4, 3.8): whether there is a view to act on, whether the
+ * loaded view holds the refuse of ".", whether a stop keeps it, the daemon's zones and the records the mirror keeps
+ * in the view, and why it cannot be armed. A view read that is not a loaded view's zones (silent, skipped, absent,
+ * unsupported) leaves armed unknown, and a silent read is never acted on.
+ *
+ * @param array{stop: ?string, upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param array{view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st the state, which the view's share does not read
+ * @return array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *     mirror: array<string, list<string>>, problem: ?string}
+ */
+function uu_plan_view(array $s, array $st): array
+{
+    $view = $s['view'];
+    $selected = $view['scope'] !== 'none';
+    $loaded = $view['loaded'] === 'zones';
+    $zones = $view['zones'];
+    $data = $view['data'];
+    $both = $zones !== null && $data !== null;
+    $foreign = $view['acl']['foreign'] ?? [];
+    $problem = match (true) {
+        $selected && $view['loaded'] === 'unsupported' => 'Fail closed not armed: Unbound has no view support',
+        $selected && $foreign !== [] => 'Fail closed not armed: a view the plugin does not own covers '
+            . implode(', ', $foreign),
+        $selected && $view['file'] !== null && $view['loaded'] === 'absent'
+            => 'Fail closed not armed: restart Unbound to load the view',
+        default => null,
+    };
+    return [
+        'active' => $selected && $loaded,
+        'armed' => $loaded ? ($view['view_zones']['.'] ?? null) === 'refuse' : null,
+        'keep' => $s['upgrade'] || $s['stop'] === UU_STOP_REMOVING,
+        'zones' => $both ? $zones : [],
+        'mirror' => $both ? uu_view_mirror($zones, $data) : [],
+        'problem' => $problem,
+    ];
+}
+
+/**
+ * The 1.4 plan: what the tunnel and the resolver need, before the view's sub-plan (uu_plan()) is added.
+ *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
@@ -423,7 +468,12 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
  *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -449,7 +499,7 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
  *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     reasons: list<string>, drain: list<string>}
  */
-function uu_plan(array $s, array $st): array
+function uu_plan_steps(array $s, array $st): array
 {
     $now = $s['now'];
     $trigger = $s['trigger'];
@@ -674,4 +724,71 @@ function uu_plan(array $s, array $st): array
         }
     }
     return uu_plan_result('none', $candidates, $reassert, $routeRepair, false, $st, $reasons, $drain);
+}
+
+/**
+ * One evaluation's plan: the 1.4 plan (uu_plan_steps()) and the fail-closed view's share (uu_plan_view()).
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st
+ * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
+ *     escalate_restart: bool,
+ *     state: array{version: int, mode: string, member: ?string,
+ *         timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int,
+ *         resolver_failed_until: ?int, probe_failures: int,
+ *             last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *         control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *         member: string}}, tls_applied: ?bool, blocked: ?int,
+ *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *             forwarded: bool, released_at: ?int}>,
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+ *     reasons: list<string>, drain: list<string>,
+ *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *         mirror: array<string, list<string>>, problem: ?string}}
+ */
+function uu_plan(array $s, array $st): array
+{
+    return uu_plan_steps($s, $st) + ['view' => uu_plan_view($s, $st)];
 }

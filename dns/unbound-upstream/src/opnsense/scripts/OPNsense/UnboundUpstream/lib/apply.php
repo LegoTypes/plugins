@@ -90,6 +90,9 @@ function uu_drill_passed(string $out): bool
  * restore.
  * The one test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
  * route.
+ * The plan's view adds the view work of a stop: the refuse armed, or the file or its copy on disk, even with nothing
+ * left of 1.4's to undo (a disable while in fallback). A plan whose view is kept (an upgrade, a tick of the removal)
+ * has none, and null is 1.4's answer.
  *
  * @param array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
  *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>} $st
@@ -97,11 +100,17 @@ function uu_drill_passed(string $out): bool
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
- *         ours: bool}>} $s
+ *         ours: bool}>,
+ *     view: array{file: ?string, copy: ?string}} $s
+ * @param ?array{armed: ?bool, keep: bool} $view the plan's view
  */
-function uu_apply_undo_due(array $st, array $s): bool
+function uu_apply_undo_due(array $st, array $s, ?array $view = null): bool
 {
     if ($st['mode'] === 'tunnel' || $st['member'] !== null) {
+        return true;
+    }
+    if ($view !== null && !$view['keep']
+        && ($view['armed'] === true || $s['view']['file'] !== null || $s['view']['copy'] !== null)) {
         return true;
     }
     $pid = $s['unbound']['pid_alive'];
@@ -142,7 +151,9 @@ final class UuApplyRun
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>,
      *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
-     *     reasons: list<string>, drain: list<string>}
+     *     reasons: list<string>, drain: list<string>,
+     *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+     *         mirror: array<string, list<string>>, problem: ?string}}
      */
     private array $p;
     /**
@@ -229,7 +240,9 @@ final class UuApplyRun
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>,
      *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
-     *     reasons: list<string>, drain: list<string>} $p
+     *     reasons: list<string>, drain: list<string>,
+     *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+     *         mirror: array<string, list<string>>, problem: ?string}} $p
      * @param array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
      *         rows: array<string, string>, failback_delay: int, probe_name: string},
@@ -411,7 +424,7 @@ final class UuApplyRun
      */
     private function stop(): void
     {
-        if (!uu_apply_undo_due($this->st, $this->s)) {
+        if (!uu_apply_undo_due($this->st, $this->s, $this->p['view'])) {
             return;
         }
         $this->reasons();
@@ -1225,7 +1238,9 @@ final class UuApplyRun
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
  *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
- *     reasons: list<string>, drain: list<string>} $p uu_plan()
+ *     reasons: list<string>, drain: list<string>,
+ *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *         mirror: array<string, list<string>>, problem: ?string}} $p uu_plan()
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
@@ -1237,7 +1252,8 @@ final class UuApplyRun
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s the snapshot the plan was made from
+ *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool},
+ *     view: array{file: ?string, copy: ?string}} $s the snapshot the plan was made from
  * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
@@ -1259,7 +1275,7 @@ function uu_apply(array $p, array $s, array $io): array
     if (!$s['settings']['dry_run']) {
         return (new UuApplyRun($p, $s, $io))->run();
     }
-    $changed = uu_apply_undo_due($p['state'], $s);
+    $changed = uu_apply_undo_due($p['state'], $s, $p['view']);
     if ($changed && $p['action'] === 'skip') {
         /* through a silent channel nothing can be undone; the skip runs as planned, its escalation
          * included, and the undo waits for the channel to answer */
@@ -1293,7 +1309,9 @@ function uu_apply(array $p, array $s, array $io): array
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
  *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
- *     reasons: list<string>, drain: list<string>} $p
+ *     reasons: list<string>, drain: list<string>,
+ *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *         mirror: array<string, list<string>>, problem: ?string}} $p
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
  *         rows: array<string, string>, failback_delay: int, probe_name: string},
