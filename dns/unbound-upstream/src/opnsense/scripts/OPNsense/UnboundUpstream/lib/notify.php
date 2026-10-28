@@ -23,22 +23,25 @@ require_once __DIR__ . '/snapshot.php';
  * @param ?array{at: int, from: string, to: string, reason: string} $before
  * @param ?array{at: int, from: string, to: string, reason: string} $after
  */
-function uu_notify_due(?array $before, ?array $after, ?string $problemBefore = null, ?string $problemAfter = null): bool
+function uu_notify_due(?array $before, ?array $after, ?string $problemBefore, ?string $problemAfter): bool
 {
     return ($after !== null && $after !== $before) || ($problemAfter !== null && $problemAfter !== $problemBefore);
 }
 
 /**
- * The last switch (none when a problem is notified before any switch), then the saved mode and member and the
- * state's view record as fail_closed.
+ * The last switch (left out when this notification is not for a new switch, so a receiver does not replay an old
+ * one), then the saved mode and member and the view record as fail_closed, without the internal hash.
  *
  * @param array{mode: string, member: ?string, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ * @param bool $switched whether the run saved a new switch
  */
-function uu_notify_body(array $st): string
+function uu_notify_body(array $st, bool $switched): string
 {
-    return json_encode(($st['last_switch'] ?? []) + ['mode' => $st['mode'], 'member' => $st['member'],
-        'fail_closed' => $st['view']], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    $v = $st['view'];
+    return json_encode(($switched ? $st['last_switch'] ?? [] : []) + ['mode' => $st['mode'], 'member' => $st['member'],
+        'fail_closed' => ['scope' => $v['scope'], 'nets' => $v['nets'], 'refuse' => $v['refuse'],
+            'problem' => $v['problem']]], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
 }
 
 /**
@@ -148,21 +151,22 @@ function uu_notify_failure_line(string $url, string $error): string
 
 /**
  * Send the saved state (its last switch and the fail-closed view) to the notify URL, when notify is on. The state is
- * already saved, so nothing here may fail the evaluation: every failure is one warning.
+ * already saved, so nothing here may fail the evaluation: every failure is one warning. $switched says whether the
+ * run saved a new switch.
  *
  * @param array{mode: string, member: ?string, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
  */
-function uu_notify_switch(array $st): void
+function uu_notify_switch(array $st, bool $switched): void
 {
-    $last = $st['last_switch'];
+    $last = $switched ? $st['last_switch'] : null;
     $switch = $last === null ? 'the fail-closed problem' : "the switch {$last['from']} -> {$last['to']}";
     try {
         $url = uu_notify_url();
         if ($url === null) {
             return;
         }
-        $error = uu_notify_post($url, uu_notify_body($st));
+        $error = uu_notify_post($url, uu_notify_body($st, $switched));
         if ($error !== null) {
             uu_log("notify: $switch did not reach " . uu_notify_failure_line($url, $error), LOG_WARNING);
         }

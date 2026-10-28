@@ -250,7 +250,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
         uu_footprint_follow($before, $viewBefore, $settings['enabled'], $stop);
     }
     if (uu_notify_due($previousSwitch, $st['last_switch'], $previousProblem, $st['view']['problem'])) {
-        uu_notify_switch($st);
+        uu_notify_switch($st, uu_notify_due($previousSwitch, $st['last_switch'], null, null));
     }
 }
 

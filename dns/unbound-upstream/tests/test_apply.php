@@ -3146,11 +3146,11 @@ uu_register_suite('apply', function (): int {
                 $ok && $runs !== null && $runs[0]['st']['mode'] === 'fallback'
                 && array_filter($runs[0]['acts'], fn (string $c): bool => str_starts_with($c, 'route ')) === []
                 && $runs[0]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), true)]
-                && uu_notify_due(null, $runs[0]['st']['last_switch'])
+                && uu_notify_due(null, $runs[0]['st']['last_switch'], null, null)
                 && $runs[1]['p']['state']['mode'] === 'fallback' && $runs[1]['calls']->getArrayCopy() === []
                 && $runs[2]['calls']->getArrayCopy() === []
-                && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch'])
-                && !uu_notify_due($runs[1]['st']['last_switch'], $runs[2]['st']['last_switch'])
+                && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch'], null, null)
+                && !uu_notify_due($runs[1]['st']['last_switch'], $runs[2]['st']['last_switch'], null, null)
                 && $runs[2]['st']['addresses'] === [$a => $entry($viaRecord($f, 'wg-a'), true)]);
         }
         $runs = null;
@@ -3168,7 +3168,7 @@ uu_register_suite('apply', function (): int {
             && uu_test_reason_has($runs[0]['p']['reasons'], "contract: Unbound's root zone forwards to $a,")
             && $runs[1]['p']['action'] === 'none' && $runs[1]['calls']->getArrayCopy() === []
             && $runs[1]['acts'] === []
-            && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch']));
+            && !uu_notify_due($runs[0]['st']['last_switch'], $runs[1]['st']['last_switch'], null, null));
 
         /* (a26) tunnel mode's route repair reaching rejectOthers() with no checkpoint before it: wg-a's own resolver F,
          * which sorts first, on a member route of the plugin's but not in the map (a lost state), and A in the map with

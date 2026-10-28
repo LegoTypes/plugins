@@ -474,7 +474,7 @@ uu_register_suite('log', function (): int {
 
     /* the fail-closed view: the state's record, the settings' selection and the snapshot's notes */
     $fcNone = ['scope' => 'none', 'interfaces' => [], 'networks' => [], 'nets' => [], 'refuse' => 'none',
-               'problem' => null, 'notes' => []];
+               'problem' => null, 'notes' => [], 'label' => 'off'];
     uu_check($t, 'status: fail_closed none for the defaults',
         uu_try_case(fn (): bool => uu_status_doc(uu_test_snapshot(), uu_plan(uu_test_snapshot(), uu_test_plan_state(null)),
             ['armed' => false, 'fill' => false, 'blocked' => null])['fail_closed'] === $fcNone));
@@ -498,7 +498,8 @@ uu_register_suite('log', function (): int {
             return uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
                 ['fail_closed'] === ['scope' => 'selected', 'interfaces' => ['lan'], 'networks' => ['203.0.113.0/24'],
                     'nets' => ['192.0.2.0/24', '2001:db8:1::/64'], 'refuse' => 'armed', 'problem' => null,
-                    'notes' => ['no IPv6 net yet for lan']];
+                    'notes' => ['no IPv6 net yet for lan'],
+                    'label' => '192.0.2.0/24, 2001:db8:1::/64: armed; no IPv6 net yet for lan'];
         }));
     uu_check($t, 'status: a loaded view without the refuse of "." reports lifted, whatever the state kept',
         uu_try_case(function () use ($fcSnap, $fcView): bool {
@@ -520,6 +521,25 @@ uu_register_suite('log', function (): int {
                 && $fc['problem'] === 'Fail closed not armed: restart Unbound to load the view'
                 && $fc['nets'] === ['192.0.2.0/24', '2001:db8:1::/64'];
         }));
+
+    $lab = fn (string $scope, array $nets, string $refuse, ?string $problem, array $notes = []): string =>
+        uu_status_fail_closed_label(['scope' => $scope, 'nets' => $nets, 'refuse' => $refuse, 'problem' => $problem,
+            'notes' => $notes]);
+    uu_check($t, 'status label: off, armed, lifted and every client',
+        $lab('none', [], 'none', null) === 'off' && $lab('all', [], 'armed', null) === 'every client: armed'
+        && $lab('selected', ['192.0.2.0/24'], 'lifted', null) === '192.0.2.0/24: lifted');
+    uu_check($t, 'status label: a stuck lift shows stuck with its reason, never plain armed',
+        $lab('selected', ['192.0.2.0/24'], 'armed', 'Fail closed stuck: the lift failed')
+            === '192.0.2.0/24: stuck: the lift failed');
+    uu_check($t, 'status label: not armed, and another fault of the file step, each with its reason',
+        $lab('all', [], 'lifted', 'Fail closed not armed: restart Unbound to load the view')
+            === 'every client: not armed: restart Unbound to load the view'
+        && $lab('all', [], 'lifted', 'Fail closed: the Unbound restart for the view file failed (restart Unbound)')
+            === 'every client: fault: the Unbound restart for the view file failed (restart Unbound)'
+        && $lab('all', [], 'lifted', 'some other reason') === 'every client: fault: some other reason');
+    uu_check($t, 'status label: a selection without a net reads no net yet, and each note follows',
+        $lab('selected', [], 'lifted', null, ['no IPv6 net yet for lan', 'second'])
+            === 'no net yet: lifted; no IPv6 net yet for lan; second');
 
     return uu_tally_report('log', $t);
 });
