@@ -39,10 +39,10 @@ Plugin Changelog
   unbound.opnsense.d, which puts the set in an Unbound view whose root
   is refused. Unbound loads it at its start, so the set is refused from
   the first query after a boot, a restart or an upgrade, and lifted once
-  a member is in use (about 2.5 to 3 minutes after a boot). Falling back
+  a member is in use (the monitor window plus the failback delay after the tunnel's start). Falling back
   arms the refuse again before the root returns to the forwarders. The
   view follows core's Access Lists: a list inside a set net gets the
-  view too, and a netblock core lists is never repeated
+  view too, and the plugin never writes an access-control line for a netblock core lists
 * Local names still resolve for a fail-closed client: host overrides and
   their PTR records, the system domain, DHCP lease names, domain
   overrides and the private reverse zones. Local zones are copied into
@@ -52,9 +52,13 @@ Plugin Changelog
   NXDOMAIN) until the next tick. TXT records holding both quote kinds
   are not copied
 * Unbound restarts once, through configd, at Apply when the set's nets
-  change, when a selected interface's addresses change (a new prefix),
-  and when core's Access Lists change (a second restart after core's
-  own). The cache is lost on each if cache flushing is on. A reload with
+  change, and, outside Apply, when a selected interface's addresses
+  change (a new prefix, logged as a warning), and when core's Access
+  Lists change (a second restart after core's own). On a box with
+  explicit Unbound interfaces, core restarts first with the old file and
+  the plugin restarts again; that is two short outages, and a new prefix
+  fails open between them. The cache is lost on each if cache flushing
+  is on. A reload with
   unbound-control re-arms the view; the next tick lifts or reconciles it
 * A clean removal, an emptied set, or a disable with a set selected
   restarts Unbound once through configd while the view is loaded, which
@@ -77,8 +81,9 @@ Plugin Changelog
   names are refused for every device that uses the firewall for DNS,
   wherever it is; local names and MagicDNS names still resolve; the
   firewall must be the tailnet's only global nameserver ("Override DNS
-  servers" on, "Use with exit node" on), or another nameserver's answer
-  wins; a WireGuard-only exit node such as Mullvad is refused as well;
+  servers" on, and "Use with exit node" on when the firewall is the exit
+  node), or another
+  nameserver's answer wins; a WireGuard-only exit node such as Mullvad is refused as well;
   split DNS alone never reaches the check. Downgrading to 1.4 leaves
   the file, which 1.4 cannot lift
 * Recovery, for a failed upgrade, a downgrade or a removal that could
