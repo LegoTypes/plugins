@@ -49,6 +49,14 @@ declare(strict_types=1);
  *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type <probe_name> SOA only; the
  *     flush_requestlist of a stop or a drain drops the queries in progress (their clients ask again), never a cache
  *     entry, and runs only behind reject routes.
+ *
+ * The fail-closed view keeps these on every path:
+ *   - the refuse of "." is armed before a fallback's restore, which runs whatever the arm's outcome;
+ *   - it is lifted only once the live root is the resolver (entry and reassert confirmed) or the configured root zone
+ *     (a stop's restore, its restart, or nothing to restore), never by a stop that kept the view (an upgrade, a tick
+ *     of the removal) or that could not restore;
+ *   - no view command runs unless the set is read as loaded or the read shows the refuse of ".", so an owner with
+ *     nothing selected gets 1.4's calls exactly.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -56,6 +64,7 @@ require_once __DIR__ . '/address.php';
 require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/planner.php';
+require_once __DIR__ . '/views.php';
 require_once __DIR__ . '/snapshot.php';
 require_once __DIR__ . '/control.php';
 require_once __DIR__ . '/log.php';
@@ -168,7 +177,11 @@ final class UuApplyRun
      *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
      *         ours: bool}>,
      *     route_flags: array<string, list<string>>,
-     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}}
+     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool},
+     *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net:
+     *         string, action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+     *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+     *         copy: ?string}}
      */
     private array $s;
     /**
@@ -226,6 +239,13 @@ final class UuApplyRun
     /** @var list<string> what this run found on the way, for the switch reason */
     private array $notes = [];
     private string $probe;
+    /**
+     * whether the view holds the refuse of ".", as the snapshot read it or this run's last arm or lift read it back;
+     * null while unknown (not loaded, or a read back that failed)
+     */
+    private ?bool $viewArmed;
+    /** @var array<string, string> the view's zones as last read: the snapshot's, then each arm's or lift's read back */
+    private array $viewZones;
 
     /**
      * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
@@ -254,7 +274,11 @@ final class UuApplyRun
      *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
      *         ours: bool}>,
      *     route_flags: array<string, list<string>>,
-     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
+     *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool},
+     *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net:
+     *         string, action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+     *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+     *         copy: ?string}} $s
      * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
      *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
      *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool,
@@ -268,6 +292,8 @@ final class UuApplyRun
         $this->io = $io;
         $this->st = $p['state'];
         $this->probe = $s['settings']['probe_name'];
+        $this->viewArmed = $p['view']['armed'];
+        $this->viewZones = $s['view']['view_zones'];
         $this->kept = uu_plan_addresses($s);
         $this->recorded = array_map('strval', array_keys($this->st['addresses']));
         foreach ($this->st['addresses'] as $address => $entry) {
@@ -401,6 +427,10 @@ final class UuApplyRun
                     break;
                 default:
                     $this->none();
+                    $this->reconcile();
+            }
+            if ($this->p['action'] !== 'stop') {
+                $this->viewRecord();
             }
             $this->drainOrphans($this->p['drain']);
         } catch (\Throwable $e) {
@@ -417,9 +447,10 @@ final class UuApplyRun
     }
 
     /**
-     * The configured forwarders back if Unbound may be on one of the plugin's addresses, then every route the plugin
-     * made drained and deleted, ignoring any orphan's hold. A restore that failed ends in a restart
-     * (restartForStop()), and when that fails too, in stopIncomplete(). Nothing is logged while there is nothing to
+     * The configured forwarders back if Unbound may be on one of the plugin's addresses, then the view's refuse
+     * lifted (unless the stop keeps the view: an upgrade, a tick of the removal), then every route the plugin made
+     * drained and deleted, ignoring any orphan's hold. A restore that failed ends in a restart (restartForStop()), and
+     * when that fails too, in stopIncomplete(), which keeps the refuse. Nothing is logged while there is nothing to
      * undo (uu_apply_undo_due()), which the minute job's ticks would otherwise repeat.
      */
     private function stop(): void
@@ -436,6 +467,9 @@ final class UuApplyRun
         if (!$this->restore() && !$this->restartForStop()) {
             $this->stopIncomplete($was);
             return;
+        }
+        if (!$this->p['view']['keep']) {
+            $this->lift(uu_plan_stop_reason($this->s) ?? ($this->s['settings']['dry_run'] ? 'dry run' : 'stop'));
         }
         $this->drainAndDelete($was);
         $this->switchTo('fallback', null);
@@ -701,8 +735,9 @@ final class UuApplyRun
     }
 
     /**
-     * Staying: the reconcile (the member's route, every other address's reject route, then reassert) and the
-     * per-evaluation checks on M; outside tunnel mode the route repair is every address's reject route.
+     * Staying: the reconcile (the member's route, every other address's reject route, then reassert), the lift of a
+     * view Unbound's start or reload armed, and the per-evaluation checks on M; outside tunnel mode the route repair
+     * is every address's reject route, then the arm of a set whose view lost its refuse, or the lift of one emptied.
      */
     private function none(): void
     {
@@ -712,6 +747,10 @@ final class UuApplyRun
                 $this->reasons();
                 $this->rejectAll();
             }
+            if ($this->p['view']['active'] && $this->viewArmed === false) {
+                $this->arm();
+            }
+            $this->liftEmptied();
             return;
         }
         if ($this->p['reassert'] || $this->p['route_repair']) {
@@ -728,6 +767,9 @@ final class UuApplyRun
         }
         if ($this->p['route_repair'] && !$this->p['reassert']) {
             $this->rejectOthers($this->resolverOf($member));
+        }
+        if ($this->viewArmed === true) {
+            $this->lift($member);
         }
         if (!$this->check($member)) {
             $this->tryCandidates($rest);
@@ -770,6 +812,7 @@ final class UuApplyRun
             $this->note('Unbound did not take ' . $resolver);
             return 'unbound';
         }
+        $this->lift($name);
         /* toResolver() just flushed the resolver's infra entry, so a failure here counts at once */
         $ok = uu_probe_outcome(true, $this->probeUnbound($name), true) === 'ok';
         $this->setFailures($name, $ok ? 0 : 1);
@@ -809,9 +852,15 @@ final class UuApplyRun
         return false;
     }
 
-    /** Fallback steps 1 to 3; the reject routes only once Unbound is off the plugin's addresses. */
+    /**
+     * Fallback steps 1 to 3; the reject routes only once Unbound is off the plugin's addresses. The set is refused
+     * first, and the restore runs whatever the arm's outcome: the other clients and the firewall need DNS.
+     */
     private function fallback(): void
     {
+        if ($this->p['view']['active'] && $this->viewArmed !== true) {
+            $this->arm();
+        }
         if (!$this->restore()) {
             $named = array_values(array_filter($this->addresses(), fn (string $a): bool => $this->forwarded[$a]));
             $this->log('fallback incomplete: Unbound may still forward to ' . $this->theResolver($named)
@@ -819,6 +868,7 @@ final class UuApplyRun
             return;
         }
         $this->rejectAll();
+        $this->liftEmptied();
         $this->switchTo('fallback', null);
     }
 
@@ -1083,6 +1133,199 @@ final class UuApplyRun
     }
 
     /**
+     * The set refused: the refuse of "." in the view, then each zone that passes names on (the mirror's) at its class,
+     * static or refuse; confirmed only by the view's zones read back with the refuse of ".". A failure is the run's
+     * view problem, with the first failed reply, else the read's.
+     */
+    private function arm(): void
+    {
+        $calls = [['view_local_zone', UU_VIEW_NAME, '.', 'refuse']];
+        foreach (array_keys($this->p['view']['mirror']) as $zone) {
+            $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone,
+                        uu_view_zone_class($this->p['view']['zones'][$zone] ?? '')];
+        }
+        $failed = $this->viewCalls($calls);
+        $read = $this->viewConfirm(true);
+        if ($read !== null) {
+            $this->viewFault('Fail closed not armed: ' . ($failed ?? $read));
+            return;
+        }
+        $this->st['view']['refuse'] = 'armed';
+        $this->st['view']['problem'] = null;
+        $this->log('fail closed: ' . $this->viewSet() . ' refused (no usable member)', LOG_ERR);
+    }
+
+    /**
+     * The refuse lifted: "." removed from the view, then each zone that passes names on set to noview; confirmed only
+     * by the view's zones read back without the refuse of "." (a view no longer loaded refuses nothing). Only while
+     * the set is read as loaded or the view holds the refuse of ".", never on an unknown read, so an owner with
+     * nothing selected gets no view command. A failure leaves the set refused, which fails closed but is a fault: the
+     * run's view problem, tried again by the next evaluation.
+     *
+     * @param string $why what the lift follows: the member entered or kept, or the stop's cause
+     */
+    private function lift(string $why): void
+    {
+        if (!$this->p['view']['active'] && $this->viewArmed !== true) {
+            return;
+        }
+        $calls = [['view_local_zone_remove', UU_VIEW_NAME, '.']];
+        foreach (array_keys($this->p['view']['mirror']) as $zone) {
+            $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone, 'noview'];
+        }
+        $failed = $this->viewCalls($calls);
+        $read = $this->viewConfirm(false);
+        if ($read !== null) {
+            $this->viewFault('Fail closed stuck: ' . ($failed ?? $read));
+            return;
+        }
+        /* a view no longer loaded is none */
+        $this->st['view']['refuse'] = $this->viewArmed === null ? 'none' : 'lifted';
+        $this->st['view']['problem'] = null;
+        $this->log("fail closed: lifted ($why)", LOG_ERR);
+    }
+
+    /** A view still holding the refuse of "." with nothing selected any more (an empty set at Apply): lifted. */
+    private function liftEmptied(): void
+    {
+        if (!$this->p['view']['active'] && $this->viewArmed === true) {
+            $this->lift('empty set');
+        }
+    }
+
+    /**
+     * The loaded view brought to the wanted one while the set is read as loaded (uu_view_reconcile()): zones added or
+     * retyped, stale ones removed, a stale record's name removed and its wanted records added back, each change
+     * logged. Nothing while the refuse is unknown, nor while the daemon's zones or records could not be read (every
+     * zone of the view would look stale); a call that gets no answer ends it.
+     */
+    private function reconcile(): void
+    {
+        if (!$this->p['view']['active'] || $this->viewArmed === null || $this->s['view']['zones'] === null
+            || $this->s['view']['data'] === null) {
+            return;
+        }
+        $diff = uu_view_reconcile($this->viewZones, $this->s['view']['view_data'],
+            uu_view_wanted($this->p['view']['zones'], $this->p['view']['mirror'], $this->viewArmed));
+        $steps = [];
+        foreach ($diff['set'] as $zone => $type) {
+            $steps[] = [['view_local_zone', UU_VIEW_NAME, (string)$zone, $type], "zone +$zone $type"];
+        }
+        foreach ($diff['remove'] as $zone) {
+            $steps[] = [['view_local_zone_remove', UU_VIEW_NAME, $zone], "zone -$zone"];
+        }
+        foreach ($diff['data_remove'] as $name) {
+            $steps[] = [['view_local_data_remove', UU_VIEW_NAME, $name], "data -$name"];
+        }
+        foreach ($diff['data_add'] as $record) {
+            $fields = explode(' ', $record);
+            $steps[] = [['view_local_data', UU_VIEW_NAME, $record], 'data +' . $fields[0] . ' ' . ($fields[3] ?? '')];
+        }
+        foreach ($steps as [$args, $what]) {
+            $out = $this->viewCall($args);
+            $failed = $this->viewWhy($out);
+            $this->log("fail closed: $what" . ($failed === null ? '' : " failed: $failed"),
+                $failed === null ? LOG_NOTICE : LOG_WARNING);
+            if ($out === null) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * The state's refuse as the loaded set's view holds it at the end of a run that is no stop, so a refuse that
+     * Unbound's start or reload put back, or one already there at a fallback, is recorded too. A stop leaves it to the
+     * stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next starts.
+     */
+    private function viewRecord(): void
+    {
+        if ($this->p['view']['active'] && $this->viewArmed !== null) {
+            $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
+        }
+    }
+
+    /**
+     * Read the view's zones back after an arm or a lift: null when the refuse of "." is as wanted, else why not. A
+     * reply that is not the view's zones leaves the refuse unknown.
+     */
+    private function viewConfirm(bool $refused): ?string
+    {
+        $out = $this->viewCall(['view_list_local_zones', UU_VIEW_NAME]);
+        $zones = $out === null ? null : uu_view_parse_list($out);
+        if ($zones === null) {
+            $this->viewArmed = null;
+            $absent = $out !== null && str_starts_with(ltrim($out), 'no view with name');
+            return $absent && !$refused ? null : $this->viewText($out);
+        }
+        $this->viewZones = $zones;
+        $this->viewArmed = ($zones['.'] ?? null) === 'refuse';
+        if ($this->viewArmed === $refused) {
+            return null;
+        }
+        return $refused ? 'the view does not refuse .' : 'the view still refuses .';
+    }
+
+    /**
+     * The view commands in order until one does not answer ok: null when each did, else why the first did not.
+     *
+     * @param list<list<string>> $calls
+     */
+    private function viewCalls(array $calls): ?string
+    {
+        foreach ($calls as $args) {
+            $failed = $this->viewWhy($this->viewCall($args));
+            if ($failed !== null) {
+                return $failed;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * One view command: its reply, null when nothing answered.
+     *
+     * @param list<string> $args
+     */
+    private function viewCall(array $args): ?string
+    {
+        $out = ($this->io['uc'])($args);
+        $this->silent = $this->silent || $out === null;
+        return $out;
+    }
+
+    /** Why a view command's reply is not `ok`; null when it is. */
+    private function viewWhy(?string $out): ?string
+    {
+        return $out !== null && trim($out) === 'ok' ? null : $this->viewText($out);
+    }
+
+    /** A reply as one line for the log and the status: "no answer" for none. */
+    private function viewText(?string $out): string
+    {
+        if ($out === null) {
+            return 'no answer';
+        }
+        $text = (string)preg_replace('/\s*\n\s*/', '; ', trim($out));
+        return $text === '' ? 'an empty reply' : $text;
+    }
+
+    /** A failed arm or lift: the run's view problem, logged at error level. */
+    private function viewFault(string $problem): void
+    {
+        $this->st['view']['problem'] = $problem;
+        $this->log($problem, LOG_ERR);
+    }
+
+    /** The set for the log: its nets, "every client" for the whole address space, "none" for no net. */
+    private function viewSet(): string
+    {
+        if ($this->s['view']['scope'] === 'all') {
+            return 'every client';
+        }
+        return $this->s['view']['nets'] === [] ? 'none' : implode(', ', $this->s['view']['nets']);
+    }
+
+    /**
      * Read the live root back and compare it as a set; `forward` prints bare addresses in its own order.
      *
      * @param list<string> $want
@@ -1222,9 +1465,9 @@ final class UuApplyRun
 /**
  * Apply the plan and return the state to save. In dry run nothing is applied: every step is logged through a
  * simulated I/O that takes each probe as passing, and the plan's own state comes back. A dry run that finds the
- * plugin's changes live (uu_apply_undo_due(): dry run turned on in tunnel mode, a restore due, or a route of the
- * plugin's that a stop would undo) first undoes them for real, as stop does, so dry run never leaves Unbound on the
- * resolver.
+ * plugin's changes live (uu_apply_undo_due(): dry run turned on in tunnel mode, a restore due, a route of the
+ * plugin's that a stop would undo, or the view's refuse armed) first undoes them for real, as stop does, so dry run
+ * never leaves Unbound on the resolver nor the set refused.
  *
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
@@ -1253,7 +1496,10 @@ final class UuApplyRun
  *         ours: bool}>,
  *     route_flags: array<string, list<string>>,
  *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool},
- *     view: array{file: ?string, copy: ?string}} $s the snapshot the plan was made from
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s the snapshot the plan was made from
  * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
@@ -1275,7 +1521,12 @@ function uu_apply(array $p, array $s, array $io): array
     if (!$s['settings']['dry_run']) {
         return (new UuApplyRun($p, $s, $io))->run();
     }
-    $changed = uu_apply_undo_due($p['state'], $s, $p['view']);
+    /* dry run neither writes nor deletes the view's file, so of the view only a refuse a real run left armed is a
+     * live change to undo: the file alone would make every tick a stop */
+    $undo = $s;
+    $undo['view']['file'] = null;
+    $undo['view']['copy'] = null;
+    $changed = uu_apply_undo_due($p['state'], $undo, $p['view']);
     if ($changed && $p['action'] === 'skip') {
         /* through a silent channel nothing can be undone; the skip runs as planned, its escalation
          * included, and the undo waits for the channel to answer */
@@ -1287,7 +1538,7 @@ function uu_apply(array $p, array $s, array $io): array
                 LOG_NOTICE);
         }
         $p['action'] = 'stop';
-        return (new UuApplyRun($p, $s, $io))->run();
+        return (new UuApplyRun($p, $undo, $io))->run();
     }
     uu_apply_preview($p, $s, $io['log']);
     return $p['state'];
@@ -1323,26 +1574,32 @@ function uu_apply(array $p, array $s, array $io): array
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
  *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool}} $s
+ *     fib_sync_ms: ?int, contract_input: array{cacheflush: bool},
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
  * @param callable(string, int): void $log
  */
 function uu_apply_preview(array $p, array $s, callable $log): void
 {
-    (new UuApplyRun($p, $s, uu_dry_io($log, $s['unbound']['live_root'])))->run();
+    (new UuApplyRun($p, $s, uu_dry_io($log, $s['unbound']['live_root'], $s['view']['view_zones'])))->run();
 }
 
 /**
  * An Io that only logs, each line marked [dry]. It plays Unbound's live root along (forward_add and forward_remove
- * set what `forward` prints), so the logged steps are the ones a passing run would take.
+ * set what `forward` prints) and the view's zones (view_local_zone and view_local_zone_remove set what
+ * view_list_local_zones prints), so the logged steps are the ones a passing run would take.
  *
  * @param callable(string, int): void $log
  * @param ?list<string> $live the snapshot's live root
+ * @param array<string, string> $zones the view's zones as the snapshot read them
  * @return array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
  *     save: callable(array): void}
  */
-function uu_dry_io(callable $log, ?array $live): array
+function uu_dry_io(callable $log, ?array $live, array $zones): array
 {
     $say = function (string $msg) use ($log): void {
         $log('[dry] ' . $msg, LOG_NOTICE);
@@ -1363,9 +1620,21 @@ function uu_dry_io(callable $log, ?array $live): array
             $say("would ask Unbound for $name SOA (taken as passing)");
             return true;
         },
-        'uc' => function (array $args) use ($say, &$live): ?string {
+        'uc' => function (array $args) use ($say, &$live, &$zones): ?string {
             $say('would run: unbound-control ' . implode(' ', $args));
             $cmd = $args[0] ?? '';
+            if ($cmd === 'view_list_local_zones') {
+                $lines = [];
+                foreach ($zones as $name => $type) {
+                    $lines[] = "$name $type";
+                }
+                return implode("\n", $lines) . "\n";
+            }
+            if ($cmd === 'view_local_zone') {
+                $zones[(string)($args[2] ?? '')] = (string)($args[3] ?? '');
+            } elseif ($cmd === 'view_local_zone_remove') {
+                unset($zones[(string)($args[2] ?? '')]);
+            }
             if ($cmd === 'forward') {
                 return $live === null ? null : ($live === [] ? 'off (using root hints)' : implode(' ', $live));
             }
