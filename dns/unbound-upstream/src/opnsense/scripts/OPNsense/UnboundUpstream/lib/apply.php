@@ -114,7 +114,7 @@ function uu_drill_passed(string $out): bool
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
- *     view: array{file: ?string, copy: ?string}} $s
+ *     view: array{copy: ?string, file_present: bool}} $s
  * @param ?array{armed: ?bool, keep: bool} $view the plan's view
  */
 function uu_apply_undo_due(array $st, array $s, ?array $view = null): bool
@@ -123,7 +123,7 @@ function uu_apply_undo_due(array $st, array $s, ?array $view = null): bool
         return true;
     }
     if ($view !== null && !$view['keep']
-        && ($view['armed'] === true || $s['view']['file'] !== null || $s['view']['copy'] !== null)) {
+        && ($view['armed'] === true || $s['view']['file_present'] || $s['view']['copy'] !== null)) {
         return true;
     }
     $pid = $s['unbound']['pid_alive'];
@@ -163,7 +163,7 @@ final class UuApplyRun
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>,
-     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
      *     reasons: list<string>, drain: list<string>,
      *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
      *         mirror: array<string, list<string>>, problem: ?string}}
@@ -185,7 +185,7 @@ final class UuApplyRun
      *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net:
      *         string, action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
      *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
-     *         copy: ?string}}
+     *         copy: ?string, file_present: bool}}
      */
     private array $s;
     /**
@@ -206,7 +206,7 @@ final class UuApplyRun
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
      *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *         forwarded: bool, released_at: ?int}>,
-     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
      */
     private array $st;
     /** @var ?list<string> Unbound's live root as last read or set; null while unknown */
@@ -268,7 +268,7 @@ final class UuApplyRun
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *             forwarded: bool, released_at: ?int}>,
-     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
      *     reasons: list<string>, drain: list<string>,
      *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
      *         mirror: array<string, list<string>>, problem: ?string}} $p
@@ -287,7 +287,7 @@ final class UuApplyRun
      *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net:
      *         string, action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
      *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
-     *         copy: ?string}} $s
+     *         copy: ?string, file_present: bool}} $s
      * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
      *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
      *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool,
@@ -414,7 +414,7 @@ final class UuApplyRun
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
      *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
      *         forwarded: bool, released_at: ?int}>,
-     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
      */
     public function run(): array
     {
@@ -481,7 +481,7 @@ final class UuApplyRun
             $this->stopIncomplete($was);
             return;
         }
-        if (!$restored && ($this->s['view']['file'] !== null || $this->s['view']['copy'] !== null)) {
+        if (!$restored && ($this->s['view']['file_present'] || $this->s['view']['copy'] !== null)) {
             /* the restart loaded the plugin's file, refuse included, whatever the read before it gave */
             $this->viewRead();
         }
@@ -1216,6 +1216,11 @@ final class UuApplyRun
         $failed = $this->viewCalls($calls, false);
         $read = $this->viewConfirm(false);
         if ($read !== null) {
+            /* the set may still be refused (the read back says so, or it is unknown after a refuse that was there):
+             * recorded armed, so the file step keeps the file and the next tick reads the view and lifts again */
+            if ($this->viewArmed === true || ($this->viewArmed === null && $was)) {
+                $this->st['view']['refuse'] = 'armed';
+            }
             $this->viewFault('Fail closed stuck: ' . ($failed ?? $read));
             return;
         }
@@ -1571,7 +1576,7 @@ final class UuApplyRun
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
  *     reasons: list<string>, drain: list<string>,
  *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *         mirror: array<string, list<string>>, problem: ?string}} $p uu_plan()
@@ -1590,7 +1595,7 @@ final class UuApplyRun
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s the snapshot the plan was made from
+ *         copy: ?string, file_present: bool}} $s the snapshot the plan was made from
  * @param array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
  *     uc: callable(list<string>): ?string, restart_unbound: callable(): bool, log: callable(string, int): void,
@@ -1605,7 +1610,7 @@ final class UuApplyRun
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_apply(array $p, array $s, array $io): array
 {
@@ -1616,6 +1621,7 @@ function uu_apply(array $p, array $s, array $io): array
      * live change to undo: the file alone would make every tick a stop */
     $undo = $s;
     $undo['view']['file'] = null;
+    $undo['view']['file_present'] = false;
     $undo['view']['copy'] = null;
     $changed = uu_apply_undo_due($p['state'], $undo, $p['view']);
     if ($changed && $p['action'] === 'skip') {
@@ -1650,7 +1656,7 @@ function uu_apply(array $p, array $s, array $io): array
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
  *     reasons: list<string>, drain: list<string>,
  *     view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *         mirror: array<string, list<string>>, problem: ?string}} $p
@@ -1669,7 +1675,7 @@ function uu_apply(array $p, array $s, array $io): array
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
+ *         copy: ?string, file_present: bool}} $s
  * @param callable(string, int): void $log
  */
 function uu_apply_preview(array $p, array $s, callable $log): void
@@ -1678,19 +1684,13 @@ function uu_apply_preview(array $p, array $s, callable $log): void
 }
 
 /**
- * The file step after apply (uu_view_file_step()), carried out, and what it leaves in the state's view record: the
- * scope, the refused nets on disk, the refuse, and the problem.
- * - The problem is the step's (the planner's reason, or why the file was kept); without one, apply's own fault
- *   stands and a fault of an earlier file step ("Fail closed: ...") is gone.
- * - A write that is not installed (uu_view_install()) keeps the old file and its nets, and cancels the restart.
- * - When no file is wanted, the file and its copy stay while the set is still refused (a lift that failed) or a stop
- *   could not restore (it stays in tunnel mode), so the next tick reads the view and tries again; once neither
- *   remains, refuse is none and there is no fault left.
- * - A restart that ran loads the file on disk: refuse is armed (the file's refuse of "."), or none without a file, and
- *   Unbound runs on its configured root zone (tls_applied null; the evaluation its start queues re-enters). One that
- *   failed is a fault, and the next tick tries again.
- * A stop the view is kept through (an upgrade's, a tick of the removal) changes nothing. Dry run calls nothing, and
- * logs what it would do.
+ * The file step after apply, as uu_view_file_step() decided it, carried out: the install, the delete, the restart line
+ * and the restart, and the state's view record the step gives. Only a failure changes what the step decided: a write
+ * that is not installed (uu_view_install()), a delete that fails, or a restart that fails keeps the record's refuse
+ * and restarted as apply left them (the next tick tries again) and names the fault; a failed install or delete keeps
+ * the old file's nets and cancels the restart, which would otherwise start Unbound on the file the step meant to
+ * replace or remove. A restart that ran puts Unbound on its configured root zone (tls_applied null; the evaluation
+ * its start queues re-enters). Dry run calls nothing, and logs what it would do.
  *
  * @param array{view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
  *     mirror: array<string, list<string>>, problem: ?string}} $p
@@ -1699,7 +1699,7 @@ function uu_apply_preview(array $p, array $s, callable $log): void
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
+ *         copy: ?string, file_present: bool}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -1710,7 +1710,8 @@ function uu_apply_preview(array $p, array $s, callable $log): void
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st the state apply returned
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
+ *     the state apply returned
  * @param array{install: callable(string): bool, delete: callable(): bool, restart: callable(): bool,
  *     log: callable(string, int): void} $io
  * @return array{version: int, mode: string, member: ?string,
@@ -1723,64 +1724,37 @@ function uu_apply_preview(array $p, array $s, callable $log): void
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_view_file_apply(array $p, array $s, array $st, array $io): array
 {
-    $view = $s['view'];
-    $stopping = uu_plan_stop_reason($s) !== null;
-    if ($stopping && $p['view']['keep']) {
-        return $st;
-    }
     $dry = $s['settings']['dry_run'];
-    $step = uu_view_file_step($view, $p['view'], $s['unbound']['pid_alive'], $s['unbound']['enabled'], $dry,
-        $stopping, $s['contract_input']['cacheflush']);
-    $record = $st['view'];
-    $record['scope'] = $view['scope'];
-    $record['nets'] = $step['nets'];
-    $record['problem'] = $step['problem']
-        ?? (str_starts_with($record['problem'] ?? '', 'Fail closed: ') ? null : $record['problem']);
-    $kept = uu_view_refused_nets($view['file']);
+    $step = uu_view_file_step($s['view'], $p['view'], $st['view'], $st['mode'], $s['unbound']['pid_alive'],
+        $s['unbound']['enabled'], $dry, uu_plan_stop_reason($s) !== null, $s['contract_input']['cacheflush']);
+    $record = $step['record'];
     $restart = $step['restart'];
-    $after = $view['file'];
-    if ($step['write'] !== null) {
-        if (($io['install'])($step['write'])) {
-            $after = $step['write'];
-        } else {
-            $record['nets'] = $kept;
-            $record['problem'] = 'Fail closed: the view file was kept (the new file was not installed)';
-            $restart = false;
-        }
-    }
-    $unwanted = uu_view_file_unwanted($view['scope'], $stopping, $p['view']['keep']);
-    $held = $unwanted && ($record['refuse'] === 'armed' || ($stopping && $st['mode'] === 'tunnel'));
-    $gone = $view['file'] === null && $view['copy'] === null;
-    if ($step['delete'] && $held) {
-        $record['nets'] = $kept;
-    } elseif ($step['delete']) {
-        $gone = ($io['delete'])();
-        if ($gone) {
-            $after = null;
-        } else {
-            $record['nets'] = $kept;
-            $record['problem'] = 'Fail closed: the view file or its copy could not be deleted';
-        }
+    $kept = ['refuse' => $st['view']['refuse'], 'nets' => uu_view_refused_nets($s['view']['file']),
+             'restarted' => $st['view']['restarted']];
+    if ($step['write'] !== null && !($io['install'])($step['write'])) {
+        $record = array_merge($record, $kept,
+            ['problem' => 'Fail closed: the view file was kept (the new file was not installed)']);
+        $restart = false;
+    } elseif ($step['delete'] && !($io['delete'])()) {
+        $record = array_merge($record, $kept,
+            ['problem' => 'Fail closed: the view file or its copy could not be deleted']);
+        $restart = false;
     }
     if ($step['line'] !== null && ($restart || $dry)) {
         ($io['log'])($step['line'], $restart ? LOG_WARNING : LOG_NOTICE);
     }
     if ($restart) {
         if (($io['restart'])()) {
-            $record['refuse'] = $after === null ? 'none' : 'armed';
             /* Unbound's own start applied the configured TLS flag, not the plugin */
             $st['tls_applied'] = null;
         } else {
-            $record['problem'] = 'Fail closed: Unbound was not restarted to load the changed nets';
+            $record = array_merge($record, ['refuse' => $kept['refuse'], 'restarted' => $kept['restarted'],
+                'problem' => 'Fail closed: Unbound was not restarted to load the changed nets']);
         }
-    }
-    if ($unwanted && $gone && !$held) {
-        $record['refuse'] = 'none';
-        $record['problem'] = null;
     }
     $st['view'] = $record;
     return $st;

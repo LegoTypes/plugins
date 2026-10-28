@@ -559,12 +559,25 @@ uu_register_suite('snapshot', function (): int {
         && $v['acl'] === ['nodes' => [['net' => '0.0.0.0/0', 'action' => 'allow'],
             ['net' => '::/0', 'action' => 'allow']], 'foreign' => []]);
 
+    $tooLarge = fn (string $path): array => $path === UU_VIEW_FILE ? ['text' => null, 'problem' => 'larger than 1 MiB']
+        : ['text' => null, 'problem' => null];
+    $results = [];
+    foreach (['too large' => $tooLarge, 'missing' => $noFile, 'readable' => $withFile] as $what => $reader) {
+        [$uc, $calls] = $recorder(['view_list_local_zones' => "no view with name: unboundupstream\n"]);
+        $v = uu_view_snapshot($viewSettings(['fail_closed' => []]), false, $uc, $viewDetails, "server:\n", $reader);
+        $results[$what] = [$v['file'], $v['file_present'], $v['loaded']];
+    }
+    uu_check($t, 'snapshot: a view file that cannot be read is still on disk: it has no text, counts as present, and '
+        . 'the view is read with an empty set',
+        $results === ['too large' => [null, true, 'absent'], 'missing' => [null, false, 'skipped'],
+            'readable' => ["rendered\n", true, 'absent']]);
+
     $waitState = [
         'settings' => ['enabled' => true], 'stop' => null,
         'unbound' => ['enabled' => true, 'pid_alive' => true, 'control_ok' => false, 'live_root' => null],
         'view' => ['scope' => 'selected', 'nets' => ['192.0.2.0/24'], 'notes' => [], 'acl' => null, 'zones' => null,
             'data' => null, 'loaded' => 'silent', 'view_zones' => [], 'view_data' => [], 'file' => null,
-            'copy' => null]];
+            'copy' => null, 'file_present' => false]];
     [$uc, $calls] = $recorder(['view_list_local_zones' => $zonesReply, 'view_list_local_data' => $dataReply,
         'list_local_zones' => "localhost. transparent\n127.in-addr.arpa. nodefault\n",
         'list_forwards' => "\n", 'list_stubs' => "\n", 'list_local_data' => "\n"]);

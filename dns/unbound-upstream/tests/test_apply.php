@@ -389,7 +389,8 @@ uu_register_suite('apply', function (): int {
                                                 'localhost.' => 'noview']
                           : ['corp.example.' => 'noview', 'fwd.example.' => 'noview', 'lab.example.' => 'noview',
                              'localhost.' => 'noview'],
-                      'view_data' => [$vRecord], 'file' => UU_VIEW_FILE, 'copy' => '# copy'];
+                      'view_data' => [$vRecord], 'file' => UU_VIEW_FILE, 'copy' => '# copy',
+                      'file_present' => true];
         return $s;
     };
     $vName = UU_VIEW_NAME;
@@ -552,6 +553,15 @@ uu_register_suite('apply', function (): int {
         && $pT['action'] === 'none' && uu_test_acts($rT['calls']) === array_merge($liftCalls, [$probe], $through)
         && $stT['view']['refuse'] === 'lifted');
 
+    /* a reload re-armed the view after the record said lifted; the set is then emptied and the lift fails */
+    $s = $inFallback($viewed(uu_test_apply_snapshot(), true, 'none'));
+    $lifted = uu_test_plan_state(null);
+    $lifted['view']['refuse'] = 'lifted';
+    $r = uu_test_io($s, $all, ['uc_fail' => ['view_local_zone_remove']]);
+    $st = uu_apply(uu_plan($s, $lifted), $s, $r['io']);
+    uu_check($t, 'apply: a failed lift records the set armed while the view still refuses, though nothing is active',
+        $st['view']['refuse'] === 'armed' && $st['view']['problem'] === 'Fail closed stuck: error failed');
+
     $s = $inFallback($viewed(uu_test_apply_snapshot(), true));
     $s['view']['data'] = [$vRecord, 'host.corp.example. 3600 IN AAAA 2001:db8::5',
                           'new.lab.example. 3600 IN A 192.0.2.7'];
@@ -668,6 +678,7 @@ uu_register_suite('apply', function (): int {
     $sOff = $viewed(uu_test_apply_snapshot(), false);
     $sOff['settings']['enabled'] = false;
     $sOff['view']['file'] = null;
+    $sOff['view']['file_present'] = false;
     $sOff['view']['copy'] = null;
     $rOff = uu_test_io($sOff, $all);
     $stOff = uu_apply(uu_plan($sOff, uu_test_plan_state(null)), $sOff, $rOff['io']);

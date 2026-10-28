@@ -17,8 +17,8 @@ declare(strict_types=1);
  * Entry = array{route: ?RouteRecord, forwarded: bool, released_at: ?int}
  * RouteRecord = array{kind: string, next_hop: string, if: string}  (kind 'member' or 'reject'; a reject route is
  *               next_hop '' on lo0, as route(8) prints it)
- * ViewRecord = array{refuse: string, scope: string, nets: list<string>, problem: ?string}  (refuse is 'armed',
- *               'lifted' or 'none')
+ * ViewRecord = array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}
+ *               (refuse is 'armed', 'lifted' or 'none')
  * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
  * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
  * wall-clock time, for display only. checks are the last direct and through-Unbound results,
@@ -34,9 +34,11 @@ declare(strict_types=1);
  * file (one resolver and one route_installed) and a version 6 file (no view) convert on read. view records the fail-closed
  * view: refuse is armed while Unbound refuses internet names to the scope's clients, lifted while the plugin has lifted
  * the refusal for a healthy tunnel, none when no view is rendered; scope the setting's scope; nets the netblocks last
- * rendered; problem the last reason the view is not armed, stuck or not rendered. A file that cannot be read back exactly as written is
- * discarded: the planner derives the mode from the live forwarders and route, so a fresh state costs only the
- * failback timers. The file lives in the root-only run directory and is read as a regular file only.
+ * rendered; problem the last reason the view is not armed, stuck or not rendered; restarted the hash of the node lines
+ * the file step last restarted Unbound for, until Unbound's copy holds them (no second restart for the same lines). A
+ * file that cannot be read back exactly as written is discarded: the planner derives the mode from the live forwarders
+ * and route, so a fresh state costs only the failback timers. The file lives in the root-only run directory and is
+ * read as a regular file only.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -134,7 +136,7 @@ function uu_read_regular_file(string $path, int $maxBytes = UU_FILE_MAX_BYTES): 
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_state_new(): array
 {
@@ -150,7 +152,7 @@ function uu_state_new(): array
         'tls_applied' => null,
         'blocked' => null,
         'addresses' => [],
-        'view' => ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null],
+        'view' => ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null, 'restarted' => null],
     ];
 }
 
@@ -259,15 +261,17 @@ function uu_state_common_ok(array $doc, bool $current): bool
 }
 
 /**
- * Whether a decoded value is a ViewRecord exactly: refuse armed, lifted or none, a scope, a list of netblock strings
- * and a problem text or null.
+ * Whether a decoded value is a ViewRecord exactly: refuse armed, lifted or none, a scope, a list of netblock strings,
+ * a problem text or null, and the restart's hash or null.
  */
 function uu_state_view_ok(mixed $view): bool
 {
-    if (!is_array($view) || count($view) !== 4 || !in_array($view['refuse'] ?? null, ['armed', 'lifted', 'none'], true)
+    if (!is_array($view) || count($view) !== 5 || !in_array($view['refuse'] ?? null, ['armed', 'lifted', 'none'], true)
         || !isset($view['scope']) || !is_string($view['scope'])
         || !isset($view['nets']) || !is_array($view['nets']) || !array_is_list($view['nets'])
-        || !array_key_exists('problem', $view) || ($view['problem'] !== null && !is_string($view['problem']))) {
+        || !array_key_exists('problem', $view) || ($view['problem'] !== null && !is_string($view['problem']))
+        || !array_key_exists('restarted', $view)
+        || ($view['restarted'] !== null && !is_string($view['restarted']))) {
         return false;
     }
     foreach ($view['nets'] as $net) {
@@ -355,7 +359,7 @@ function uu_state_valid_v5(array $doc): bool
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_state_assemble(array $doc, array $addresses, ?array $view = null): array
 {
@@ -400,7 +404,8 @@ function uu_state_assemble(array $doc, array $addresses, ?array $view = null): a
     if ($view !== null) {
         $state['view'] = ['refuse' => (string)$view['refuse'], 'scope' => (string)$view['scope'],
                           'nets' => array_map('strval', $view['nets']),
-                          'problem' => $view['problem'] === null ? null : (string)$view['problem']];
+                          'problem' => $view['problem'] === null ? null : (string)$view['problem'],
+                          'restarted' => $view['restarted'] === null ? null : (string)$view['restarted']];
     }
     return $state;
 }
@@ -433,7 +438,7 @@ function uu_state_route_from(?array $route): ?array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_state_from_v5(array $doc): ?array
 {
@@ -464,7 +469,7 @@ function uu_state_from_v5(array $doc): ?array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_state_from_doc(array $doc): ?array
 {
@@ -499,7 +504,7 @@ function uu_state_from_doc(array $doc): ?array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
  *     problem: ?string}
  */
 function uu_state_read(string $path): array
@@ -531,7 +536,7 @@ function uu_state_read(string $path): array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_state_load(string $path): array
 {
@@ -606,11 +611,22 @@ function uu_state_footprint(array $state): array
  * job follows it beside the addresses (uu_state_footprint()), so a disabled plugin still lifts a view it left; the
  * filter reload does not, since the view has no rules.
  *
- * @param array{view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $state
+ * @param array{view: array{refuse: string, scope: string, nets: list<string>, problem: ?string,
+ *     restarted: ?string}} $state
  */
 function uu_state_view_footprint(array $state, bool $fileExists): bool
 {
     return in_array($state['view']['refuse'], ['armed', 'lifted'], true) || $fileExists;
+}
+
+/**
+ * Whether anything is at the view file's path (its lstat), whatever it is: a file that cannot be read, or a link to
+ * nothing, is still on disk for the footprint, as for the snapshot's file_present.
+ */
+function uu_view_file_present(string $path = UU_VIEW_FILE): bool
+{
+    clearstatcache(true, $path);
+    return @lstat($path) !== false;
 }
 
 /**
@@ -663,7 +679,7 @@ function uu_footprint_actions(array $before, array $after, bool $enabled, ?strin
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $state
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $state
  */
 function uu_state_save(string $path, array $state): void
 {

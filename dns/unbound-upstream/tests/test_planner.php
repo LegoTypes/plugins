@@ -95,7 +95,8 @@ function uu_test_snapshot(): array
                           'addresses' => ['10.2.0.1']],
         'upgrade' => false,
         'view' => ['scope' => 'none', 'nets' => [], 'notes' => [], 'acl' => null, 'zones' => null, 'data' => null,
-                   'loaded' => 'skipped', 'view_zones' => [], 'view_data' => [], 'file' => null, 'copy' => null],
+                   'loaded' => 'skipped', 'view_zones' => [], 'view_data' => [], 'file' => null, 'copy' => null,
+                   'file_present' => false],
     ];
 }
 
@@ -400,7 +401,7 @@ function uu_test_default(array $s, string $address): array
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_test_plan_state(
     ?string $member,
@@ -515,7 +516,7 @@ uu_register_suite('planner', function (): int {
         is_array($v) && $v['problem'] === 'Fail closed not armed: a view the plugin does not own covers '
             . 'view: other, access-control-view: 192.0.2.0/24 other');
     $v = $viewOf(['loaded' => 'absent', 'view_zones' => [], 'view_data' => [],
-        'file' => '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf'] + $zonesRead);
+        'file' => '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf', 'file_present' => true] + $zonesRead);
     uu_check($t, 'plan: a written file with the view not loaded asks for an Unbound restart',
         is_array($v) && !$v['active'] && $v['armed'] === null
         && $v['problem'] === 'Fail closed not armed: restart Unbound to load the view');
@@ -535,6 +536,7 @@ uu_register_suite('planner', function (): int {
     $armedView = ['active' => true, 'armed' => true, 'keep' => false, 'zones' => [], 'mirror' => [], 'problem' => null];
     $idle = ['active' => false, 'armed' => false, 'keep' => false, 'zones' => [], 'mirror' => [], 'problem' => null];
     $s['view']['file'] = '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf';
+    $s['view']['file_present'] = true;
     $sCopy = uu_test_snapshot();
     $sCopy['view']['copy'] = '# copy';
     uu_check($t, 'plan: undo is due for an armed view with no route left',

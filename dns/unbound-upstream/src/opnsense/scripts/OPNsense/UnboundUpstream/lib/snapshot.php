@@ -403,7 +403,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
+ *         copy: ?string, file_present: bool}} $s
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
@@ -438,7 +438,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}}
+ *         copy: ?string, file_present: bool}}
  */
 function uu_route_adopt(array $s, array $addresses): array
 {
@@ -785,11 +785,13 @@ function uu_view_core_interfaces(): array
  *
  * @param array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
- *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string} $view
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string,
+ *     file_present: bool} $view
  * @param callable(list<string>): ?string $uc
  * @return array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
- *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string}
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string,
+ *     file_present: bool}
  */
 function uu_view_read(array $view, callable $uc, bool $zones = false): array
 {
@@ -826,8 +828,9 @@ function uu_view_read(array $view, callable $uc, bool $zones = false): array
 /**
  * The fail-closed view as the snapshot keeps it: the set (the selected interfaces' networks, the listed ones), core's
  * ACL nodes and the plugin's copy from the expanded configuration, the rendered file, and what the view reads give
- * (uu_view_read()). With an empty set and neither a file nor a copy, or with Unbound not running, no view command
- * runs: loaded is skipped.
+ * (uu_view_read()). file_present says whether anything is at the file's path (its lstat): a file that cannot be read
+ * (too large, not a regular file) has no text but is still on disk, for the view read and for the delete. With an
+ * empty set and neither a file nor a copy, or with Unbound not running, no view command runs: loaded is skipped.
  *
  * @param array{fallback: bool, fail_closed: list<string>, fail_closed_networks: list<string>} $settings
  * @param callable(list<string>): ?string $uc
@@ -838,7 +841,8 @@ function uu_view_read(array $view, callable $uc, bool $zones = false): array
  * @param callable(string): array{text: ?string, problem: ?string} $readFile uu_read_regular_file()
  * @return array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
- *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string}
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string,
+ *     file_present: bool}
  */
 function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $details, ?string $expanded,
     callable $readFile, bool $pidAlive = true): array
@@ -852,6 +856,7 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
     $set = uu_view_set($settings['fallback'], $selected, $ifaceNets['nets'],
         $settings['fail_closed_networks']);
     $acl = $expanded === null ? null : uu_view_acl_parse($expanded);
+    $file = $readFile(UU_VIEW_FILE);
     $view = [
         'scope' => $set['scope'],
         'nets' => $set['nets'],
@@ -862,10 +867,12 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
         'loaded' => 'skipped',
         'view_zones' => [],
         'view_data' => [],
-        'file' => $readFile(UU_VIEW_FILE)['text'],
+        'file' => $file['text'],
         'copy' => $expanded === null ? null : uu_view_block($expanded),
+        /* uu_read_regular_file() gives neither text nor problem only for nothing at the path */
+        'file_present' => $file['text'] !== null || $file['problem'] !== null,
     ];
-    if (!$pidAlive || ($set['scope'] === 'none' && $view['file'] === null && $view['copy'] === null)) {
+    if (!$pidAlive || ($set['scope'] === 'none' && !$view['file_present'] && $view['copy'] === null)) {
         return $view;
     }
     return uu_view_read($view, $uc, $zones);
@@ -911,7 +918,7 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
+ *         copy: ?string, file_present: bool}} $s
  * @param string $mode the saved state's mode
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
@@ -945,7 +952,7 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}}
+ *         copy: ?string, file_present: bool}}
  */
 function uu_wait_control(array $s, string $mode, ?callable $liveRoot = null, ?callable $uc = null,
     ?callable $sleep = null): array
@@ -1003,7 +1010,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
     if (!array_key_exists('view', $snapshot)) {
         $snapshot += ['upgrade' => false, 'view' => ['scope' => 'none', 'nets' => [], 'notes' => [], 'acl' => null,
             'zones' => null, 'data' => null, 'loaded' => 'skipped', 'view_zones' => [], 'view_data' => [],
-            'file' => null, 'copy' => null]];
+            'file' => null, 'copy' => null, 'file_present' => false]];
     }
     return $snapshot;
 }
@@ -1056,7 +1063,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}}
+ *         copy: ?string, file_present: bool}}
  */
 function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRules, array $stateAddresses,
     bool $zones = false, bool $upgrade = false): array

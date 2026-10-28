@@ -175,7 +175,7 @@ function uu_status_active(array $s, array $plan): string
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *             forwarded: bool, released_at: ?int}>,
- *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}},
  *     reasons: list<string>, drain: list<string>} $plan uu_plan() of the snapshot and the saved state
  * @param array{armed: bool, fill: bool, blocked: ?int} $blockTable uu_block_table_view() of the snapshot's
  *     block_table and the setting's addresses

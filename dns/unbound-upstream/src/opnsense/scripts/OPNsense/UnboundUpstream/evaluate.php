@@ -210,8 +210,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
 {
     $st = uu_state_load(UU_STATE_PATH);
     $before = uu_state_footprint($st);
-    clearstatcache(true, UU_VIEW_FILE);
-    $viewBefore = uu_state_view_footprint($st, file_exists(UU_VIEW_FILE));
+    $viewBefore = uu_state_view_footprint($st, uu_view_file_present());
     $s = uu_snapshot($settings, $named, $stop, $stop === null, $before, true, $upgrade);
     if ($s['rules']['record'] !== null) {
         try {
@@ -266,7 +265,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
  *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
  *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
+ *         copy: ?string, file_present: bool}} $s
  * @param array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -277,7 +276,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}} $st
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -288,7 +287,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
  *         forwarded: bool, released_at: ?int}>,
- *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_view_file_follow(array $p, array $s, array $st): array
 {
@@ -318,9 +317,8 @@ function uu_footprint_follow(array $before, bool $viewBefore, bool $enabled, ?st
     try {
         $state = uu_state_load(UU_STATE_PATH);
         $after = uu_state_footprint($state);
-        clearstatcache(true, UU_VIEW_FILE);
         $actions = uu_footprint_actions($before, $after, $enabled, $stop, $viewBefore,
-            uu_state_view_footprint($state, file_exists(UU_VIEW_FILE)));
+            uu_state_view_footprint($state, uu_view_file_present()));
         if ($actions['reload']) {
             uu_footprint_reload('the address the plugin last used changed from ' . uu_footprint_text($before) . ' to '
                 . uu_footprint_text($after), 'uu_core_shell', 'uu_log');

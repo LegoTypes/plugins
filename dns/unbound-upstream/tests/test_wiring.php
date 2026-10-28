@@ -1404,8 +1404,8 @@ VOLT;
                     . 'stays: [1] unbound-checkconf[1:0] error: bad zone name noview; [1] unbound-checkconf[1:0] fatal '
                     . 'error: Could not set up views']];
         }));
-    uu_check($t, 'install: unbound-checkconf passes the rendered file, which replaces the old one 0644 root:wheel, and '
-        . 'refuses an empty zone name, which leaves the old one',
+    uu_check($t, 'install: unbound-checkconf passes the rendered file (a TXT record in single quotes included), which '
+        . 'replaces the old one 0644 root:wheel, and refuses an empty zone name, which leaves the old one',
         uu_scratch_case(function (string $dir) use ($recordLog): bool {
             $file = "$dir/unboundupstream.conf";
             file_put_contents($file, "old\n");
@@ -1413,7 +1413,8 @@ VOLT;
                 ['net' => '192.0.2.7/32', 'action' => 'allow']];
             $zones = ['example.internal.' => 'transparent', 'localhost.' => 'redirect', 'pt.' => 'typetransparent'];
             $text = uu_view_render(uu_view_nodes(['192.0.2.0/24', '2001:db8:1:2::/64'], $acl), $zones,
-                uu_view_mirror($zones, ['nas.example.internal. 3600 IN A 192.0.2.10']));
+                uu_view_mirror($zones, ['nas.example.internal. 3600 IN A 192.0.2.10',
+                    'txt.example.internal. 3600 IN TXT "v=spf1  -all" "two\\"q"']));
             $lines = [];
             $refused = !uu_view_install(str_replace('"pt."', '""', $text), 'uu_core_shell', $recordLog($lines), $file,
                 $dir) && file_get_contents($file) === "old\n" && count($lines) === 1 && $lines[0][0] === LOG_ERR;
@@ -1423,7 +1424,8 @@ VOLT;
             return $refused && $ok && file_get_contents($file) === $text && $stat !== false
                 && ($stat['mode'] & 0777) === 0644 && $stat['uid'] === 0 && $stat['gid'] === 0
                 && !file_exists("$file.new") && !file_exists("$dir/view-check.conf")
-                && str_contains($text, 'access-control: 192.0.2.0/24 allow_snoop');
+                && str_contains($text, 'access-control: 192.0.2.0/24 allow_snoop')
+                && str_contains($text, "    local-data: 'txt.example.internal. 3600 IN TXT \"v=spf1  -all\" \"two\\\"q\"'\n");
         }));
     uu_check($t, 'delete: the view file and its copy go, and a missing one is no failure',
         uu_scratch_case(function (string $dir) use ($recordLog): bool {
