@@ -26,12 +26,14 @@ uu_register_suite('notify', function (): int {
     uu_check($t, 'due: a switch back to the same place at a later time is a new switch',
         uu_notify_due($a, ['at' => 1200] + $a));
 
-    $body = json_decode(uu_notify_body(['mode' => 'fallback', 'member' => null, 'last_switch' => $b]), true);
+    $view = ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null, 'restarted' => null];
+    $body = json_decode(uu_notify_body(['mode' => 'fallback', 'member' => null, 'last_switch' => $b, 'view' => $view]),
+        true);
     uu_check($t, 'body: the last switch, then the saved mode and member, as JSON',
         $body === ['at' => 1060, 'from' => 'wg-a', 'to' => 'fallback', 'reason' => 'wg-a: settled down',
-            'mode' => 'fallback', 'member' => null]);
+            'mode' => 'fallback', 'member' => null, 'fail_closed' => $view]);
     uu_check($t, 'body: a tunnel switch carries its member',
-        json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a]), true)['member']
+        json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a, 'view' => $view]), true)['member']
             === 'wg-a');
 
     /* each case of what 1.3 adds runs inside uu_try_case(), so on a version without it each fails on its own and the
@@ -91,6 +93,20 @@ uu_register_suite('notify', function (): int {
     uu_check($t, 'failure line: a URL parse_url cannot split is named as the notify URL',
         uu_try_case(fn (): bool => uu_notify_failure_line('http:///x', 'HTTP 404')
             === 'the notify URL: HTTP 404 (see the Notify URL on the page)'));
+
+    $armedView = ['refuse' => 'armed', 'scope' => 'all', 'nets' => [], 'problem' => null, 'restarted' => null];
+    $failed = ['problem' => 'Fail closed not armed: restart Unbound to load the view'] + $armedView;
+    uu_check($t, 'notify: a failed arm notifies',
+        uu_notify_due($a, $a, null, $failed['problem']) && uu_notify_due(null, null, null, $failed['problem'])
+        && !uu_notify_due($a, $a, $failed['problem'], $failed['problem'])
+        && !uu_notify_due($a, $a, null, null)
+        && uu_notify_due($a, $a, $failed['problem'], 'Fail closed: the Unbound restart for the view file failed'));
+    uu_check($t, 'notify: the body carries fail_closed',
+        json_decode(uu_notify_body(['mode' => 'tunnel', 'member' => 'wg-a', 'last_switch' => $a, 'view' => $failed]),
+            true)['fail_closed'] === $failed);
+    uu_check($t, 'notify: a problem before any switch is sent without last_switch',
+        json_decode(uu_notify_body(['mode' => 'fallback', 'member' => null, 'last_switch' => null, 'view' => $failed]),
+            true) === ['mode' => 'fallback', 'member' => null, 'fail_closed' => $failed]);
 
     return uu_tally_report('notify', $t);
 });

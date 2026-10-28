@@ -57,6 +57,26 @@
                     + (route.ours ? '' : " {{ lang._('(not made by this plugin)') }}"))
                 : "{{ lang._('absent') }}";
         }
+        /* off for no set; else the refused nets (or every client) and armed, lifted, "not armed: reason" or
+           "stuck: reason", then each note */
+        function failClosedText(fc) {
+            if (!fc || fc.scope === 'none') {
+                return "{{ lang._('off') }}";
+            }
+            var text = fc.scope === 'all' ? "{{ lang._('every client') }}" : plain((fc.nets || []).join(', '));
+            var notArmed = /^Fail closed not armed: /;
+            if (fc.refuse === 'armed') {
+                text += ": {{ lang._('armed') }}";
+            } else if (fc.problem && notArmed.test(fc.problem)) {
+                text += ": {{ lang._('not armed:') }} " + plain(fc.problem.replace(notArmed, ''));
+            } else if (fc.problem) {
+                text += ": {{ lang._('stuck:') }} " + plain(fc.problem.replace(/^Fail closed: /, ''));
+            } else {
+                text += ": {{ lang._('lifted') }}";
+            }
+            $.each(fc.notes || [], function (i, n) { text += '; ' + plain(n); });
+            return text;
+        }
         function lastDown(d) {
             return d ? new Date(d.at * 1000).toLocaleString() + ': ' + plain(d.reason) : '';
         }
@@ -88,6 +108,7 @@
                     });
                 }
                 body.append(row("{{ lang._('Rules loaded') }}", rulesText(data)));
+                body.append(row("{{ lang._('Fail closed') }}", failClosedText(data.fail_closed)));
                 body.append(row("{{ lang._('Last direct check') }}", check((data.checks || {}).direct)));
                 body.append(row("{{ lang._('Last check through Unbound') }}", check((data.checks || {}).unbound)));
                 var ls = data.last_switch;

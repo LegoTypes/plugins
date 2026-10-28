@@ -75,7 +75,7 @@ uu_register_suite('log', function (): int {
     uu_check($t, 'status: every field',
         array_keys($doc) === ['enabled', 'dry_run', 'resolver', 'mode', 'member', 'tier', 'unbound', 'live_root',
             'configured_root', 'tls_applied', 'route', 'routes', 'rules_loaded', 'rules', 'footprint', 'addresses',
-            'counter_armed', 'blocked', 'checks', 'members', 'last_switch', 'contract', 'next']);
+            'counter_armed', 'blocked', 'checks', 'members', 'last_switch', 'contract', 'next', 'fail_closed']);
     uu_check($t, 'status: the resolver, mode, member and its tier; live and configured roots; the TLS flag applied',
         $doc['resolver'] === $s['settings']['default'] && $doc['mode'] === 'tunnel' && $doc['member'] === 'wg-a' && $doc['tier'] === 1
         && $doc['live_root'] === ['10.2.0.1'] && $doc['configured_root'] === $s['zone'] && $doc['tls_applied'] === false
@@ -254,7 +254,7 @@ uu_register_suite('log', function (): int {
      * resolver), encoded as evaluate.php status encodes it, against what 1.3_2's own code printed for the same
      * snapshot and state (fixtures/status_1.3_2_*.json) */
     $as132 = function (array $doc): string {
-        unset($doc['routes'], $doc['addresses']);
+        unset($doc['routes'], $doc['addresses'], $doc['fail_closed']);
         foreach (array_keys($doc['members']) as $i) {
             unset($doc['members'][$i]['resolver']);
         }
@@ -269,14 +269,14 @@ uu_register_suite('log', function (): int {
 
     uu_check($t, '(l2) one IPv4 address in tunnel mode: every key and value 1.3_2 printed, byte for byte',
         uu_try_case(fn (): bool => $as132(uu_status_doc($s, $plan, $armed)) === $printed('tunnel')));
-    uu_check($t, '(l2) …and the keys it adds are only routes, addresses and each member\'s resolver: the one address, '
+    uu_check($t, '(l2) …and the keys it adds are only routes, addresses, fail_closed and each member\'s resolver: the one address, '
         . 'its route as route shows it',
         uu_try_case(function () use ($s, $plan, $armed, $printed, $memberFlags): bool {
             $doc = uu_status_doc($s, $plan, $armed);
             $was = json_decode($printed('tunnel'), true);
             $added = fn (array $now, array $then): array => array_values(array_diff(array_keys($now),
                 array_keys($then)));
-            return $added($doc, $was) === ['routes', 'addresses']
+            return $added($doc, $was) === ['routes', 'addresses', 'fail_closed']
                 && $added($doc['members'][0], $was['members'][0]) === ['resolver']
                 && $added($doc['members'][1], $was['members'][1]) === ['resolver']
                 && $doc['routes'] === ['10.2.0.1' => $s['routes']['10.2.0.1'] + ['flags' => $memberFlags,
@@ -471,6 +471,55 @@ uu_register_suite('log', function (): int {
         && $doc['routes']['198.51.100.20']['footprint'] === true
         && $doc['routes']['10.2.0.1']['footprint'] === false
         && $doc['addresses'] === ['198.51.100.10', '198.51.100.20']);
+
+    /* the fail-closed view: the state's record, the settings' selection and the snapshot's notes */
+    $fcNone = ['scope' => 'none', 'interfaces' => [], 'networks' => [], 'nets' => [], 'refuse' => 'none',
+               'problem' => null, 'notes' => []];
+    uu_check($t, 'status: fail_closed none for the defaults',
+        uu_try_case(fn (): bool => uu_status_doc(uu_test_snapshot(), uu_plan(uu_test_snapshot(), uu_test_plan_state(null)),
+            ['armed' => false, 'fill' => false, 'blocked' => null])['fail_closed'] === $fcNone));
+    $fcView = ['refuse' => 'armed', 'scope' => 'selected', 'nets' => ['192.0.2.0/24', '2001:db8:1::/64'],
+               'problem' => null, 'restarted' => null];
+    $fcSnap = function (string $loaded, array $viewZones) {
+        $v = uu_test_snapshot();
+        $v['settings']['fail_closed'] = ['lan'];
+        $v['settings']['fail_closed_networks'] = ['203.0.113.0/24'];
+        $v['view']['scope'] = 'selected';
+        $v['view']['notes'] = ['no IPv6 net yet for lan'];
+        $v['view']['loaded'] = $loaded;
+        $v['view']['view_zones'] = $viewZones;
+        return $v;
+    };
+    uu_check($t, 'status: selected scope lists interfaces, networks and nets',
+        uu_try_case(function () use ($fcSnap, $fcView): bool {
+            $v = $fcSnap('zones', ['.' => 'refuse']);
+            $st = uu_test_plan_state(null);
+            $st['view'] = $fcView;
+            return uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
+                ['fail_closed'] === ['scope' => 'selected', 'interfaces' => ['lan'], 'networks' => ['203.0.113.0/24'],
+                    'nets' => ['192.0.2.0/24', '2001:db8:1::/64'], 'refuse' => 'armed', 'problem' => null,
+                    'notes' => ['no IPv6 net yet for lan']];
+        }));
+    uu_check($t, 'status: a loaded view without the refuse of "." reports lifted, whatever the state kept',
+        uu_try_case(function () use ($fcSnap, $fcView): bool {
+            $v = $fcSnap('zones', []);
+            $st = uu_test_plan_state(null);
+            $st['view'] = $fcView;
+            return uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
+                ['fail_closed']['refuse'] === 'lifted';
+        }));
+    uu_check($t, 'status: Unbound down still reports fail_closed from the state',
+        uu_try_case(function () use ($fcSnap, $fcView): bool {
+            $v = $fcSnap('skipped', []);
+            $v['unbound']['pid_alive'] = false;
+            $st = uu_test_plan_state(null);
+            $st['view'] = ['problem' => 'Fail closed not armed: restart Unbound to load the view'] + $fcView;
+            $fc = uu_status_doc($v, uu_plan($v, $st), ['armed' => false, 'fill' => false, 'blocked' => null])
+                ['fail_closed'];
+            return $fc['refuse'] === 'armed' && $fc['scope'] === 'selected'
+                && $fc['problem'] === 'Fail closed not armed: restart Unbound to load the view'
+                && $fc['nets'] === ['192.0.2.0/24', '2001:db8:1::/64'];
+        }));
 
     return uu_tally_report('log', $t);
 });

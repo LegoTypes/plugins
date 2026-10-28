@@ -197,8 +197,9 @@ function uu_evaluate(?string $stop, array $named, bool $upgrade = false): int
  * Snapshot (with the routes of every address the loaded state holds), the rules' verification saved when this run
  * made one, plan, apply, the view's file step (uu_view_file_follow()), the counting table's upkeep and blocked-count
  * line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
- * (uu_footprint_follow()), then the switch notification when the run switched. A stop never lists the ruleset: it
- * plans without the contract, and the filter reload it ends with changes the checksum anyway.
+ * (uu_footprint_follow()), then the notification when the run switched or left the fail-closed view with a new
+ * problem. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends with changes
+ * the checksum anyway.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
@@ -221,6 +222,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
         }
     }
     $previousSwitch = $st['last_switch'];
+    $previousProblem = $st['view']['problem'];
     try {
         $want = uu_setting_addresses($s);
         $table = uu_block_table_view($s['block_table']['table'], $s['block_table']['addresses'], $want);
@@ -247,7 +249,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
     } finally {
         uu_footprint_follow($before, $viewBefore, $settings['enabled'], $stop);
     }
-    if (uu_notify_due($previousSwitch, $st['last_switch'])) {
+    if (uu_notify_due($previousSwitch, $st['last_switch'], $previousProblem, $st['view']['problem'])) {
         uu_notify_switch($st);
     }
 }

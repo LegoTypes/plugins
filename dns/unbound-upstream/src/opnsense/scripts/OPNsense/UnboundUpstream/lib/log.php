@@ -139,7 +139,8 @@ function uu_status_active(array $s, array $plan): string
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fail_closed: list<string>,
+ *         fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -163,7 +164,8 @@ function uu_status_active(array $s, array $plan): string
  *         mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     view: array{loaded: string, view_zones: array<string, string>, notes: list<string>}} $s
  * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
@@ -195,7 +197,9 @@ function uu_status_active(array $s, array $plan): string
  *         resolver_failed_for: ?int, probe_failures: int}>,
  *     last_switch: ?array{at: int, from: string, to: string, reason: string},
  *     contract: array{ok: bool, failures: list<string>, notes: list<string>},
- *     next: array{action: string, reasons: list<string>}}
+ *     next: array{action: string, reasons: list<string>},
+ *     fail_closed: array{scope: string, interfaces: list<string>, networks: list<string>, nets: list<string>,
+ *         refuse: string, problem: ?string, notes: list<string>}}
  */
 function uu_status_doc(array $s, array $plan, array $blockTable): array
 {
@@ -272,5 +276,29 @@ function uu_status_doc(array $s, array $plan, array $blockTable): array
         'last_switch' => $st['last_switch'],
         'contract' => ['ok' => $contract['ok'], 'failures' => $contract['failures'], 'notes' => $contract['notes']],
         'next' => ['action' => $plan['action'], 'reasons' => $plan['reasons']],
+        'fail_closed' => [
+            'scope' => $st['view']['scope'],
+            'interfaces' => $s['settings']['fail_closed'],
+            'networks' => $s['settings']['fail_closed_networks'],
+            'nets' => $st['view']['nets'],
+            'refuse' => uu_status_refuse($s['view'], $st['view']['refuse']),
+            'problem' => $st['view']['problem'],
+            'notes' => $s['view']['notes'],
+        ],
     ];
+}
+
+/**
+ * The view's refuse for status: the live read when the plugin's view is loaded (the refuse of "." in its zones),
+ * else the state's record, which is all status knows while Unbound is down or does not answer.
+ *
+ * @param array{loaded: string, view_zones: array<string, string>} $view
+ * @param string $recorded the state's refuse: armed, lifted or none
+ */
+function uu_status_refuse(array $view, string $recorded): string
+{
+    if ($view['loaded'] !== 'zones') {
+        return $recorded;
+    }
+    return ($view['view_zones']['.'] ?? null) === 'refuse' ? 'armed' : ($recorded === 'none' ? 'none' : 'lifted');
 }
