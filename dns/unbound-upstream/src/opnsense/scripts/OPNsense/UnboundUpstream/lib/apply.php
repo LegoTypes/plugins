@@ -1380,13 +1380,14 @@ function uu_drill(string $server, string $name): bool
 }
 
 /**
- * What an unbound-control call answered: the reply (its stdout, newline-terminated) for exit 0, or exit 1 with
- * output, which is how the daemon reports its own `error ...` replies; null for no answer: empty stdout (a refused
- * connect exits 1 with nothing on stdout), a timeout (124), or any other exit (`status` alone exits 3).
+ * What an unbound-control call answered: the reply (its stdout, newline-terminated) for exit 0, an empty one
+ * included (an empty list is "\n"), or for exit 1 with output, which is how the daemon reports its own `error ...`
+ * replies; null for no answer: exit 1 with empty stdout (a refused connect), a timeout (124), or any other exit
+ * (`status` alone exits 3).
  */
 function uu_uc_result(int $rc, string $stdout): ?string
 {
-    if (($rc !== 0 && $rc !== 1) || trim($stdout) === '') {
+    if ($rc !== 0 && ($rc !== 1 || trim($stdout) === '')) {
         return null;
     }
     return rtrim($stdout, "\r\n") . "\n";

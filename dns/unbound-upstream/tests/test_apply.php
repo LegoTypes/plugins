@@ -325,7 +325,7 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'uc: exit 1 with empty stdout is silence', uu_uc_result(1, '') === null);
     uu_check($t, 'uc: exit 124 timeout is silence', uu_uc_result(124, '') === null && uu_uc_result(124, 'ok') === null);
     uu_check($t, 'uc: exit 3 is silence', uu_uc_result(3, 'x') === null);
-    uu_check($t, 'uc: exit 0 with empty stdout is silence', uu_uc_result(0, '') === null);
+    uu_check($t, 'uc: exit 0 with empty stdout is an empty reply, not silence', uu_uc_result(0, '') === "\n");
     $errTunnel = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
     $errTunnel['unbound']['control_ok'] = false;
     $errTunnel['unbound']['live_root'] = null;
