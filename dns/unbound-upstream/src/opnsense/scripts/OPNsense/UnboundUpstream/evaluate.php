@@ -159,11 +159,13 @@ function uu_remove_marker(): void
 /**
  * remove under the lock: the removal's stop, then core's filter reload and cron restart, which run even when the
  * stop failed, so the rules and the minute job follow whatever footprint it saved; a stop that throws before it can
- * act restarts Unbound first (uu_remove_run()).
+ * act restarts Unbound first (uu_remove_run()). pkg sets PKG_UPGRADE in the pre-deinstall's environment on an
+ * upgrade: that stop keeps the fail-closed view, refuse and file, through the upgrade window.
  */
 function uu_remove(): int
 {
-    return uu_remove_run(fn (): int => uu_evaluate(UU_STOP_REMOVE, []), 'uu_core_shell', 'uu_log');
+    $upgrade = getenv('PKG_UPGRADE') !== false;
+    return uu_remove_run(fn (): int => uu_evaluate(UU_STOP_REMOVE, [], $upgrade), 'uu_core_shell', 'uu_log');
 }
 
 /**
@@ -176,8 +178,9 @@ function uu_remove(): int
  *
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param list<string> $named
+ * @param bool $upgrade remove on a package upgrade (uu_remove())
  */
-function uu_evaluate(?string $stop, array $named): int
+function uu_evaluate(?string $stop, array $named, bool $upgrade = false): int
 {
     $settings = uu_settings(true);
     $cause = uu_plan_causes($stop, is_file(UU_REMOVING_PATH))['run'];
@@ -186,28 +189,30 @@ function uu_evaluate(?string $stop, array $named): int
         uu_log('the package is being removed (' . UU_REMOVING_PATH . ' exists): evaluating as stopped; delete it '
             . 'if the package is still installed', LOG_WARNING);
     }
-    uu_evaluate_once($settings, $named, $cause);
+    uu_evaluate_once($settings, $named, $cause, $upgrade);
     return 0;
 }
 
 /**
  * Snapshot (with the routes of every address the loaded state holds), the rules' verification saved when this run
- * made one, plan, apply, the counting table's upkeep and blocked-count line, save, the filter reload (and cron
- * restart) when the footprint changed, except in remove itself (uu_footprint_follow()), then the switch notification
- * when the run switched. A stop never lists the ruleset: it plans without the contract, and the filter reload it ends
- * with changes the checksum anyway.
+ * made one, plan, apply, the view's file step (uu_view_file_follow()), the counting table's upkeep and blocked-count
+ * line, save, the filter reload (and cron restart) when the footprint changed, except in remove itself
+ * (uu_footprint_follow()), then the switch notification when the run switched. A stop never lists the ruleset: it
+ * plans without the contract, and the filter reload it ends with changes the checksum anyway.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
  *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
  * @param list<string> $named
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
+ * @param bool $upgrade remove on a package upgrade: the snapshot carries it, and the stop keeps the view
  */
-function uu_evaluate_once(array $settings, array $named, ?string $stop): void
+function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $upgrade = false): void
 {
     $st = uu_state_load(UU_STATE_PATH);
     $before = uu_state_footprint($st);
-    $s = uu_snapshot($settings, $named, $stop, $stop === null, $before, true,
-        $stop === UU_STOP_REMOVE && getenv('PKG_UPGRADE') !== false);
+    clearstatcache(true, UU_VIEW_FILE);
+    $viewBefore = uu_state_view_footprint($st, file_exists(UU_VIEW_FILE));
+    $s = uu_snapshot($settings, $named, $stop, $stop === null, $before, true, $upgrade);
     if ($s['rules']['record'] !== null) {
         try {
             uu_rules_record_save(UU_RULES_PATH, $s['rules']['record']);
@@ -224,6 +229,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         $s = uu_wait_control($s, $st['mode']);
         $p = uu_plan($s, $st);
         $st = uu_apply($p, $s, uu_live_io(UU_STATE_PATH));
+        $st = uu_view_file_follow($p, $s, $st);
 
         $blocked = null;
         if (uu_plan_stop_reason($s) === null) {
@@ -240,7 +246,7 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
         $st['blocked'] = $blocked;
         uu_state_save(UU_STATE_PATH, $st);
     } finally {
-        uu_footprint_follow($before, $settings['enabled'], $stop);
+        uu_footprint_follow($before, $viewBefore, $settings['enabled'], $stop);
     }
     if (uu_notify_due($previousSwitch, $st['last_switch'])) {
         uu_notify_switch($st);
@@ -248,20 +254,73 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop): void
 }
 
 /**
- * The rules and the minute job follow the footprint the run saved: a footprint that changed reloads the filter
- * (uu_footprint_reload()), so its block and pass come or go at once, and one that came or went while the plugin is
- * disabled restarts cron, so the minute job that retries the stop is installed exactly while one is recorded; in remove
- * itself, both wait until its stop is over (uu_remove()). The state is read back, so a run that failed after a
- * checkpoint follows what it saved; nothing is thrown, so such a run still ends in its own error.
+ * The view's file step after apply (uu_view_file_apply(), through the real I/O): the file written only once
+ * unbound-checkconf passes it, deleted with its copy when no file is wanted, Unbound restarted only when the refused
+ * nets changed, and the state's view record following it. In its own try: a failure is logged at error level, the
+ * record stays as apply left it, and the save and the notification still run.
  *
- * @param list<string> $before the footprint before the run
- * @param ?string $stop the run's UU_STOP_* cause, or null
+ * @param array{view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *     mirror: array<string, list<string>>, problem: ?string}} $p
+ * @param array{stop: ?string, settings: array{enabled: bool, dry_run: bool},
+ *     unbound: array{enabled: bool, pid_alive: bool}, contract_input: array{cacheflush: bool},
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st
+ * @return array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
-function uu_footprint_follow(array $before, bool $enabled, ?string $stop): void
+function uu_view_file_follow(array $p, array $s, array $st): array
 {
     try {
-        $after = uu_state_footprint(uu_state_load(UU_STATE_PATH));
-        $actions = uu_footprint_actions($before, $after, $enabled, $stop);
+        return uu_view_file_apply($p, $s, $st, uu_view_file_io());
+    } catch (\Throwable $e) {
+        uu_log('fail closed: the view file step failed: ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':'
+            . $e->getLine() . ')', LOG_ERR);
+        return $st;
+    }
+}
+
+/**
+ * The rules and the minute job follow the footprint the run saved: a footprint that changed reloads the filter
+ * (uu_footprint_reload()), so its block and pass come or go at once, and one that came or went while the plugin is
+ * disabled restarts cron, so the minute job that retries the stop is installed exactly while one is recorded (the
+ * view's footprint counts for the job, uu_state_view_footprint()); in remove itself, both wait until its stop is over
+ * (uu_remove()). The state is read back, so a run that failed after a checkpoint follows what it saved; nothing is
+ * thrown, so such a run still ends in its own error.
+ *
+ * @param list<string> $before the footprint before the run
+ * @param bool $viewBefore the view's footprint before the run
+ * @param ?string $stop the run's UU_STOP_* cause, or null
+ */
+function uu_footprint_follow(array $before, bool $viewBefore, bool $enabled, ?string $stop): void
+{
+    try {
+        $state = uu_state_load(UU_STATE_PATH);
+        $after = uu_state_footprint($state);
+        clearstatcache(true, UU_VIEW_FILE);
+        $actions = uu_footprint_actions($before, $after, $enabled, $stop, $viewBefore,
+            uu_state_view_footprint($state, file_exists(UU_VIEW_FILE)));
         if ($actions['reload']) {
             uu_footprint_reload('the address the plugin last used changed from ' . uu_footprint_text($before) . ' to '
                 . uu_footprint_text($after), 'uu_core_shell', 'uu_log');

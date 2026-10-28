@@ -57,7 +57,10 @@ declare(strict_types=1);
  *     restore; the fallback of an emptied set), never by a stop that kept the view (an upgrade, a tick of the
  *     removal) or that could not restore;
  *   - no view command runs unless the set is read as loaded or the read shows the refuse of ".", so an owner with
- *     nothing selected gets 1.4's calls exactly.
+ *     nothing selected gets 1.4's calls exactly;
+ *   - after apply, the file step (uu_view_file_apply(), uu_view_file_io() binds it) installs a view file only once
+ *     unbound-checkconf passes it, deletes it only once the set is no longer refused, and restarts Unbound only when
+ *     the refused nets change.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -1675,6 +1678,115 @@ function uu_apply_preview(array $p, array $s, callable $log): void
 }
 
 /**
+ * The file step after apply (uu_view_file_step()), carried out, and what it leaves in the state's view record: the
+ * scope, the refused nets on disk, the refuse, and the problem.
+ * - The problem is the step's (the planner's reason, or why the file was kept); without one, apply's own fault
+ *   stands and a fault of an earlier file step ("Fail closed: ...") is gone.
+ * - A write that is not installed (uu_view_install()) keeps the old file and its nets, and cancels the restart.
+ * - When no file is wanted, the file and its copy stay while the set is still refused (a lift that failed) or a stop
+ *   could not restore (it stays in tunnel mode), so the next tick reads the view and tries again; once neither
+ *   remains, refuse is none and there is no fault left.
+ * - A restart that ran loads the file on disk: refuse is armed (the file's refuse of "."), or none without a file, and
+ *   Unbound runs on its configured root zone (tls_applied null; the evaluation its start queues re-enters). One that
+ *   failed is a fault, and the next tick tries again.
+ * A stop the view is kept through (an upgrade's, a tick of the removal) changes nothing. Dry run calls nothing, and
+ * logs what it would do.
+ *
+ * @param array{view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *     mirror: array<string, list<string>>, problem: ?string}} $p
+ * @param array{stop: ?string, settings: array{enabled: bool, dry_run: bool},
+ *     unbound: array{enabled: bool, pid_alive: bool}, contract_input: array{cacheflush: bool},
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st the state apply returned
+ * @param array{install: callable(string): bool, delete: callable(): bool, restart: callable(): bool,
+ *     log: callable(string, int): void} $io
+ * @return array{version: int, mode: string, member: ?string,
+ *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
+ *     probe_failures: int,
+ *         last_down: ?array{at: int, reason: string}, resolver: string}>, control_failures: int,
+ *     control_silent_since: ?int,
+ *     last_switch: ?array{at: int, from: string, to: string, reason: string},
+ *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
+ *     member: string}}, tls_applied: ?bool, blocked: ?int,
+ *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
+ */
+function uu_view_file_apply(array $p, array $s, array $st, array $io): array
+{
+    $view = $s['view'];
+    $stopping = uu_plan_stop_reason($s) !== null;
+    if ($stopping && $p['view']['keep']) {
+        return $st;
+    }
+    $dry = $s['settings']['dry_run'];
+    $step = uu_view_file_step($view, $p['view'], $s['unbound']['pid_alive'], $s['unbound']['enabled'], $dry,
+        $stopping, $s['contract_input']['cacheflush']);
+    $record = $st['view'];
+    $record['scope'] = $view['scope'];
+    $record['nets'] = $step['nets'];
+    $record['problem'] = $step['problem']
+        ?? (str_starts_with($record['problem'] ?? '', 'Fail closed: ') ? null : $record['problem']);
+    $kept = uu_view_refused_nets($view['file']);
+    $restart = $step['restart'];
+    $after = $view['file'];
+    if ($step['write'] !== null) {
+        if (($io['install'])($step['write'])) {
+            $after = $step['write'];
+        } else {
+            $record['nets'] = $kept;
+            $record['problem'] = 'Fail closed: the view file was kept (the new file was not installed)';
+            $restart = false;
+        }
+    }
+    $unwanted = uu_view_file_unwanted($view['scope'], $stopping, $p['view']['keep']);
+    $held = $unwanted && ($record['refuse'] === 'armed' || ($stopping && $st['mode'] === 'tunnel'));
+    $gone = $view['file'] === null && $view['copy'] === null;
+    if ($step['delete'] && $held) {
+        $record['nets'] = $kept;
+    } elseif ($step['delete']) {
+        $gone = ($io['delete'])();
+        if ($gone) {
+            $after = null;
+        } else {
+            $record['nets'] = $kept;
+            $record['problem'] = 'Fail closed: the view file or its copy could not be deleted';
+        }
+    }
+    if ($step['line'] !== null && ($restart || $dry)) {
+        ($io['log'])($step['line'], $restart ? LOG_WARNING : LOG_NOTICE);
+    }
+    if ($restart) {
+        if (($io['restart'])()) {
+            $record['refuse'] = $after === null ? 'none' : 'armed';
+            /* Unbound's own start applied the configured TLS flag, not the plugin */
+            $st['tls_applied'] = null;
+        } else {
+            $record['problem'] = 'Fail closed: Unbound was not restarted to load the changed nets';
+        }
+    }
+    if ($unwanted && $gone && !$held) {
+        $record['refuse'] = 'none';
+        $record['problem'] = null;
+    }
+    $st['view'] = $record;
+    return $st;
+}
+
+/**
  * An Io that only logs, each line marked [dry]. It plays Unbound's live root along (forward_add and forward_remove
  * set what `forward` prints) and the view's zones (view_local_zone and view_local_zone_remove set what
  * view_list_local_zones prints), so the logged steps are the ones a passing run would take.
@@ -1801,6 +1913,25 @@ function uu_live_io(string $statePath): array
         },
         'save' => function (array $state) use ($statePath): void {
             uu_state_save($statePath, $state);
+        },
+    ];
+}
+
+/**
+ * The file step's real I/O (uu_view_file_apply()): the install through unbound-checkconf (uu_view_install()), the
+ * delete of the file and its copy (uu_view_delete()), and Unbound's restart (uu_unbound_restart()).
+ *
+ * @return array{install: callable(string): bool, delete: callable(): bool, restart: callable(): bool,
+ *     log: callable(string, int): void}
+ */
+function uu_view_file_io(): array
+{
+    return [
+        'install' => fn (string $text): bool => uu_view_install($text, 'uu_core_shell', 'uu_log'),
+        'delete' => fn (): bool => uu_view_delete('uu_log'),
+        'restart' => fn (): bool => uu_unbound_restart('uu_core_shell', 'uu_log'),
+        'log' => function (string $msg, int $prio): void {
+            uu_log($msg, $prio);
         },
     ];
 }

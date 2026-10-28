@@ -289,6 +289,113 @@ function uu_remove_run(callable $evaluate, callable $run, callable $log): int
     return $rc;
 }
 
+/** Remove a path that is there (a symbolic link itself, never what it points at); throws when it cannot. */
+function uu_view_unlink(string $path): void
+{
+    clearstatcache(true, $path);
+    if ((is_link($path) || file_exists($path)) && !unlink($path)) {
+        throw new RuntimeException("cannot delete $path");
+    }
+}
+
+/**
+ * Install a rendered view file only once Unbound can parse it (spec 3.2, the render guard: a file Unbound cannot parse
+ * stops every Unbound start). The candidate is written beside the file as <file>.new, 0644 root:wheel (no *.conf, so
+ * core's start never copies it), and unbound-checkconf reads it through a scratch configuration in the run directory
+ * that includes it, without a chroot or a user and in Unbound's own directory; only then is it renamed over the file.
+ * A candidate that cannot be written, that unbound-checkconf refuses (or that it does not finish checking within
+ * UU_CHECKCONF_SECONDS), or that cannot be renamed is deleted, the old file stays, and an error says why. True when the
+ * file is the candidate. $file and $runDir are for the tests.
+ *
+ * @param callable(string): array{rc: int, out: string} $run runs a shell command line (uu_core_shell())
+ * @param callable(string, int): void $log
+ */
+function uu_view_install(string $text, callable $run, callable $log, string $file = UU_VIEW_FILE,
+    string $runDir = UU_RUN_DIR): bool
+{
+    $new = $file . '.new';
+    $scratch = $runDir . '/view-check.conf';
+    try {
+        try {
+            uu_view_unlink($new);
+            $handle = fopen($new, 'xb');
+            if ($handle === false) {
+                throw new RuntimeException("cannot create $new");
+            }
+            try {
+                $written = fwrite($handle, $text) === strlen($text) && fflush($handle);
+            } finally {
+                fclose($handle);
+            }
+            if (!$written || !chmod($new, 0644) || !chown($new, 0) || !chgrp($new, 0)) {
+                throw new RuntimeException("cannot write $new");
+            }
+            uu_view_unlink($scratch);
+            if (file_put_contents($scratch, "server:\n    chroot: \"\"\n    username: \"\"\n"
+                . "    directory: \"/var/unbound\"\ninclude: \"$new\"\n") === false) {
+                throw new RuntimeException("cannot write $scratch");
+            }
+            $check = $run('/usr/bin/timeout ' . UU_CHECKCONF_SECONDS . ' /usr/local/sbin/unbound-checkconf '
+                . escapeshellarg($scratch) . ' 2>&1');
+        } finally {
+            uu_view_unlink($scratch);
+        }
+        if ($check['rc'] !== 0) {
+            uu_view_unlink($new);
+            $lines = [];
+            foreach (explode("\n", $check['out']) as $line) {
+                $line = trim((string)preg_replace('/\s+/', ' ', $line));
+                if ($line !== '') {
+                    $lines[] = $line;
+                }
+            }
+            $log('fail closed: unbound-checkconf refused the new view file, so the old one stays: '
+                . ($lines === [] ? "exit {$check['rc']}" : implode('; ', $lines)), LOG_ERR);
+            return false;
+        }
+        if (!rename($new, $file)) {
+            throw new RuntimeException("cannot rename $new over $file");
+        }
+    } catch (\Throwable $e) {
+        try {
+            uu_view_unlink($new);
+        } catch (\Throwable $cleanup) {
+            $log('fail closed: ' . $cleanup->getMessage(), LOG_ERR);
+        }
+        $log('fail closed: the new view file was not installed, so the old one stays: ' . $e->getMessage(), LOG_ERR);
+        return false;
+    }
+    $log('fail closed: the view file was written', LOG_NOTICE);
+    return true;
+}
+
+/**
+ * Delete the view file and its copy in Unbound's chroot (spec 3.2: a manual reload reads the copy, and would arm the
+ * refuse again). The view Unbound loaded stays until its next start. One line when either was there, and an error for
+ * each that could not be deleted. True when neither is left. $file and $copy are for the tests.
+ *
+ * @param callable(string, int): void $log
+ */
+function uu_view_delete(callable $log, string $file = UU_VIEW_FILE, string $copy = UU_VIEW_COPY): bool
+{
+    $found = false;
+    $left = false;
+    foreach ([$file, $copy] as $path) {
+        clearstatcache(true, $path);
+        $found = $found || is_link($path) || file_exists($path);
+        try {
+            uu_view_unlink($path);
+        } catch (\Throwable $e) {
+            $log('fail closed: ' . $e->getMessage() . ': Unbound loads it again at its next start', LOG_ERR);
+            $left = true;
+        }
+    }
+    if ($found && !$left) {
+        $log('fail closed: the view file and its copy were deleted', LOG_NOTICE);
+    }
+    return !$left;
+}
+
 /**
  * The error remove logs when an evaluation held the lock for UU_REMOVE_LOCK_WAIT_SECONDS, with the remedy: the
  * addresses the saved state records, else a placeholder; one delete command for each.

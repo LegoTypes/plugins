@@ -595,6 +595,17 @@ uu_register_suite('state', function (): int {
     uu_check($t, 'footprint A → none in a requested stop: as an evaluation',
         uu_try_case(fn (): bool => uu_footprint_actions($a, [], false, UU_STOP_REQUEST)
             === ['reload' => true, 'cron' => true]));
+    uu_check($t, 'footprint: a view footprint that comes or goes while disabled restarts cron, never the filter',
+        uu_try_case(fn (): bool => uu_footprint_actions([], [], false, null, false, true)
+            === ['reload' => false, 'cron' => true]
+            && uu_footprint_actions([], [], false, null, true, false) === ['reload' => false, 'cron' => true]
+            && uu_footprint_actions([], [], true, null, true, false) === ['reload' => false, 'cron' => false]
+            && uu_footprint_actions([], [], false, null, true, true) === ['reload' => false, 'cron' => false]
+            /* the minute job stays while either footprint remains */
+            && uu_footprint_actions($a, [], false, null, true, true) === ['reload' => true, 'cron' => false]
+            && uu_footprint_actions([], $a, false, null, true, false) === ['reload' => true, 'cron' => false]
+            && uu_footprint_actions([], [], false, UU_STOP_REMOVE, true, false)
+            === ['reload' => false, 'cron' => false]));
 
     uu_test_state_cleanup($dir . '/run');
     uu_test_state_cleanup($dir);

@@ -627,20 +627,26 @@ function uu_footprint_text(array $addresses): string
  * What an evaluation runs once it has saved a changed footprint: a filter reload whenever the footprint changed,
  * since the rules follow it; and, with the plugin disabled, a cron restart when a footprint came or went, since the
  * minute job is installed exactly while the plugin is enabled or a footprint is recorded (a disabled plugin's stop
- * needs a tick to retry it). Nothing in remove itself (UU_STOP_REMOVE), which runs core's reload and cron restart
- * once its stop is over; a tick while the removal marker exists (UU_STOP_REMOVING) is an evaluation and follows.
+ * needs a tick to retry it). The view's footprint (uu_state_view_footprint()) counts for the minute job beside the
+ * addresses, never for the filter reload: the view has no rules. Nothing in remove itself (UU_STOP_REMOVE), which runs
+ * core's reload and cron restart once its stop is over; a tick while the removal marker exists (UU_STOP_REMOVING) is an
+ * evaluation and follows.
  *
  * @param list<string> $before
  * @param list<string> $after
  * @param ?string $stop the run's UU_STOP_* cause, or null
+ * @param bool $viewBefore the view's footprint before the run
+ * @param bool $viewAfter the view's footprint after it
  * @return array{reload: bool, cron: bool}
  */
-function uu_footprint_actions(array $before, array $after, bool $enabled, ?string $stop): array
+function uu_footprint_actions(array $before, array $after, bool $enabled, ?string $stop, bool $viewBefore = false,
+    bool $viewAfter = false): array
 {
     if ($stop === UU_STOP_REMOVE) {
         return ['reload' => false, 'cron' => false];
     }
-    return ['reload' => $before !== $after, 'cron' => !$enabled && ($before === []) !== ($after === [])];
+    return ['reload' => $before !== $after,
+            'cron' => !$enabled && ($before !== [] || $viewBefore) !== ($after !== [] || $viewAfter)];
 }
 
 /**

@@ -274,6 +274,33 @@ uu_register_suite('contract', function (): int {
             $text !== null && $text !== '' && preg_match('/^[\t\n\x20-\x7e]*\z/', $text) === 1
             && str_ends_with($text, "\n"));
     }
+    /* the pre-deinstall under /bin/sh, logger and evaluate.php stubbed and the view file's path a scratch one: the
+     * recovery commands of the spec go to the plugin log before remove runs, and only while the file exists */
+    uu_check($t, '+PRE_DEINSTALL.pre: the view file\'s recovery commands are logged before remove, only while the file '
+        . 'exists; printable ASCII',
+        uu_scratch_case(function (string $dir): bool {
+            $text = (string)@file_get_contents(__DIR__ . '/../+PRE_DEINSTALL.pre');
+            $file = "$dir/unboundupstream.conf";
+            $sh = str_replace(['/usr/local/etc/unbound.opnsense.d/unboundupstream.conf ]', '/usr/bin/logger',
+                '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php'],
+                ["$file ]", 'echo LOGGED', 'echo REMOVE'], $text);
+            $run = function () use ($sh): array {
+                $out = [];
+                $rc = 0;
+                exec('/bin/sh -c ' . escapeshellarg($sh) . ' 2>&1', $out, $rc);
+                return [$rc, $out];
+            };
+            $without = $run();
+            file_put_contents($file, "x\n");
+            $with = $run();
+            return preg_match('/^[\t\n\x20-\x7e]*\z/', $text) === 1 && str_ends_with($text, "\n")
+                && $without === [0, ['REMOVE remove']]
+                && $with === [0, ['LOGGED -p local4.notice -t dnsupstream fail closed: the package is being removed or '
+                    . 'upgraded with the fail-closed view file in place; after a failed upgrade, a downgrade to 1.4 or '
+                    . 'a removal that could not finish, recover with: rm '
+                    . '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf /var/unbound/etc/unboundupstream.conf; '
+                    . 'configctl unbound restart', 'REMOVE remove']];
+        }));
 
     // Address-scoped failures exclude the members that use the address; covering every member, they refuse.
     $two = uu_test_contract_input();

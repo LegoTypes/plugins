@@ -455,6 +455,179 @@ function uu_view_node_lines(?string $file): array
 }
 
 /**
+ * The netblocks a rendered file's access-control-view lines name, in the file's order; none for no file.
+ *
+ * @return list<string>
+ */
+function uu_view_refused_nets(?string $file): array
+{
+    $nets = [];
+    foreach (uu_view_node_lines($file) as $line) {
+        if (preg_match('/^\s*access-control-view:\s*(\S+)/', $line, $m) === 1) {
+            $nets[] = $m[1];
+        }
+    }
+    return $nets;
+}
+
+/**
+ * Whether a file holds only what uu_view_render() writes, each line checked against its shape: the markers first and
+ * last, then the server clause (an access-control line of an allow-type, then the view lines, each on a canonical
+ * netblock outside loopback), then the view clause (its name, view-first, the root refuse, then each zone a name the
+ * file may carry at a class, each record one line of the shape list_local_data gives, with no quote). The last guard
+ * before unbound-checkconf, which never parses an access-control netblock.
+ */
+function uu_view_text_ok(string $text): bool
+{
+    if (!str_ends_with($text, "\n") || preg_match('/^[\x20-\x7e\n]*$/D', $text) !== 1) {
+        return false;
+    }
+    $lines = explode("\n", substr($text, 0, -1));
+    $head = [UU_VIEW_BEGIN, 'server:'];
+    $view = ['view:', '    name: "' . UU_VIEW_NAME . '"', '    view-first: yes', '    local-zone: "." refuse'];
+    if (count($lines) < count($head) + count($view) + 1 || array_slice($lines, 0, 2) !== $head
+        || end($lines) !== UU_VIEW_END) {
+        return false;
+    }
+    $net = fn (string $n): bool => uu_net_canonical($n) === $n && !uu_view_loopback($n);
+    $i = 2;
+    while (preg_match('/^    access-control: (\S+) (\S+)$/D', $lines[$i], $m) === 1) {
+        if (!$net($m[1]) || !in_array($m[2], UU_VIEW_ALLOW_TYPES, true)) {
+            return false;
+        }
+        $i++;
+    }
+    while (preg_match('/^    access-control-view: (\S+) ' . UU_VIEW_NAME . '$/D', $lines[$i], $m) === 1) {
+        if (!$net($m[1])) {
+            return false;
+        }
+        $i++;
+    }
+    if (array_slice($lines, $i, count($view)) !== $view) {
+        return false;
+    }
+    $zone = false;
+    for ($i += count($view); $i < count($lines) - 1; $i++) {
+        if (preg_match('/^    local-zone: "([^"]*)" (noview|static|refuse)$/D', $lines[$i], $m) === 1) {
+            if (!uu_view_zone_ok($m[1])) {
+                return false;
+            }
+            $zone = true;
+        } elseif (!$zone || preg_match('/^    local-data: "((\S+) \d+ [A-Za-z]+ [A-Za-z0-9]+ [^"]*\S)"$/D', $lines[$i],
+            $m) !== 1 || !uu_view_zone_ok($m[2])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Whether the run wants no view file: nothing selected, or a stop the view is not kept through. */
+function uu_view_file_unwanted(string $scope, bool $stopping, bool $keep): bool
+{
+    return $scope === 'none' || ($stopping && !$keep);
+}
+
+/**
+ * The file step (spec 3.2, 3.4, 3.6, 3.8), decided from the view as the snapshot read it and the planner's view share
+ * (uu_plan_view()): the text to write, whether the file and its copy go, whether Unbound restarts, the refused nets on
+ * disk once the step is done, the line the restart (or dry run) logs and the view's problem.
+ * - A stop the view is kept through (an upgrade's, a tick of the removal): nothing.
+ * - No file wanted (nothing selected, or any other stop): the file and its copy deleted, never a restart: the loaded
+ *   view keeps its nets without the refuse until Unbound next starts.
+ * - A view the plugin does not own in Unbound's configuration, or an Unbound without view commands: nothing written,
+ *   the file and its copy deleted, and the planner's reason.
+ * - Unbound not running (the planner's stop action without a stop reason is no stop of the plugin), or a selected set
+ *   with no net (its interfaces have no address): the file kept, for Unbound's next start.
+ * - Else the file rendered from core's ACL nodes and Unbound's zones and records, only from reads that all answered
+ *   and only when the text passes its shape check (else the file kept, and why), and written when its bytes differ.
+ * Unbound restarts only when the file on disk after the step names other ACL nodes than the copy Unbound loaded, and
+ * only while it runs and is enabled; the restart is then the remedy for the planner's "restart Unbound to load the
+ * view". Dry run writes, deletes and restarts nothing: its line says what would be done. Pure.
+ *
+ * @param array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
+ *     view_zones: array<string, string>, view_data: list<string>, file: ?string, copy: ?string} $view
+ * @param array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
+ *     mirror: array<string, list<string>>, problem: ?string} $planView
+ * @param bool $stopping uu_plan_stop_reason() is not null
+ * @return array{write: ?string, delete: bool, restart: bool, nets: list<string>, line: ?string, problem: ?string}
+ */
+function uu_view_file_step(array $view, array $planView, bool $unboundRunning, bool $unboundEnabled, bool $dry,
+    bool $stopping, bool $cacheflush): array
+{
+    $step = ['write' => null, 'delete' => false, 'restart' => false, 'nets' => uu_view_refused_nets($view['file']),
+             'line' => null, 'problem' => null];
+    if ($stopping && $planView['keep']) {
+        return $step;
+    }
+    $exists = $view['file'] !== null || $view['copy'] !== null;
+    $foreign = $view['acl']['foreign'] ?? [];
+    $unwanted = uu_view_file_unwanted($view['scope'], $stopping, $planView['keep']);
+    $write = null;
+    if ($unwanted) {
+        $after = null;
+        $delete = $exists;
+    } elseif ($view['loaded'] === 'unsupported' || $foreign !== []) {
+        $after = null;
+        $delete = $exists;
+        $step['problem'] = $planView['problem'];
+    } elseif (!$unboundRunning || ($view['scope'] === 'selected' && $view['nets'] === [])) {
+        return $step;
+    } else {
+        if ($view['acl'] === null || $view['zones'] === null || $view['data'] === null) {
+            $unread = array_keys(array_filter(['access-control lines' => $view['acl'], 'local zones' => $view['zones'],
+                'local data' => $view['data']], fn (?array $read): bool => $read === null));
+            $last = array_pop($unread);
+            $step['problem'] = $planView['problem'] ?? "Fail closed: the view file was kept (Unbound's "
+                . ($unread === [] ? '' : implode(', ', $unread) . ' and ') . "$last could not be read)";
+            return $step;
+        }
+        $after = uu_view_render(uu_view_nodes($view['nets'], $view['acl']['nodes']), $view['zones'],
+            uu_view_mirror($view['zones'], $view['data']));
+        if (!uu_view_text_ok($after)) {
+            $step['problem'] = $planView['problem']
+                ?? 'Fail closed: the view file was kept (the rendered file failed its shape check)';
+            return $step;
+        }
+        $write = $after === $view['file'] ? null : $after;
+        $delete = false;
+        $step['problem'] = $planView['problem'];
+    }
+    $restart = !$unwanted && $unboundRunning && $unboundEnabled
+        && uu_view_node_lines($after) !== uu_view_node_lines($view['copy']);
+    if ($restart && $view['loaded'] === 'absent' && $foreign === []) {
+        $step['problem'] = null;
+    }
+    $list = function (?string $file): string {
+        $nets = uu_view_refused_nets($file);
+        return $nets === [] ? 'none' : implode(', ', $nets);
+    };
+    $change = 'the refused nets changed (' . $list($view['copy']) . ' -> ' . $list($after) . ')';
+    if ($dry) {
+        $would = [];
+        if ($write !== null) {
+            $would[] = 'would write the view file';
+        }
+        if ($delete) {
+            $would[] = 'would delete the view file and its copy';
+        }
+        if ($restart) {
+            $would[] = "$change: would restart Unbound" . ($cacheflush ? '; the cache would be flushed (cacheflush is on)'
+                : '');
+        }
+        $step['line'] = $would === [] ? null : '[dry] fail closed: ' . implode('; ', $would);
+        return $step;
+    }
+    $step['write'] = $write;
+    $step['delete'] = $delete;
+    $step['restart'] = $restart;
+    $step['nets'] = uu_view_refused_nets($after);
+    $step['line'] = $restart ? "fail closed: $change: restarting Unbound"
+        . ($cacheflush ? '; the cache is flushed (cacheflush is on)' : '') : null;
+    return $step;
+}
+
+/**
  * The plugin's block, markers included, as uu_conf_expanded_text() spliced the loaded copy in; null when the text
  * holds no complete block.
  */

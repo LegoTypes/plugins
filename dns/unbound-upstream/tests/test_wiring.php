@@ -16,7 +16,8 @@ declare(strict_types=1);
  * uu-wiring marker lines to the plugin's log, and puts a state recording a footprint in place of the saved one for
  * one read as nobody and, under the evaluate lock, for two cron restarts and for status reads (a version 5 file, and
  * one holding a gateway's monitor address), then puts the saved one, the crontab and
- * cron's running state back. It also records two snapshots and replays each, in scratch directories it removes, and
+ * cron's running state back. It also records two snapshots and replays each, and installs (through unbound-checkconf)
+ * and deletes view files, in scratch directories it removes, never in Unbound's own, and
  * runs the settings controller's resolver actions over a row it adds to the controller's model in memory only (no
  * action it runs saves).
  */
@@ -26,6 +27,8 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/lo
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/render.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/corecmd.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/views.php';
 require_once __DIR__ . '/scratch.php';
 
 /** Every daily file of one log directory under /var/log, in order. */
@@ -1375,5 +1378,77 @@ VOLT;
     }
     uu_check($t, 'pluginctl -c unbound_start leads to an evaluate that configd runs within 5 s',
         $seen);
+
+    /* the view file's install and delete, in scratch directories (never Unbound's own): the check is the real
+     * unbound-checkconf except where a recording runner stands in for it */
+    $recordLog = function (array &$lines): callable {
+        return function (string $msg, int $prio) use (&$lines): void {
+            $lines[] = [$prio, $msg];
+        };
+    };
+    uu_check($t, 'install: a candidate unbound-checkconf refuses is never installed',
+        uu_scratch_case(function (string $dir) use ($recordLog): bool {
+            $file = "$dir/unboundupstream.conf";
+            file_put_contents($file, "old\n");
+            $ran = [];
+            $lines = [];
+            $ok = uu_view_install("new\n", function (string $cmd) use (&$ran): array {
+                $ran[] = $cmd;
+                return ['rc' => 1, 'out' => "[1] unbound-checkconf[1:0] error: bad zone name  noview\n"
+                    . '[1] unbound-checkconf[1:0] fatal error: Could not set up views'];
+            }, $recordLog($lines), $file, $dir);
+            return !$ok && file_get_contents($file) === "old\n" && !file_exists("$file.new")
+                && !file_exists("$dir/view-check.conf") && count($ran) === 1
+                && str_contains($ran[0], '/usr/local/sbin/unbound-checkconf ' . escapeshellarg("$dir/view-check.conf"))
+                && $lines === [[LOG_ERR, 'fail closed: unbound-checkconf refused the new view file, so the old one '
+                    . 'stays: [1] unbound-checkconf[1:0] error: bad zone name noview; [1] unbound-checkconf[1:0] fatal '
+                    . 'error: Could not set up views']];
+        }));
+    uu_check($t, 'install: unbound-checkconf passes the rendered file, which replaces the old one 0644 root:wheel, and '
+        . 'refuses an empty zone name, which leaves the old one',
+        uu_scratch_case(function (string $dir) use ($recordLog): bool {
+            $file = "$dir/unboundupstream.conf";
+            file_put_contents($file, "old\n");
+            $acl = [['net' => '0.0.0.0/0', 'action' => 'allow_snoop'], ['net' => '::/0', 'action' => 'allow'],
+                ['net' => '192.0.2.7/32', 'action' => 'allow']];
+            $zones = ['example.internal.' => 'transparent', 'localhost.' => 'redirect', 'pt.' => 'typetransparent'];
+            $text = uu_view_render(uu_view_nodes(['192.0.2.0/24', '2001:db8:1:2::/64'], $acl), $zones,
+                uu_view_mirror($zones, ['nas.example.internal. 3600 IN A 192.0.2.10']));
+            $lines = [];
+            $refused = !uu_view_install(str_replace('"pt."', '""', $text), 'uu_core_shell', $recordLog($lines), $file,
+                $dir) && file_get_contents($file) === "old\n" && count($lines) === 1 && $lines[0][0] === LOG_ERR;
+            $ok = uu_view_install($text, 'uu_core_shell', $recordLog($lines), $file, $dir);
+            clearstatcache();
+            $stat = stat($file);
+            return $refused && $ok && file_get_contents($file) === $text && $stat !== false
+                && ($stat['mode'] & 0777) === 0644 && $stat['uid'] === 0 && $stat['gid'] === 0
+                && !file_exists("$file.new") && !file_exists("$dir/view-check.conf")
+                && str_contains($text, 'access-control: 192.0.2.0/24 allow_snoop');
+        }));
+    uu_check($t, 'delete: the view file and its copy go, and a missing one is no failure',
+        uu_scratch_case(function (string $dir) use ($recordLog): bool {
+            $file = "$dir/unboundupstream.conf";
+            $copy = "$dir/copy.conf";
+            file_put_contents($file, "x\n");
+            file_put_contents($copy, "x\n");
+            $lines = [];
+            $both = uu_view_delete($recordLog($lines), $file, $copy);
+            $again = uu_view_delete($recordLog($lines), $file, $copy);
+            clearstatcache();
+            return $both && $again && !file_exists($file) && !file_exists($copy)
+                && $lines === [[LOG_NOTICE, 'fail closed: the view file and its copy were deleted']];
+        }));
+    $evaluateSource = (string)file_get_contents(__DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/'
+        . 'evaluate.php');
+    $body = function (string $name) use ($evaluateSource): string {
+        return preg_match('/\nfunction ' . $name . '\([^)]*\)[^{]*\{(.*?)\n\}/s', $evaluateSource, $m) === 1 ? $m[1]
+            : '';
+    };
+    uu_check($t, 'remove: PKG_UPGRADE reaches the snapshot',
+        str_contains($body('uu_remove'), "getenv('PKG_UPGRADE') !== false")
+        && str_contains($body('uu_remove'), 'uu_evaluate(UU_STOP_REMOVE, [], $upgrade)')
+        && str_contains($body('uu_evaluate'), 'uu_evaluate_once($settings, $named, $cause, $upgrade)')
+        && preg_match('/uu_snapshot\([^;]*\$upgrade\);/', $body('uu_evaluate_once')) === 1
+        && substr_count($evaluateSource, "getenv('PKG_UPGRADE')") === 1);
     return uu_tally_report('wiring', $t);
 });
