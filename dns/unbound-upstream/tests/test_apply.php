@@ -318,6 +318,35 @@ uu_register_suite('apply', function (): int {
     $settledDown = uu_test_probe('down', '100.0 %', 300);
     $before = time();
 
+    // The control channel's reply: only no answer is silence; the daemon's own error reply is text.
+    uu_check($t, 'uc: exit 0 no view with name is text',
+        uu_uc_result(0, 'no view with name: fc') === "no view with name: fc\n");
+    uu_check($t, 'uc: exit 1 error reply is text', uu_uc_result(1, "error something\n") === "error something\n");
+    uu_check($t, 'uc: exit 1 with empty stdout is silence', uu_uc_result(1, '') === null);
+    uu_check($t, 'uc: exit 124 timeout is silence', uu_uc_result(124, '') === null && uu_uc_result(124, 'ok') === null);
+    uu_check($t, 'uc: exit 3 is silence', uu_uc_result(3, 'x') === null);
+    uu_check($t, 'uc: exit 0 with empty stdout is silence', uu_uc_result(0, '') === null);
+    $errTunnel = uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a');
+    $errTunnel['unbound']['control_ok'] = false;
+    $errTunnel['unbound']['live_root'] = null;
+    $errStop = $errTunnel;
+    $errStop['settings']['enabled'] = false;
+    $errAtBound = uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS - 1, $now - UU_ESCALATE_MIN_SECONDS);
+    $errLive = $errStop;
+    $errLive['unbound']['live_root'] = ['10.2.0.1'];
+    $r = uu_test_io($errLive, $all, ['uc_fail' => ['forward_add']]);
+    uu_apply(uu_plan($errStop, $errAtBound), $errStop, $r['io']);
+    uu_check($t, 'ucOk: an error reply is a failure, not silence',
+        !in_array('restart', uu_test_acts($r['calls']), true)
+        && !uu_test_logged($r['calls'], LOG_WARNING, 'control channel is silent')
+        && !uu_test_logged($r['calls'], LOG_ERR, 'control channel is silent'));
+    $r = uu_test_io($errLive, $all, ['forward_out' => "error something\n"]);
+    uu_apply(uu_plan($errStop, $errAtBound), $errStop, $r['io']);
+    uu_check($t, 'confirm: an error reply leaves the live root unknown, not silent',
+        !in_array('restart', uu_test_acts($r['calls']), true)
+        && !uu_test_logged($r['calls'], LOG_WARNING, 'control channel is silent')
+        && !uu_test_logged($r['calls'], LOG_ERR, 'control channel is silent'));
+
     // Entering tunnel mode from fallback.
     $s = uu_test_apply_snapshot();
     $p = uu_plan($s, uu_test_plan_state(null, $usable));

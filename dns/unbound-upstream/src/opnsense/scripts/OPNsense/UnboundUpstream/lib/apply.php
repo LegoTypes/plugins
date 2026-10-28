@@ -14,9 +14,9 @@ declare(strict_types=1);
  *            probe_direct: callable(string $resolver, string $name): bool, probe_unbound: callable(string $name): bool,
  *            uc: callable(list<string> $args): ?string, restart_unbound: callable(): bool,
  *            log: callable(string $msg, int $prio): void, save: callable(array $state): void}
- *   route runs route(8) with the verb (add, change or delete); uc runs unbound-control and returns its output, null
- *   when it failed or timed out; each probe is one `drill -D <name> @<server> SOA` tried UU_PROBE_TRIES times and
- *   passes on NOERROR with the ad flag; log takes a syslog priority; save writes the State (state.php) the run has
+ *   route runs route(8) with the verb (add, change or delete); uc runs unbound-control and returns its reply, an
+ *   `error ...` reply from the daemon included, and null only when nothing answered (uu_uc_result()); each probe is
+ *   one `drill -D <name> @<server> SOA` tried UU_PROBE_TRIES times and passes on NOERROR with the ad flag; log takes a syslog priority; save writes the State (state.php) the run has
  *   reached, after every successful route or forwarder change and when an exception escapes, so the route record
  *   (the route record in state.php's addresses) survives a failure partway through.
  *
@@ -1380,8 +1380,72 @@ function uu_drill(string $server, string $name): bool
 }
 
 /**
- * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS; a failing
- * route or unbound-control call logs its output here, where the output is known. Every restart, whatever its cause,
+ * What an unbound-control call answered: the reply (its stdout, newline-terminated) for exit 0, or exit 1 with
+ * output, which is how the daemon reports its own `error ...` replies; null for no answer: empty stdout (a refused
+ * connect exits 1 with nothing on stdout), a timeout (124), or any other exit (`status` alone exits 3).
+ */
+function uu_uc_result(int $rc, string $stdout): ?string
+{
+    if (($rc !== 0 && $rc !== 1) || trim($stdout) === '') {
+        return null;
+    }
+    return rtrim($stdout, "\r\n") . "\n";
+}
+
+/**
+ * Run unbound-control under UU_CONTROL_CALL_TIMEOUT_SECONDS, without a shell, stdout and stderr apart. A non-zero
+ * exit logs the output and the exit at warning level, whether the daemon replied with an error or refused the
+ * connect. Null when nothing answered (uu_uc_result()), including a command that could not start.
+ *
+ * @param list<string> $args
+ */
+function uu_uc_run(array $args): ?string
+{
+    $cmd = array_merge(['/usr/bin/timeout', (string)UU_CONTROL_CALL_TIMEOUT_SECONDS,
+        '/usr/local/sbin/unbound-control', '-c', '/var/unbound/unbound.conf'], $args);
+    $proc = proc_open($cmd, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($proc)) {
+        uu_log('unbound-control ' . implode(' ', $args) . ': could not start', LOG_WARNING);
+        return null;
+    }
+    $buf = [1 => '', 2 => ''];
+    $open = [1 => $pipes[1], 2 => $pipes[2]];
+    foreach ($open as $pipe) {
+        stream_set_blocking($pipe, false);
+    }
+    while ($open !== []) {
+        $read = array_values($open);
+        $write = null;
+        $except = null;
+        if (stream_select($read, $write, $except, 1) === false) {
+            break;
+        }
+        foreach ($open as $n => $pipe) {
+            $chunk = fread($pipe, 8192);
+            if ($chunk !== false && $chunk !== '') {
+                $buf[$n] .= $chunk;
+            }
+            if (feof($pipe)) {
+                fclose($pipe);
+                unset($open[$n]);
+            }
+        }
+    }
+    foreach ($open as $pipe) {
+        fclose($pipe);
+    }
+    $rc = proc_close($proc);
+    if ($rc !== 0) {
+        uu_log('unbound-control ' . implode(' ', $args) . ' (exit ' . $rc . '): '
+            . implode('; ', array_filter(array_map('trim', [$buf[1], $buf[2]]), fn (string $l): bool => $l !== '')),
+            LOG_WARNING);
+    }
+    return uu_uc_result($rc, $buf[1]);
+}
+
+/**
+ * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (uu_uc_run()); a failing
+ * route call logs its output here, where the output is known. Every restart, whatever its cause,
  * is uu_unbound_restart(): core's restart through configd, else core's own command.
  *
  * @param string $statePath where save writes the state (UU_STATE_PATH)
@@ -1411,19 +1475,7 @@ function uu_live_io(string $statePath): array
         },
         'probe_direct' => fn (string $resolver, string $name): bool => uu_drill($resolver, $name),
         'probe_unbound' => fn (string $name): bool => uu_drill('127.0.0.1', $name),
-        'uc' => function (array $args): ?string {
-            $out = [];
-            $rc = 0;
-            exec('/usr/bin/timeout ' . UU_CONTROL_CALL_TIMEOUT_SECONDS
-                . ' /usr/local/sbin/unbound-control -c /var/unbound/unbound.conf '
-                . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1', $out, $rc);
-            if ($rc !== 0) {
-                uu_log('unbound-control ' . implode(' ', $args) . ' (exit ' . $rc . '): ' . implode('; ', $out),
-                    LOG_WARNING);
-                return null;
-            }
-            return implode("\n", $out) . "\n";
-        },
+        'uc' => fn (array $args): ?string => uu_uc_run($args),
         'restart_unbound' => fn (): bool => uu_unbound_restart('uu_core_shell', 'uu_log'),
         'log' => function (string $msg, int $prio): void {
             uu_log($msg, $prio);
