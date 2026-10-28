@@ -38,6 +38,8 @@ const UU_VIEW_UNLOADED = 'Fail closed not armed: restart Unbound to load the vie
 /* the file step's reason when the start it restarted Unbound for did not load the file's node lines */
 const UU_VIEW_NOT_LOADED = "Fail closed not armed: Unbound's start did not load the view file "
     . '(restart Unbound to load it)';
+/* the file step's fault when core's restart it asked for reported a failure (never tried again for the same lines) */
+const UU_VIEW_RESTART_FAILED = 'Fail closed: the Unbound restart for the view file failed (restart Unbound)';
 /* the file step's reason when the start it restarted Unbound for kept the copy of a file it deleted */
 const UU_VIEW_NOT_DROPPED = "Fail closed: Unbound's start kept the copy of the deleted view file "
     . '(restart Unbound to drop it)';
@@ -630,10 +632,12 @@ function uu_view_step_problem(?string $problem): bool
  * - A stop the view is kept through (an upgrade's, a tick of the removal): nothing, the record as it is.
  * - No file wanted (nothing selected, or any other stop): the file deleted and, while a copy with node lines is
  *   loaded, Unbound restarted so the copy goes too; refuse none, and no problem but this run's. File and copy are
- *   held, so the next tick reads the view and lifts it, while the view may still refuse: the record
- *   says armed after apply (a lift that failed records it) and this run's read did not show the view without the
- *   refuse of "." (it showed the refuse, or got no answer: silent, or Unbound down); or a stop could not restore (it
- *   stays in tunnel mode). The record, not the read before apply: a lift that took (a removal's) deletes at once.
+ *   held, so the next tick reads the view and lifts it, while the live view may still refuse: the record says armed
+ *   after apply (a lift that failed records it) and this run's read showed the refuse of "." or got no answer from a
+ *   running Unbound (silent); or a stop could not restore (it stays in tunnel mode). The record, not the read before
+ *   apply: a lift that took deletes at once. With Unbound down there is no live view to lift: the delete is the lift
+ *   (its next start loads no view). A removal never holds, since no tick follows it: it deletes the file and, while a
+ *   copy with node lines is loaded, restarts Unbound, which drops the view whatever its lift did.
  * - A view the plugin does not own in Unbound's configuration, or an Unbound without view commands: nothing written,
  *   the file deleted, and the planner's reason.
  * - Unbound not running (the planner's stop action without a stop reason is no stop of the plugin), or a selected set
@@ -660,11 +664,12 @@ function uu_view_step_problem(?string $problem): bool
  *     the state's view record as apply left it
  * @param string $mode the state's mode as apply left it
  * @param bool $stopping uu_plan_stop_reason() is not null
+ * @param bool $removal the run is the package's removal (UU_STOP_REMOVE), the last the plugin makes
  * @return array{write: ?string, delete: bool, restart: bool, line: ?string,
  *     record: array{refuse: string, scope: string, nets: list<string>, problem: ?string, restarted: ?string}}
  */
 function uu_view_file_step(array $view, array $planView, array $record, string $mode, bool $unboundRunning,
-    bool $unboundEnabled, bool $dry, bool $stopping, bool $cacheflush): array
+    bool $unboundEnabled, bool $dry, bool $stopping, bool $removal, bool $cacheflush): array
 {
     $step = ['write' => null, 'delete' => false, 'restart' => false, 'line' => null, 'record' => $record];
     if ($stopping && $planView['keep']) {
@@ -681,11 +686,10 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     $write = null;
     $skipped = 0;
     if ($unwanted) {
-        /* the record says armed after apply (a lift that failed, or none tried), unless this run's read showed the
-         * view without the refuse of "."; a read that got no answer (silent, Unbound down) does not show it */
-        $refused = $record['refuse'] === 'armed'
-            && ($planView['armed'] === true || in_array($view['loaded'], ['silent', 'skipped'], true));
-        if ($exists && ($refused || ($stopping && $mode === 'tunnel'))) {
+        /* the record says armed after apply (a lift that failed, or none tried), and the live view may still hold
+         * the refuse of ".": this run's read showed it, or a running Unbound did not answer */
+        $refused = $record['refuse'] === 'armed' && ($planView['armed'] === true || $view['loaded'] === 'silent');
+        if ($exists && !$removal && ($refused || ($stopping && $mode === 'tunnel'))) {
             return $step;
         }
         $after = null;
@@ -734,9 +738,15 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     $restarted = $differs ? $record['restarted'] : null;
     $render = !$unwanted && $view['loaded'] !== 'unsupported' && $foreign === [];
     if ($restart && $record['restarted'] === $hash) {
-        /* this run would restart for the node lines the last restart was for, and the copy still differs */
+        /* this run would restart for the node lines the last restart (or its failed attempt) was for, and the copy
+         * still differs: reported, never repeated, so a restart that failed yet happened is no outage a minute */
         $restart = false;
-        $reason = $render ? UU_VIEW_NOT_LOADED : ($unwanted ? UU_VIEW_NOT_DROPPED : $reason);
+        $reason = match (true) {
+            $record['problem'] === UU_VIEW_RESTART_FAILED => UU_VIEW_RESTART_FAILED,
+            $render => UU_VIEW_NOT_LOADED,
+            $unwanted => UU_VIEW_NOT_DROPPED,
+            default => $reason,
+        };
     } elseif ($restart && !$dry) {
         $restarted = $hash;
         $reason = $render ? null : $reason;

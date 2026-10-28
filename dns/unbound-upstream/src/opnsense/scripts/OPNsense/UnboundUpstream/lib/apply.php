@@ -1686,11 +1686,13 @@ function uu_apply_preview(array $p, array $s, callable $log): void
 
 /**
  * The file step after apply, as uu_view_file_step() decided it, carried out: the install, the delete, the restart line
- * and the restart, and the state's view record the step gives. Only a failure changes what the step decided: a write
- * that is not installed (uu_view_install()), a delete that fails, or a restart that fails keeps the record's refuse
- * and restarted as apply left them (the next tick tries again) and names the fault; a failed install or delete keeps
- * the old file's nets and cancels the restart, which would otherwise start Unbound on the file the step meant to
- * replace or remove. A restart that ran puts Unbound on its configured root zone (tls_applied null; the evaluation
+ * and the restart, and the state's view record the step gives. Only a failure changes what the step decided:
+ * - a write that is not installed (uu_view_install()) or a delete that fails keeps the record's refuse and restarted
+ *   as apply left them (the next tick tries again), keeps the old file's nets, names the fault, and cancels the
+ *   restart, which would otherwise start Unbound on the file the step meant to replace or remove;
+ * - a restart that fails keeps the refuse and names the fault, but its restarted stands: one reported failed may still
+ *   have happened, so it is never tried again for the same node lines (no outage a minute).
+ * A restart that ran puts Unbound on its configured root zone (tls_applied null; the evaluation
  * its start queues re-enters). Dry run calls nothing, and logs what it would do.
  *
  * @param array{view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,
@@ -1731,7 +1733,8 @@ function uu_view_file_apply(array $p, array $s, array $st, array $io): array
 {
     $dry = $s['settings']['dry_run'];
     $step = uu_view_file_step($s['view'], $p['view'], $st['view'], $st['mode'], $s['unbound']['pid_alive'],
-        $s['unbound']['enabled'], $dry, uu_plan_stop_reason($s) !== null, $s['contract_input']['cacheflush']);
+        $s['unbound']['enabled'], $dry, uu_plan_stop_reason($s) !== null, $s['stop'] === UU_STOP_REMOVE,
+        $s['contract_input']['cacheflush']);
     $record = $step['record'];
     $restart = $step['restart'];
     $kept = ['refuse' => $st['view']['refuse'], 'nets' => uu_view_refused_nets($s['view']['file']),
@@ -1753,8 +1756,9 @@ function uu_view_file_apply(array $p, array $s, array $st, array $io): array
             /* Unbound's own start applied the configured TLS flag, not the plugin */
             $st['tls_applied'] = null;
         } else {
-            $record = array_merge($record, ['refuse' => $kept['refuse'], 'restarted' => $kept['restarted'],
-                'problem' => 'Fail closed: Unbound was not restarted to load the changed nets']);
+            /* restarted stays the step's: a restart reported failed may still have happened, and is not tried
+             * again for the same node lines until the copy changes */
+            $record = array_merge($record, ['refuse' => $kept['refuse'], 'problem' => UU_VIEW_RESTART_FAILED]);
         }
     }
     $st['view'] = $record;

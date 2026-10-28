@@ -362,10 +362,11 @@ uu_register_suite('views', function (): int {
     $fsRecord = fn (string $refuse = 'lifted', ?string $problem = null, ?string $restarted = null,
         array $nets = ['192.0.2.0/24'], string $scope = 'selected'): array => ['refuse' => $refuse, 'scope' => $scope,
         'nets' => $nets, 'problem' => $problem, 'restarted' => $restarted];
-    /* the step with the defaults of a staying run: Unbound running and enabled, no dry run, no stop, no cacheflush */
+    /* the step with the defaults of a staying run: Unbound running and enabled, no dry run, no stop, no removal, no
+     * cacheflush */
     $fsStep = fn (array $view, array $plan, array $record, array $flags = []): array => uu_view_file_step($view, $plan,
         $record, $flags['mode'] ?? 'fallback', $flags['running'] ?? true, $flags['enabled'] ?? true,
-        $flags['dry'] ?? false, $flags['stopping'] ?? false, $flags['cacheflush'] ?? false);
+        $flags['dry'] ?? false, $flags['stopping'] ?? false, $flags['removal'] ?? false, $flags['cacheflush'] ?? false);
     $fsHash = fn (?string $file): string => hash('sha256', implode("\n", uu_view_node_lines($file)));
     $one = $fsFile(['192.0.2.0/24']);
     $two = $fsFile(['192.0.2.0/24', '198.51.100.0/24']);
@@ -479,7 +480,8 @@ uu_register_suite('views', function (): int {
                     'record' => $noneRecord]
                 && $unreadable['delete'] && !$unreadable['restart'] && $unreadable['record'] === $noneRecord;
         }));
-    uu_check($t, 'file step: the delete waits while the view may still refuse, and goes once a read shows it does not',
+    uu_check($t, 'file step: the delete waits while the live view may still refuse, and goes once a read shows it does '
+        . 'not or Unbound is down',
         uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsStep, $one, $none): bool {
             $v = fn (array $over = []): array => $fsView(array_merge(['scope' => 'none', 'nets' => [], 'file' => $one,
                 'copy' => $one], $over));
@@ -487,11 +489,12 @@ uu_register_suite('views', function (): int {
             $noneRecord = $fsRecord('none', null, null, [], 'none');
             /* a lift that failed this run: the read showed the refuse, apply recorded it */
             $failed = $fsStep($v(), $fsPlan(['active' => false]), $fsRecord('armed', $stuck));
-            /* the read got no answer, or Unbound is down: the record decides */
+            /* a running Unbound did not answer: the record decides */
             $silent = $fsStep($v(['loaded' => 'silent', 'zones' => null, 'data' => null]),
                 $fsPlan(['active' => false, 'armed' => null]), $fsRecord('armed', $stuck));
+            /* Unbound is down: no live view to lift, the delete is the lift (its next start loads no view) */
             $down = $fsStep($v(['loaded' => 'skipped', 'zones' => null, 'data' => null]),
-                $fsPlan(['active' => false, 'armed' => null]), $fsRecord('armed'));
+                $fsPlan(['active' => false, 'armed' => null]), $fsRecord('armed'), ['running' => false]);
             /* a record of armed that the read contradicts: the view without ".", or no view loaded */
             $without = $fsStep($v(['view_zones' => ['localhost.' => 'noview']]),
                 $fsPlan(['active' => false, 'armed' => false]), $fsRecord('armed'));
@@ -502,7 +505,7 @@ uu_register_suite('views', function (): int {
                 $fsRecord('lifted'), ['stopping' => true]);
             return $none($failed) && $failed['record'] === $fsRecord('armed', $stuck, null, ['192.0.2.0/24'], 'none')
                 && $none($silent) && $silent['record']['refuse'] === 'armed'
-                && $none($down) && $down['record']['refuse'] === 'armed'
+                && $down['delete'] && !$down['restart'] && $down['record'] === $noneRecord
                 && $without['delete'] && $without['restart']
                 && $without['record'] === $fsRecord('none', null, hash('sha256', ''), [], 'none')
                 && $absent['delete'] && $absent['restart']
@@ -677,7 +680,8 @@ uu_register_suite('views', function (): int {
                 && $st['view'] === $fsRecord('armed', null, $fsHash($two), $nets2);
         }));
     uu_check($t, 'file step: a failed install keeps the old nets and cancels the restart; a failed restart is a fault',
-        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsIo, $fsS, $fsSt, $one, $nets2): bool {
+        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsIo, $fsS, $fsSt, $fsHash, $one, $two,
+            $nets2): bool {
             $v = $fsView(['nets' => $nets2, 'file' => $one, 'copy' => $one]);
             $calls = [];
             $st = uu_view_file_apply(['view' => $fsPlan()], $fsS($v), $fsSt($fsRecord()), $fsIo($calls, false));
@@ -687,8 +691,53 @@ uu_register_suite('views', function (): int {
             return $calls === ['install']
                 && $st['view'] === $fsRecord('lifted', 'Fail closed: the view file was kept (the new file was not '
                     . 'installed)') && $st['tls_applied'] === true
-                && $notRestarted['view'] === $fsRecord('lifted', 'Fail closed: Unbound was not restarted to load the '
-                    . 'changed nets', null, $nets2);
+                && $notRestarted['view'] === $fsRecord('lifted', UU_VIEW_RESTART_FAILED, $fsHash($two), $nets2);
+        }));
+    uu_check($t, 'file step: a restart reported failed is not tried again for the same node lines; its fault stands '
+        . 'until the copy changes',
+        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsIo, $fsS, $fsSt, $fsHash, $one, $two,
+            $nets2): bool {
+            $calls = [];
+            $failed = uu_view_file_apply(['view' => $fsPlan()], $fsS($fsView(['nets' => $nets2, 'file' => $one,
+                'copy' => $one])), $fsSt($fsRecord()), $fsIo($calls, true, true, false));
+            /* the next tick: the file installed, the copy still the old one */
+            $nextCalls = [];
+            $next = uu_view_file_apply(['view' => $fsPlan()], $fsS($fsView(['nets' => $nets2, 'file' => $two,
+                'copy' => $one])), $fsSt($failed['view']), $fsIo($nextCalls));
+            /* the restart had happened after all, or the owner's did: the copy holds the lines */
+            $loadedCalls = [];
+            $loaded = uu_view_file_apply(['view' => $fsPlan()], $fsS($fsView(['nets' => $nets2, 'file' => $two,
+                'copy' => $two])), $fsSt($next['view']), $fsIo($loadedCalls));
+            return count($calls) === 3 && end($calls) === 'restart'
+                && $failed['view'] === $fsRecord('lifted', UU_VIEW_RESTART_FAILED, $fsHash($two), $nets2)
+                && $nextCalls === [] && $next['view'] === $failed['view']
+                && $loadedCalls === [] && $loaded['view'] === $fsRecord('lifted', null, null, $nets2);
+        }));
+    uu_check($t, 'file step: a removal never holds the file: it deletes it, and restarts Unbound while a copy with node '
+        . 'lines is loaded',
+        uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsIo, $fsS, $fsSt, $one): bool {
+            $removal = ['stop' => UU_STOP_REMOVE];
+            /* Unbound down with the set armed: the lift was skipped; the delete alone keeps its next start clean */
+            $downCalls = [];
+            $down = uu_view_file_apply(['view' => $fsPlan(['active' => false, 'armed' => null])],
+                $fsS($fsView(['file' => $one, 'copy' => $one, 'loaded' => 'skipped', 'zones' => null,
+                    'data' => null]), $removal + ['unbound' => ['enabled' => true, 'pid_alive' => false]]),
+                $fsSt($fsRecord('armed')), $fsIo($downCalls));
+            /* a lift that failed with Unbound running: core's restart drops the view whatever the lift did */
+            $stuck = 'Fail closed stuck: error failed';
+            $failedCalls = [];
+            $failed = uu_view_file_apply(['view' => $fsPlan()], $fsS($fsView(['file' => $one, 'copy' => $one]),
+                $removal), $fsSt($fsRecord('armed', $stuck)), $fsIo($failedCalls));
+            /* a removal whose stop could not restore still deletes: nothing after it would lift a held set */
+            $tunnelCalls = [];
+            $tunnel = uu_view_file_apply(['view' => $fsPlan()], $fsS($fsView(['file' => $one, 'copy' => $one]),
+                $removal), $fsSt($fsRecord('armed', $stuck), 'tunnel'), $fsIo($tunnelCalls));
+            $restarted = $fsRecord('none', null, hash('sha256', ''), []);
+            return $downCalls === ['delete'] && $down['view'] === $fsRecord('none', null, null, [])
+                && $failedCalls === ['delete', 'log ' . LOG_WARNING . ' fail closed: the refused nets changed '
+                    . '(192.0.2.0/24 -> none): restarting Unbound', 'restart']
+                && $failed['view'] === $restarted && $failed['tls_applied'] === null
+                && $tunnelCalls === $failedCalls && $tunnel['view'] === $restarted;
         }));
     uu_check($t, 'file step: a failed delete cancels the restart (a foreign view line, the file still on disk)',
         uu_try_case(function () use ($fsView, $fsPlan, $fsRecord, $fsIo, $fsS, $fsSt, $one): bool {
