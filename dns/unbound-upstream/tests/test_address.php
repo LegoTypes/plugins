@@ -168,5 +168,23 @@ uu_register_suite('address', function (): int {
             && !uu_next_hop_routable('') && !uu_next_hop_routable('dynamic')
             && !uu_next_hop_routable('%wg3')));
 
+    uu_check($t, 'net: parse masks host bits, a bare address is a host route, bad shapes are null',
+        uu_try_case(fn (): bool => uu_net_canonical('192.0.2.5/24') === '192.0.2.0/24'
+            && uu_net_canonical('192.0.2.5') === '192.0.2.5/32' && uu_net_canonical('2001:DB8::1:5/64') === '2001:db8::/64'
+            && uu_net_canonical('2001:db8::7') === '2001:db8::7/128' && uu_net_canonical('0.0.0.0/0') === '0.0.0.0/0'
+            && uu_net_canonical('::ffff:127.0.0.1/128') === '::ffff:127.0.0.1/128'
+            && uu_net_canonical('192.0.2.0/33') === null && uu_net_canonical('2001:db8::/129') === null
+            && uu_net_canonical('192.0.2.0/') === null && uu_net_canonical('192.0.2.0/1/2') === null
+            && uu_net_canonical('fe80::1%wg0/64') === null && uu_net_canonical('host/24') === null
+            && uu_net_canonical(' 192.0.2.0/24') === null && uu_net_canonical('') === null));
+    uu_check($t, 'net: contains is family-aware and includes the net itself',
+        uu_try_case(fn (): bool => uu_net_contains('192.0.2.0/24', '192.0.2.0/24')
+            && uu_net_contains('192.0.2.0/24', '192.0.2.128/25') && uu_net_contains('0.0.0.0/0', '198.51.100.7/32')
+            && uu_net_contains('::/0', '2001:db8::/32') && uu_net_contains('2001:db8::/32', '2001:db8:1::/48')
+            && !uu_net_contains('192.0.2.0/25', '192.0.2.0/24') && !uu_net_contains('192.0.2.0/24', '192.0.3.0/24')
+            && !uu_net_contains('0.0.0.0/0', '::/0') && !uu_net_contains('::/0', '0.0.0.0/0')
+            && !uu_net_contains('192.0.2.0/24', 'nonsense') && !uu_net_contains('nonsense', '192.0.2.0/24')
+            && uu_net_contains('::/0', '::ffff:127.0.0.1/128')));
+
     return uu_tally_report('address', $t);
 });

@@ -1,0 +1,520 @@
+<?php
+
+declare(strict_types=1);
+
+/*
+ * Copyright (C) 2026 cayossarian
+ * All rights reserved.
+ * BSD 2-Clause License
+ *
+ * The fail-closed view as plain arrays. Pure.
+ *
+ * The set of source networks the view refuses internet names to, the ACL nodes Unbound needs for those networks to
+ * reach the view, the zones the view must still answer from (every zone the daemon reports, as noview or as an
+ * armed copy), the file between the plugin's two markers, and the diff that brings a loaded view to the wanted one.
+ * The I/O (the control channel, the file, the restart) is elsewhere.
+ *
+ * Net  = array{net: string, action: string}   an ACL node: canonical CIDR and the access-control action
+ * Nodes = array{view: list<string>, access: list<Net>}
+ */
+
+const UU_VIEW_NAME = 'unboundupstream';
+const UU_VIEW_BEGIN = '# Rendered by os-unbound-upstream. Do not edit.';
+const UU_VIEW_END = '# End of os-unbound-upstream.';
+
+/** The access-control actions that answer queries from their source. */
+const UU_VIEW_ALLOW_TYPES = ['allow', 'allow_setrd', 'allow_snoop', 'allow_cookie'];
+
+/** The networks Unbound's own loopback nodes cover; a view on a node within them would refuse the firewall's lookups. */
+const UU_VIEW_LOOPBACK = ['127.0.0.0/8', '::1/128', '::ffff:127.0.0.1/128'];
+
+/** Zone types whose names are answered from the zone itself or from the owner's chosen target: the view skips them. */
+const UU_VIEW_NOVIEW_TYPES = ['static', 'redirect', 'deny', 'refuse', 'always_refuse', 'always_nxdomain',
+    'always_nodata', 'always_deny', 'always_null', 'forward', 'stub'];
+
+/**
+ * Order of two canonical networks: IPv4 before IPv6, then by address, then by prefix length.
+ */
+function uu_view_net_cmp(string $a, string $b): int
+{
+    $pa = uu_net_parse($a);
+    $pb = uu_net_parse($b);
+    if ($pa === null || $pb === null) {
+        return strcmp($a, $b);
+    }
+    return [strlen($pa['packed']), $pa['packed'], $pa['prefix']] <=> [strlen($pb['packed']), $pb['packed'], $pb['prefix']];
+}
+
+/**
+ * The canonical networks sorted as uu_view_net_cmp() orders them, without duplicates.
+ *
+ * @param list<string> $nets
+ * @return list<string>
+ */
+function uu_view_net_sort(array $nets): array
+{
+    $nets = array_values(array_unique($nets));
+    usort($nets, 'uu_view_net_cmp');
+    return $nets;
+}
+
+/** Whether a canonical network lies within Unbound's loopback nodes. */
+function uu_view_loopback(string $net): bool
+{
+    foreach (UU_VIEW_LOOPBACK as $loopback) {
+        if (uu_net_contains($loopback, $net)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * The network of every live address of each selected interface, GUA and ULA, never fe80::/10; a selected interface
+ * with no IPv6 address adds a note.
+ *
+ * @param array<string, array{ipv4: list<array{ipaddr: string, subnetbits: int}>, ipv6: list<array{ipaddr: string,
+ *     subnetbits: int, link-local: bool}>}> $details legacy_interfaces_details(), by device
+ * @param list<string> $selected interface ids
+ * @param array<string, string> $devices interface id => device
+ * @return array{nets: list<string>, notes: list<string>}
+ */
+function uu_view_iface_nets(array $details, array $selected, array $devices): array
+{
+    $nets = [];
+    $notes = [];
+    foreach ($selected as $id) {
+        $entry = $details[$devices[$id] ?? ''] ?? ['ipv4' => [], 'ipv6' => []];
+        foreach ($entry['ipv4'] as $addr) {
+            $net = uu_net_canonical($addr['ipaddr'] . '/' . $addr['subnetbits']);
+            if ($net !== null) {
+                $nets[] = $net;
+            }
+        }
+        $v6 = 0;
+        foreach ($entry['ipv6'] as $addr) {
+            $net = uu_net_canonical($addr['ipaddr'] . '/' . $addr['subnetbits']);
+            if ($net === null || $addr['link-local'] || uu_net_contains('fe80::/10', $net)) {
+                continue;
+            }
+            $nets[] = $net;
+            $v6++;
+        }
+        if ($v6 === 0) {
+            $notes[] = 'no IPv6 net yet for ' . $id;
+        }
+    }
+    return ['nets' => array_values(array_unique($nets)), 'notes' => $notes];
+}
+
+/**
+ * The set the view refuses: every address when the fallback is off, else the selected interfaces' networks and the
+ * listed ones. A selected interface keeps the scope "selected" with no net (its VLAN is down, the file stays); a
+ * listed 0.0.0.0/0 or ::/0 is dropped (the checkbox off is that choice).
+ *
+ * @param list<string> $selected
+ * @param list<string> $ifaceNets
+ * @param list<string> $networks
+ * @return array{scope: string, nets: list<string>}
+ */
+function uu_view_set(bool $fallback, array $selected, array $ifaceNets, array $networks): array
+{
+    if (!$fallback) {
+        return ['scope' => 'all', 'nets' => ['0.0.0.0/0', '::/0']];
+    }
+    $listed = [];
+    foreach ($networks as $network) {
+        $net = uu_net_canonical($network);
+        if ($net !== null && $net !== '0.0.0.0/0' && $net !== '::/0') {
+            $listed[] = $net;
+        }
+    }
+    $all = [];
+    foreach ([...$ifaceNets, ...$listed] as $net) {
+        $net = uu_net_canonical($net);
+        if ($net !== null) {
+            $all[] = $net;
+        }
+    }
+    $all = uu_view_net_sort($all);
+    $nets = array_values(array_filter($all, function (string $net) use ($all): bool {
+        foreach ($all as $other) {
+            if ($other !== $net && uu_net_contains($other, $net)) {
+                return false;
+            }
+        }
+        return true;
+    }));
+    return ['scope' => $selected !== [] || $listed !== [] ? 'selected' : 'none', 'nets' => $nets];
+}
+
+/**
+ * Unbound's ACL nodes and the view lines outside the plugin's block, from the configuration as
+ * uu_conf_expanded_text() splices it. Each netblock is masked as Unbound masks it, and one listed twice takes its
+ * last line's action. Null when the text lacks a node for 0.0.0.0/0 or ::/0, which core always renders (a read taken
+ * while Unbound starts, or a cut file).
+ *
+ * @return ?array{nodes: list<Net>, foreign: list<string>}
+ */
+function uu_view_acl_parse(string $expanded): ?array
+{
+    $nodes = [];
+    $foreign = [];
+    $inside = false;
+    foreach (explode("\n", $expanded) as $line) {
+        $line = trim($line);
+        if ($line === UU_VIEW_BEGIN) {
+            $inside = true;
+            continue;
+        }
+        if ($inside) {
+            $inside = $line !== UU_VIEW_END;
+            continue;
+        }
+        $bare = trim((string)preg_replace('/#.*$/', '', $line));
+        if (preg_match('/^(?:view|access-control-view)\s*:/', $bare) === 1) {
+            $foreign[] = $bare;
+        } elseif (preg_match('/^access-control\s*:\s*(\S+)\s+(\S+)$/D', $bare, $m) === 1) {
+            $net = uu_net_canonical($m[1]);
+            if ($net !== null) {
+                $nodes[$net] = $m[2];
+            }
+        }
+    }
+    if (!isset($nodes['0.0.0.0/0'], $nodes['::/0'])) {
+        return null;
+    }
+    $list = [];
+    foreach ($nodes as $net => $action) {
+        $list[] = ['net' => (string)$net, 'action' => $action];
+    }
+    return ['nodes' => $list, 'foreign' => $foreign];
+}
+
+/**
+ * The lines the file needs for the set to reach the view: a view line on every allow-type node of Unbound's that
+ * lies within a set net and, where Unbound has no node at the set net itself, on the net, with an access-control
+ * line first when the node covering it is an allow-type other than allow. Never a node within loopback.
+ *
+ * @param list<string> $nets the set, canonical
+ * @param list<Net> $acl uu_view_acl_parse()'s nodes
+ * @return Nodes
+ */
+function uu_view_nodes(array $nets, array $acl): array
+{
+    $view = [];
+    $access = [];
+    foreach ($nets as $net) {
+        if (uu_view_loopback($net)) {
+            continue;
+        }
+        $own = false;
+        $cover = null;
+        foreach ($acl as $node) {
+            if ($node['net'] === $net) {
+                $own = true;
+            }
+            if (in_array($node['action'], UU_VIEW_ALLOW_TYPES, true) && uu_net_contains($net, $node['net'])
+                && !uu_view_loopback($node['net'])) {
+                $view[] = $node['net'];
+            }
+            if (uu_net_contains($node['net'], $net)
+                && ($cover === null || uu_net_contains($cover['net'], $node['net']))) {
+                $cover = $node;
+            }
+        }
+        if ($own || $cover === null || !in_array($cover['action'], UU_VIEW_ALLOW_TYPES, true)) {
+            continue;
+        }
+        $view[] = $net;
+        if ($cover['action'] !== 'allow') {
+            $access[$net] = $cover['action'];
+        }
+    }
+    $lines = [];
+    foreach (uu_view_net_sort(array_map('strval', array_keys($access))) as $net) {
+        $lines[] = ['net' => $net, 'action' => $access[$net]];
+    }
+    return ['view' => uu_view_net_sort($view), 'access' => $lines];
+}
+
+/** Whether a zone or record name is one the file may carry: printable ASCII, no white space or quote, ending in a dot. */
+function uu_view_zone_ok(string $name): bool
+{
+    return $name !== '.' && strlen($name) <= 255 && str_ends_with($name, '.')
+        && preg_match('/^[\x21\x23-\x7e]+$/D', $name) === 1;
+}
+
+/**
+ * The lines of a control reply, blank ones dropped.
+ *
+ * @return list<string>
+ */
+function uu_view_lines(string $out): array
+{
+    $lines = [];
+    foreach (explode("\n", $out) as $line) {
+        $line = trim($line);
+        if ($line !== '') {
+            $lines[] = $line;
+        }
+    }
+    return $lines;
+}
+
+/**
+ * Every zone the running daemon reports, minus ".", with its type: list_local_zones' second word, "forward" for
+ * list_forwards and "stub" for list_stubs (a forward or stub of a name wins over a local zone of it, as the owner's
+ * chosen target does). Null when an input is null, a line has another shape, a name is not one the file may carry, or
+ * the result lacks the zones Unbound always has.
+ *
+ * @return ?array<string, string>
+ */
+function uu_view_zone_list(?string $localZones, ?string $forwards, ?string $stubs): ?array
+{
+    if ($localZones === null || $forwards === null || $stubs === null) {
+        return null;
+    }
+    $zones = [];
+    foreach (['' => $localZones, 'forward' => $forwards, 'stub' => $stubs] as $type => $out) {
+        foreach (uu_view_lines($out) as $line) {
+            $pattern = $type === '' ? '/^(\S+) ([A-Za-z_]+)$/D' : '/^(\S+) IN ' . $type . '(?: .*)?$/D';
+            if (preg_match($pattern, $line, $m) !== 1) {
+                return null;
+            }
+            if ($m[1] === '.') {
+                continue;
+            }
+            if (!uu_view_zone_ok($m[1])) {
+                return null;
+            }
+            $zones[$m[1]] = $type === '' ? $m[2] : $type;
+        }
+    }
+    if (!isset($zones['localhost.'], $zones['127.in-addr.arpa.'])) {
+        return null;
+    }
+    ksort($zones, SORT_STRING);
+    return $zones;
+}
+
+/**
+ * What the view does with a zone of a type: noview (the zone answers itself, or the owner chose its target), static
+ * (a local domain: data answered, the rest locally NXDOMAIN or NODATA) or refuse (a zone that passes names on, and
+ * any type unknown here).
+ */
+function uu_view_zone_class(string $type): string
+{
+    if (in_array($type, UU_VIEW_NOVIEW_TYPES, true)) {
+        return 'noview';
+    }
+    return $type === 'transparent' || $type === 'inform' ? 'static' : 'refuse';
+}
+
+/**
+ * list_local_data's records, one per line with white space collapsed, sorted and unique. Null for a null input and
+ * for a line that is not "<name> <ttl> <class> <type> <rdata>" with a name the file may carry and no quote.
+ *
+ * @return ?list<string>
+ */
+function uu_view_data_list(?string $out): ?array
+{
+    if ($out === null) {
+        return null;
+    }
+    $records = [];
+    foreach (uu_view_lines($out) as $line) {
+        $line = (string)preg_replace('/\s+/', ' ', $line);
+        if (preg_match('/^(\S+) \d+ [A-Za-z]+ [A-Za-z0-9]+ \S/D', $line, $m) !== 1 || !uu_view_zone_ok($m[1])
+            || str_contains($line, '"')) {
+            return null;
+        }
+        $records[] = $line;
+    }
+    $records = array_values(array_unique($records));
+    sort($records, SORT_STRING);
+    return $records;
+}
+
+/**
+ * The records each zone that passes names on keeps in the view: the records whose closest enclosing zone, over all
+ * the zones, it is.
+ *
+ * @param array<string, string> $zones name => type
+ * @param list<string> $records
+ * @return array<string, list<string>>
+ */
+function uu_view_mirror(array $zones, array $records): array
+{
+    $mirror = [];
+    foreach ($zones as $name => $type) {
+        if (uu_view_zone_class($type) !== 'noview') {
+            $mirror[$name] = [];
+        }
+    }
+    foreach ($records as $record) {
+        $owner = strtolower((string)strstr($record . ' ', ' ', true));
+        $closest = null;
+        foreach (array_keys($zones) as $name) {
+            $zone = strtolower((string)$name);
+            if (($owner === $zone || str_ends_with($owner, '.' . $zone))
+                && ($closest === null || strlen($zone) > strlen($closest))) {
+                $closest = $zone;
+                $closestName = (string)$name;
+            }
+        }
+        if ($closest !== null && isset($closestName, $mirror[$closestName])) {
+            $mirror[$closestName][] = $record;
+        }
+    }
+    return $mirror;
+}
+
+/**
+ * view_list_local_zones' reply: "<name> <type>" per line. Null for a line of another shape.
+ *
+ * @return ?array<string, string>
+ */
+function uu_view_parse_list(string $out): ?array
+{
+    $zones = [];
+    foreach (uu_view_lines($out) as $line) {
+        if (preg_match('/^(\S+) (\S+)$/D', $line, $m) !== 1) {
+            return null;
+        }
+        $zones[$m[1]] = $m[2];
+    }
+    return $zones;
+}
+
+/**
+ * The file between the plugin's markers: the access-control lines, the view lines of the set, the view with its
+ * root refuse and each zone as its class (the armed type) followed by its mirrored records.
+ *
+ * @param Nodes $nodes
+ * @param array<string, string> $zones name => type
+ * @param array<string, list<string>> $mirror
+ */
+function uu_view_render(array $nodes, array $zones, array $mirror): string
+{
+    $lines = [UU_VIEW_BEGIN, 'server:'];
+    foreach ($nodes['access'] as $node) {
+        $lines[] = '    access-control: ' . $node['net'] . ' ' . $node['action'];
+    }
+    foreach ($nodes['view'] as $net) {
+        $lines[] = '    access-control-view: ' . $net . ' ' . UU_VIEW_NAME;
+    }
+    array_push($lines, 'view:', '    name: "' . UU_VIEW_NAME . '"', '    view-first: yes', '    local-zone: "." refuse');
+    ksort($zones, SORT_STRING);
+    foreach ($zones as $name => $type) {
+        $lines[] = '    local-zone: "' . $name . '" ' . uu_view_zone_class($type);
+        foreach ($mirror[$name] ?? [] as $record) {
+            $lines[] = '    local-data: "' . $record . '"';
+        }
+    }
+    $lines[] = UU_VIEW_END;
+    return implode("\n", $lines) . "\n";
+}
+
+/**
+ * The access-control and access-control-view lines of a rendered file, as written; none for no file.
+ *
+ * @return list<string>
+ */
+function uu_view_node_lines(?string $file): array
+{
+    $lines = [];
+    foreach (explode("\n", $file ?? '') as $line) {
+        if (preg_match('/^\s*access-control(?:-view)?:/', $line) === 1) {
+            $lines[] = $line;
+        }
+    }
+    return $lines;
+}
+
+/**
+ * The plugin's block, markers included, as uu_conf_expanded_text() spliced the loaded copy in; null when the text
+ * holds no complete block.
+ */
+function uu_view_block(string $expanded): ?string
+{
+    $block = [];
+    $inside = false;
+    foreach (explode("\n", $expanded) as $line) {
+        if (!$inside && trim($line) === UU_VIEW_BEGIN) {
+            $inside = true;
+        }
+        if ($inside) {
+            $block[] = $line;
+            if (trim($line) === UU_VIEW_END) {
+                return implode("\n", $block) . "\n";
+            }
+        }
+    }
+    return null;
+}
+
+/**
+ * The view as it should be: the root refuse when armed, each zone its class, a mirrored zone noview while lifted, and
+ * the mirrored records.
+ *
+ * @param array<string, string> $zones
+ * @param array<string, list<string>> $mirror
+ * @return array{zones: array<string, string>, data: list<string>}
+ */
+function uu_view_wanted(array $zones, array $mirror, bool $armed): array
+{
+    $wanted = $armed ? ['.' => 'refuse'] : [];
+    $data = [];
+    foreach ($zones as $name => $type) {
+        $class = uu_view_zone_class($type);
+        $wanted[$name] = $armed ? $class : 'noview';
+        foreach ($mirror[$name] ?? [] as $record) {
+            $data[] = $record;
+        }
+    }
+    ksort($wanted, SORT_STRING);
+    $data = array_values(array_unique($data));
+    sort($data, SORT_STRING);
+    return ['zones' => $wanted, 'data' => $data];
+}
+
+/**
+ * What brings the loaded view to the wanted one: the zones to add or retype, the zones to remove (never "."), the
+ * records to add and the names whose records must go. A name's records go together (view_local_data_remove), so a
+ * name in data_remove gets its wanted records back in data_add.
+ *
+ * @param array<string, string> $loadedZones
+ * @param list<string> $loadedData
+ * @param array{zones: array<string, string>, data: list<string>} $wanted
+ * @return array{set: array<string, string>, remove: list<string>, data_add: list<string>, data_remove: list<string>}
+ */
+function uu_view_reconcile(array $loadedZones, array $loadedData, array $wanted): array
+{
+    $set = [];
+    foreach ($wanted['zones'] as $name => $type) {
+        if ($name !== '.' && ($loadedZones[$name] ?? null) !== $type) {
+            $set[$name] = $type;
+        }
+    }
+    $remove = [];
+    foreach (array_keys($loadedZones) as $name) {
+        if ($name !== '.' && !isset($wanted['zones'][$name])) {
+            $remove[] = (string)$name;
+        }
+    }
+    $owner = fn (string $record): string => (string)strstr($record . ' ', ' ', true);
+    $gone = [];
+    foreach (array_diff($loadedData, $wanted['data']) as $record) {
+        $gone[$owner($record)] = true;
+    }
+    $dataAdd = [];
+    foreach ($wanted['data'] as $record) {
+        if (!in_array($record, $loadedData, true) || isset($gone[$owner($record)])) {
+            $dataAdd[] = $record;
+        }
+    }
+    $dataRemove = array_map('strval', array_keys($gone));
+    sort($dataRemove, SORT_STRING);
+    return ['set' => $set, 'remove' => $remove, 'data_add' => $dataAdd, 'data_remove' => $dataRemove];
+}

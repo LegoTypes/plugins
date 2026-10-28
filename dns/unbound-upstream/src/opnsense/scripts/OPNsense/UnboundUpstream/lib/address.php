@@ -51,6 +51,63 @@ function uu_ip_same(string $a, string $b): bool
 }
 
 /**
+ * A network as Unbound masks a netblock: the packed address with its host bits cleared and the prefix length. A bare
+ * address is a host route (/32, /128). Null for anything but an address (IPv4-mapped IPv6 included, which is an IPv6
+ * netblock here) with an optional whole-number prefix no longer than its family allows: a scoped address, white
+ * space, a host name, an empty or repeated prefix.
+ *
+ * @return ?array{packed: string, prefix: int}
+ */
+function uu_net_parse(string $net): ?array
+{
+    $parts = explode('/', $net);
+    if (count($parts) > 2 || filter_var($parts[0], FILTER_VALIDATE_IP) === false) {
+        return null;
+    }
+    $packed = inet_pton($parts[0]);
+    if ($packed === false) {
+        return null;
+    }
+    $bits = strlen($packed) * 8;
+    $prefix = $bits;
+    if (count($parts) === 2) {
+        if (preg_match('/^(0|[1-9]\d{0,2})$/D', $parts[1]) !== 1 || (int)$parts[1] > $bits) {
+            return null;
+        }
+        $prefix = (int)$parts[1];
+    }
+    return ['packed' => uu_net_mask($packed, $prefix), 'prefix' => $prefix];
+}
+
+/** The packed address with every bit past $prefix cleared. */
+function uu_net_mask(string $packed, int $prefix): string
+{
+    $out = '';
+    for ($i = 0; $i < strlen($packed); $i++) {
+        $keep = max(0, min(8, $prefix - 8 * $i));
+        $out .= chr(ord($packed[$i]) & ((0xFF << (8 - $keep)) & 0xFF));
+    }
+    return $out;
+}
+
+/** The network in canonical CIDR (host bits cleared, the shortest IPv6 form, lower case); null as uu_net_parse(). */
+function uu_net_canonical(string $net): ?string
+{
+    $parsed = uu_net_parse($net);
+    $text = $parsed === null ? false : inet_ntop($parsed['packed']);
+    return $parsed === null || $text === false ? null : strtolower($text) . '/' . $parsed['prefix'];
+}
+
+/** Whether $outer holds all of $inner (itself included); never across families, never for a string that is no network. */
+function uu_net_contains(string $outer, string $inner): bool
+{
+    $o = uu_net_parse($outer);
+    $i = uu_net_parse($inner);
+    return $o !== null && $i !== null && strlen($o['packed']) === strlen($i['packed']) && $o['prefix'] <= $i['prefix']
+        && uu_net_mask($i['packed'], $o['prefix']) === $o['packed'];
+}
+
+/**
  * Why an address cannot be a resolver: 'not an address' (no family, see uu_ip_family()), 'link-local' (169.254.0.0/16,
  * fe80::/10), 'multicast' (exactly 224.0.0.0/4 and ff00::/8), 'unspecified' (0.0.0.0, ::), 'loopback' (127.0.0.0/8,
  * ::1), or null. 240.0.0.0/4 and 255.255.255.255 are not refused, as in the model.
