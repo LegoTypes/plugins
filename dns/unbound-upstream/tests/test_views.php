@@ -131,6 +131,38 @@ uu_register_suite('views', function (): int {
     uu_check($t, 'nodes: a set net inside loopback gets nothing',
         uu_try_case(fn (): bool => uu_view_nodes(['127.0.0.0/8'], $base) === ['view' => [], 'access' => []]));
 
+    uu_check($t, 'nodes: the most specific cover decides',
+        uu_try_case(function () use ($base): bool {
+            $refuse = [['net' => '192.0.0.0/16', 'action' => 'refuse']];
+            $snoop = [['net' => '192.0.0.0/16', 'action' => 'allow_snoop']];
+            $want = ['view' => ['192.0.2.0/24'], 'access' => [['net' => '192.0.2.0/24', 'action' => 'allow_snoop']]];
+            $empty = ['view' => [], 'access' => []];
+            return uu_view_nodes(['192.0.2.0/24'], [...$base, ...$refuse]) === $empty
+                && uu_view_nodes(['192.0.2.0/24'], [...$refuse, ...$base]) === $empty
+                && uu_view_nodes(['192.0.2.0/24'], [...$base, ...$snoop]) === $want
+                && uu_view_nodes(['192.0.2.0/24'], [...$snoop, ...$base]) === $want;
+        }));
+    uu_check($t, 'acl: a quoted value is read as Unbound reads it',
+        uu_try_case(function () use ($core): bool {
+            $r = uu_view_acl_parse($core . "    access-control: \"192.0.2.7/32\" 'allow_snoop'\n");
+            return $r !== null && $r['nodes'][2] === ['net' => '192.0.2.7/32', 'action' => 'allow_snoop'];
+        }));
+    uu_check($t, 'acl: an access-control line that does not parse makes the read null',
+        uu_try_case(fn (): bool => uu_view_acl_parse($core . "    access-control: 192.0.2.7/32\n") === null
+            && uu_view_acl_parse($core . "    access-control: not-a-net allow\n") === null
+            && uu_view_acl_parse($core . "    access-control: 192.0.2.7/32 allow extra\n") === null));
+    uu_check($t, 'acl: an unterminated block of the plugin makes the read null',
+        uu_try_case(fn (): bool => uu_view_acl_parse($core . $begin . "server:\n    access-control: 192.0.2.0/24 allow\n")
+            === null));
+    uu_check($t, 'sort: byte order, not numeric order of the packed bytes',
+        uu_try_case(function (): bool {
+            $want = ['10.49.48.48/32', '10.50.0.0/16', '10.57.46.57/32'];
+            return uu_view_net_sort(['10.57.46.57/32', '10.49.48.48/32', '10.50.0.0/16']) === $want
+                && uu_view_net_sort(['10.49.48.48/32', '10.57.46.57/32', '10.50.0.0/16']) === $want
+                && uu_view_net_sort(['10.50.0.0/16', '10.57.46.57/32', '10.49.48.48/32']) === $want
+                && uu_view_set(true, [], [], ['10.57.46.57/32', '10.50.0.0/16', '10.49.48.48/32'])['nets'] === $want;
+        }));
+
     /* zone lists */
     $localOut = "localhost. redirect\n127.in-addr.arpa. static\n\nexample.internal. transparent\n. transparent\n";
     uu_check($t, 'zones: a cut list keeps nothing',
@@ -267,6 +299,13 @@ uu_register_suite('views', function (): int {
         uu_try_case(fn (): bool => uu_view_reconcile(['.' => 'refuse'], ['old.a. 60 IN A 192.0.2.8'],
             ['zones' => ['.' => 'refuse'], 'data' => ['new.a. 60 IN A 192.0.2.9']])
             === ['set' => [], 'remove' => [], 'data_add' => ['new.a. 60 IN A 192.0.2.9'], 'data_remove' => ['old.a.']]));
+    uu_check($t, 'render: a zone named the root is never written',
+        uu_try_case(fn (): bool => substr_count(uu_view_render(['view' => [], 'access' => []],
+            ['.' => 'transparent', 'a.' => 'static'], []), 'local-zone: "."') === 1));
+    uu_check($t, 'reconcile: owners match without regard to case',
+        uu_try_case(fn (): bool => uu_view_reconcile(['.' => 'refuse'], ['H.a. 60 IN A 192.0.2.1', 'h.A. 60 IN A 192.0.2.2'],
+            ['zones' => ['.' => 'refuse'], 'data' => ['h.A. 60 IN A 192.0.2.2']])
+            === ['set' => [], 'remove' => [], 'data_add' => ['h.A. 60 IN A 192.0.2.2'], 'data_remove' => ['h.a.']]));
     uu_check($t, 'reconcile: a name losing one of two records gets the other back',
         uu_try_case(fn (): bool => uu_view_reconcile(['.' => 'refuse'],
             ['h.a. 60 IN A 192.0.2.1', 'h.a. 60 IN A 192.0.2.2', 'k.a. 60 IN A 192.0.2.3'],

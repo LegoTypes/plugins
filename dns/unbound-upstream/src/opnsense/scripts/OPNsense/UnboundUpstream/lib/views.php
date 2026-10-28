@@ -18,6 +18,8 @@ declare(strict_types=1);
  * Nodes = array{view: list<string>, access: list<Net>}
  */
 
+require_once __DIR__ . '/address.php';
+
 const UU_VIEW_NAME = 'unboundupstream';
 const UU_VIEW_BEGIN = '# Rendered by os-unbound-upstream. Do not edit.';
 const UU_VIEW_END = '# End of os-unbound-upstream.';
@@ -42,7 +44,8 @@ function uu_view_net_cmp(string $a, string $b): int
     if ($pa === null || $pb === null) {
         return strcmp($a, $b);
     }
-    return [strlen($pa['packed']), $pa['packed'], $pa['prefix']] <=> [strlen($pb['packed']), $pb['packed'], $pb['prefix']];
+    return strlen($pa['packed']) <=> strlen($pb['packed']) ?: strcmp($pa['packed'], $pb['packed'])
+        ?: $pa['prefix'] <=> $pb['prefix'];
 }
 
 /**
@@ -148,11 +151,19 @@ function uu_view_set(bool $fallback, array $selected, array $ifaceNets, array $n
     return ['scope' => $selected !== [] || $listed !== [] ? 'selected' : 'none', 'nets' => $nets];
 }
 
+/** The token without one pair of matching quotes around it. */
+function uu_view_unquote(string $token): string
+{
+    return strlen($token) >= 2 && ($token[0] === '"' || $token[0] === "'") && $token[-1] === $token[0]
+        ? substr($token, 1, -1) : $token;
+}
+
 /**
  * Unbound's ACL nodes and the view lines outside the plugin's block, from the configuration as
  * uu_conf_expanded_text() splices it. Each netblock is masked as Unbound masks it, and one listed twice takes its
- * last line's action. Null when the text lacks a node for 0.0.0.0/0 or ::/0, which core always renders (a read taken
- * while Unbound starts, or a cut file).
+ * last line's action; a value in one pair of quotes is read as Unbound reads it. Null when the text lacks a node for
+ * 0.0.0.0/0 or ::/0, which core always renders (a read taken while Unbound starts, or a cut file), when an
+ * access-control line does not parse, and when the plugin's block never ends.
  *
  * @return ?array{nodes: list<Net>, foreign: list<string>}
  */
@@ -174,12 +185,20 @@ function uu_view_acl_parse(string $expanded): ?array
         $bare = trim((string)preg_replace('/#.*$/', '', $line));
         if (preg_match('/^(?:view|access-control-view)\s*:/', $bare) === 1) {
             $foreign[] = $bare;
-        } elseif (preg_match('/^access-control\s*:\s*(\S+)\s+(\S+)$/D', $bare, $m) === 1) {
-            $net = uu_net_canonical($m[1]);
-            if ($net !== null) {
-                $nodes[$net] = $m[2];
+        } elseif (preg_match('/^access-control\s*:/', $bare) === 1) {
+            $token = '("[^"]*"|\'[^\']*\'|\S+)';
+            if (preg_match('/^access-control\s*:\s*' . $token . '\s+' . $token . '$/D', $bare, $m) !== 1) {
+                return null;
             }
+            $net = uu_net_canonical(uu_view_unquote($m[1]));
+            if ($net === null) {
+                return null;
+            }
+            $nodes[$net] = uu_view_unquote($m[2]);
         }
+    }
+    if ($inside) {
+        return null;
     }
     if (!isset($nodes['0.0.0.0/0'], $nodes['::/0'])) {
         return null;
@@ -407,6 +426,9 @@ function uu_view_render(array $nodes, array $zones, array $mirror): string
     array_push($lines, 'view:', '    name: "' . UU_VIEW_NAME . '"', '    view-first: yes', '    local-zone: "." refuse');
     ksort($zones, SORT_STRING);
     foreach ($zones as $name => $type) {
+        if ($name === '.') {
+            continue;
+        }
         $lines[] = '    local-zone: "' . $name . '" ' . uu_view_zone_class($type);
         foreach ($mirror[$name] ?? [] as $record) {
             $lines[] = '    local-data: "' . $record . '"';
@@ -503,7 +525,7 @@ function uu_view_reconcile(array $loadedZones, array $loadedData, array $wanted)
             $remove[] = (string)$name;
         }
     }
-    $owner = fn (string $record): string => (string)strstr($record . ' ', ' ', true);
+    $owner = fn (string $record): string => strtolower((string)strstr($record . ' ', ' ', true));
     $gone = [];
     foreach (array_diff($loadedData, $wanted['data']) as $record) {
         $gone[$owner($record)] = true;
