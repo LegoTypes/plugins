@@ -55,13 +55,13 @@ class UnboundUpstream extends BaseModel
         if ($this->notify->isEqual('1') && $this->notify_url->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Enter the URL to notify.'), $this->notify_url->__reference));
         }
-        $gateways = new Gateways();
         if ($this->fallback->isEqual('1')) {
-            $this->checkFailClosed($messages, $gateways);
+            $this->checkFailClosed($messages);
         }
         if (!$this->enabled->isEqual('1')) {
             return $messages;
         }
+        $gateways = new Gateways();
         if ($this->gateway_group->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Select a gateway group.'), $this->gateway_group->__reference));
         } else {
@@ -73,16 +73,24 @@ class UnboundUpstream extends BaseModel
 
     /**
      * The interfaces and networks that fail closed, against the gateway group's member interfaces and the live
-     * addresses; run only while the fallback is on, since off refuses every client anyway.
+     * addresses; run only while the fallback is on, since off refuses every client anyway. Nothing is read from the
+     * box while both lists are empty.
      */
-    private function checkFailClosed(object $messages, Gateways $model): void
+    private function checkFailClosed(object $messages): void
     {
-        $gateways = $model->gatewaysIndexedByName(true);
+        $ids = array_filter(explode(',', $this->fail_closed->getValue()));
+        $listed = array_filter(explode(',', $this->fail_closed_networks->getValue()));
+        if ($ids === [] && $listed === []) {
+            return;
+        }
         $details = legacy_interfaces_details();
         $devices = [];
         foreach (legacy_config_get_interfaces() as $id => $conf) {
             $devices[(string)$id] = (string)($conf['if'] ?? '');
         }
+        /**
+         * @return list<string> the interface's live networks, link-local addresses left out
+         */
         $nets = static function (string $id) use ($details, $devices): array {
             $out = [];
             foreach ($details[$devices[$id] ?? '']['ipv4'] ?? [] as $addr) {
@@ -95,6 +103,7 @@ class UnboundUpstream extends BaseModel
             }
             return $out;
         };
+        $gateways = (new Gateways())->gatewaysIndexedByName(true);
         $memberNets = [];
         foreach (array_keys($this->findGroup()['members'] ?? []) as $name) {
             $id = (string)($gateways[$name]['interface'] ?? '');
@@ -104,9 +113,9 @@ class UnboundUpstream extends BaseModel
         }
 
         $field = $this->fail_closed->__reference;
-        foreach (array_filter(explode(',', $this->fail_closed->getValue())) as $id) {
+        foreach ($ids as $id) {
             if ($id === 'lo0') {
-                $messages->appendMessage(new Message(gettext('The loopback interface cannot fail closed'), $field));
+                $messages->appendMessage(new Message(gettext('the loopback interface cannot fail closed'), $field));
             } elseif (isset($memberNets[$id])) {
                 $messages->appendMessage(new Message(
                     sprintf(gettext('%s is a member of the gateway group'), $id),
@@ -117,10 +126,9 @@ class UnboundUpstream extends BaseModel
             }
         }
 
-        /* the field's own Strict has already refused host bits with core's message */
-        $listed = array_filter(explode(',', $this->fail_closed_networks->getValue()));
-        foreach (self::failClosedProblems($listed, $memberNets) as $problem) {
-            if (!str_ends_with($problem, ': enter the network address')) {
+        /* host bits are the field's own Strict refusal */
+        foreach ($listed as $net) {
+            foreach (self::networkProblems($net, $memberNets) as $problem) {
                 $messages->appendMessage(new Message($problem, $this->fail_closed_networks->__reference));
             }
         }
@@ -139,34 +147,59 @@ class UnboundUpstream extends BaseModel
     {
         $problems = [];
         foreach ($networks as $net) {
+            $host = self::hostBitsProblems([$net]);
+            array_push($problems, ...($host !== [] ? $host : self::networkProblems($net, $memberNets)));
+        }
+        return $problems;
+    }
+
+    /**
+     * The listed networks that have host bits set. Pure; a string that is no network is skipped.
+     *
+     * @param list<string> $networks as entered, "address/length"
+     * @return list<string>
+     */
+    public static function hostBitsProblems(array $networks): array
+    {
+        $problems = [];
+        foreach ($networks as $net) {
             $parsed = self::parseNetwork($net);
-            if ($parsed === null) {
-                continue;
-            }
-            [$packed, $len] = $parsed;
-            if (self::hostBitsSet($packed, $len)) {
+            if ($parsed !== null && self::hostBitsSet($parsed[0], $parsed[1])) {
                 $problems[] = $net . ': enter the network address';
-            } elseif ($len === 0) {
-                $problems[] = $net . ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead';
-            } elseif (self::touchesLoopback($packed, $len)) {
-                $problems[] = $net . ' overlaps the loopback network: the firewall\'s own lookups would be refused';
-            } else {
-                foreach ($memberNets as $id => $theirs) {
-                    foreach ($theirs as $their) {
-                        $other = self::parseNetwork($their);
-                        if ($other !== null && self::overlaps($packed, $len, $other[0], $other[1])) {
-                            $problems[] = sprintf(
-                                '%s overlaps the network of %s, a member of the gateway group',
-                                $net,
-                                $id
-                            );
-                            break 2;
-                        }
-                    }
-                }
             }
         }
         return $problems;
+    }
+
+    /**
+     * What is wrong with one listed network besides host bits: a default route, the loopback network, a member
+     * interface's network. Pure.
+     *
+     * @param array<string, list<string>> $memberNets interface id => its live networks
+     * @return list<string>
+     */
+    private static function networkProblems(string $net, array $memberNets): array
+    {
+        $parsed = self::parseNetwork($net);
+        if ($parsed === null) {
+            return [];
+        }
+        [$packed, $len] = $parsed;
+        if ($len === 0) {
+            return [$net . ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead'];
+        }
+        if (self::touchesLoopback($packed, $len)) {
+            return [$net . ' overlaps the loopback network: the firewall\'s own lookups would be refused'];
+        }
+        foreach ($memberNets as $id => $theirs) {
+            foreach ($theirs as $their) {
+                $other = self::parseNetwork($their);
+                if ($other !== null && self::overlaps($packed, $len, $other[0], $other[1])) {
+                    return [sprintf('%s overlaps the network of %s, a member of the gateway group', $net, $id)];
+                }
+            }
+        }
+        return [];
     }
 
     /**

@@ -116,6 +116,9 @@ uu_register_suite('model', function (): int {
     $listed = ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead';
     uu_check($t, 'failClosedProblems: host bits set ask for the network address',
         $problems('192.0.2.1/24') === ['192.0.2.1/24: enter the network address']);
+    uu_check($t, 'hostBitsProblems: only a network with host bits set is named',
+        \OPNsense\UnboundUpstream\UnboundUpstream::hostBitsProblems(['192.0.2.1/24', '192.0.2.0/24', 'bogus'])
+            === ['192.0.2.1/24: enter the network address']);
     uu_check($t, 'failClosedProblems: the default routes cannot be listed',
         $problems('0.0.0.0/0') === ['0.0.0.0/0' . $listed] && $problems('::/0') === ['::/0' . $listed]);
     uu_check($t, 'failClosedProblems: a network overlapping the loopback network is refused',
@@ -132,6 +135,8 @@ uu_register_suite('model', function (): int {
     uu_check($t, 'model: the networks field refuses host bits and a default route while fallback is on',
         in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '192.0.2.1/24']), true)
         && in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '0.0.0.0/0']), true)
+        && uu_test_model_field(uu_test_model_messages(['fail_closed_networks' => '192.0.2.1/24']), 'fail_closed_networks')
+            === ['Enter each network with its prefix length and no host bits, for example 100.64.0.0/10.']
         && !in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '100.64.0.0/10']), true)
         && !in_array('fail_closed_networks', uu_test_model_refused(
             ['fallback' => '0', 'fail_closed_networks' => '0.0.0.0/0']

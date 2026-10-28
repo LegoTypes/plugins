@@ -78,6 +78,7 @@
             <FieldSeparator>,</FieldSeparator>
             <NetMaskRequired>Y</NetMaskRequired>
             <Strict>Y</Strict>
+            <ValidationMessage>Enter each network with its prefix length and no host bits, for example 100.64.0.0/10.</ValidationMessage>
         </fail_closed_networks>
         <notify type="BooleanField">
             <Default>0</Default>
