@@ -787,6 +787,22 @@ uu_register_suite('apply', function (): int {
         && $st['view']['problem'] === 'Fail closed not armed: error failed'
         && uu_test_logged($r['calls'], LOG_ERR, 'fallback incomplete'));
 
+    $sNext = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $pNext = uu_plan($sNext, $st);
+    $rNext = uu_test_io($sNext, $all);
+    $stNext = uu_apply($pNext, $sNext, $rNext['io']);
+    $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+    $s['zone'] = ['shape' => 'unrestorable', 'addrs' => [], 'tls' => false, 'problems' => ['a forward-host']];
+    $r = uu_test_io($s, $all, ['uc_lost' => ['view_local_zone']]);
+    $stLost = uu_apply(uu_plan($s, uu_test_plan_state('wg-a', $usable)), $s, $r['io']);
+    uu_check($t, 'apply: a fault is judged by what the run wanted (a staying tunnel tick with the view lifted clears '
+        . 'it; a fallback whose restore failed clears it once its arm took effect)',
+        $pNext['action'] === 'none' && $stNext['mode'] === 'tunnel' && $viewActs($rNext['calls']) === []
+        && $stNext['view']['refuse'] === 'lifted' && $stNext['view']['problem'] === null
+        && $stLost['mode'] === 'tunnel' && $stLost['view']['refuse'] === 'armed' && $stLost['view']['problem'] === null
+        && $hasLine($r['calls'], LOG_ERR, 'Fail closed not armed: no answer')
+        && in_array("uc view_local_zone $vName corp.example. static", uu_test_acts($r['calls']), true));
+
     $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
     unset($s['view']['view_zones']['localhost.']);
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));

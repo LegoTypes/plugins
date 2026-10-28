@@ -247,6 +247,11 @@ final class UuApplyRun
     private ?bool $viewArmed;
     /** @var array<string, string> the view's zones as last read: the snapshot's, then each arm's or lift's read back */
     private array $viewZones;
+    /**
+     * this run wanted the set refused: it ran fallback(), or stayed in fallback; else it wanted the refuse lifted,
+     * whatever the mode a failed restore left
+     */
+    private bool $wantArmed = false;
 
     /**
      * @param array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
@@ -756,6 +761,7 @@ final class UuApplyRun
                 $this->reasons();
                 $this->rejectAll();
             }
+            $this->wantArmed = true;
             if ($this->p['view']['active'] && $this->viewArmed === false) {
                 $this->arm();
             }
@@ -867,6 +873,7 @@ final class UuApplyRun
      */
     private function fallback(): void
     {
+        $this->wantArmed = true;
         if ($this->p['view']['active'] && $this->viewArmed !== true) {
             $this->arm();
         }
@@ -1273,12 +1280,10 @@ final class UuApplyRun
     /**
      * The state's refuse as the loaded set's view holds it at the end of a run that is no stop, so a refuse that
      * Unbound's start or reload put back, or one already there at a fallback, is recorded too; and an arm's or a
-     * lift's own fault cleared once the view holds what the mode wants (fallback: armed with the arm's zones, which
-     * clears either fault; tunnel: lifted, which clears only a stuck lift, since a fallback whose restore failed stays
-     * in tunnel mode with its arm's fault standing), however it got there (a lost reply that took effect, a reload,
-     * the reconcile). A stop leaves
-     * it to the stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next
-     * starts.
+     * lift's own fault cleared once the view holds what this run wanted (wantArmed: armed with the arm's zones; else
+     * lifted), however it got there (a lost reply that took effect, a reload, the reconcile). What the run wanted,
+     * not the mode: a fallback whose restore failed stays in tunnel mode yet wanted the set refused. A stop leaves it
+     * to the stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next starts.
      */
     private function viewRecord(): void
     {
@@ -1287,11 +1292,10 @@ final class UuApplyRun
         }
         $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
         $problem = $this->st['view']['problem'] ?? '';
-        $stuck = str_starts_with($problem, 'Fail closed stuck: ');
-        $clears = $this->st['mode'] === 'tunnel' ? $stuck && !$this->viewArmed
-            : ($stuck || str_starts_with($problem, 'Fail closed not armed: ')) && $this->viewArmed
-                && $this->viewMissing() === null;
-        if ($clears) {
+        $ours = str_starts_with($problem, 'Fail closed not armed: ')
+            || str_starts_with($problem, 'Fail closed stuck: ');
+        $holds = $this->wantArmed ? $this->viewArmed && $this->viewMissing() === null : !$this->viewArmed;
+        if ($ours && $holds) {
             $this->st['view']['problem'] = null;
         }
     }
