@@ -1143,19 +1143,21 @@ final class UuApplyRun
 
     /**
      * The set refused: the refuse of "." in the view, then each zone that passes names on (the mirror's) at its class,
-     * static or refuse, every one tried past a refused one (a zone left noview passes its names on, the open side);
-     * confirmed only by the view's zones read back holding each wanted zone at its armed type (viewMissing()). A
+     * static or refuse, once "." answered ok, every one tried past a refused one (a zone left noview passes its names
+     * on, the open side); confirmed only by the view's zones read back holding "." refused and each of those zones at
+     * its armed class (viewMissing()). A
      * failure is the run's view problem, with the first failed reply, else the read's, and the state's refuse as the
      * read shows it.
      */
     private function arm(): void
     {
-        $calls = [['view_local_zone', UU_VIEW_NAME, '.', 'refuse']];
+        $calls = [];
         foreach (array_keys($this->p['view']['mirror']) as $zone) {
             $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone,
                         uu_view_zone_class($this->p['view']['zones'][$zone] ?? '')];
         }
-        $failed = $this->viewCalls($calls, true);
+        $failed = $this->viewCalls([['view_local_zone', UU_VIEW_NAME, '.', 'refuse']], false)
+            ?? $this->viewCalls($calls, true);
         $read = $this->viewConfirm(true);
         $missing = $read === null ? $this->viewMissing() : null;
         if ($read !== null || $missing !== null) {
@@ -1171,7 +1173,8 @@ final class UuApplyRun
     }
 
     /**
-     * The refuse lifted: "." removed from the view, then each zone that passes names on set to noview; confirmed only
+     * The refuse lifted: "." removed from the view, then each zone that passes names on (the mirror's, and any other
+     * the view as last read holds at an armed class) set to noview; confirmed only
      * by the view's zones read back without the refuse of "." (a view no longer loaded refuses nothing). Only while
      * the set is read as loaded or the view holds the refuse of ".", never on an unknown read, so an owner with
      * nothing selected gets no view command. A failure leaves the set refused, which fails closed but is a fault: the
@@ -1188,9 +1191,17 @@ final class UuApplyRun
             return;
         }
         $was = $this->viewArmed === true;
+        /* the mirror's zones, and any other the view as last read holds at an armed class (a restart's file, read
+         * back after a silent channel left the mirror unknown) */
+        $zones = array_map('strval', array_keys($this->p['view']['mirror']));
+        foreach ($this->viewZones as $zone => $type) {
+            if ($zone !== '.' && $type !== 'noview' && !in_array((string)$zone, $zones, true)) {
+                $zones[] = (string)$zone;
+            }
+        }
         $calls = [['view_local_zone_remove', UU_VIEW_NAME, '.']];
-        foreach (array_keys($this->p['view']['mirror']) as $zone) {
-            $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone, 'noview'];
+        foreach ($zones as $zone) {
+            $calls[] = ['view_local_zone', UU_VIEW_NAME, $zone, 'noview'];
         }
         $failed = $this->viewCalls($calls, false);
         $read = $this->viewConfirm(false);
@@ -1262,8 +1273,10 @@ final class UuApplyRun
     /**
      * The state's refuse as the loaded set's view holds it at the end of a run that is no stop, so a refuse that
      * Unbound's start or reload put back, or one already there at a fallback, is recorded too; and an arm's or a
-     * lift's own fault cleared once the view holds what the mode wants (fallback: armed with every wanted zone;
-     * tunnel: lifted), however it got there (a lost reply that took effect, a reload, the reconcile). A stop leaves
+     * lift's own fault cleared once the view holds what the mode wants (fallback: armed with the arm's zones, which
+     * clears either fault; tunnel: lifted, which clears only a stuck lift, since a fallback whose restore failed stays
+     * in tunnel mode with its arm's fault standing), however it got there (a lost reply that took effect, a reload,
+     * the reconcile). A stop leaves
      * it to the stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next
      * starts.
      */
@@ -1274,24 +1287,26 @@ final class UuApplyRun
         }
         $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
         $problem = $this->st['view']['problem'] ?? '';
-        $ours = str_starts_with($problem, 'Fail closed not armed: ')
-            || str_starts_with($problem, 'Fail closed stuck: ');
-        $holds = $this->st['mode'] === 'tunnel' ? !$this->viewArmed : $this->viewArmed && $this->viewMissing() === null;
-        if ($ours && $holds) {
+        $stuck = str_starts_with($problem, 'Fail closed stuck: ');
+        $clears = $this->st['mode'] === 'tunnel' ? $stuck && !$this->viewArmed
+            : ($stuck || str_starts_with($problem, 'Fail closed not armed: ')) && $this->viewArmed
+                && $this->viewMissing() === null;
+        if ($clears) {
             $this->st['view']['problem'] = null;
         }
     }
 
     /**
-     * The first zone the armed view should hold at its armed type (uu_view_wanted(), "." apart) that the view as last
-     * read does not, as "<zone> <type>"; null when it holds every one.
+     * The first of the arm's own zones (the mirror's, which pass names on unless held at their armed class) that the
+     * view as last read does not hold at that class, as "<zone> <class>"; null when it holds every one. A noview zone
+     * missing from an armed view is the closed side: its names match the refuse of ".".
      */
     private function viewMissing(): ?string
     {
-        $wanted = uu_view_wanted($this->p['view']['zones'], $this->p['view']['mirror'], true)['zones'];
-        foreach ($wanted as $zone => $type) {
-            if ($zone !== '.' && ($this->viewZones[$zone] ?? null) !== $type) {
-                return "$zone $type";
+        foreach (array_keys($this->p['view']['mirror']) as $zone) {
+            $class = uu_view_zone_class($this->p['view']['zones'][$zone] ?? '');
+            if (($this->viewZones[$zone] ?? null) !== $class) {
+                return "$zone $class";
             }
         }
         return null;
