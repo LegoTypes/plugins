@@ -19,6 +19,74 @@ its queries leave through that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.5
+
+* "Fall back to Unbound's own forwarders" (on by default) and, below it,
+  "Fail closed on" (interfaces) and "Fail closed for networks" (source
+  networks routed to the firewall, such as a tailnet's 100.64.0.0/10 and
+  fd7a:115c:a1e0::/48). While no member is usable, a client in the set
+  gets REFUSED for internet names, the others keep the fallback, and the
+  firewall's own lookups from 127.0.0.1 are never refused. Three scopes:
+  none (the default: checkbox on, nothing selected, nothing listed; 1.4's
+  behaviour, no file, no view command, the status gains only a
+  fail_closed object), selected (the interfaces' nets plus the listed
+  networks) and all (checkbox off: every client except loopback). The
+  two set fields are hidden while the checkbox is off. Save refuses a
+  group member's interface, the loopback interface, an interface with no
+  address, host bits, 0.0.0.0/0 and ::/0, and any network that overlaps
+  loopback or a member's net
+* How: the plugin writes unboundupstream.conf in core's
+  unbound.opnsense.d, which puts the set in an Unbound view whose root
+  is refused. Unbound loads it at its start, so the set is refused from
+  the first query after a boot, a restart or an upgrade, and lifted once
+  a member is in use (about 2.5 to 3 minutes after a boot). Falling back
+  arms the refuse again before the root returns to the forwarders. The
+  view follows core's Access Lists: a list inside a set net gets the
+  view too, and a netblock core lists is never repeated
+* Local names still resolve for a fail-closed client: host overrides and
+  their PTR records, the system domain, DHCP lease names, domain
+  overrides and the private reverse zones. Local zones are copied into
+  the view while it is armed, so a name with no data in a local zone is
+  answered NXDOMAIN or REFUSED by Unbound itself, never asked upstream.
+  A name that appears after the last minute tick is refused (or
+  NXDOMAIN) until the next tick. TXT records holding both quote kinds
+  are not copied
+* Unbound restarts once, through configd, at Apply when the set's nets
+  change, when a selected interface's addresses change (a new prefix),
+  and when core's Access Lists change (a second restart after core's
+  own). The cache is lost on each if cache flushing is on. A reload with
+  unbound-control re-arms the view; the next tick lifts or reconciles it
+* A clean removal, an emptied set, or a disable with a set selected
+  restarts Unbound once through configd while the view is loaded, which
+  drops it. The plugin never deletes anything in /var/unbound/etc. An
+  upgrade keeps the refuse and the file through its window. A stop that
+  cannot restore keeps the refuse armed
+* Unbound without view commands, or a view: or access-control-view line
+  of the owner's own, refuses a non-empty set. A file Unbound cannot
+  parse is never written
+* The page shows "Fail closed" (armed, lifted, not armed with the reason,
+  or stuck). The status and the notify POST carry fail_closed, the log
+  lines "fail closed: ... refused (no usable member)" and "fail closed:
+  lifted (...)" are at error level, and the Home Assistant package
+  gains binary_sensor.dns_fail_closed
+* Limits. A client querying from an IPv6 link-local address is not
+  covered. A DS query at the apex of a local zone is refused. A device
+  that falls back to DoH or Private Relay resolves elsewhere; only pf
+  stops that. A lookup the firewall sends from an interface address in
+  the set (not from 127.0.0.1) is refused. Tailnet clients: internet
+  names are refused for every device that uses the firewall for DNS,
+  wherever it is; local names and MagicDNS names still resolve; the
+  firewall must be the tailnet's only global nameserver ("Override DNS
+  servers" on, "Use with exit node" on), or another nameserver's answer
+  wins; a WireGuard-only exit node such as Mullvad is refused as well;
+  split DNS alone never reaches the check. Downgrading to 1.4 leaves
+  the file, which 1.4 cannot lift
+* Recovery, for a failed upgrade, a downgrade or a removal that could
+  not finish:
+
+      rm /usr/local/etc/unbound.opnsense.d/unboundupstream.conf
+      configctl unbound restart
+
 1.4
 
 * A resolver per member (a row below the settings) or the default one,
