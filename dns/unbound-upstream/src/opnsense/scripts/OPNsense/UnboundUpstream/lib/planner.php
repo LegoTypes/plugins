@@ -122,7 +122,8 @@ function uu_plan_note(
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>} $st
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st
  * @param list<string> $reasons
  * @param list<string> $drain
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
@@ -135,7 +136,8 @@ function uu_plan_note(
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *             forwarded: bool, released_at: ?int}>},
+ *             forwarded: bool, released_at: ?int}>,
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     reasons: list<string>, drain: list<string>}
  */
 function uu_plan_result(
@@ -431,7 +433,8 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>} $st
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $st
  * @return array{action: string, candidates: list<string>, reassert: bool, route_repair: bool,
  *     escalate_restart: bool,
  *     state: array{version: int, mode: string, member: ?string,
@@ -442,7 +445,8 @@ function uu_plan_drain(array $s, array $addresses, ?array $read): array
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *             forwarded: bool, released_at: ?int}>},
+ *             forwarded: bool, released_at: ?int}>,
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     reasons: list<string>, drain: list<string>}
  */
 function uu_plan(array $s, array $st): array

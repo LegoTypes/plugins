@@ -12,11 +12,13 @@ declare(strict_types=1);
  * State = array{version: int, mode: string, member: ?string, timers: Timers, control_failures: int,
  *               control_silent_since: ?int, last_switch: ?array{at: int, from: string, to: string, reason: string},
  *               checks: array{direct: ?Check, unbound: ?Check}, tls_applied: ?bool, blocked: ?int,
- *               addresses: array<string, Entry>}
+ *               addresses: array<string, Entry>, view: ViewRecord}
  * Check = array{ok: bool, at: int, member: string}
  * Entry = array{route: ?RouteRecord, forwarded: bool, released_at: ?int}
  * RouteRecord = array{kind: string, next_hop: string, if: string}  (kind 'member' or 'reject'; a reject route is
  *               next_hop '' on lo0, as route(8) prints it)
+ * ViewRecord = array{refuse: string, scope: string, nets: list<string>, problem: ?string}  (refuse is 'armed',
+ *               'lifted' or 'none')
  * mode is 'tunnel' or 'fallback'. Timers (choose.php) and control_silent_since (the first of the consecutive
  * evaluations with a silent control channel) are monotonic seconds; last_switch.at and the checks' at are
  * wall-clock time, for display only. checks are the last direct and through-Unbound results,
@@ -29,7 +31,10 @@ declare(strict_types=1);
  * after its delete), so the route stays the plugin's own when the group that explained it is renamed or deleted;
  * released_at is the monotonic second an address became an orphan (no member's resolver, not forwarded to), null
  * otherwise; a drain deletes an orphan's route and entry at least UU_OLD_ADDRESS_HOLD later (apply.php). A version 5
- * file (one resolver and one route_installed) converts on read. A file that cannot be read back exactly as written is
+ * file (one resolver and one route_installed) and a version 6 file (no view) convert on read. view records the fail-closed
+ * view: refuse is armed while Unbound refuses internet names to the scope's clients, lifted while the plugin has lifted
+ * the refusal for a healthy tunnel, none when no view is rendered; scope the setting's scope; nets the netblocks last
+ * rendered; problem the last reason the view is not armed, stuck or not rendered. A file that cannot be read back exactly as written is
  * discarded: the planner derives the mode from the live forwarders and route, so a fresh state costs only the
  * failback timers. The file lives in the root-only run directory and is read as a regular file only.
  */
@@ -37,7 +42,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/constants.php';
 require_once __DIR__ . '/address.php';
 
-const UU_STATE_VERSION = 6;
+const UU_STATE_VERSION = 7;
 
 /**
  * The plugin's runtime directory (UU_RUN_DIR by default), root's alone, since what it holds is trusted: created
@@ -128,7 +133,8 @@ function uu_read_regular_file(string $path, int $maxBytes = UU_FILE_MAX_BYTES): 
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
 function uu_state_new(): array
 {
@@ -144,6 +150,7 @@ function uu_state_new(): array
         'tls_applied' => null,
         'blocked' => null,
         'addresses' => [],
+        'view' => ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null],
     ];
 }
 
@@ -252,16 +259,33 @@ function uu_state_common_ok(array $doc, bool $current): bool
 }
 
 /**
- * Whether a decoded document has exactly this version's State shape: 11 keys, and every key of addresses an address in
- * its canonical form with an entry of exactly route, forwarded and released_at.
+ * Whether a decoded value is a ViewRecord exactly: refuse armed, lifted or none, a scope, a list of netblock strings
+ * and a problem text or null.
+ */
+function uu_state_view_ok(mixed $view): bool
+{
+    if (!is_array($view) || count($view) !== 4 || !in_array($view['refuse'] ?? null, ['armed', 'lifted', 'none'], true)
+        || !isset($view['scope']) || !is_string($view['scope'])
+        || !isset($view['nets']) || !is_array($view['nets']) || !array_is_list($view['nets'])
+        || !array_key_exists('problem', $view) || ($view['problem'] !== null && !is_string($view['problem']))) {
+        return false;
+    }
+    foreach ($view['nets'] as $net) {
+        if (!is_string($net)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Whether a decoded document's addresses is a map of canonical addresses, each with an entry of exactly route,
+ * forwarded and released_at. Versions 6 and 7 share it.
  *
  * @param array<array-key, mixed> $doc
  */
-function uu_state_valid(array $doc): bool
+function uu_state_addresses_ok(array $doc): bool
 {
-    if (count($doc) !== 11 || ($doc['version'] ?? null) !== UU_STATE_VERSION || !uu_state_common_ok($doc, true)) {
-        return false;
-    }
     if (!isset($doc['addresses']) || !is_array($doc['addresses'])) {
         return false;
     }
@@ -278,6 +302,29 @@ function uu_state_valid(array $doc): bool
 }
 
 /**
+ * Whether a decoded document has exactly this version's State shape: 12 keys, every key of addresses an address in its
+ * canonical form with an entry of exactly route, forwarded and released_at, and a ViewRecord.
+ *
+ * @param array<array-key, mixed> $doc
+ */
+function uu_state_valid(array $doc): bool
+{
+    return count($doc) === 12 && ($doc['version'] ?? null) === UU_STATE_VERSION && uu_state_common_ok($doc, true)
+        && uu_state_addresses_ok($doc) && uu_state_view_ok($doc['view'] ?? null);
+}
+
+/**
+ * Whether a decoded document has exactly 1.4's State shape (version 6): version 7's without the view.
+ *
+ * @param array<array-key, mixed> $doc
+ */
+function uu_state_valid_v6(array $doc): bool
+{
+    return count($doc) === 11 && ($doc['version'] ?? null) === 6 && uu_state_common_ok($doc, true)
+        && uu_state_addresses_ok($doc);
+}
+
+/**
  * Whether a decoded document has exactly 1.3's State shape (version 5): one resolver address, or null, and one route
  * record, or null.
  *
@@ -291,12 +338,13 @@ function uu_state_valid_v5(array $doc): bool
 }
 
 /**
- * The State's fields that versions 5 and 6 share, from a document that passed its version's check, with the addresses
- * given; a timer without a resolver or last_down gets them empty.
+ * The State's fields that versions 5, 6 and 7 share, from a document that passed its version's check, with the addresses
+ * given and the view (none when null); a timer without a resolver or last_down gets them empty.
  *
  * @param array<array-key, mixed> $doc
  * @param array<string, array{route: ?array{kind: string, next_hop: string, if: string}, forwarded: bool,
  *     released_at: ?int}> $addresses
+ * @param ?array<array-key, mixed> $view
  * @return array{version: int, mode: string, member: ?string,
  *     timers: array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *     probe_failures: int,
@@ -306,9 +354,10 @@ function uu_state_valid_v5(array $doc): bool
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
-function uu_state_assemble(array $doc, array $addresses): array
+function uu_state_assemble(array $doc, array $addresses, ?array $view = null): array
 {
     $state = uu_state_new();
     $state['mode'] = (string)$doc['mode'];
@@ -348,6 +397,11 @@ function uu_state_assemble(array $doc, array $addresses): array
     $state['tls_applied'] = $doc['tls_applied'] === null ? null : (bool)$doc['tls_applied'];
     $state['blocked'] = $doc['blocked'] === null ? null : (int)$doc['blocked'];
     $state['addresses'] = $addresses;
+    if ($view !== null) {
+        $state['view'] = ['refuse' => (string)$view['refuse'], 'scope' => (string)$view['scope'],
+                          'nets' => array_map('strval', $view['nets']),
+                          'problem' => $view['problem'] === null ? null : (string)$view['problem']];
+    }
     return $state;
 }
 
@@ -378,7 +432,8 @@ function uu_state_route_from(?array $route): ?array
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
 function uu_state_from_v5(array $doc): ?array
 {
@@ -395,7 +450,7 @@ function uu_state_from_v5(array $doc): ?array
 }
 
 /**
- * A decoded document as a State, or null when it is not exactly this version's shape or version 5's. Shared by the
+ * A decoded document as a State, or null when it is not exactly this version's shape, version 6's or version 5's. Shared by the
  * state file and evaluate.php's replay.
  *
  * @param array<array-key, mixed> $doc
@@ -408,14 +463,16 @@ function uu_state_from_v5(array $doc): ?array
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
 function uu_state_from_doc(array $doc): ?array
 {
     if (($doc['version'] ?? null) === 5) {
         return uu_state_from_v5($doc);
     }
-    if (!uu_state_valid($doc)) {
+    $current = ($doc['version'] ?? null) !== 6;
+    if ($current ? !uu_state_valid($doc) : !uu_state_valid_v6($doc)) {
         return null;
     }
     $addresses = [];
@@ -425,7 +482,7 @@ function uu_state_from_doc(array $doc): ?array
                                         'released_at' => $entry['released_at'] === null ? null
                                             : (int)$entry['released_at']];
     }
-    return uu_state_assemble($doc, $addresses);
+    return uu_state_assemble($doc, $addresses, $current ? $doc['view'] : null);
 }
 
 /**
@@ -441,7 +498,8 @@ function uu_state_from_doc(array $doc): ?array
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>},
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     problem: ?string}
  */
 function uu_state_read(string $path): array
@@ -472,7 +530,8 @@ function uu_state_read(string $path): array
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
 function uu_state_load(string $path): array
 {
@@ -543,6 +602,18 @@ function uu_state_footprint(array $state): array
 }
 
 /**
+ * Whether the fail-closed view is a footprint: the state records it armed or lifted, or its file is on disk. The minute
+ * job follows it beside the addresses (uu_state_footprint()), so a disabled plugin still lifts a view it left; the
+ * filter reload does not, since the view has no rules.
+ *
+ * @param array{view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $state
+ */
+function uu_state_view_footprint(array $state, bool $fileExists): bool
+{
+    return in_array($state['view']['refuse'], ['armed', 'lifted'], true) || $fileExists;
+}
+
+/**
  * The footprint as a log line prints it: the addresses, comma separated, or none.
  *
  * @param list<string> $addresses
@@ -585,7 +656,8 @@ function uu_footprint_actions(array $before, array $after, bool $enabled, ?strin
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>} $state
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}} $state
  */
 function uu_state_save(string $path, array $state): void
 {

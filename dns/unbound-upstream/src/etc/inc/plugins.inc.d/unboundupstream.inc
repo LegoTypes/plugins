@@ -142,15 +142,16 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
 }
 
 /**
- * Whether the state records a footprint, by the plugin's own uu_state_footprint(). Loads only lib/state.php and
- * lib/logline.php, which need only the constants, and neither when its functions are already there. A state file that
- * cannot be read counts as no footprint, in one line; nothing throws into core.
+ * Whether the state records a footprint, by the plugin's own uu_state_footprint() and uu_state_view_footprint() (a view
+ * armed or lifted, or its file on disk). Loads only lib/state.php and lib/logline.php, which need only the constants,
+ * and neither when its functions are already there. A state file that cannot be read counts as no footprint, in one
+ * line; nothing throws into core.
  */
 function unboundupstream_footprint_recorded(): bool
 {
     $lib = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib';
     try {
-        foreach (['uu_state_footprint' => 'state.php', 'uu_logger' => 'logline.php'] as $function => $file) {
+        foreach (['uu_state_view_footprint' => 'state.php', 'uu_logger' => 'logline.php'] as $function => $file) {
             if (function_exists($function)) {
                 continue;
             }
@@ -164,7 +165,8 @@ function unboundupstream_footprint_recorded(): bool
             uu_logger('cron: the state file is ' . $read['problem'] . ': no footprint read, so the minute job follows '
                 . 'the enabled setting alone', 'warning');
         }
-        return uu_state_footprint($read['state']) !== [];
+        return uu_state_footprint($read['state']) !== []
+            || uu_state_view_footprint($read['state'], file_exists(UU_VIEW_FILE));
     } catch (\Throwable $e) {
         unboundupstream_log_error('cron: cannot read the state, so the minute job follows the enabled setting alone: ',
             $e->getMessage());

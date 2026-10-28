@@ -140,7 +140,8 @@ final class UuApplyRun
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
-     *             forwarded: bool, released_at: ?int}>},
+     *             forwarded: bool, released_at: ?int}>,
+     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
      *     reasons: list<string>, drain: list<string>}
      */
     private array $p;
@@ -176,7 +177,8 @@ final class UuApplyRun
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
      *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
-     *         forwarded: bool, released_at: ?int}>}
+     *         forwarded: bool, released_at: ?int}>,
+     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
      */
     private array $st;
     /** @var ?list<string> Unbound's live root as last read or set; null while unknown */
@@ -225,7 +227,8 @@ final class UuApplyRun
      *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *         member: string}}, tls_applied: ?bool, blocked: ?int,
      *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
-     *             forwarded: bool, released_at: ?int}>},
+     *             forwarded: bool, released_at: ?int}>,
+     *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
      *     reasons: list<string>, drain: list<string>} $p
      * @param array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
@@ -362,7 +365,8 @@ final class UuApplyRun
      *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
      *     member: string}}, tls_applied: ?bool, blocked: ?int,
      *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
-     *         forwarded: bool, released_at: ?int}>}
+     *         forwarded: bool, released_at: ?int}>,
+     *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
      */
     public function run(): array
     {
@@ -1219,7 +1223,8 @@ final class UuApplyRun
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *             forwarded: bool, released_at: ?int}>},
+ *             forwarded: bool, released_at: ?int}>,
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     reasons: list<string>, drain: list<string>} $p uu_plan()
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
@@ -1246,7 +1251,8 @@ final class UuApplyRun
  *     checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *     member: string}}, tls_applied: ?bool, blocked: ?int,
  *     addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *         forwarded: bool, released_at: ?int}>}
+ *         forwarded: bool, released_at: ?int}>,
+ *     view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}}
  */
 function uu_apply(array $p, array $s, array $io): array
 {
@@ -1285,7 +1291,8 @@ function uu_apply(array $p, array $s, array $io): array
  *         checks: array{direct: ?array{ok: bool, at: int, member: string}, unbound: ?array{ok: bool, at: int,
  *         member: string}}, tls_applied: ?bool, blocked: ?int,
  *         addresses: array<string, array{route: ?array{kind: string, next_hop: string, if: string},
- *             forwarded: bool, released_at: ?int}>},
+ *             forwarded: bool, released_at: ?int}>,
+ *         view: array{refuse: string, scope: string, nets: list<string>, problem: ?string}},
  *     reasons: list<string>, drain: list<string>} $p
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,

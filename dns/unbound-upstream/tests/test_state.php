@@ -38,13 +38,13 @@ uu_register_suite('state', function (): int {
     $path = $dir . '/run/state.json';
 
     $new = uu_state_new();
-    uu_check($t, 'new state: version 6, fallback, no member, no timers, no failures, not silent, no switch',
-        UU_STATE_VERSION === 6 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
+    uu_check($t, 'new state: version 7, fallback, no member, no timers, no failures, not silent, no switch',
+        UU_STATE_VERSION === 7 && $new['version'] === UU_STATE_VERSION && $new['mode'] === 'fallback'
         && $new['member'] === null && $new['timers'] === [] && $new['control_failures'] === 0
         && $new['control_silent_since'] === null && $new['last_switch'] === null);
     uu_check($t, 'new state: no checks yet, no TLS flag applied, no blocked count, no address recorded',
         $new['checks'] === ['direct' => null, 'unbound' => null] && $new['tls_applied'] === null
-        && $new['blocked'] === null && $new['addresses'] === [] && count($new) === 11);
+        && $new['blocked'] === null && $new['addresses'] === [] && count($new) === 12);
 
     uu_check($t, 'missing file loads as a new state', uu_state_load($path) === $new);
 
@@ -192,7 +192,7 @@ uu_register_suite('state', function (): int {
         && uu_state_from_doc(['version' => UU_STATE_VERSION]) === null);
 
     $v11 = json_decode((string)json_encode($s), true);
-    unset($v11['addresses'], $v11['timers']['wg-a']['last_down'], $v11['timers']['wg-a']['resolver']);
+    unset($v11['addresses'], $v11['view'], $v11['timers']['wg-a']['last_down'], $v11['timers']['wg-a']['resolver']);
     $v11['version'] = 5;
     $v11['route_installed'] = null;
     $v11['resolver'] = null;
@@ -389,7 +389,7 @@ uu_register_suite('state', function (): int {
     ];
     $converted = uu_state_from_doc($v5);
     uu_check($t, 'state v6 (s4): a version 5 tunnel-mode file converts to one forwarded entry with its route kept',
-        $converted !== null && $converted['version'] === 6 && $converted['mode'] === 'tunnel'
+        $converted !== null && $converted['version'] === 7 && $converted['mode'] === 'tunnel'
         && $converted['member'] === 'wg-a' && $converted['control_failures'] === 2
         && $converted['addresses'] === ['10.2.0.1' => ['route' => $v5['route_installed'], 'forwarded' => true,
                                                         'released_at' => null]]
@@ -463,6 +463,70 @@ uu_register_suite('state', function (): int {
         $v6Round !== null && uu_try_case(function () use ($v6Round, $path): bool {
             uu_state_save($path, $v6Round);
             return uu_state_load($path) === $v6Round;
+        }));
+
+    uu_check($t, 'state: a version 6 file converts with the view none',
+        uu_try_case(function () use ($s, $new): bool {
+            $v6 = json_decode((string)json_encode($s), true);
+            if (!is_array($v6)) {
+                return false;
+            }
+            unset($v6['view']);
+            $v6['version'] = 6;
+            $converted = uu_state_from_doc($v6);
+            $extra = $v6;
+            $extra['view'] = $new['view'];
+            $short = $v6;
+            unset($short['blocked']);
+            return $converted === $s && $s['view'] === ['refuse' => 'none', 'scope' => 'none', 'nets' => [],
+                'problem' => null] && uu_state_from_doc($extra) === null && uu_state_from_doc($short) === null;
+        }));
+    uu_check($t, 'state: a view record of another shape is refused',
+        uu_try_case(function () use ($s): bool {
+            $doc = json_decode((string)json_encode($s), true);
+            if (!is_array($doc)) {
+                return false;
+            }
+            $bad = [];
+            foreach ([['refuse', 'maybe'], ['refuse', null], ['scope', 7], ['nets', 'x'], ['nets', [4]],
+                      ['nets', ['a' => 'x']], ['problem', 3]] as [$key, $value]) {
+                $variant = $doc;
+                $variant['view'][$key] = $value;
+                $bad[] = uu_state_from_doc($variant);
+            }
+            $missing = $doc;
+            unset($missing['view']['problem']);
+            $extra = $doc;
+            $extra['view']['more'] = 1;
+            $notArray = $doc;
+            $notArray['view'] = 'none';
+            $absent = $doc;
+            unset($absent['view']);
+            $armed = $doc;
+            $armed['view'] = ['refuse' => 'armed', 'scope' => 'set', 'nets' => ['192.0.2.0/24'], 'problem' => 'x'];
+            return array_filter($bad, fn (?array $r): bool => $r !== null) === []
+                && uu_state_from_doc($missing) === null && uu_state_from_doc($extra) === null
+                && uu_state_from_doc($notArray) === null && uu_state_from_doc($absent) === null
+                && (uu_state_from_doc($armed)['view'] ?? null) === $armed['view'];
+        }));
+    uu_check($t, 'state: armed and lifted are a footprint, none is not',
+        uu_try_case(function (): bool {
+            $st = uu_state_new();
+            $out = [uu_state_view_footprint($st, false)];
+            foreach (['armed', 'lifted'] as $refuse) {
+                $st['view']['refuse'] = $refuse;
+                $out[] = uu_state_view_footprint($st, false);
+            }
+            return $out === [false, true, true];
+        }));
+    uu_check($t, 'state: a file on disk is a footprint',
+        uu_try_case(fn (): bool => uu_state_view_footprint(uu_state_new(), true)
+            && uu_state_footprint(uu_state_new()) === []));
+    uu_check($t, 'state: a version 5 file converts through 6 to 7',
+        uu_try_case(function () use ($v5): bool {
+            $st = uu_state_from_doc($v5);
+            return $st !== null && $st['version'] === 7
+                && $st['view'] === ['refuse' => 'none', 'scope' => 'none', 'nets' => [], 'problem' => null];
         }));
 
     // The footprint: the map's keys, and what an evaluation that changed it runs.
