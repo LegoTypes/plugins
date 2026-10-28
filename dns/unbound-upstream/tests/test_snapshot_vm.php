@@ -20,46 +20,6 @@ uu_register_suite('snapshot_vm', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     if (!is_readable('/usr/local/etc/inc/config.inc') || !is_readable('/usr/local/opnsense/mvc/app/models/OPNsense/Routing/GatewayGroups.php')) {
         printf("[SKIP] snapshot_vm: core is not on this machine\n");
-        /* the view: LAN selected and a rendered view loaded. The view comes from a throwaway option file in Unbound's
-     * directory (core empties it at every start) read by a reload, with the plugin's file beside it; both are
-     * removed and Unbound restarted at the end */
-    $viewConf = '/var/unbound/etc/zz-uu-view.conf';
-    $viewText = UU_VIEW_BEGIN . "\nserver:\n    access-control-view: 192.168.1.0/24 " . UU_VIEW_NAME . "\nview:\n    name: \""
-        . UU_VIEW_NAME . "\"\n    view-first: yes\n    local-zone: \".\" refuse\n    local-data: \"nas.internal. 3600 IN A "
-        . "192.0.2.8\"\n" . UU_VIEW_END . "\n";
-    $viewSnap = null;
-    $viewCleanup = false;
-    if (is_dir('/var/unbound/etc') && !file_exists($viewConf) && !file_exists(UU_VIEW_FILE)) {
-        try {
-            file_put_contents($viewConf, $viewText);
-            file_put_contents(UU_VIEW_FILE, $viewText);
-            shell_exec('/usr/local/sbin/unbound-control -c /var/unbound/unbound.conf reload > /dev/null 2>&1');
-            $deadline = hrtime(true) + 15000000000;
-            do {
-                usleep(300000);
-                $viewSnap = uu_snapshot(['fallback' => true, 'fail_closed' => ['lan'], 'fail_closed_networks' => []]
-                    + $settings, [], null, false, [], true);
-            } while ($viewSnap['view']['loaded'] !== 'zones' && hrtime(true) < $deadline);
-        } finally {
-            @unlink($viewConf);
-            @unlink(UU_VIEW_FILE);
-            clearstatcache(true, UU_VIEW_FILE);
-            shell_exec('/usr/local/sbin/configctl unbound restart > /dev/null 2>&1');
-            $deadline = hrtime(true) + 30000000000;
-            while (uu_live_root() === null && hrtime(true) < $deadline) {
-                usleep(500000);
-            }
-            $viewCleanup = !file_exists($viewConf) && !file_exists(UU_VIEW_FILE);
-        }
-    }
-    $vw = $viewSnap['view'] ?? null;
-    uu_check($t, 'snapshot_vm: the LAN net, the view\'s zones and its mirrored data are read',
-        $vw !== null && $viewCleanup && $vw['scope'] === 'selected' && $vw['nets'] === ['192.168.1.0/24']
-        && $vw['loaded'] === 'zones' && $vw['view_zones'] === ['.' => 'refuse']
-        && $vw['view_data'] === ['nas.internal. 3600 IN A 192.0.2.8'] && $vw['file'] === $viewText
-        && $vw['copy'] === $viewText && $vw['acl'] !== null && $vw['zones'] !== null && $vw['data'] !== null
-        && ($viewSnap['upgrade'] ?? null) === false);
-
     return uu_tally_report('snapshot_vm', $t);
     }
     uu_load_core();
@@ -68,7 +28,8 @@ uu_register_suite('snapshot_vm', function (): int {
         return uu_tally_report('snapshot_vm', $t);
     }
     $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp',
-                 'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'];
+                 'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
+                 'fallback' => true, 'fail_closed' => [], 'fail_closed_networks' => []];
     $s = uu_snapshot($settings, [], null, false, []);
     uu_check($t, 'settings pass through, trigger is the group\'s', $s['settings'] === $settings && $s['trigger'] === 'downloss');
     uu_check($t, 'now is monotonic seconds', abs($s['now'] - intdiv(hrtime(true), 1000000000)) <= 2);
@@ -128,7 +89,8 @@ uu_register_suite('snapshot_vm', function (): int {
     /* the four contract inputs come from the snapshot's own reads: an IPv6 group with an IPv4 Default, and the same
      * group with an IPv4 member added in memory (config.xml is put back and compared) */
     $far6 = ['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp', 'default' => '10.2.0.1', 'rows' => [],
-             'failback_delay' => 120, 'probe_name' => '.'];
+             'failback_delay' => 120, 'probe_name' => '.', 'fallback' => true, 'fail_closed' => [],
+             'fail_closed_networks' => []];
     if (isset((new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()['uu_far6_grp'])) {
         $v6 = uu_snapshot($far6, [], null, false, []);
         uu_check($t, '(c6) an IPv6 group with an IPv4 Default: group_family inet6, the Default listed as a mismatch, '
@@ -296,6 +258,53 @@ uu_register_suite('snapshot_vm', function (): int {
             'row for gateway 0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60 ignored: no such gateway',
             'wg-test-429 has no resolver: not a candidate', 'wg-test-529 has no resolver: not a candidate']
         && $p18b['routes'] === []);
+
+    /* the view: LAN selected and a rendered view loaded. The view comes from a throwaway option file in Unbound's
+     * directory (core empties it at every start) read by a reload, with the plugin's file beside it; both are
+     * removed and Unbound restarted at the end */
+    $viewConf = '/var/unbound/etc/zz-uu-view.conf';
+    $viewText = UU_VIEW_BEGIN . "\nserver:\n    access-control-view: 192.168.1.0/24 " . UU_VIEW_NAME . "\nview:\n    name: \""
+        . UU_VIEW_NAME . "\"\n    view-first: yes\n    local-zone: \".\" refuse\n    local-data: \"nas.internal. 3600 IN A "
+        . "192.0.2.8\"\n" . UU_VIEW_END . "\n";
+    $viewSnap = null;
+    $viewCleanup = false;
+    if (is_dir('/var/unbound/etc') && !file_exists($viewConf) && !file_exists(UU_VIEW_FILE)) {
+        try {
+            file_put_contents($viewConf, $viewText);
+            file_put_contents(UU_VIEW_FILE, $viewText);
+            shell_exec('/usr/local/sbin/unbound-control -c /var/unbound/unbound.conf reload > /dev/null 2>&1');
+            $deadline = hrtime(true) + 15000000000;
+            do {
+                usleep(300000);
+                $viewSnap = uu_snapshot(['fail_closed' => ['lan']] + $settings, [], null, false, [], true);
+            } while ($viewSnap['view']['loaded'] !== 'zones' && hrtime(true) < $deadline);
+        } finally {
+            @unlink($viewConf);
+            @unlink(UU_VIEW_FILE);
+            clearstatcache(true, UU_VIEW_FILE);
+            shell_exec('/usr/local/sbin/configctl unbound restart > /dev/null 2>&1');
+            $deadline = hrtime(true) + 30000000000;
+            while (uu_live_root() === null && hrtime(true) < $deadline) {
+                usleep(500000);
+            }
+            /* the evaluation core's start queues must be over before the next suite reads the state: quiet once no
+             * evaluation ran for two samples in a row */
+            $idle = 0;
+            $deadline = hrtime(true) + 60000000000;
+            while ($idle < 2 && hrtime(true) < $deadline) {
+                sleep(1);
+                $idle = trim((string)shell_exec("/bin/pgrep -f 'UnboundUpstream/evaluate[.]php'")) === '' ? $idle + 1 : 0;
+            }
+            $viewCleanup = !file_exists($viewConf) && !file_exists(UU_VIEW_FILE);
+        }
+    }
+    $vw = $viewSnap['view'] ?? null;
+    uu_check($t, 'snapshot_vm: the LAN net, the view\'s zones and its mirrored data are read',
+        $vw !== null && $viewCleanup && $vw['scope'] === 'selected' && $vw['nets'] === ['192.168.1.0/24']
+        && $vw['loaded'] === 'zones' && $vw['view_zones'] === ['.' => 'refuse']
+        && $vw['view_data'] === ['nas.internal. 3600 IN A 192.0.2.8'] && $vw['file'] === $viewText
+        && $vw['copy'] === $viewText && $vw['acl'] !== null && $vw['zones'] !== null && $vw['data'] !== null
+        && ($viewSnap['upgrade'] ?? null) === false);
 
     return uu_tally_report('snapshot_vm', $t);
 });

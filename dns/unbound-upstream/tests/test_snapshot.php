@@ -14,7 +14,6 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/apply.php';
 require_once __DIR__ . '/test_verdict.php';
 require_once __DIR__ . '/test_pfobserve.php';
 require_once __DIR__ . '/scratch.php';
@@ -472,17 +471,18 @@ uu_register_suite('snapshot', function (): int {
             $rec = ['routes' => [], 'route_flags' => ['10.2.0.1' => ['UP', 'HOST']],
                     'contract_input' => ['core_commands' => ['cron restart']]];
             $read = uu_snapshot_recorded($rec, '/root/new.json');
-            return array_slice($read, 0, 3) === $rec && array_keys($read) === [...array_keys($rec), 'upgrade', 'view'];
+            return array_slice($read, 0, 3) === $rec
+                && array_keys($read) === [...array_keys($rec), 'upgrade', 'view'];
         }));
     uu_check($t, 'recorded: an earlier 1.4 recording with no route_flags gains none read, right after routes',
         uu_try_case(function (): bool {
             $rec = ['now' => 10000, 'routes' => ['10.2.0.1' => ['present' => false]], 'fib_sync_ms' => 1000,
                     'contract_input' => ['core_commands' => []]];
             $read = uu_snapshot_recorded($rec, '/root/earlier.json');
-            return array_keys($read) === ['now', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'upgrade', 'view']
+            return array_keys($read) === ['now', 'routes', 'route_flags', 'fib_sync_ms', 'contract_input', 'upgrade',
+                    'view']
                 && $read['route_flags'] === [] && $read['routes'] === $rec['routes'];
         }));
-
 
     /* the fail-closed view the snapshot reads */
     $viewSettings = fn (array $over = []): array => $over + ['fallback' => true, 'fail_closed' => ['lan'],

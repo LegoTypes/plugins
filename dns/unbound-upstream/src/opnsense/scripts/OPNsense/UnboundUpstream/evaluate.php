@@ -314,7 +314,7 @@ function uu_record_main(string $path): int
      * listing cut short), so a replay plans on the same verdict; the verification is not saved (record changes
      * nothing) */
     $st = uu_state_load(UU_STATE_PATH);
-    $doc = ['snapshot' => uu_snapshot(uu_settings(), [], null, true, uu_state_footprint($st)), 'state' => $st];
+    $doc = ['snapshot' => uu_snapshot(uu_settings(), [], null, true, uu_state_footprint($st), true, false), 'state' => $st];
     if (file_put_contents($path, json_encode($doc, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
         . "\n") === false) {
         throw new RuntimeException("cannot write $path");

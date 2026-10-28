@@ -1341,7 +1341,8 @@ VOLT;
             file_put_contents($custom, "server:\ndo-ip6: no\n");
             $swapped = uu_try_case(function (): bool {
                 $s = uu_snapshot(['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp',
-                    'default' => '2001:db8:a::53', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.'],
+                    'default' => '2001:db8:a::53', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
+                    'fallback' => true, 'fail_closed' => [], 'fail_closed_networks' => []],
                     [], null, false, []);
                 return ($s['contract_input']['unbound_conf'] ?? null) === ['do_ip4' => true, 'do_ip6' => false,
                         'outgoing_interface' => false]

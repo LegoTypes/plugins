@@ -21,8 +21,9 @@ require_once __DIR__ . '/zone.php';
 require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/pfobserve.php';
 require_once __DIR__ . '/state.php';
+require_once __DIR__ . '/planner.php';
 require_once __DIR__ . '/views.php';
-require_once __DIR__ . '/apply.php';
+require_once __DIR__ . '/control.php';
 
 /** Core's PHP library, loaded when a collector needs it so the parsers load anywhere. */
 function uu_load_core(): void
@@ -372,7 +373,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -406,7 +408,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -759,6 +762,13 @@ function uu_zone_decode(string $stdout): ?array
 function uu_view_core_interfaces(): array
 {
     uu_load_core();
+    /* config.inc parses the configuration into a global at its first load, and uu_load_core() loads it inside a
+     * function, where that variable is a local one (and a read of a missing section makes it an empty one): read it into the
+     * global here */
+    global $config;
+    if (empty($config['interfaces'])) {
+        $config = parse_config();
+    }
     $devices = [];
     foreach (legacy_config_get_interfaces() as $id => $conf) {
         $devices[(string)$id] = (string)($conf['if'] ?? '');
@@ -769,8 +779,9 @@ function uu_view_core_interfaces(): array
 /**
  * What the view reads give: view_list_local_zones and view_list_local_data of the plugin's view (loaded zones, absent,
  * unsupported or silent; a reply of another shape is silent too, so it is never acted on), and with $zones the four
- * daemon lists the mirror is built from (list_local_zones, list_forwards, list_stubs, list_local_data), read unless
- * the channel was silent. Everything else in the view is passed through.
+ * daemon lists the mirror is built from (list_local_zones, list_forwards, list_stubs, list_local_data), read
+ * whenever the view is not silent, an absent or unsupported view included, since the file step needs the zones to
+ * render. Everything else in the view is passed through.
  *
  * @param array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
  *     action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>, loaded: string,
@@ -818,8 +829,7 @@ function uu_view_read(array $view, callable $uc, bool $zones = false): array
  * (uu_view_read()). With an empty set and neither a file nor a copy, or with Unbound not running, no view command
  * runs: loaded is skipped.
  *
- * @param array{fallback?: bool, fail_closed?: list<string>, fail_closed_networks?: list<string>} $settings the
- *     settings; one without the keys (a caller from before the view) is an empty set with the fallback on
+ * @param array{fallback: bool, fail_closed: list<string>, fail_closed_networks: list<string>} $settings
  * @param callable(list<string>): ?string $uc
  * @param callable(): array{details: array<string, array{ipv4: list<array{ipaddr: string, subnetbits: int}>,
  *     ipv6: list<array{ipaddr: string, subnetbits: int, link-local: bool}>}>, devices: array<string, string>} $details
@@ -833,14 +843,14 @@ function uu_view_read(array $view, callable $uc, bool $zones = false): array
 function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $details, ?string $expanded,
     callable $readFile, bool $pidAlive = true): array
 {
-    $selected = $settings['fail_closed'] ?? [];
+    $selected = $settings['fail_closed'];
     $ifaceNets = ['nets' => [], 'notes' => []];
     if ($selected !== []) {
         $core = $details();
         $ifaceNets = uu_view_iface_nets($core['details'], $selected, $core['devices']);
     }
-    $set = uu_view_set($settings['fallback'] ?? true, $selected, $ifaceNets['nets'],
-        $settings['fail_closed_networks'] ?? []);
+    $set = uu_view_set($settings['fallback'], $selected, $ifaceNets['nets'],
+        $settings['fail_closed_networks']);
     $acl = $expanded === null ? null : uu_view_acl_parse($expanded);
     $view = [
         'scope' => $set['scope'],
@@ -859,6 +869,108 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
         return $view;
     }
     return uu_view_read($view, $uc, $zones);
+}
+
+/**
+ * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
+ * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
+ * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo. A channel that answers after the wait
+ * gets the view read again (uu_view_read(), with the daemon lists), unless the snapshot ran no view command: the
+ * evaluation an Unbound start queues must see the view as loaded.
+ * $liveRoot, $uc and $sleep are for the tests.
+ *
+ * @param array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         fail_closed: list<string>, fail_closed_networks: list<string>},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}} $s
+ * @param string $mode the saved state's mode
+ * @return array{now: int, wall: int,
+ *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         fail_closed: list<string>, fail_closed_networks: list<string>},
+ *     trigger: string, tiers: list<list<string>>, family: string,
+ *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
+ *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
+ *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
+ *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
+ *     named: list<string>, stop: ?string,
+ *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
+ *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
+ *         ours: bool}>,
+ *     route_flags: array<string, list<string>>,
+ *     fib_sync_ms: ?int,
+ *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
+ *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
+ *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
+ *         resolver_notes: list<string>, no_next_hop: list<string>,
+ *         rules: array{state: string, problems: list<string>},
+ *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
+ *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
+ *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
+ *         mixed_family: bool, family_mismatch: list<string>},
+ *     rules: array{state: string, problems: list<string>, verified_at: ?int,
+ *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
+ *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
+ *     upgrade: bool,
+ *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
+ *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
+ *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
+ *         copy: ?string}}
+ */
+function uu_wait_control(array $s, string $mode, ?callable $liveRoot = null, ?callable $uc = null,
+    ?callable $sleep = null): array
+{
+    $u = $s['unbound'];
+    if ($u['control_ok'] || !$u['pid_alive'] || (uu_plan_stop_reason($s) !== null && $mode !== 'tunnel')) {
+        return $s;
+    }
+    $liveRoot ??= 'uu_live_root';
+    $uc ??= 'uu_uc_run';
+    $sleep ??= 'sleep';
+    $deadline = hrtime(true) + UU_CONTROL_WAIT_SECONDS * 1000000000;
+    while (hrtime(true) < $deadline) {
+        $sleep(1);
+        $live = $liveRoot();
+        if ($live !== null) {
+            $s['unbound']['control_ok'] = true;
+            $s['unbound']['live_root'] = $live;
+            if ($s['view']['loaded'] !== 'skipped') {
+                $s['view'] = uu_view_read($s['view'], $uc, true);
+            }
+            break;
+        }
+    }
+    return $s;
 }
 
 /**
@@ -900,7 +1012,8 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
- *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings uu_settings()
+ *     rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *     fail_closed: list<string>, fail_closed_networks: list<string>} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
  * @param bool $listRules whether the ruleset may be listed when no verification of the live checksum is saved, or
@@ -913,7 +1026,8 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  * @param bool $upgrade whether this run is a package upgrade's deinstall (pkg's PKG_UPGRADE is set)
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,

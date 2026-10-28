@@ -57,6 +57,7 @@ require_once __DIR__ . '/choose.php';
 require_once __DIR__ . '/state.php';
 require_once __DIR__ . '/planner.php';
 require_once __DIR__ . '/snapshot.php';
+require_once __DIR__ . '/control.php';
 require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/corecmd.php';
 
@@ -1380,71 +1381,6 @@ function uu_drill(string $server, string $name): bool
 }
 
 /**
- * What an unbound-control call answered: the reply (its stdout, newline-terminated) for exit 0, an empty one
- * included (an empty list is "\n"), or for exit 1 with output, which is how the daemon reports its own `error ...`
- * replies; null for no answer: exit 1 with empty stdout (a refused connect), a timeout (124), or any other exit
- * (`status` alone exits 3).
- */
-function uu_uc_result(int $rc, string $stdout): ?string
-{
-    if ($rc !== 0 && ($rc !== 1 || trim($stdout) === '')) {
-        return null;
-    }
-    return rtrim($stdout, "\r\n") . "\n";
-}
-
-/**
- * Run unbound-control under UU_CONTROL_CALL_TIMEOUT_SECONDS, without a shell, stdout and stderr apart. A non-zero
- * exit logs the output and the exit at warning level, whether the daemon replied with an error or refused the
- * connect. Null when nothing answered (uu_uc_result()), including a command that could not start.
- *
- * @param list<string> $args
- */
-function uu_uc_run(array $args): ?string
-{
-    $cmd = array_merge(['/usr/bin/timeout', (string)UU_CONTROL_CALL_TIMEOUT_SECONDS,
-        '/usr/local/sbin/unbound-control', '-c', '/var/unbound/unbound.conf'], $args);
-    $proc = proc_open($cmd, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
-    if (!is_resource($proc)) {
-        uu_log('unbound-control ' . implode(' ', $args) . ': could not start', LOG_WARNING);
-        return null;
-    }
-    $buf = [1 => '', 2 => ''];
-    $open = [1 => $pipes[1], 2 => $pipes[2]];
-    foreach ($open as $pipe) {
-        stream_set_blocking($pipe, false);
-    }
-    while ($open !== []) {
-        $read = array_values($open);
-        $write = null;
-        $except = null;
-        if (stream_select($read, $write, $except, 1) === false) {
-            break;
-        }
-        foreach ($open as $n => $pipe) {
-            $chunk = fread($pipe, 8192);
-            if ($chunk !== false && $chunk !== '') {
-                $buf[$n] .= $chunk;
-            }
-            if (feof($pipe)) {
-                fclose($pipe);
-                unset($open[$n]);
-            }
-        }
-    }
-    foreach ($open as $pipe) {
-        fclose($pipe);
-    }
-    $rc = proc_close($proc);
-    if ($rc !== 0) {
-        uu_log('unbound-control ' . implode(' ', $args) . ' (exit ' . $rc . '): '
-            . implode('; ', array_filter(array_map('trim', [$buf[1], $buf[2]]), fn (string $l): bool => $l !== '')),
-            LOG_WARNING);
-    }
-    return uu_uc_result($rc, $buf[1]);
-}
-
-/**
  * The real I/O. Every unbound-control call runs under UU_CONTROL_CALL_TIMEOUT_SECONDS (uu_uc_run()); a failing
  * route call logs its output here, where the output is known. Every restart, whatever its cause,
  * is uu_unbound_restart(): core's restart through configd, else core's own command.
@@ -1486,104 +1422,3 @@ function uu_live_io(string $statePath): array
         },
     ];
 }
-
-/**
- * Right after a start Unbound's control socket accepts before its workers serve it, so a silent
- * channel with a live pid is retried for up to UU_CONTROL_WAIT_SECONDS before the planner sees it as silent. Not
- * while the run is a stop (uu_plan_stop_reason) and has nothing live to undo. A channel that answers after the wait
- * gets the view read again (uu_view_read(), with the daemon lists), unless the snapshot ran no view command: the
- * evaluation an Unbound start queues must see the view as loaded.
- * $liveRoot, $uc and $sleep are for the tests.
- *
- * @param array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
- *     trigger: string, tiers: list<list<string>>, family: string,
- *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
- *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
- *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
- *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>, stop: ?string,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
- *         ours: bool}>,
- *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int,
- *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
- *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
- *         resolver_notes: list<string>, no_next_hop: list<string>,
- *         rules: array{state: string, problems: list<string>},
- *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
- *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
- *     upgrade: bool,
- *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
- *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
- *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}} $s
- * @param string $mode the saved state's mode
- * @return array{now: int, wall: int,
- *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
- *     trigger: string, tiers: list<list<string>>, family: string,
- *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
- *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
- *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>,
- *     probes: array<string, array{status: string, loss: string, sock_age: ?int, cached: ?string}>,
- *     named: list<string>, stop: ?string,
- *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
- *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
- *         ours: bool}>,
- *     route_flags: array<string, list<string>>,
- *     fib_sync_ms: ?int,
- *     contract_input: array{unbound_hooks_registered: bool, unbound_sorts_first: bool, groups_have_tiers: bool,
- *         status_fields: bool, monitors: array<string, list<string>>, statics: array<string, list<string>>,
- *         unmonitored_members: list<string>, foreign: list<string>, member_resolvers: array<string, string>,
- *         resolver_notes: list<string>, no_next_hop: list<string>,
- *         rules: array{state: string, problems: list<string>},
- *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
- *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
- *     rules: array{state: string, problems: list<string>, verified_at: ?int,
- *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
- *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
- *     upgrade: bool,
- *     view: array{scope: string, nets: list<string>, notes: list<string>, acl: ?array{nodes: list<array{net: string,
- *         action: string}>, foreign: list<string>}, zones: ?array<string, string>, data: ?list<string>,
- *         loaded: string, view_zones: array<string, string>, view_data: list<string>, file: ?string,
- *         copy: ?string}}
- */
-function uu_wait_control(array $s, string $mode, ?callable $liveRoot = null, ?callable $uc = null,
-    ?callable $sleep = null): array
-{
-    $u = $s['unbound'];
-    if ($u['control_ok'] || !$u['pid_alive'] || (uu_plan_stop_reason($s) !== null && $mode !== 'tunnel')) {
-        return $s;
-    }
-    $liveRoot ??= 'uu_live_root';
-    $uc ??= 'uu_uc_run';
-    $sleep ??= 'sleep';
-    $deadline = hrtime(true) + UU_CONTROL_WAIT_SECONDS * 1000000000;
-    while (hrtime(true) < $deadline) {
-        $sleep(1);
-        $live = $liveRoot();
-        if ($live !== null) {
-            $s['unbound']['control_ok'] = true;
-            $s['unbound']['live_root'] = $live;
-            if ($s['view']['loaded'] !== 'skipped') {
-                $s['view'] = uu_view_read($s['view'], $uc, true);
-            }
-            break;
-        }
-    }
-    return $s;
-}
-
