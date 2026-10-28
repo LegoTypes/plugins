@@ -52,9 +52,10 @@ declare(strict_types=1);
  *
  * The fail-closed view keeps these on every path:
  *   - the refuse of "." is armed before a fallback's restore, which runs whatever the arm's outcome;
- *   - it is lifted only once the live root is the resolver (entry and reassert confirmed) or the configured root zone
- *     (a stop's restore, its restart, or nothing to restore), never by a stop that kept the view (an upgrade, a tick
- *     of the removal) or that could not restore;
+ *   - it is lifted only once the live root is the resolver (an entry's or a reassert's confirm, or the snapshot's
+ *     read when staying needs no reassert) or the configured root zone (a stop's restore, its restart, or nothing to
+ *     restore; the fallback of an emptied set), never by a stop that kept the view (an upgrade, a tick of the
+ *     removal) or that could not restore;
  *   - no view command runs unless the set is read as loaded or the read shows the refuse of ".", so an owner with
  *     nothing selected gets 1.4's calls exactly.
  */
@@ -427,7 +428,9 @@ final class UuApplyRun
                     break;
                 default:
                     $this->none();
-                    $this->reconcile();
+            }
+            if (!in_array($this->p['action'], ['stop', 'skip'], true)) {
+                $this->reconcile();
             }
             if ($this->p['action'] !== 'stop') {
                 $this->viewRecord();
@@ -448,7 +451,8 @@ final class UuApplyRun
 
     /**
      * The configured forwarders back if Unbound may be on one of the plugin's addresses, then the view's refuse
-     * lifted (unless the stop keeps the view: an upgrade, a tick of the removal), then every route the plugin made
+     * lifted (unless the stop keeps the view: an upgrade, a tick of the removal; after a restart over the plugin's
+     * file the view is read back first, since the restart armed it), then every route the plugin made
      * drained and deleted, ignoring any orphan's hold. A restore that failed ends in a restart (restartForStop()), and
      * when that fails too, in stopIncomplete(), which keeps the refuse. Nothing is logged while there is nothing to
      * undo (uu_apply_undo_due()), which the minute job's ticks would otherwise repeat.
@@ -464,9 +468,14 @@ final class UuApplyRun
         if ($this->st['mode'] === 'tunnel' && $this->st['member'] !== null) {
             $was[$this->resolverOf($this->st['member'])] = true;
         }
-        if (!$this->restore() && !$this->restartForStop()) {
+        $restored = $this->restore();
+        if (!$restored && !$this->restartForStop()) {
             $this->stopIncomplete($was);
             return;
+        }
+        if (!$restored && ($this->s['view']['file'] !== null || $this->s['view']['copy'] !== null)) {
+            /* the restart loaded the plugin's file, refuse included, whatever the read before it gave */
+            $this->viewRead();
         }
         if (!$this->p['view']['keep']) {
             $this->lift(uu_plan_stop_reason($this->s) ?? ($this->s['settings']['dry_run'] ? 'dry run' : 'stop'));
@@ -1134,8 +1143,10 @@ final class UuApplyRun
 
     /**
      * The set refused: the refuse of "." in the view, then each zone that passes names on (the mirror's) at its class,
-     * static or refuse; confirmed only by the view's zones read back with the refuse of ".". A failure is the run's
-     * view problem, with the first failed reply, else the read's.
+     * static or refuse, every one tried past a refused one (a zone left noview passes its names on, the open side);
+     * confirmed only by the view's zones read back holding each wanted zone at its armed type (viewMissing()). A
+     * failure is the run's view problem, with the first failed reply, else the read's, and the state's refuse as the
+     * read shows it.
      */
     private function arm(): void
     {
@@ -1144,10 +1155,14 @@ final class UuApplyRun
             $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone,
                         uu_view_zone_class($this->p['view']['zones'][$zone] ?? '')];
         }
-        $failed = $this->viewCalls($calls);
+        $failed = $this->viewCalls($calls, true);
         $read = $this->viewConfirm(true);
-        if ($read !== null) {
-            $this->viewFault('Fail closed not armed: ' . ($failed ?? $read));
+        $missing = $read === null ? $this->viewMissing() : null;
+        if ($read !== null || $missing !== null) {
+            if ($this->viewArmed !== null) {
+                $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
+            }
+            $this->viewFault('Fail closed not armed: ' . ($failed ?? $read ?? "the view does not list $missing"));
             return;
         }
         $this->st['view']['refuse'] = 'armed';
@@ -1162,6 +1177,9 @@ final class UuApplyRun
      * nothing selected gets no view command. A failure leaves the set refused, which fails closed but is a fault: the
      * run's view problem, tried again by the next evaluation.
      *
+     * The event line is logged only for a refuse that was there: an active view already lifted gets the commands (its
+     * zones back to noview) without it.
+     *
      * @param string $why what the lift follows: the member entered or kept, or the stop's cause
      */
     private function lift(string $why): void
@@ -1169,11 +1187,12 @@ final class UuApplyRun
         if (!$this->p['view']['active'] && $this->viewArmed !== true) {
             return;
         }
+        $was = $this->viewArmed === true;
         $calls = [['view_local_zone_remove', UU_VIEW_NAME, '.']];
         foreach (array_keys($this->p['view']['mirror']) as $zone) {
             $calls[] = ['view_local_zone', UU_VIEW_NAME, (string)$zone, 'noview'];
         }
-        $failed = $this->viewCalls($calls);
+        $failed = $this->viewCalls($calls, false);
         $read = $this->viewConfirm(false);
         if ($read !== null) {
             $this->viewFault('Fail closed stuck: ' . ($failed ?? $read));
@@ -1182,7 +1201,9 @@ final class UuApplyRun
         /* a view no longer loaded is none */
         $this->st['view']['refuse'] = $this->viewArmed === null ? 'none' : 'lifted';
         $this->st['view']['problem'] = null;
-        $this->log("fail closed: lifted ($why)", LOG_ERR);
+        if ($was) {
+            $this->log("fail closed: lifted ($why)", LOG_ERR);
+        }
     }
 
     /** A view still holding the refuse of "." with nothing selected any more (an empty set at Apply): lifted. */
@@ -1194,10 +1215,11 @@ final class UuApplyRun
     }
 
     /**
-     * The loaded view brought to the wanted one while the set is read as loaded (uu_view_reconcile()): zones added or
-     * retyped, stale ones removed, a stale record's name removed and its wanted records added back, each change
-     * logged. Nothing while the refuse is unknown, nor while the daemon's zones or records could not be read (every
-     * zone of the view would look stale); a call that gets no answer ends it.
+     * The loaded view brought to the wanted one while the set is read as loaded (uu_view_reconcile()), after every run
+     * but a stop's or a silent channel's, from the view as the run last read it (its arm's or lift's read back
+     * included): zones added or retyped, stale ones removed, a stale record's name removed and its wanted records
+     * added back, each change logged. Nothing while the refuse is unknown, nor while the daemon's zones or records
+     * could not be read (every zone of the view would look stale); a call that gets no answer ends it.
      */
     private function reconcile(): void
     {
@@ -1229,19 +1251,50 @@ final class UuApplyRun
             if ($out === null) {
                 return;
             }
+            if ($failed === null && $args[0] === 'view_local_zone') {
+                $this->viewZones[$args[2]] = $args[3];
+            } elseif ($failed === null && $args[0] === 'view_local_zone_remove') {
+                unset($this->viewZones[$args[2]]);
+            }
         }
     }
 
     /**
      * The state's refuse as the loaded set's view holds it at the end of a run that is no stop, so a refuse that
-     * Unbound's start or reload put back, or one already there at a fallback, is recorded too. A stop leaves it to the
-     * stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next starts.
+     * Unbound's start or reload put back, or one already there at a fallback, is recorded too; and an arm's or a
+     * lift's own fault cleared once the view holds what the mode wants (fallback: armed with every wanted zone;
+     * tunnel: lifted), however it got there (a lost reply that took effect, a reload, the reconcile). A stop leaves
+     * it to the stop's own lift and the file step: its view stays loaded, without the refuse, until Unbound next
+     * starts.
      */
     private function viewRecord(): void
     {
-        if ($this->p['view']['active'] && $this->viewArmed !== null) {
-            $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
+        if (!$this->p['view']['active'] || $this->viewArmed === null) {
+            return;
         }
+        $this->st['view']['refuse'] = $this->viewArmed ? 'armed' : 'lifted';
+        $problem = $this->st['view']['problem'] ?? '';
+        $ours = str_starts_with($problem, 'Fail closed not armed: ')
+            || str_starts_with($problem, 'Fail closed stuck: ');
+        $holds = $this->st['mode'] === 'tunnel' ? !$this->viewArmed : $this->viewArmed && $this->viewMissing() === null;
+        if ($ours && $holds) {
+            $this->st['view']['problem'] = null;
+        }
+    }
+
+    /**
+     * The first zone the armed view should hold at its armed type (uu_view_wanted(), "." apart) that the view as last
+     * read does not, as "<zone> <type>"; null when it holds every one.
+     */
+    private function viewMissing(): ?string
+    {
+        $wanted = uu_view_wanted($this->p['view']['zones'], $this->p['view']['mirror'], true)['zones'];
+        foreach ($wanted as $zone => $type) {
+            if ($zone !== '.' && ($this->viewZones[$zone] ?? null) !== $type) {
+                return "$zone $type";
+            }
+        }
+        return null;
     }
 
     /**
@@ -1250,15 +1303,11 @@ final class UuApplyRun
      */
     private function viewConfirm(bool $refused): ?string
     {
-        $out = $this->viewCall(['view_list_local_zones', UU_VIEW_NAME]);
-        $zones = $out === null ? null : uu_view_parse_list($out);
-        if ($zones === null) {
-            $this->viewArmed = null;
+        $out = $this->viewRead();
+        if ($this->viewArmed === null) {
             $absent = $out !== null && str_starts_with(ltrim($out), 'no view with name');
             return $absent && !$refused ? null : $this->viewText($out);
         }
-        $this->viewZones = $zones;
-        $this->viewArmed = ($zones['.'] ?? null) === 'refuse';
         if ($this->viewArmed === $refused) {
             return null;
         }
@@ -1266,19 +1315,39 @@ final class UuApplyRun
     }
 
     /**
-     * The view commands in order until one does not answer ok: null when each did, else why the first did not.
+     * Read the view's zones: the run's view as Unbound now holds it, the refuse unknown for a reply that is not the
+     * view's zones. The reply, null when nothing answered.
+     */
+    private function viewRead(): ?string
+    {
+        $out = $this->viewCall(['view_list_local_zones', UU_VIEW_NAME]);
+        $zones = $out === null ? null : uu_view_parse_list($out);
+        if ($zones === null) {
+            $this->viewArmed = null;
+            return $out;
+        }
+        $this->viewZones = $zones;
+        $this->viewArmed = ($zones['.'] ?? null) === 'refuse';
+        return $out;
+    }
+
+    /**
+     * The view commands in order: null when each answered ok, else why the first did not. They stop at the first that
+     * did not, or with $onPast only at one that got no answer (each silent call costs the timeout).
      *
      * @param list<list<string>> $calls
      */
-    private function viewCalls(array $calls): ?string
+    private function viewCalls(array $calls, bool $onPast): ?string
     {
+        $first = null;
         foreach ($calls as $args) {
-            $failed = $this->viewWhy($this->viewCall($args));
-            if ($failed !== null) {
-                return $failed;
+            $out = $this->viewCall($args);
+            $first ??= $this->viewWhy($out);
+            if ($first !== null && (!$onPast || $out === null)) {
+                break;
             }
         }
-        return null;
+        return $first;
     }
 
     /**

@@ -76,13 +76,15 @@ function uu_test_apply_snapshot(): array
  * @param ArrayObject<int, string> $all
  * @param array{direct?: array<string, list<bool>>, unbound?: list<bool>, uc_fail?: list<string>,
  *     uc_lost?: list<string>, forward_out?: string, route_fail?: list<string>, restart?: bool, silent?: bool,
- *     restart_live?: list<string>, throw_on?: string, restarts?: bool} $o
+ *     restart_live?: list<string>, restart_view?: array<string, string>, throw_on?: string, restarts?: bool} $o
  *   direct: per device, successive direct probe results (true when absent or used up); unbound: successive
  *   through-Unbound results (true when used up); uc_fail and route_fail: commands or verbs that fail once each,
- *   in order (a route_fail entry "<verb> <address>" fails only that address's call); uc_lost: commands that take
+ *   in order (a route_fail entry "<verb> <address>" fails only that address's call, a uc_fail entry that is a whole
+ *   command line only that call); uc_lost: commands that take
  *   effect but whose reply is lost once each (null, as a timeout); forward_out: what `forward` prints instead of the
  *   fake's live root; silent: every unbound-control call times out (null) until a restart that sets restart_live as
- *   the live root; throw_on: the Io function that throws, after recording its call; restarts: the case expects a
+ *   the live root and restart_view as the view's zones (the plugin's file loaded); throw_on: the Io function that
+ *   throws, after recording its call; restarts: the case expects a
  *   restart (the sweep at the end allows one nowhere else)
  * @return array{io: array{route: callable(string, list<string>): bool, sleep_ms: callable(int): void,
  *     probe_direct: callable(string, string): bool, probe_unbound: callable(string): bool,
@@ -232,7 +234,7 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             }
             $cmd = (string)($args[0] ?? '');
             $lost = $failOnce($ucLost, $cmd);
-            if (!$lost && $failOnce($ucFail, $cmd)) {
+            if (!$lost && ($failOnce($ucFail, $cmd) || $failOnce($ucFail, implode(' ', $args)))) {
                 return 'error failed';
             }
             if (str_starts_with($cmd, 'view_')) {
@@ -255,11 +257,15 @@ function uu_test_io(array $s, ArrayObject $all, array $o = []): array
             }
             return $lost ? null : "ok\n";
         },
-        'restart_unbound' => function () use ($record, $o, $silent, $live): bool {
+        'restart_unbound' => function () use ($record, $o, $silent, $live, $view): bool {
             $record('restart');
             if (isset($o['restart_live'])) {
                 $silent['silent'] = false;
                 $live['live'] = $o['restart_live'];
+            }
+            if (isset($o['restart_view'])) {
+                $view['loaded'] = true;
+                $view['zones'] = $o['restart_view'];
             }
             return $o['restart'] ?? true;
         },
@@ -427,8 +433,8 @@ uu_register_suite('apply', function (): int {
     $rLost = uu_test_io($s, $all, ['uc_lost' => ['view_local_zone', 'view_list_local_zones']]);
     $stLost = uu_apply($p, $s, $rLost['io']);
     uu_check($t, 'apply: a failed arm still restores and reports',
-        uu_test_acts($r['calls']) === ["uc view_local_zone $vName . refuse", "uc view_list_local_zones $vName",
-            $restoreDot, 'uc forward', $reject]
+        uu_test_acts($r['calls']) === array_merge($armCalls, [$restoreDot, 'uc forward', $reject,
+            "uc view_local_zone $vName corp.example. noview", "uc view_local_zone $vName lab.example. noview"])
         && $st['mode'] === 'fallback' && $st['view']['refuse'] === 'lifted'
         && $st['view']['problem'] === 'Fail closed not armed: error failed'
         && $hasLine($r['calls'], LOG_ERR, 'Fail closed not armed: error failed')
@@ -693,6 +699,81 @@ uu_register_suite('apply', function (): int {
             "uc view_local_zone_remove $vName gone.example."]
         && $hasLine($r['calls'], LOG_WARNING, 'fail closed: zone +corp.example. static failed: error failed')
         && $hasLine($r['calls'], LOG_WARNING, 'fail closed: zone -gone.example. failed: no answer'));
+
+    $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all, ['uc_lost' => ['view_local_zone', 'view_list_local_zones']]);
+    $st = uu_apply($p, $s, $r['io']);
+    $s2 = $inFallback($viewed(uu_test_apply_snapshot(), true));
+    $p2 = uu_plan($s2, $st);
+    $r2 = uu_test_io($s2, $all);
+    $st2 = uu_apply($p2, $s2, $r2['io']);
+    $stuck = $armedState(uu_test_plan_state('wg-a', $usable));
+    $stuck['view']['problem'] = 'Fail closed stuck: error failed';
+    $s3 = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $r3 = uu_test_io($s3, $all);
+    $st3 = uu_apply(uu_plan($s3, $stuck), $s3, $r3['io']);
+    uu_check($t, 'apply: a fault clears once the view holds what the mode wants (a lost arm reply, then a staying '
+        . 'tick; a stuck lift, then a reload in tunnel mode)',
+        $st['view']['problem'] === 'Fail closed not armed: no answer'
+        && $p2['action'] === 'none' && $viewActs($r2['calls']) === [] && $st2['view']['refuse'] === 'armed'
+        && $st2['view']['problem'] === null
+        && $viewActs($r3['calls']) === [] && $st3['view']['refuse'] === 'lifted' && $st3['view']['problem'] === null);
+
+    $corpArm = "view_local_zone $vName corp.example. static";
+    $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all, ['uc_fail' => [$corpArm, $corpArm]]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'apply: an arm that leaves a mirrored zone noview is not armed, and the zones after it are still set',
+        uu_test_acts($r['calls']) === array_merge($armCalls, [$restoreDot, 'uc forward', $reject, "uc $corpArm"])
+        && $st['mode'] === 'fallback' && $st['view']['refuse'] === 'armed'
+        && $st['view']['problem'] === 'Fail closed not armed: error failed'
+        && $hasLine($r['calls'], LOG_ERR, 'Fail closed not armed: error failed')
+        && !uu_test_logged($r['calls'], LOG_ERR, 'refused (no usable member)')
+        && $hasLine($r['calls'], LOG_WARNING, 'fail closed: zone +corp.example. static failed: error failed'));
+
+    $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $s['settings']['enabled'] = false;
+    $s['unbound']['control_ok'] = false;
+    $s['unbound']['live_root'] = null;
+    $s['view'] = ['loaded' => 'silent', 'zones' => null, 'data' => null, 'view_zones' => [],
+                  'view_data' => []] + $s['view'];
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable, UU_ESCALATE_EVALUATIONS - 1,
+        $now - UU_ESCALATE_MIN_SECONDS));
+    $r = uu_test_io($s, $all, ['silent' => true, 'restart_live' => ['192.0.2.53', '2001:db8::53'], 'restarts' => true,
+        'restart_view' => ['.' => 'refuse', 'corp.example.' => 'static', 'localhost.' => 'noview']]);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'apply: a stop whose restart loaded the plugin\'s file reads the view back and lifts it',
+        $p['action'] === 'stop' && $p['view']['armed'] === null && !$p['view']['active']
+        && uu_test_acts($r['calls']) === [$restoreDot, 'restart', 'uc forward', "uc view_list_local_zones $vName",
+            "uc view_local_zone_remove $vName .", "uc view_list_local_zones $vName", $reject, $flushReq, $drain,
+            'route delete -inet -host 10.2.0.1']
+        && $st['mode'] === 'fallback' && $st['view']['refuse'] === 'lifted'
+        && $hasLine($r['calls'], LOG_ERR, 'fail closed: lifted (disabled in settings)'));
+
+    $s = $viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false);
+    $s['members']['wg-a']['force_down'] = true;
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'apply: a member change with the set lifted runs the lift\'s commands but logs no lift',
+        $p['action'] === 'tunnel' && $st['member'] === 'wg-b' && $viewActs($r['calls']) === $liftCalls
+        && $st['view']['refuse'] === 'lifted' && !uu_test_logged($r['calls'], LOG_ERR, 'ail closed'));
+
+    $s = $bothDown($viewed(uu_test_in_tunnel(uu_test_apply_snapshot(), 'wg-a'), false));
+    $s['view']['view_zones']['gone.example.'] = 'noview';
+    $s['view']['view_data'] = [];
+    $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
+    $r = uu_test_io($s, $all);
+    $st = uu_apply($p, $s, $r['io']);
+    uu_check($t, 'apply: a fallback reconciles the view in its own run',
+        $p['action'] === 'fallback'
+        && uu_test_acts($r['calls']) === array_merge($armCalls, [$restoreDot, 'uc forward', $reject,
+            "uc view_local_zone_remove $vName gone.example.", "uc view_local_data $vName $vRecord"])
+        && $hasLine($r['calls'], LOG_NOTICE, 'fail closed: zone -gone.example.')
+        && $hasLine($r['calls'], LOG_NOTICE, 'fail closed: data +host.corp.example. A')
+        && $st['view']['refuse'] === 'armed' && $st['view']['problem'] === null);
 
     // The control channel's reply: only no answer is silence; the daemon's own error reply is text.
     uu_check($t, 'uc: exit 0 no view with name is text',
