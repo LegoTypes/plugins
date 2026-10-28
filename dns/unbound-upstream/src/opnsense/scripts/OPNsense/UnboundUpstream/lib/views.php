@@ -38,6 +38,9 @@ const UU_VIEW_UNLOADED = 'Fail closed not armed: restart Unbound to load the vie
 /* the file step's reason when the start it restarted Unbound for did not load the file's node lines */
 const UU_VIEW_NOT_LOADED = "Fail closed not armed: Unbound's start did not load the view file "
     . '(restart Unbound to load it)';
+/* the file step's reason when the start it restarted Unbound for kept the copy of a file it deleted */
+const UU_VIEW_NOT_DROPPED = "Fail closed: Unbound's start kept the copy of the deleted view file "
+    . '(restart Unbound to drop it)';
 
 /** Zone types whose names are answered from the zone itself or from the owner's chosen target: the view skips them. */
 const UU_VIEW_NOVIEW_TYPES = ['static', 'redirect', 'deny', 'refuse', 'always_refuse', 'always_nxdomain',
@@ -620,26 +623,29 @@ function uu_view_step_problem(?string $problem): bool
 
 /**
  * The file step (spec 3.2, 3.4, 3.6, 3.8), decided from the view as the snapshot read it, the planner's view share
- * (uu_plan_view()) and the state's view record as apply left it: the text to write, whether the file and its copy go,
- * whether Unbound restarts, the line the restart (or dry run) logs, and the view record once all of it has run.
+ * (uu_plan_view()) and the state's view record as apply left it: the text to write, whether the plugin's file goes,
+ * whether Unbound restarts, the line the restart (or dry run) logs, and the view record once all of it has run. The
+ * plugin writes and deletes only its own file in /usr/local/etc/unbound.opnsense.d, never the copy in
+ * /var/unbound/etc, which core's start empties and refills: the copy goes with core's restart.
  * - A stop the view is kept through (an upgrade's, a tick of the removal): nothing, the record as it is.
- * - No file wanted (nothing selected, or any other stop): the file and its copy deleted, never a restart (the loaded
- *   view keeps its nets without the refuse until Unbound next starts); refuse none and no problem once nothing is on
- *   disk. They are held, so the next tick reads the view and lifts it, while the view may still refuse: the record
+ * - No file wanted (nothing selected, or any other stop): the file deleted and, while a copy with node lines is
+ *   loaded, Unbound restarted so the copy goes too; refuse none, and no problem but this run's. File and copy are
+ *   held, so the next tick reads the view and lifts it, while the view may still refuse: the record
  *   says armed after apply (a lift that failed records it) and this run's read did not show the view without the
  *   refuse of "." (it showed the refuse, or got no answer: silent, or Unbound down); or a stop could not restore (it
  *   stays in tunnel mode). The record, not the read before apply: a lift that took (a removal's) deletes at once.
  * - A view the plugin does not own in Unbound's configuration, or an Unbound without view commands: nothing written,
- *   the file and its copy deleted, and the planner's reason.
+ *   the file deleted, and the planner's reason.
  * - Unbound not running (the planner's stop action without a stop reason is no stop of the plugin), or a selected set
  *   with no net (its interfaces have no address): the file kept, for Unbound's next start.
  * - Else the file rendered from core's ACL nodes and Unbound's zones and records, only from reads that all answered,
  *   only when the text passes its shape check and fits what the plugin reads back (UU_FILE_MAX_BYTES; else the file
  *   kept, and why), and written when its bytes differ. A record the file cannot carry (uu_view_unwritable()) is left
  *   to the reconcile, and counted in the problem.
- * Unbound restarts only when the file on disk after the step names other ACL nodes than the copy Unbound loaded, while
- * it runs and is enabled, and never twice for the same node lines (restarted holds their hash until the copy holds
- * them): a start that did not load them is reported, not repeated. The restart is the remedy for the planner's
+ * Unbound restarts only when the file on disk after the step (no file: no node lines) names other ACL nodes than the
+ * copy Unbound loaded, while it runs and is enabled, and never twice for the same node lines (restarted holds their
+ * hash until the copy holds them): a start that did not load them, or did not drop a deleted file's copy, is reported,
+ * not repeated. The restart is the remedy for the planner's
  * "restart Unbound to load the view", and refuse is then armed (the file's refuse of "."), or none without a file. The
  * problem is this run's reason, else apply's fault (uu_view_step_problem() says which are not the step's). Dry run
  * writes, deletes and restarts nothing: its line says what would be done. Pure.
@@ -670,7 +676,11 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
     $step['record']['nets'] = uu_view_refused_nets($view['file']);
     $step['record']['problem'] = $problem(null);
     $exists = $view['file_present'] || $view['copy'] !== null;
-    if (uu_view_file_unwanted($view['scope'], $stopping, $planView['keep'])) {
+    $unwanted = uu_view_file_unwanted($view['scope'], $stopping, $planView['keep']);
+    $foreign = $view['acl']['foreign'] ?? [];
+    $write = null;
+    $skipped = 0;
+    if ($unwanted) {
         /* the record says armed after apply (a lift that failed, or none tried), unless this run's read showed the
          * view without the refuse of "."; a read that got no answer (silent, Unbound down) does not show it */
         $refused = $record['refuse'] === 'armed'
@@ -678,22 +688,12 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         if ($exists && ($refused || ($stopping && $mode === 'tunnel'))) {
             return $step;
         }
-        if ($exists && $dry) {
-            $step['line'] = '[dry] fail closed: would delete the view file and its copy';
-            return $step;
-        }
-        $step['delete'] = $exists;
-        $step['record'] = ['refuse' => 'none', 'scope' => $view['scope'], 'nets' => [], 'problem' => null,
-                           'restarted' => null];
-        return $step;
-    }
-    $foreign = $view['acl']['foreign'] ?? [];
-    $write = null;
-    $delete = false;
-    $skipped = 0;
-    if ($view['loaded'] === 'unsupported' || $foreign !== []) {
         $after = null;
-        $delete = $exists;
+        $delete = $view['file_present'];
+        $reason = null;
+    } elseif ($view['loaded'] === 'unsupported' || $foreign !== []) {
+        $after = null;
+        $delete = $view['file_present'];
         $reason = $planView['problem'];
     } elseif (!$unboundRunning || ($view['scope'] === 'selected' && $view['nets'] === [])) {
         return $step;
@@ -720,19 +720,23 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
             return $step;
         }
         $write = $after === $view['file'] ? null : $after;
+        $delete = false;
         $reason = $planView['problem'];
         $skipped = count(uu_view_unwritable($mirror));
     }
+    /* one rule for every restart: the node lines of the file on disk after the step (none without a file) against
+     * the copy's, which Unbound loaded; core's start empties and refills /var/unbound/etc, so a restart is also what
+     * takes a deleted file's copy away */
     $nodes = uu_view_node_lines($after);
     $hash = hash('sha256', implode("\n", $nodes));
     $differs = $nodes !== uu_view_node_lines($view['copy']);
     $restart = $unboundRunning && $unboundEnabled && $differs;
     $restarted = $differs ? $record['restarted'] : null;
-    $render = $view['loaded'] !== 'unsupported' && $foreign === [];
+    $render = !$unwanted && $view['loaded'] !== 'unsupported' && $foreign === [];
     if ($restart && $record['restarted'] === $hash) {
-        /* this run would restart for the node lines the last restart was for, and the copy still lacks them */
+        /* this run would restart for the node lines the last restart was for, and the copy still differs */
         $restart = false;
-        $reason = $render ? UU_VIEW_NOT_LOADED : $reason;
+        $reason = $render ? UU_VIEW_NOT_LOADED : ($unwanted ? UU_VIEW_NOT_DROPPED : $reason);
     } elseif ($restart && !$dry) {
         $restarted = $hash;
         $reason = $render ? null : $reason;
@@ -745,13 +749,17 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         return $nets === [] ? 'none' : implode(', ', $nets);
     };
     $change = 'the refused nets changed (' . $list($view['copy']) . ' -> ' . $list($after) . ')';
+    /* with no file wanted the view no longer refuses (else it was held above): nothing is armed, and only this run's
+     * reason is left to report */
+    $final = $unwanted ? ['refuse' => 'none', 'scope' => $view['scope'], 'nets' => [], 'problem' => $reason,
+        'restarted' => $restarted] : null;
     if ($dry) {
         $would = [];
         if ($write !== null) {
             $would[] = 'would write the view file';
         }
         if ($delete) {
-            $would[] = 'would delete the view file and its copy';
+            $would[] = 'would delete the view file';
         }
         if ($restart) {
             $would[] = "$change: would restart Unbound"
@@ -759,6 +767,9 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         }
         $step['line'] = $would === [] ? null : '[dry] fail closed: ' . implode('; ', $would);
         $step['record']['problem'] = $problem($reason);
+        if ($final !== null && $would === []) {
+            $step['record'] = $final;
+        }
         return $step;
     }
     return [
@@ -767,7 +778,7 @@ function uu_view_file_step(array $view, array $planView, array $record, string $
         'restart' => $restart,
         'line' => $restart ? "fail closed: $change: restarting Unbound"
             . ($cacheflush ? '; the cache is flushed (cacheflush is on)' : '') : null,
-        'record' => [
+        'record' => $final ?? [
             'refuse' => $restart ? ($after === null ? 'none' : 'armed') : $record['refuse'],
             'scope' => $view['scope'],
             'nets' => uu_view_refused_nets($after),

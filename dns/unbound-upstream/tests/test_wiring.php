@@ -1427,19 +1427,22 @@ VOLT;
                 && str_contains($text, 'access-control: 192.0.2.0/24 allow_snoop')
                 && str_contains($text, "    local-data: 'txt.example.internal. 3600 IN TXT \"v=spf1  -all\" \"two\\\"q\"'\n");
         }));
-    uu_check($t, 'delete: the view file and its copy go, and a missing one is no failure',
+    uu_check($t, 'delete: only the plugin\'s file goes (and a candidate beside it), and a missing one is no failure',
         uu_scratch_case(function (string $dir) use ($recordLog): bool {
             $file = "$dir/unboundupstream.conf";
-            $copy = "$dir/copy.conf";
             file_put_contents($file, "x\n");
-            file_put_contents($copy, "x\n");
+            file_put_contents("$file.new", "x\n");
             $lines = [];
-            $both = uu_view_delete($recordLog($lines), $file, $copy);
-            $again = uu_view_delete($recordLog($lines), $file, $copy);
+            $deleted = uu_view_delete($recordLog($lines), $file);
+            $again = uu_view_delete($recordLog($lines), $file);
             clearstatcache();
-            return $both && $again && !file_exists($file) && !file_exists($copy)
-                && $lines === [[LOG_NOTICE, 'fail closed: the view file and its copy were deleted']];
+            return $deleted && $again && !file_exists($file) && !file_exists("$file.new")
+                && $lines === [[LOG_NOTICE, 'fail closed: the view file was deleted']];
         }));
+    $corecmdSource = (string)file_get_contents(__DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/'
+        . 'corecmd.php');
+    uu_check($t, 'delete: the plugin never names a path in /var/unbound/etc to write or delete',
+        !str_contains($corecmdSource, '/var/unbound/etc/') && !defined('UU_VIEW_COPY'));
     $evaluateSource = (string)file_get_contents(__DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/'
         . 'evaluate.php');
     $body = function (string $name) use ($evaluateSource): string {

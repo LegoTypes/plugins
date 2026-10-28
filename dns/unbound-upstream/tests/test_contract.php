@@ -298,7 +298,7 @@ uu_register_suite('contract', function (): int {
                 && $with === [0, ['LOGGED -p local4.notice -t dnsupstream fail closed: the package is being removed or '
                     . 'upgraded with the fail-closed view file in place; after a failed upgrade, a downgrade to 1.4 or '
                     . 'a removal that could not finish, recover with: rm '
-                    . '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf /var/unbound/etc/unboundupstream.conf; '
+                    . '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf; '
                     . 'configctl unbound restart', 'REMOVE remove']];
         }));
 

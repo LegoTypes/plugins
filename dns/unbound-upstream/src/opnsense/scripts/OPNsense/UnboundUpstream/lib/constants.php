@@ -20,7 +20,6 @@ const UU_CONTROL_WAIT_SECONDS = 15;       /* wait for Unbound's control channel 
 const UU_CONTROL_CALL_TIMEOUT_SECONDS = 5; /* every unbound-control call has a timeout */
 const UU_VIEW_NAME = 'unboundupstream';   /* the Unbound view the fail-closed set refuses internet names in */
 const UU_VIEW_FILE = '/usr/local/etc/unbound.opnsense.d/unboundupstream.conf'; /* the rendered view, root's directory */
-const UU_VIEW_COPY = '/var/unbound/etc/unboundupstream.conf'; /* start.sh's copy inside Unbound's chroot */
 const UU_CHECKCONF_SECONDS = 10;          /* unbound-checkconf of a new view file is killed after this long; the VM
                                            * measured it under 10 ms */
 const UU_ESCALATE_EVALUATIONS = 3;        /* silent control channel this many evaluations before a restart */

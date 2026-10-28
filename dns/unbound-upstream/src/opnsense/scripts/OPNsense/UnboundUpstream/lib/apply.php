@@ -59,8 +59,9 @@ declare(strict_types=1);
  *   - no view command runs unless the set is read as loaded or the read shows the refuse of ".", so an owner with
  *     nothing selected gets 1.4's calls exactly;
  *   - after apply, the file step (uu_view_file_apply(), uu_view_file_io() binds it) installs a view file only once
- *     unbound-checkconf passes it, deletes it only once the set is no longer refused, and restarts Unbound only when
- *     the refused nets change.
+ *     unbound-checkconf passes it, deletes it only once the set is no longer refused, never touches the copy in
+ *     /var/unbound/etc (core's start empties and refills it), and restarts Unbound through core's restart only when
+ *     the copy's node lines differ from the file's (a deleted file has none).
  */
 
 require_once __DIR__ . '/constants.php';
@@ -1741,7 +1742,7 @@ function uu_view_file_apply(array $p, array $s, array $st, array $io): array
         $restart = false;
     } elseif ($step['delete'] && !($io['delete'])()) {
         $record = array_merge($record, $kept,
-            ['problem' => 'Fail closed: the view file or its copy could not be deleted']);
+            ['problem' => 'Fail closed: the view file could not be deleted']);
         $restart = false;
     }
     if ($step['line'] !== null && ($restart || $dry)) {
@@ -1893,7 +1894,8 @@ function uu_live_io(string $statePath): array
 
 /**
  * The file step's real I/O (uu_view_file_apply()): the install through unbound-checkconf (uu_view_install()), the
- * delete of the file and its copy (uu_view_delete()), and Unbound's restart (uu_unbound_restart()).
+ * delete of the plugin's own file (uu_view_delete()), and Unbound's restart through core's
+ * (uu_unbound_restart()).
  *
  * @return array{install: callable(string): bool, delete: callable(): bool, restart: callable(): bool,
  *     log: callable(string, int): void}

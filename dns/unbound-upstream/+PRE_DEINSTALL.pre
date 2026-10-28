@@ -9,9 +9,10 @@
 # left half-way by a removal that failed, and the plugin log says what remove could not do.
 # On an upgrade (pkg sets PKG_UPGRADE) the stop keeps the fail-closed view's file and refuse, so the set stays refused
 # through the upgrade window. Should the upgrade fail, a downgrade to 1.4 follow, or the removal not finish, the
-# recovery commands are in the plugin log first: the delete keeps the view from loading again, the restart drops it.
+# recovery commands are in the plugin log first: the delete keeps the view from loading again, and core's restart
+# drops it (core's start empties and refills /var/unbound/etc, so its copy goes too).
 # Logged only while the file exists, so an owner with nothing selected gets no new line.
 if [ -f /usr/local/etc/unbound.opnsense.d/unboundupstream.conf ]; then
-	/usr/bin/logger -p local4.notice -t dnsupstream "fail closed: the package is being removed or upgraded with the fail-closed view file in place; after a failed upgrade, a downgrade to 1.4 or a removal that could not finish, recover with: rm /usr/local/etc/unbound.opnsense.d/unboundupstream.conf /var/unbound/etc/unboundupstream.conf; configctl unbound restart" || true
+	/usr/bin/logger -p local4.notice -t dnsupstream "fail closed: the package is being removed or upgraded with the fail-closed view file in place; after a failed upgrade, a downgrade to 1.4 or a removal that could not finish, recover with: rm /usr/local/etc/unbound.opnsense.d/unboundupstream.conf; configctl unbound restart" || true
 fi
 /usr/local/opnsense/scripts/OPNsense/UnboundUpstream/evaluate.php remove || true

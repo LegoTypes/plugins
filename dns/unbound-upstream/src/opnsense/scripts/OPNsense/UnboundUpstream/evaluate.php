@@ -254,8 +254,9 @@ function uu_evaluate_once(array $settings, array $named, ?string $stop, bool $up
 
 /**
  * The view's file step after apply (uu_view_file_apply(), through the real I/O): the file written only once
- * unbound-checkconf passes it, deleted with its copy when no file is wanted, Unbound restarted only when the refused
- * nets changed, and the state's view record following it. In its own try: a failure is logged at error level, the
+ * unbound-checkconf passes it, deleted when no file is wanted, Unbound restarted through core's restart only when the
+ * node lines of its loaded copy differ from the file's (which also takes a deleted file's copy away), and the state's
+ * view record following it. In its own try: a failure is logged at error level, the
  * record stays as apply left it, and the save and the notification still run.
  *
  * @param array{view: array{active: bool, armed: ?bool, keep: bool, zones: array<string, string>,

@@ -370,30 +370,28 @@ function uu_view_install(string $text, callable $run, callable $log, string $fil
 }
 
 /**
- * Delete the view file and its copy in Unbound's chroot (spec 3.2: a manual reload reads the copy, and would arm the
- * refuse again). The view Unbound loaded stays until its next start. One line when either was there, and an error for
- * each that could not be deleted. True when neither is left. $file and $copy are for the tests.
+ * Delete the plugin's own view file, and a candidate an install left beside it. Never the copy in /var/unbound/etc:
+ * core's start empties and refills that directory, so the copy goes with the next Unbound start, which the file step
+ * makes through core's restart. One line when the file was there; an error when it could not be deleted. True when
+ * neither is left. $file is for the tests.
  *
  * @param callable(string, int): void $log
  */
-function uu_view_delete(callable $log, string $file = UU_VIEW_FILE, string $copy = UU_VIEW_COPY): bool
+function uu_view_delete(callable $log, string $file = UU_VIEW_FILE): bool
 {
-    $found = false;
-    $left = false;
-    foreach ([$file, $copy] as $path) {
-        clearstatcache(true, $path);
-        $found = $found || is_link($path) || file_exists($path);
-        try {
-            uu_view_unlink($path);
-        } catch (\Throwable $e) {
-            $log('fail closed: ' . $e->getMessage() . ': Unbound loads it again at its next start', LOG_ERR);
-            $left = true;
-        }
+    clearstatcache(true, $file);
+    $found = is_link($file) || file_exists($file);
+    try {
+        uu_view_unlink($file);
+        uu_view_unlink($file . '.new');
+    } catch (\Throwable $e) {
+        $log('fail closed: ' . $e->getMessage() . ': Unbound loads it again at its next start', LOG_ERR);
+        return false;
     }
-    if ($found && !$left) {
-        $log('fail closed: the view file and its copy were deleted', LOG_NOTICE);
+    if ($found) {
+        $log('fail closed: the view file was deleted', LOG_NOTICE);
     }
-    return !$left;
+    return true;
 }
 
 /**
