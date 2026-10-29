@@ -74,13 +74,13 @@ wf_register_suite('contract', function (): int {
             'current_interval' => '1', 'current_loss_interval' => '4'];
     $status = ['status' => 'none', 'loss' => '0.0 %'];
     $route = "   route to: default\ndestination: default\n    gateway: 203.0.113.1\n";
-    wf_check($t, 'all judging dependencies match', wf_contract_judging($row, $status, $route, true, true) === []);
+    wf_check($t, 'all judging dependencies match', wf_contract_judging($row, $status, $route, true, true, true, true) === []);
     $short = $row;
     unset($short['current_losslow']);
-    wf_check($t, 'a missing current_losslow is reported', count(wf_contract_judging($short, $status, $route, true, true)) === 1);
-    wf_check($t, 'a status row without loss is reported', count(wf_contract_judging($row, ['status' => 'none'], $route, true, true)) === 1);
-    wf_check($t, 'unparseable route output is reported', count(wf_contract_judging($row, $status, "garbage\n", true, true)) === 1);
-    wf_check($t, 'no dpinger socket where expected is reported', count(wf_contract_judging($row, $status, $route, false, true)) === 1);
+    wf_check($t, 'a missing current_losslow is reported', count(wf_contract_judging($short, $status, $route, true, true, true, true)) === 1);
+    wf_check($t, 'a status row without loss is reported', count(wf_contract_judging($row, ['status' => 'none'], $route, true, true, true, true)) === 1);
+    wf_check($t, 'unparseable route output is reported', count(wf_contract_judging($row, $status, "garbage\n", true, true, true, true)) === 1);
+    wf_check($t, 'no dpinger socket where expected is reported', count(wf_contract_judging($row, $status, $route, false, true, true, true)) === 1);
 
     $ok = ['judging' => [], 'command' => []];
     $bad = ['judging' => [], 'command' => ['x changed']];
@@ -103,8 +103,8 @@ wf_register_suite('contract', function (): int {
     $r3 = wf_contract_log($ok, $r['last']);
     wf_check($t, 'log: the return to a match is logged', $r3['line'] !== null && str_contains($r3['line'], 'matches again'));
     wf_check($t, 'a disabled or unmonitored WAN has no dpinger rows or socket; not a drift',
-        wf_contract_judging(null, null, $route, false, false) === []);
-    wf_check($t, 'an unmonitored WAN still checks the route format', count(wf_contract_judging(null, null, "garbage\n", false, false)) === 1);
+        wf_contract_judging(null, null, $route, false, false, true, true) === []);
+    wf_check($t, 'an unmonitored WAN still checks the route format', count(wf_contract_judging(null, null, "garbage\n", false, false, true, true)) === 1);
 
     /* Core runs a WAN's dpinger only while its interface has carrier and an IPv4 address (2026-10-07 on the
      * firewall: vtnet1 flapped, lost its address, the socket went with it, and the plugin read that as core
@@ -116,9 +116,43 @@ wf_register_suite('contract', function (): int {
     wf_check($t, 'dpinger not expected: unmonitored or disabled WAN', !wf_dpinger_expected(false, $active));
     $noCarrier = "vtnet1: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500\n\tmedia: Ethernet autoselect\n\tstatus: no carrier\n";
     wf_check($t, 'a WAN that lost carrier and its address has no socket, rows aside: not a drift (the 2026-10-07 flap)',
-        wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($noCarrier))) === []);
+        wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($noCarrier)), true, true) === []);
     $upNoSocket = "vtnet1: flags=8843<UP,BROADCAST,RUNNING> metric 0 mtu 1500\n\tinet 203.0.113.167 netmask 0xfffffe00 broadcast 255.255.255.255\n\tstatus: active\n";
     wf_check($t, 'a WAN with carrier and an address but no socket is still a drift',
-        count(wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($upNoSocket)))) === 1);
+        count(wf_contract_judging($row, $status, $route, false, wf_dpinger_expected(true, wf_parse_ifconfig($upNoSocket)), true, true)) === 1);
+
+    /* a monitored WAN's window age is its dpinger's process age: the pid from its pid file, the age from ps */
+    wf_check($t, 'contract: a socket with no pid is reported',
+        wf_contract_judging($row, $status, $route, true, true, false, true) === ['no dpinger pid at /var/run/dpinger_<name>.pid for a monitored WAN']
+        && wf_contract_judging($row, $status, $route, true, true, false, false) === ['no dpinger pid at /var/run/dpinger_<name>.pid for a monitored WAN']);
+    wf_check($t, 'contract: a pid with no age is reported',
+        wf_contract_judging($row, $status, $route, true, true, true, false) === ["ps -o etimes= gives no age for a monitored WAN's dpinger"]);
+    wf_check($t, 'contract: no socket means no pid or age check',
+        wf_contract_judging($row, $status, $route, false, true, false, false) === ['no dpinger socket at /var/run/dpinger_<name>.sock for a monitored WAN']);
+    wf_check($t, 'contract: an unmonitored WAN checks no pid or age', wf_contract_judging(null, null, $route, false, false, false, false) === []);
+
+    $maskDrift = 'Gateways.xml gateway name Mask changed';
+    $r7 = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => [], 'names' => [$maskDrift]], '');
+    $r8 = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => ['[routes.configure] changed'],
+        'names' => [$maskDrift]], '');
+    wf_check($t, 'contract log: a names drift blocks nothing and says so',
+        $r7['line'] === 'core-contract: core changed what the plugin relies on (a gateway name core now accepts may read as '
+            . 'unresolved): Gateways.xml gateway name Mask changed' && $r7['prio'] === LOG_WARNING
+        && $r8['line'] === 'core-contract: core changed what the plugin relies on (only a package removal, when configd does '
+            . 'not answer): [routes.configure] changed; Gateways.xml gateway name Mask changed');
+
+    /* the name field of core 26.7.7's Gateways.xml, as core has it */
+    $gatewaysXml = '<model><items><gateway_item><name><Mask>/^[a-zA-Z0-9_\-]{1,32}$/</Mask></name></gateway_item></items></model>';
+    wf_check($t, "contract: core's name mask as copied reports nothing", wf_contract_name_mask($gatewaysXml) === []);
+    wf_check($t, 'contract: a changed name mask is a names drift',
+        wf_contract_name_mask(str_replace('{1,32}', '{1,64}', $gatewaysXml)) === [$maskDrift]);
+    wf_check($t, 'contract: an unreadable Gateways.xml is a names drift',
+        wf_contract_name_mask(null) === ['Gateways.xml unreadable'] && wf_contract_name_mask('<model>') === ['Gateways.xml unreadable']);
+    $internal = libxml_use_internal_errors(false);
+    $kept = wf_contract_name_mask('<model>') !== [] && libxml_use_internal_errors() === false && libxml_get_errors() === [];
+    libxml_use_internal_errors(true);
+    $kept = $kept && wf_contract_name_mask('<model>') !== [] && libxml_use_internal_errors() === true && libxml_get_errors() === [];
+    libxml_use_internal_errors($internal);
+    wf_check($t, "contract: reading Gateways.xml leaves libxml's error setting as it was and its error list empty", $kept);
     return wf_tally_report('contract', $t);
 });

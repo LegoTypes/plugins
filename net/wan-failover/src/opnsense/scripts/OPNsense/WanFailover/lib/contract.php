@@ -11,7 +11,8 @@ declare(strict_types=1);
  * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
  * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
  * fallbacks for core's routing reconfigure and cron restart when configd does not answer; a drift there blocks
- * nothing, and the removal no longer runs the routing copy.
+ * nothing, and the removal no longer runs the routing copy. Names dependency: core's gateway-name mask, which
+ * WF_GATEWAY_NAME_MASK copies; a drift blocks nothing, since a name the copy refuses only reads as unresolved.
  * Pure: callers pass the file contents.
  */
 
@@ -125,12 +126,21 @@ function wf_dpinger_expected(bool $monitored, array $link): bool
 }
 
 /**
+ * The reads the judge rests on: `route -n get`'s format, which the live default and every route lookup parse; and,
+ * for a WAN core runs a dpinger for, its dpinger_instances() row (WF_INSTANCE_KEYS), its dpinger_status() row (status
+ * and loss), its socket (WF_DPINGER_SOCK), and its pid file (WF_DPINGER_PID) and that pid's `ps -o etimes=`, which
+ * the window age is read from. Without the socket the pid and age go unchecked: the socket's line already says it.
+ *
  * @param array<string, string|int|float>|null $instanceRow one dpinger_instances() row
  * @param array<string, string>|null $statusRow the same gateway's dpinger_status() row
+ * @param bool $socketFound the WAN's WF_DPINGER_SOCK exists
  * @param bool $dpingerExpected wf_dpinger_expected(): core runs a dpinger for this WAN
+ * @param bool $pidFound the WAN's WF_DPINGER_PID names a pid
+ * @param bool $ageFound ps gives that pid an age
  * @return list<string>
  */
-function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound, bool $dpingerExpected): array
+function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $routeOut, bool $socketFound,
+                             bool $dpingerExpected, bool $pidFound, bool $ageFound): array
 {
     $p = [];
     if ($routeOut === null || preg_match('/^\s*(gateway|destination):\s*\S+/m', $routeOut) !== 1) {
@@ -149,20 +159,48 @@ function wf_contract_judging(?array $instanceRow, ?array $statusRow, ?string $ro
         $p[] = 'dpinger_status() rows lack status or loss';
     }
     if (!$socketFound) {
-        $p[] = 'no dpinger socket at /var/run/dpinger_<name>.sock for a monitored WAN';
+        $p[] = 'no dpinger socket at ' . sprintf(WF_DPINGER_SOCK, '<name>') . ' for a monitored WAN';
+    } elseif (!$pidFound) {
+        $p[] = 'no dpinger pid at ' . sprintf(WF_DPINGER_PID, '<name>') . ' for a monitored WAN';
+    } elseif (!$ageFound) {
+        $p[] = "ps -o etimes= gives no age for a monitored WAN's dpinger";
     }
     return $p;
 }
 
 /**
+ * Core's mask for a gateway name, the Mask of the name field in Gateways.xml, against WF_GATEWAY_NAME_MASK without
+ * its D flag. Compared as text, so a respelled but equal regex reads as changed.
+ *
+ * @return list<string>
+ */
+function wf_contract_name_mask(?string $gatewaysXml): array
+{
+    if ($gatewaysXml === null) {
+        return ['Gateways.xml unreadable'];
+    }
+    $internal = libxml_use_internal_errors(true);
+    $xml = simplexml_load_string($gatewaysXml, 'SimpleXMLElement', LIBXML_NONET);
+    libxml_clear_errors();
+    libxml_use_internal_errors($internal);
+    if ($xml === false) {
+        return ['Gateways.xml unreadable'];
+    }
+    $mask = $xml->items->gateway_item->name->Mask ?? null;
+    return $mask !== null && (string)$mask === substr(WF_GATEWAY_NAME_MASK, 0, -1) ? [] : ['Gateways.xml gateway name Mask changed'];
+}
+
+/**
  * Log a drift once when it appears or changes, and once when it clears.
  *
- * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>, removal?: list<string>} $contract
+ * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>, removal?: list<string>,
+ *               names?: list<string>} $contract
  * @return array{line: ?string, prio: int, last: string}
  */
 function wf_contract_log(array $contract, string $last): array
 {
-    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? [], $contract['removal'] ?? []);
+    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? [], $contract['removal'] ?? [],
+        $contract['names'] ?? []);
     $now = implode("\n", $all);
     if ($now === $last) {
         return ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
@@ -172,7 +210,9 @@ function wf_contract_log(array $contract, string $last): array
     }
     $effect = $contract['judging'] !== [] ? 'releasing every hold if it persists for ' . WF_UNKNOWN_MAX_SECONDS . ' s'
         : ($contract['command'] !== [] ? 'no new holds'
-        : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off' : 'only a package removal, when configd does not answer'));
+        : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off'
+        : (($contract['removal'] ?? []) !== [] ? 'only a package removal, when configd does not answer'
+        : 'a gateway name core now accepts may read as unresolved')));
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }

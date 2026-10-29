@@ -33,9 +33,16 @@ const WF_DEINSTALL_WAIT_SECONDS = 180; /* the removal's release, its wait for an
 const WF_DEINSTALL_RETRY_SECONDS = 5;  /* between the removal's tries at a release that did not land */
 
 /* core's own mask for a gateway name (Gateways.xml), with the D flag so a trailing newline fails; names and
- * interfaces from a restored configuration are checked against these where they build paths and arguments */
+ * interfaces from a restored configuration are checked against these where they build paths and arguments; the
+ * names contract compares the mask with core's at run time (wf_contract_name_mask()) */
 const WF_GATEWAY_NAME_MASK = '/^[a-zA-Z0-9_\-]{1,32}$/D';
 const WF_IF_MASK = '/^[a-z][a-z0-9_.]*\z/';
+
+/* core 26.7.7's files the snapshot reads, verbatim (%s is the gateway's name); the contract notes any that core no
+ * longer keeps there */
+const WF_DPINGER_PID = '/var/run/dpinger_%s.pid';   /* dpinger.inc */
+const WF_DPINGER_SOCK = '/var/run/dpinger_%s.sock'; /* dpinger.inc */
+const WF_CORE_GATEWAYS_XML = '/usr/local/opnsense/mvc/app/models/OPNsense/Routing/Gateways.xml';
 
 const WF_FRESH_SECONDS = 120;        /* an alternative must have read settled-up this recently to back a hold */
 const WF_UNKNOWN_MAX_SECONDS = 180;  /* unreadable this long counts as bad (three dpinger time_periods) */

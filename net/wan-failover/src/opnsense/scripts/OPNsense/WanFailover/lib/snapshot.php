@@ -74,7 +74,8 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
  *               legacy_held: list<string>, force_down: array<string, bool>,
- *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>, removal: list<string>}}
+ *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>, removal: list<string>,
+ *                               names: list<string>}}
  *     wans: by gateway name; disabled and monitor_disable are the gateway's own settings, either of which means the
  *     engine can never judge it (wf_unjudgeable());
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
@@ -114,17 +115,6 @@ function wf_snapshot(): array
     /* the route-format check probes the loopback route, which always exists; the default route can be
      * missing for a moment while routing is reconfigured, which is not a format drift */
     $loopbackOut = (string)shell_exec('/sbin/route -n get -inet 127.0.0.1 2>/dev/null');
-    /* a window's age is its dpinger's process age: monotonic, so a clock step cannot make it look settled */
-    $pids = [];
-    foreach ($wansRes['names'] as $name) {
-        $pidFile = "/var/run/dpinger_{$name}.pid";
-        $pid = is_readable($pidFile) ? (int)trim((string)file_get_contents($pidFile)) : 0;
-        if ($pid > 0) {
-            $pids[$name] = $pid;
-        }
-    }
-    $ages = $pids === [] ? [] : wf_parse_ps_etimes((string)shell_exec('/bin/ps -o pid= -o etimes= -p '
-        . escapeshellarg(implode(',', $pids)) . ' 2>/dev/null'));
     $wans = [];
     $judging = [];
     foreach ($wansRes['names'] as $name) {
@@ -135,14 +125,19 @@ function wf_snapshot(): array
         }
         $st = $status[$name] ?? null;
         $lossStr = (string)($st['loss'] ?? '~');
-        $sock = "/var/run/dpinger_{$name}.sock";
-        $sockFound = file_exists($sock);
+        /* a window's age is its dpinger's process age: monotonic, so a clock step cannot make it look settled. The
+         * socket, the pid file and the age are read together, so a dpinger restart can fall between them only for
+         * this WAN */
+        $sockFound = file_exists(sprintf(WF_DPINGER_SOCK, $name));
+        $pidFile = sprintf(WF_DPINGER_PID, $name);
+        $pid = is_readable($pidFile) ? (int)trim((string)file_get_contents($pidFile)) : 0;
+        $age = $pid > 0 ? (wf_parse_ps_etimes((string)shell_exec('/bin/ps -o pid= -o etimes= -p '
+            . escapeshellarg((string)$pid) . ' 2>/dev/null'))[$pid] ?? null) : null;
         $link = wf_parse_ifconfig((string)shell_exec('/sbin/ifconfig ' . escapeshellarg((string)($g['if'] ?? '')) . ' 2>/dev/null'));
         /* core runs a dpinger only for a gateway the engine can judge */
         $flags = ['disabled' => !empty($g['disabled']), 'monitor_disable' => !empty($g['monitor_disable'])];
         $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound,
-            wf_dpinger_expected(wf_unjudgeable($flags) === null, $link)));
-        $age = isset($pids[$name]) ? ($ages[$pids[$name]] ?? null) : null;
+            wf_dpinger_expected(wf_unjudgeable($flags) === null, $link), $pid > 0, $age !== null));
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
             'gateway_ip' => (string)($g['gateway'] ?? ''),
@@ -179,6 +174,7 @@ function wf_snapshot(): array
     }
     $tsActions = $read($a . 'actions_tailscale.conf');
     $tailscale = wf_contract_tailscale($tsActions);
+    $names = wf_contract_name_mask($read(WF_CORE_GATEWAYS_XML));
     return [
         'now' => $now, 'boot_id' => $bootId, 'release' => null,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
@@ -190,7 +186,7 @@ function wf_snapshot(): array
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
         'legacy_held' => $legacy, 'force_down' => $forceDown,
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale,
-                       'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf'))],
+                       'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf')), 'names' => $names],
     ];
 }
 

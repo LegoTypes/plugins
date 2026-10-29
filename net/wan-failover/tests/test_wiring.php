@@ -243,5 +243,11 @@ wf_register_suite('wiring', function (): int {
         printf("    exit %d, config.xml %s, output: %s\n", $r['rc'], $written ? 'WRITTEN: restore the VM to the '
             . "'wan-failover base' checkpoint" : 'unchanged', trim($r['out']) === '' ? '(none)' : trim($r['out']));
     }
+    /* the run-time names check against the box's own core, at the path the snapshot reads */
+    $names = wf_contract_name_mask(is_readable(WF_CORE_GATEWAYS_XML) ? (string)file_get_contents(WF_CORE_GATEWAYS_XML) : null);
+    wf_check($t, "the box's own Gateways.xml mask reports no drift", $names === []);
+    if ($names !== []) {
+        printf("    %s: %s\n", WF_CORE_GATEWAYS_XML, implode('; ', $names));
+    }
     return wf_tally_report('wiring', $t);
 });

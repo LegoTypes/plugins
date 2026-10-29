@@ -584,5 +584,10 @@ wf_register_suite('planner', function (): int {
         && $a['plan']['release'] === $b['plan']['release'] && $a['state']['judgements'] === $b['state']['judgements'];
     wf_check($t, "planner: an unjudgeable WAN's judgement and holds are as before",
         $alike($r1, $p1) && $alike($r2, $p2) && $r2['state']['judgements']['WAN_B']['value'] === WF_BAD);
+
+    $names = ['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => [], 'names' => ['Gateways.xml gateway name Mask changed']];
+    $r = wf_plan(wf_t_snap(31000, [], ['loss' => 30.0], ['contract' => $names]), wf_state_new('b1'));
+    wf_check($t, 'planner: a names drift blocks no hold',
+        $r['plan']['hold'] === ['WAN_B'] && !$r['plan']['stopped'] && $lines($r['plan'], 'not starting holds') === 0);
     return wf_tally_report('planner', $t);
 });

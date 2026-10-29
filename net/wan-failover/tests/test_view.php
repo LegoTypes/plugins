@@ -52,6 +52,10 @@ wf_register_suite('view', function (): int {
         str_contains($view, 'data-endpoint="/api/wanfailover/service/failback_now"'));
     wf_check($t, 'the page calls no run-together endpoint',
         !str_contains($view, 'service/holds') && !str_contains($view, 'service/failbacknow'));
+    $removalNote = strpos($view, '(data.contract || {}).removal');
+    $namesNote = strpos($view, "\$.each((data.contract || {}).names || [], function (i, p) { notes.push(\"{{ lang._('Core "
+        . "changed (a gateway name core accepts may read here as unresolved):') }} \" + plain(p)); });");
+    wf_check($t, 'the page notes a names drift', $removalNote !== false && $namesNote !== false && $namesNote > $removalNote);
 
     return wf_tally_report('view', $t);
 });
