@@ -178,8 +178,9 @@ function uu_core_paths_changed(array $dpinger, ?string $confText): array
     $changed = [];
     $reading = array_filter($dpinger, fn (array $d): bool => uu_loss_value($d['loss']) !== null);
     if ($reading !== [] && array_filter($reading, fn (array $d): bool => $d['pid'] && $d['sock']) === []) {
+        $sock = sprintf(UU_DPINGER_SOCK, '<gateway>');
         $changed[] = "dpinger's pid or socket file is not at " . sprintf(UU_DPINGER_PID, '<gateway>')
-            . ' or .sock while core reads a loss: no member can settle';
+            . ' or .' . pathinfo($sock, PATHINFO_EXTENSION) . ' while core reads a loss: no member can settle';
     }
     if ($confText !== null) {
         $pidfile = uu_unbound_conf_pidfile($confText);
