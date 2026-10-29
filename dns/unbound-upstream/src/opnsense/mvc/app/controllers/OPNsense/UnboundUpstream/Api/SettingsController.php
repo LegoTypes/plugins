@@ -43,11 +43,11 @@ class SettingsController extends ApiMutableModelControllerBase
     protected static $internalModelClass = '\OPNsense\UnboundUpstream\UnboundUpstream';
 
     /**
-     * The per-member resolvers for the page's grid: each row's member and address, both searched.
+     * The per-member resolvers for the page's grid: the grid shows the row's fields.
      */
     public function searchResolverAction()
     {
-        return $this->searchBase('resolvers.resolver', ['gateway', 'address']);
+        return $this->searchBase('resolvers.resolver');
     }
 
     /**

@@ -28,9 +28,9 @@
 
 /*
  * Hooks. plugins_scan() sorts the file names, so this file runs after unbound.inc: on unbound_start Unbound's
- * restart is already launched when the evaluate below is queued. The configure hooks only queue
- * `configctl -d unboundupstream evaluate` and return; the cron and firewall hooks read the plugin's state through its
- * own libraries; none can throw into core.
+ * restart is already launched when the evaluate below is queued. The configure hooks only queue the evaluate
+ * through core's configd_run() and configdp_run(), detached, and return; the cron and firewall hooks read the
+ * plugin's state through its own libraries; none can throw into core.
  */
 
 /**
@@ -104,7 +104,7 @@ function unboundupstream_queue(bool $verbose = false): void
             echo 'Queueing the Unbound upstream evaluation...';
             flush();
         }
-        exec('/usr/local/sbin/configctl -d unboundupstream evaluate > /dev/null 2>&1');
+        configd_run('unboundupstream evaluate', true);
         if ($verbose) {
             echo "done.\n";
         }
@@ -131,8 +131,11 @@ function unboundupstream_queue_monitor(bool $verbose = false, array|string|null 
         $map = $gwnames;
         plugins_argument_map($map);
         $names = is_array($map) ? implode(',', array_map('strval', $map)) : '';
-        exec('/usr/local/sbin/configctl -d unboundupstream evaluate'
-            . ($names === '' ? '' : ' ' . escapeshellarg($names)) . ' > /dev/null 2>&1');
+        if ($names === '') {
+            configd_run('unboundupstream evaluate', true);
+        } else {
+            configdp_run('unboundupstream evaluate', [$names], true);
+        }
         if ($verbose) {
             echo "done.\n";
         }

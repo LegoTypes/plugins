@@ -1143,6 +1143,26 @@ VOLT;
     unboundupstream_queue_monitor(false, 'wg-test-429,wg-test-529');
     uu_check($t, 'the monitor hook with a comma-separated string (pluginctl -c monitor) passes the same names',
         uu_test_wait_configd($named, $before));
+    /* the two hooks queue through core's own configd_run() and configdp_run(); the four monitor-hook cases above
+     * are the end-to-end proof that configd runs a plain evaluate and gets the names as one parameter. The cron job's
+     * command keeps configctl, so only the two function bodies are searched */
+    $hookText = (string)file_get_contents('/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc');
+    $hookBody = static function (string $name) use ($hookText): string {
+        return preg_match('/^function ' . $name . '\(.*?^\}$/ms', $hookText, $m) === 1 ? $m[0] : '';
+    };
+    $queueBody = $hookBody('unboundupstream_queue');
+    $monitorBody = $hookBody('unboundupstream_queue_monitor');
+    uu_check($t, 'hooks: the configure and monitor hooks queue through configd_run() and configdp_run(), and their '
+        . 'bodies run no exec() and no configctl',
+        str_contains($queueBody, "configd_run('unboundupstream evaluate', true)")
+        && str_contains($monitorBody, "configd_run('unboundupstream evaluate', true)")
+        && str_contains($monitorBody, "configdp_run('unboundupstream evaluate', [\$names], true)")
+        && !str_contains($queueBody, 'exec(') && !str_contains($queueBody, 'configctl')
+        && !str_contains($monitorBody, 'exec(') && !str_contains($monitorBody, 'configctl'));
+    $controllerText = (string)file_get_contents('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/Api/'
+        . 'SettingsController.php');
+    uu_check($t, 'controller: search_resolver lists the row\'s fields through searchBase with no field list',
+        str_contains($controllerText, "return \$this->searchBase('resolvers.resolver');"));
 
     /* The installed evaluate.php replays a recording made before 1.3 (no contract_input.core_commands)
      * without a PHP warning; the recording is this box's own, written to a scratch directory and removed, and is
