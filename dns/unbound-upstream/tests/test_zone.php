@@ -39,9 +39,7 @@ uu_register_suite('zone', function (): int {
             . ' 64 8388608 2>/dev/null', $out, $rc);
         return [$rc, implode("\n", $out)];
     };
-    uu_check($t, 'the configuration\'s own PATH: a regular file is its text and an empty file is the empty string, '
-        . 'never null; a link, a directory, a named pipe, a device, a missing file, a PATH under a linked directory, a '
-        . 'PATH naming no file, a relative PATH and a helper that does not exist are null',
+    uu_check($t, 'the configuration\'s own PATH: a file is its text, an empty file is \'\'; every other PATH is null',
         uu_try_case(fn (): bool => uu_scratch_case(function (string $dir): bool {
             file_put_contents($dir . '/a.conf', "server:\n  do-ip6: no\n");
             symlink($dir . '/a.conf', $dir . '/b.conf');
@@ -59,6 +57,7 @@ uu_register_suite('zone', function (): int {
                 && uu_conf_expanded_text('/dev/null') === null
                 && uu_conf_expanded_text($dir . '/none.conf') === null
                 && uu_conf_expanded_text($dir . '/link/d.conf') === null
+                && uu_conf_expanded_text($dir . '/nodir/d.conf') === null
                 && uu_conf_expanded_text($dir . '/') === null
                 && uu_conf_expanded_text('a.conf') === null
                 && uu_conf_expanded_text($dir . '/a.conf', $dir . '/nohelper.py') === null;
@@ -276,6 +275,12 @@ uu_register_suite('zone', function (): int {
             symlink($dir . '/a.conf', $dir . '/b.conf');
             mkdir($dir . '/c.conf');
             return $helperRun($dir) === [0, '{"texts": ["eA=="], "skipped": 2}'];
+        }));
+    uu_check($t, 'zone_read.py: a DIR holding several *.conf files prints each one\'s whole text, in name order',
+        uu_scratch_case(function (string $dir) use ($helperRun): bool {
+            file_put_contents($dir . '/b.conf', 'x');
+            file_put_contents($dir . '/a.conf', "aa\nbb\ncc\n");
+            return $helperRun($dir) === [0, '{"texts": ["YWEKYmIKY2MK", "eA=="], "skipped": 0}'];
         }));
     uu_check($t, 'zone texts: a reachable directory with no *.conf file (only other names, a dot file) is no files '
         . '([]), shape none as before; only a failed read is null',
