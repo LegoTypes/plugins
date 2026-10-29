@@ -56,6 +56,12 @@ wf_register_suite('view', function (): int {
     $namesNote = strpos($view, "\$.each((data.contract || {}).names || [], function (i, p) { notes.push(\"{{ lang._('Core "
         . "changed (a gateway name core accepts may read here as unresolved):') }} \" + plain(p)); });");
     wf_check($t, 'the page notes a names drift', $removalNote !== false && $namesNote !== false && $namesNote > $removalNote);
+    $commandNote = strpos($view, '(data.contract || {}).command');
+    $failbackNote = strpos($view, "\$.each((data.contract || {}).failback || [], function (i, p) { notes.push(\"{{ lang._('Core "
+        . "changed (failback suspended):') }} \" + plain(p)); });");
+    $tailscaleNote = strpos($view, '(data.contract || {}).tailscale');
+    wf_check($t, 'the page notes a failback drift', $commandNote !== false && $failbackNote !== false && $tailscaleNote !== false
+        && $commandNote < $failbackNote && $failbackNote < $tailscaleNote);
 
     return wf_tally_report('view', $t);
 });

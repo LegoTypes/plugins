@@ -176,5 +176,53 @@ wf_register_suite('pfstate', function (): int {
         wf_kill_answer_clean('killed 3 states (0 failed)') && wf_kill_answer_clean('killed 0 states (0 failed)')
         && !wf_kill_answer_clean('killed 3 states (1 failed)') && !wf_kill_answer_clean('listing failed: pfctl exited 1')
         && !wf_kill_answer_clean("killed 3 states (0 failed)\n") && !wf_kill_answer_clean('rejected target'));
+
+    /* each line of every fixture, with the rendering it parses to: the cases above, line by line, and the weighted pool */
+    $rulesRaw = (string)file_get_contents(__DIR__ . '/fixtures/rules.txt');
+    $ruleLines = preg_split('/\R/', trim($rulesRaw)) ?: [];
+    $weighted = '@2901 pass in quick on vlan0.120 route-to { (vtnet2 198.51.100.254), (vtnet2 198.51.100.254) } round-robin inet proto tcp from <b_first_hosts:3> to ! (self:13) flags S/SA keep state label "77777777-7777-4777-8777-777777777777"';
+    $toB = [['gw' => '198.51.100.254', 'if' => 'vtnet2', 'balanced' => false]];
+    $rendered = [
+        [$ruleLines[0] ?? '', ['dddddddddddddddddddddddddddddddd' => [['gw' => '203.0.113.1', 'if' => 'vtnet1', 'balanced' => false]]]],
+        [$ruleLines[1] ?? '', ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' => $toB]],
+        [$ruleLines[2] ?? '', ['22222222-2222-4222-8222-222222222222' => $toB]],
+        [$ruleLines[3] ?? '', ['22222222-2222-4222-8222-222222222222' => $toB]],
+        [$ruleLines[4] ?? '', ['11111111-1111-4111-8111-111111111111' => [['gw' => null, 'if' => null, 'balanced' => false]]]],
+        [$ruleLines[5] ?? '', ['55555555-5555-4555-8555-555555555555' => [['gw' => null, 'if' => null, 'balanced' => true]]]],
+        [$weighted, ['77777777-7777-4777-8777-777777777777' => $toB]],
+    ];
+    foreach (preg_split('/\R/', $raw) ?: [] as $stateLine) {
+        $rendered[] = [$stateLine, []];
+    }
+    $unchanged = count($ruleLines) === 6;
+    foreach ($rendered as [$line, $want]) {
+        $unchanged = $unchanged && wf_parse_rules($line) === $want;
+    }
+    wf_check($t, "parse rules: the fixture's renderings are unchanged", $unchanged);
+
+    $agree = wf_rule_targets($ruleLines[5] ?? '') === ['vtnet1 203.0.113.1' => ['vtnet1', '203.0.113.1'],
+                                                       'vtnet2 198.51.100.254' => ['vtnet2', '198.51.100.254']]
+        && wf_rule_targets($weighted) === ['vtnet2 198.51.100.254' => ['vtnet2', '198.51.100.254']]
+        && wf_rule_targets($ruleLines[4] ?? '') === [];
+    foreach ($rendered as [$line, $want]) {
+        $targets = wf_rule_targets($line);
+        $single = count($targets) === 1 ? reset($targets) : null;
+        $agree = $agree && ($want === [] || array_values($want)[0] === [['gw' => $single === null ? null : $single[1],
+            'if' => $single === null ? null : $single[0], 'balanced' => count($targets) > 1]]);
+    }
+    wf_check($t, "rule targets: each fixture line's targets are what its rendering reads", $agree);
+
+    wf_check($t, 'rules selfcheck: the fixture listing is clean', wf_rules_selfcheck($rulesRaw));
+    wf_check($t, 'rules selfcheck: an empty listing is a drift', !wf_rules_selfcheck(''));
+    $labelsMoved = str_replace('label "', 'label:', $rulesRaw);
+    wf_check($t, 'rules selfcheck: labels that no longer parse are a drift',
+        $labelsMoved !== $rulesRaw && !wf_rules_selfcheck($labelsMoved));
+    $targetsMoved = (string)preg_replace('/\((vtnet\d+) /', '($1:', $rulesRaw);
+    wf_check($t, 'rules selfcheck: route-to targets that no longer parse are a drift',
+        !str_contains($targetsMoved, '(vtnet1 ') && !str_contains($targetsMoved, '(vtnet2 ') && !wf_rules_selfcheck($targetsMoved));
+    wf_check($t, 'rules selfcheck: a listing with labels and no route-to is clean', wf_rules_selfcheck($ruleLines[4] ?? ''));
+    wf_check($t, 'rules selfcheck: one route-to line of an unread form beside parsed ones is not a drift',
+        wf_rules_selfcheck($rulesRaw . '@2500 pass in quick on vlan0.140 route-to vtnet9 inet proto tcp from any to any keep state '
+            . "label \"66666666-6666-4666-8666-666666666666\"\n"));
     return wf_tally_report('pfstate', $t);
 });

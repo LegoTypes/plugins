@@ -140,6 +140,16 @@ wf_register_suite('contract', function (): int {
             . 'unresolved): Gateways.xml gateway name Mask changed' && $r7['prio'] === LOG_WARNING
         && $r8['line'] === 'core-contract: core changed what the plugin relies on (only a package removal, when configd does '
             . 'not answer): [routes.configure] changed; Gateways.xml gateway name Mask changed');
+    $rulesDrift = 'pfctl -vvsr no longer prints rule labels or route-to targets as the failback parser reads them';
+    $r9 = wf_contract_log(['judging' => [], 'command' => [], 'failback' => [$rulesDrift], 'tailscale' => ['no [restart]'],
+        'removal' => [], 'names' => []], '');
+    $r10 = wf_contract_log(['judging' => ['route -n get output no longer parses'], 'command' => [], 'failback' => [$rulesDrift],
+        'tailscale' => [], 'removal' => [], 'names' => []], '');
+    wf_check($t, 'contract log: a failback drift says failback suspended',
+        $r9['line'] === 'core-contract: core changed what the plugin relies on (failback suspended): ' . $rulesDrift
+            . '; no [restart]' && $r9['prio'] === LOG_WARNING
+        && $r10['line'] === 'core-contract: core changed what the plugin relies on (releasing every hold if it persists for '
+            . WF_UNKNOWN_MAX_SECONDS . ' s): route -n get output no longer parses; ' . $rulesDrift);
 
     /* the name field of core 26.7.7's Gateways.xml, as core has it */
     $gatewaysXml = '<model><items><gateway_item><name><Mask>/^[a-zA-Z0-9_\-]{1,32}$/</Mask></name></gateway_item></items></model>';
@@ -154,5 +164,19 @@ wf_register_suite('contract', function (): int {
     $kept = $kept && wf_contract_name_mask('<model>') !== [] && libxml_use_internal_errors() === true && libxml_get_errors() === [];
     libxml_use_internal_errors($internal);
     wf_check($t, "contract: reading Gateways.xml leaves libxml's error setting as it was and its error list empty", $kept);
+
+    /* GatewayGroups::getGroupsConfig()'s rows as core 26.7.7 returns them, its other keys left out: tiers keyed by
+     * number, an empty tier as [''] */
+    $rules = (string)file_get_contents(__DIR__ . '/fixtures/rules.txt');
+    $groupsDrift = 'GatewayGroups::getGroupsConfig() rows no longer carry tiers as lists of gateway names';
+    $groups = ['G1' => ['tiers' => [1 => ['WAN_A'], 2 => ['WAN_B'], 3 => ['']]]];
+    wf_check($t, 'failback contract: a clean listing and groups report nothing', wf_contract_failback($rules, $groups) === []);
+    wf_check($t, 'failback contract: tiers that are not lists of names are a drift',
+        wf_contract_failback($rules, ['G1' => ['tiers' => 'WAN_A']]) === [$groupsDrift]
+        && wf_contract_failback($rules, ['G1' => []]) === [$groupsDrift]
+        && wf_contract_failback($rules, ['G1' => ['tiers' => [1 => [7]]]]) === [$groupsDrift]);
+    wf_check($t, 'failback contract: an unreadable listing is a drift',
+        wf_contract_failback(null, $groups) === [$rulesDrift] && wf_contract_failback('', $groups) === [$rulesDrift]
+        && wf_contract_failback(null, ['G1' => []]) === [$rulesDrift, $groupsDrift]);
     return wf_tally_report('contract', $t);
 });

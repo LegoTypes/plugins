@@ -93,10 +93,29 @@ function wf_parse_states(string $text): array
 }
 
 /**
- * A rule's route-to is one target, "route-to (<if> <gw>)", or a pool, "route-to { (<if> <gw>), ... }".
- * Core lists a gateway group member once per unit of its weight, so a pool can name a single target
- * several times: that routes to the target as surely as the plain form. Only a pool of different
- * targets is balanced.
+ * A rule line's route-to targets: one, "route-to (<if> <gw>)", or a pool, "route-to { (<if> <gw>), ... }". Neither
+ * token may hold a parenthesis, so a member in another form never matches across into the next one.
+ *
+ * @return array<string, array{0: string, 1: string}> "<if> <gw>" => [if, gw]
+ */
+function wf_rule_targets(string $line): array
+{
+    $targets = [];
+    if (preg_match('/route-to \{([^}]*)\}/', $line, $pool) === 1) {
+        preg_match_all('/\(([^\s()]+) ([^\s()]+)\)/', $pool[1], $members, PREG_SET_ORDER);
+        foreach ($members as $m) {
+            $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
+        }
+    } elseif (preg_match('/route-to \(([^\s()]+) ([^\s()]+)\)/', $line, $m) === 1) {
+        $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
+    }
+    return $targets;
+}
+
+/**
+ * Each labelled rule line's rendering, from its route-to targets (wf_rule_targets()). Core lists a gateway group
+ * member once per unit of its weight, so a pool can name a single target several times: that routes to the target
+ * as surely as the plain form. Only a pool of different targets is balanced.
  *
  * @return array<string, list<array{gw: ?string, if: ?string, balanced: bool}>> label => renderings
  */
@@ -107,20 +126,28 @@ function wf_parse_rules(string $text): array
         if (preg_match('/^@\d+ /', $line) !== 1 || preg_match('/label "([^"]+)"/', $line, $lm) !== 1) {
             continue;
         }
-        $targets = [];
-        if (preg_match('/route-to \{([^}]*)\}/', $line, $pool) === 1) {
-            preg_match_all('/\((\S+) (\S+)\)/', $pool[1], $members, PREG_SET_ORDER);
-            foreach ($members as $m) {
-                $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
-            }
-        } elseif (preg_match('/route-to \((\S+) (\S+)\)/', $line, $m) === 1) {
-            $targets[$m[1] . ' ' . $m[2]] = [$m[1], $m[2]];
-        }
+        $targets = wf_rule_targets($line);
         $single = count($targets) === 1 ? reset($targets) : null;
         $out[$lm[1]][] = ['gw' => $single === null ? null : $single[1], 'if' => $single === null ? null : $single[0],
                           'balanced' => count($targets) > 1];
     }
     return $out;
+}
+
+/**
+ * The rule listing's format check, for a moved format rather than one unread line: false when no line is an "@N"
+ * rule, when no rule line carries a label "...", or when rule lines name route-to and none of them yields a target.
+ * Core renders every route-to through one template, so a real move changes them all; one route-to in a form the
+ * parser does not read, beside parsed ones, only reads as stale.
+ */
+function wf_rules_selfcheck(string $raw): bool
+{
+    $rules = preg_grep('/^@\d+ /', preg_split('/\R/', $raw) ?: []) ?: [];
+    if (preg_grep('/label "[^"]+"/', $rules) === []) {
+        return false;
+    }
+    $routed = preg_grep('/ route-to /', $rules) ?: [];
+    return $routed === [] || array_filter($routed, fn (string $line): bool => wf_rule_targets($line) !== []) !== [];
 }
 
 function wf_addr_host(string $addr): string

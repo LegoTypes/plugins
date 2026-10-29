@@ -11,12 +11,14 @@ declare(strict_types=1);
  * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
  * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
  * fallbacks for core's routing reconfigure and cron restart when configd does not answer; a drift there blocks
- * nothing, and the removal no longer runs the routing copy. Names dependency: core's gateway-name mask, which
- * WF_GATEWAY_NAME_MASK copies; a drift blocks nothing, since a name the copy refuses only reads as unresolved.
- * Pure: callers pass the file contents.
+ * nothing, and the removal no longer runs the routing copy. Failback dependencies: the pf rule listing failback reads
+ * and the gateway groups' tiers; a drift suspends failback and blocks nothing else. Names dependency: core's
+ * gateway-name mask, which WF_GATEWAY_NAME_MASK copies; a drift blocks nothing, since a name the copy refuses only
+ * reads as unresolved. Pure: callers pass the file contents and core's returns.
  */
 
 require_once __DIR__ . '/constants.php';
+require_once __DIR__ . '/pfstate.php';
 
 const WF_GATEWAY_LOCK = '/tmp/filter_reload_gateway.lock';
 const WF_DRIFT_ROUTES_CONFIGURE = '[routes.configure] changed';
@@ -191,16 +193,55 @@ function wf_contract_name_mask(?string $gatewaysXml): array
 }
 
 /**
+ * The shape the failback gate reads from GatewayGroups::getGroupsConfig() (wf_first_tier()): every row an array whose
+ * tiers is an array of lists of gateway names.
+ *
+ * @param array<array-key, mixed> $groups getGroupsConfig()'s raw return, whose shape is what this tests
+ * @return list<string>
+ */
+function wf_contract_groups(array $groups): array
+{
+    foreach ($groups as $row) {
+        $tiers = is_array($row) ? ($row['tiers'] ?? null) : null;
+        $ok = is_array($tiers);
+        foreach ($ok ? $tiers : [] as $tier) {
+            $ok = $ok && is_array($tier) && array_is_list($tier) && count(array_filter($tier, 'is_string')) === count($tier);
+        }
+        if (!$ok) {
+            return ['GatewayGroups::getGroupsConfig() rows no longer carry tiers as lists of gateway names'];
+        }
+    }
+    return [];
+}
+
+/**
+ * The reads failback rests on: `pfctl -vvsr`'s format (wf_rules_selfcheck()), whose labels and route-to targets tell
+ * whether a rule renders its preferred WAN yet, and the groups' tiers (wf_contract_groups()), which give that
+ * preference. Null is a listing that could not be read.
+ *
+ * @param array<array-key, mixed> $groups GatewayGroups::getGroupsConfig()'s raw return, whose shape is what this tests
+ * @return list<string>
+ */
+function wf_contract_failback(?string $rawRules, array $groups): array
+{
+    $p = [];
+    if ($rawRules === null || !wf_rules_selfcheck($rawRules)) {
+        $p[] = 'pfctl -vvsr no longer prints rule labels or route-to targets as the failback parser reads them';
+    }
+    return array_merge($p, wf_contract_groups($groups));
+}
+
+/**
  * Log a drift once when it appears or changes, and once when it clears.
  *
- * @param array{judging: list<string>, command: list<string>, tailscale?: list<string>, removal?: list<string>,
- *               names?: list<string>} $contract
+ * @param array{judging: list<string>, command: list<string>, failback?: list<string>, tailscale?: list<string>,
+ *               removal?: list<string>, names?: list<string>} $contract
  * @return array{line: ?string, prio: int, last: string}
  */
 function wf_contract_log(array $contract, string $last): array
 {
-    $all = array_merge($contract['judging'], $contract['command'], $contract['tailscale'] ?? [], $contract['removal'] ?? [],
-        $contract['names'] ?? []);
+    $all = array_merge($contract['judging'], $contract['command'], $contract['failback'] ?? [], $contract['tailscale'] ?? [],
+        $contract['removal'] ?? [], $contract['names'] ?? []);
     $now = implode("\n", $all);
     if ($now === $last) {
         return ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
@@ -210,9 +251,10 @@ function wf_contract_log(array $contract, string $last): array
     }
     $effect = $contract['judging'] !== [] ? 'releasing every hold if it persists for ' . WF_UNKNOWN_MAX_SECONDS . ' s'
         : ($contract['command'] !== [] ? 'no new holds'
+        : (($contract['failback'] ?? []) !== [] ? 'failback suspended'
         : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off'
         : (($contract['removal'] ?? []) !== [] ? 'only a package removal, when configd does not answer'
-        : 'a gateway name core now accepts may read as unresolved')));
+        : 'a gateway name core now accepts may read as unresolved'))));
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }

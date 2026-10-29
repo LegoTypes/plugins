@@ -74,12 +74,13 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
  *               legacy_held: list<string>, force_down: array<string, bool>,
- *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>, removal: list<string>,
- *                               names: list<string>}}
+ *               contract: array{judging: list<string>, command: list<string>, failback: list<string>, tailscale: list<string>,
+ *                               removal: list<string>, names: list<string>}}
  *     wans: by gateway name; disabled and monitor_disable are the gateway's own settings, either of which means the
  *     engine can never judge it (wf_unjudgeable());
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
- *     legacy_held: the gateways 1.3_1's held list names while it is still in the config
+ *     legacy_held: the gateways 1.3_1's held list names while it is still in the config;
+ *     contract.failback: read only while failback is on, since its drift suspends failback alone
  */
 function wf_snapshot(): array
 {
@@ -175,25 +176,33 @@ function wf_snapshot(): array
     $tsActions = $read($a . 'actions_tailscale.conf');
     $tailscale = wf_contract_tailscale($tsActions);
     $names = wf_contract_name_mask($read(WF_CORE_GATEWAYS_XML));
+    $failbackOn = $mdl->failback->isEqual('1');
+    $failback = $failbackOn ? wf_contract_failback((string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null'),
+        (new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()) : [];
     return [
         'now' => $now, 'boot_id' => $bootId, 'release' => null,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
-        'failback' => $mdl->failback->isEqual('1'), 'failback_delay' => (int)$mdl->failback_delay->getValue() * 60,
+        'failback' => $failbackOn, 'failback_delay' => (int)$mdl->failback_delay->getValue() * 60,
         'failback_now' => false,
         'tailscale_restart' => $mdl->tailscale_restart->isEqual('1') && $tsActions !== null && $tailscale === [],
         'default_gw' => wf_route_get_target(wf_parse_route_get($defaultOut)),
         'wans' => $wans, 'unresolved' => $wansRes['unresolved'],
         'holds' => $holds['holds'], 'holds_stale' => $holds['stale'], 'holds_dupes' => $holds['dupes'],
         'legacy_held' => $legacy, 'force_down' => $forceDown,
-        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'tailscale' => $tailscale,
-                       'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf')), 'names' => $names],
+        'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'failback' => $failback,
+                       'tailscale' => $tailscale, 'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf')),
+                       'names' => $names],
     ];
 }
 
 /**
+ * drift is the failback contract on this read's own rule listing and groups (wf_contract_failback()); a group whose
+ * shape drifted gives its rules no preference, so the read never throws on it.
+ *
  * @param array<string, string> $wanTargets WAN name => route target
  * @return array{flows: list<array>, renderings: array<string, list<array>>, pinned: array<string, true>,
- *               rule_pref: array<string, list<string>>, default: ?string, selfcheck: bool, raw_states: string, raw_rules: string}
+ *               rule_pref: array<string, list<string>>, default: ?string, selfcheck: bool, drift: list<string>,
+ *               raw_states: string, raw_rules: string}
  */
 function wf_snapshot_pf(array $wanTargets): array
 {
@@ -213,7 +222,7 @@ function wf_snapshot_pf(array $wanTargets): array
         if ($gw === '') {
             $pref[(string)$uuid] = [];
         } elseif (isset($groups[$gw])) {
-            $pref[(string)$uuid] = wf_first_tier($groups[$gw]['tiers']);
+            $pref[(string)$uuid] = wf_contract_groups([$gw => $groups[$gw]]) === [] ? wf_first_tier($groups[$gw]['tiers']) : [];
         } else {
             $pref[(string)$uuid] = [$gw];
         }
@@ -221,5 +230,5 @@ function wf_snapshot_pf(array $wanTargets): array
     $default = array_search(wf_live_default(), $wanTargets, true);
     return ['flows' => $flows, 'renderings' => wf_parse_rules($rawRules), 'pinned' => $pinned, 'rule_pref' => $pref,
             'default' => $default === false ? null : $default, 'selfcheck' => wf_pf_selfcheck($rawStates, $states),
-            'raw_states' => $rawStates, 'raw_rules' => $rawRules];
+            'drift' => wf_contract_failback($rawRules, $groups), 'raw_states' => $rawStates, 'raw_rules' => $rawRules];
 }

@@ -46,6 +46,7 @@
                 });
                 $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds; all holds released if it lasts 3 minutes):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
+                $.each((data.contract || {}).failback || [], function (i, p) { notes.push("{{ lang._('Core changed (failback suspended):') }} " + plain(p)); });
                 $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });
                 $.each((data.contract || {}).removal || [], function (i, p) { notes.push("{{ lang._('Core changed (affects only a package removal when configd does not answer):') }} " + plain(p)); });
                 $.each((data.contract || {}).names || [], function (i, p) { notes.push("{{ lang._('Core changed (a gateway name core accepts may read here as unresolved):') }} " + plain(p)); });

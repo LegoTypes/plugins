@@ -154,6 +154,16 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
     }
 
     $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
+    /* failback acts on a pf read only when its state listing parsed and its rule listing and groups show no drift
+     * (wf_contract_failback()); otherwise it says why, kills nothing and stays pending */
+    $suspended = function (string $n, array $pf) use ($log): bool {
+        if ($pf['selfcheck'] && $pf['drift'] === []) {
+            return false;
+        }
+        $why = array_merge($pf['drift'], $pf['selfcheck'] ? [] : ['pf state format did not parse']);
+        $log("failback {$n}: " . implode('; ', $why) . ' (core contract); failback suspended');
+        return true;
+    };
     foreach ($plan['failback'] as $n => $fb) {
         $before = ($io['status'])();
         if (!($io['gw_lock'])()) {
@@ -162,8 +172,7 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         }
         ($io['gw_unlock'])();
         $pf = ($io['pf'])();
-        if (!$pf['selfcheck']) {
-            $log("failback {$n}: pf state format did not parse (core contract); failback suspended");
+        if ($suspended($n, $pf)) {
             continue;
         }
         $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
@@ -171,6 +180,9 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
             $extra = array_keys(array_diff_assoc(($io['status'])(), $before));
             ($io['configd'])('wanfailover replay_alarm', [implode(',', $plain(array_values(array_unique(array_merge([$n], $extra)))))]);
             $pf = ($io['pf'])();
+            if ($suspended($n, $pf)) {
+                continue;
+            }
             $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
         }
         $killed = 0;

@@ -169,7 +169,7 @@ wf_register_suite('apply', function (): int {
     $flows = wf_flows($states, ['203.0.113.1@vtnet1' => 'WAN_A', '198.51.100.254@vtnet2' => 'WAN_B']);
     $pref = ['22222222-2222-4222-8222-222222222222' => ['WAN_B'], '33333333-3333-4333-8333-333333333333' => []];
     $pfStale = ['flows' => $flows, 'renderings' => $rules, 'pinned' => ['198.51.100.200' => true], 'rule_pref' => $pref,
-                'default' => 'WAN_B', 'selfcheck' => true, 'raw_states' => '', 'raw_rules' => ''];
+                'default' => 'WAN_B', 'selfcheck' => true, 'drift' => [], 'raw_states' => '', 'raw_rules' => ''];
     $pfMoved = array_merge($pfStale, ['default' => 'WAN_A']);
     $fb = wf_state_new('b1');
     $fb['pending_failbacks']['WAN_A'] = ['since' => 990];
@@ -184,6 +184,23 @@ wf_register_suite('apply', function (): int {
     $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
     wf_check($t, 'failback: pf self-check failed -> suspended, nothing killed, still pending',
         count(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'configd filter kill state'))) === 0
+        && isset($r['state']['pending_failbacks']['WAN_A']));
+    $f = wf_t_io([], true, true, [array_merge($pfMoved, ['drift' => ['x']])]);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, "failback: a contract drift on the gate's read suspends it, kills nothing and keeps it pending",
+        in_array('log failback WAN_A: x (core contract); failback suspended', $c, true)
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd filter kill state')
+            || str_starts_with($x, 'configd wanfailover replay_alarm')) === []
+        && isset($r['state']['pending_failbacks']['WAN_A']));
+    $f = wf_t_io([], true, true, [$pfStale, array_merge($pfMoved, ['drift' => ['x']])]);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'failback: a contract drift on the read after the alarm replay kills nothing, says so once and keeps it pending',
+        in_array('configd wanfailover replay_alarm WAN_A', $c, true)
+        && array_values(array_filter($c, fn (string $x): bool => str_starts_with($x, 'log failback')))
+            === ['log failback WAN_A: x (core contract); failback suspended']
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd filter kill state')) === []
         && isset($r['state']['pending_failbacks']['WAN_A']));
 
     $ts = wf_state_new('b1');
