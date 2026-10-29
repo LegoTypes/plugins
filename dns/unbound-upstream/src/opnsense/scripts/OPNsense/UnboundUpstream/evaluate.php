@@ -203,7 +203,7 @@ function uu_evaluate(?string $stop, array $named, bool $upgrade = false): int
  * ends with changes the checksum anyway.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
- *     rows: array<string, string>, failback_delay: int, probe_name: string} $settings
+ *     rows: array<string, string>, failback_delay: int} $settings
  * @param list<string> $named
  * @param ?string $stop a UU_STOP_* cause, or null for an evaluation
  * @param bool $upgrade remove on a package upgrade: the snapshot carries it, and the stop keeps the view

@@ -27,7 +27,7 @@ require_once __DIR__ . '/scratch.php';
  *
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -75,7 +75,7 @@ function uu_test_snapshot(): array
         'now' => 10000,
         'wall' => 1792400000,
         'settings' => ['enabled' => true, 'dry_run' => false, 'group' => 'grp_test',
-                       'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
+                       'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120,
                        'fail_closed' => [], 'fail_closed_networks' => []],
         'trigger' => 'downloss',
         'tiers' => [['wg-a'], ['wg-b']],
@@ -107,7 +107,7 @@ function uu_test_snapshot(): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -134,7 +134,7 @@ function uu_test_snapshot(): array
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -175,7 +175,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -203,7 +203,7 @@ function uu_test_in_tunnel(array $s, string $member): array
  * @param array{present: bool, gateway: string, interface: string, reject: bool, ours: bool} $route
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -241,7 +241,7 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -268,7 +268,7 @@ function uu_test_route(array $s, array $route, ?string $address = null): array
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -313,7 +313,7 @@ function uu_test_resolver(array $s, string $member, string $address): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -340,7 +340,7 @@ function uu_test_resolver(array $s, string $member, string $address): array
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>}} $s
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -1383,7 +1383,7 @@ uu_register_suite('planner', function (): int {
     uu_check($t, '(p14) a Default stored as 2001:DB8:A:0::53 while Unbound prints 2001:db8:a::53: the settings, the '
         . 'member\'s resolver and the plan agree, no reassert and no route repair',
         uu_try_case(function () use ($perMember, $onA, $a6): bool {
-            $clean = uu_settings_clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [], 'probe_name' => '.',
+            $clean = uu_settings_clean(['resolver' => '2001:DB8:A:0::53', 'rows' => [],
                 'failback_delay' => '120', 'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60',
                 'fallback' => '1', 'fail_closed' => '', 'fail_closed_networks' => '']);
             $default = $clean['settings']['default'];

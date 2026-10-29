@@ -10,7 +10,7 @@ declare(strict_types=1);
  * The planner. Pure: (snapshot, state) -> plan.
  *
  * Snapshot = array{now: int, wall: int, settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *                  rows: array<string, string>, failback_delay: int, probe_name: string},
+ *                  rows: array<string, string>, failback_delay: int},
  *                  trigger: string, tiers: list<list<string>>, family: string, members: array<string, Member>,
  *                  probes: array<string, Probe>, named: list<string>, stop: ?string,
  *                  unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
@@ -443,7 +443,7 @@ function uu_plan_view(array $s): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -732,7 +732,7 @@ function uu_plan_steps(array $s, array $st): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,

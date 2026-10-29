@@ -27,19 +27,13 @@
         <id>unboundupstream.failback_delay</id>
         <label>Failback delay (seconds)</label>
         <type>text</type>
-        <help>How long a better member must stay usable before Unbound returns to it, from 60 to 3600 seconds. Use at least the longest monitor period of the members.</help>
-    </field>
-    <field>
-        <id>unboundupstream.probe_name</id>
-        <label>Probe name</label>
-        <type>text</type>
-        <help>The name used to check that the resolver answers; "." asks for the root.</help>
+        <help>How long a better member must stay usable before Unbound returns to it. Use at least the longest monitor period of the members.</help>
     </field>
     <field>
         <id>unboundupstream.fallback</id>
         <label>Fall back to Unbound's own forwarders</label>
         <type>checkbox</type>
-        <help>While no member is usable, Unbound uses its own forwarders (Query Forwarding or DNS over TLS) for every client except those set to fail closed below. Off: every client gets REFUSED instead. The firewall's own lookups always fall back.</help>
+        <help>While no member is usable, Unbound uses its own forwarders (Query Forwarding or DNS over TLS) for every client except those set to fail closed below. Off: every client gets REFUSED instead. The firewall's own lookups always fall back. Use with care.</help>
     </field>
     <field>
         <id>unboundupstream.fail_closed</id>

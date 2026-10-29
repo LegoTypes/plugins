@@ -236,6 +236,21 @@ uu_register_suite('wiring', function (): int {
         $fields === ['resolver.gateway' => ['dropdown', 'The member this resolver is for.'],
                      'resolver.address' => ['text',
                          "The resolver's address inside this member's tunnel. IPv4 or IPv6."]]);
+    $general = @simplexml_load_file('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/forms/'
+        . 'general.xml');
+    $helps = [];
+    foreach ($general === false ? [] : ($general->xpath('/form/field') ?: []) as $field) {
+        $helps[(string)$field->id] = (string)$field->help;
+    }
+    $fallbackHelp = "While no member is usable, Unbound uses its own forwarders (Query Forwarding or DNS over TLS) "
+        . "for every client except those set to fail closed below. Off: every client gets REFUSED instead. The "
+        . "firewall's own lookups always fall back. Use with care.";
+    uu_check($t, 'form: the failback help has no range, and turning off the fallback is marked Use with care',
+        uu_try_case(fn (): bool => ($helps['unboundupstream.failback_delay'] ?? '')
+                === 'How long a better member must stay usable before Unbound returns to it. Use at least the '
+                . 'longest monitor period of the members.'
+            && ($helps['unboundupstream.fallback'] ?? '') === $fallbackHelp
+            && !array_key_exists('unboundupstream.probe_name', $helps)));
     $index = (string)@file_get_contents('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/'
         . 'IndexController.php');
     $members = preg_match('~<table[^>]*id="unboundupstream-members".*?</thead>~s', $view, $m) === 1 ? $m[0] : '';
@@ -1439,7 +1454,7 @@ VOLT;
             file_put_contents($custom, "server:\ndo-ip6: no\n");
             $swapped = uu_try_case(function (): bool {
                 $s = uu_snapshot(['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp',
-                    'default' => '2001:db8:a::53', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
+                    'default' => '2001:db8:a::53', 'rows' => [], 'failback_delay' => 120,
                     'fallback' => true, 'fail_closed' => [], 'fail_closed_networks' => []],
                     [], null, false, []);
                 return ($s['contract_input']['unbound_conf'] ?? null) === ['do_ip4' => true, 'do_ip6' => false,

@@ -139,7 +139,7 @@ function uu_status_active(array $s, array $plan): string
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fail_closed: list<string>,
+ *         rows: array<string, string>, failback_delay: int, fail_closed: list<string>,
  *         fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,

@@ -46,7 +46,7 @@ declare(strict_types=1);
  *     they always did) and keeps its entry, its route record and its hold, so the next evaluation tries again;
  *   - the state's mode and member change only when the step that makes them true succeeded, and a switch in place on
  *     the same member (its resolver changed) records none;
- *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type <probe_name> SOA only; the
+ *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type . SOA only; the
  *     flush_requestlist of a stop or a drain drops the queries in progress (their clients ask again), never a cache
  *     entry, and runs only behind reject routes.
  *
@@ -180,7 +180,7 @@ final class UuApplyRun
     /**
      * @var array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
-     *         rows: array<string, string>, failback_delay: int, probe_name: string},
+     *         rows: array<string, string>, failback_delay: int},
      *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
      *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
      *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
@@ -251,7 +251,6 @@ final class UuApplyRun
     private bool $reasonsLogged = false;
     /** @var list<string> what this run found on the way, for the switch reason */
     private array $notes = [];
-    private string $probe;
     /**
      * whether the view holds the refuse of ".", as the snapshot read it or this run's last arm or lift read it back;
      * null while unknown (not loaded, or a read back that failed)
@@ -284,7 +283,7 @@ final class UuApplyRun
      *         mirror: array<string, list<string>>, problem: ?string}} $p
      * @param array{now: int, wall: int,
      *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
-     *         rows: array<string, string>, failback_delay: int, probe_name: string},
+     *         rows: array<string, string>, failback_delay: int},
      *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
      *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
      *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
@@ -310,7 +309,6 @@ final class UuApplyRun
         $this->s = $s;
         $this->io = $io;
         $this->st = $p['state'];
-        $this->probe = $s['settings']['probe_name'];
         $this->viewArmed = $p['view']['armed'];
         $this->viewZones = $s['view']['view_zones'];
         $this->kept = uu_plan_addresses($s);
@@ -1145,7 +1143,7 @@ final class UuApplyRun
     {
         $resolver = $this->resolverOf($name);
         $this->fibWait($resolver);
-        $ok = ($this->io['probe_direct'])($resolver, $this->probe);
+        $ok = ($this->io['probe_direct'])($resolver, UU_PROBE_NAME);
         $this->st['checks']['direct'] = ['ok' => $ok, 'at' => time(), 'member' => $name];
         return $ok;
     }
@@ -1154,12 +1152,12 @@ final class UuApplyRun
     private function probeUnbound(string $name): bool
     {
         $this->fibWait($this->resolverOf($name));
-        $flushed = $this->ucOk(['flush_type', $this->probe, 'SOA']);
+        $flushed = $this->ucOk(['flush_type', UU_PROBE_NAME, 'SOA']);
         if (!$flushed) {
-            $this->log("unbound-control flush_type {$this->probe} SOA failed: the check through Unbound counts as "
-                . 'failed (a cached answer proves nothing)', LOG_WARNING);
+            $this->log('unbound-control flush_type ' . UU_PROBE_NAME . ' SOA failed: the check through Unbound counts '
+                . 'as failed (a cached answer proves nothing)', LOG_WARNING);
         }
-        $ok = $flushed && ($this->io['probe_unbound'])($this->probe);
+        $ok = $flushed && ($this->io['probe_unbound'])(UU_PROBE_NAME);
         $this->st['checks']['unbound'] = ['ok' => $ok, 'at' => time(), 'member' => $name];
         return $ok;
     }
@@ -1613,7 +1611,7 @@ final class UuApplyRun
  *         mirror: array<string, list<string>>, problem: ?string}} $p uu_plan()
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
  *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,
@@ -1695,7 +1693,7 @@ function uu_apply(array $p, array $s, array $io): array
  *         mirror: array<string, list<string>>, problem: ?string}} $p
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
  *         monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int}>, stop: ?string,

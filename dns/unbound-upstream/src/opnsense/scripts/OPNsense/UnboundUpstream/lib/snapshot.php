@@ -357,7 +357,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         rows: array<string, string>, failback_delay: int, fallback: bool,
  *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -392,7 +392,7 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *     released_at: ?int}> $addresses the saved state's map
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         rows: array<string, string>, failback_delay: int, fallback: bool,
  *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -454,17 +454,16 @@ function uu_route_adopt(array $s, array $addresses): array
  * The settings as the scripts use them, checked again where they are used: a restored configuration bypasses the
  * model's masks. A Default resolver (the model's resolver field) that is not an IPv4 or IPv6 address, or is one the
  * model refuses (link-local, multicast, loopback, unspecified), is '' (unset) and any other is its canonical form, the
- * per-member rows are uu_rows_clean()'s, a probe name outside UU_PROBE_NAME_MASK is '.', a failback_delay is clamped to
- * 60..UU_FAILBACK_DELAY_MAX, a group id that is not a UUID is ''. One problem per substitution; none quotes the
- * value.
+ * per-member rows are uu_rows_clean()'s, a failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, a group id that is
+ * not a UUID is ''. One problem per substitution; none quotes the value.
  *
  * fallback is false only for "0"; fail_closed and fail_closed_networks are the model's comma lists, sorted with
  * duplicates removed, the networks in canonical form and a value that is no network dropped with its own problem.
  *
- * @param array{resolver: string, rows: list<array{gateway: string, address: string}>, probe_name: string,
+ * @param array{resolver: string, rows: list<array{gateway: string, address: string}>,
  *     failback_delay: string, group_uuid: string, fallback: string, fail_closed: string,
  *     fail_closed_networks: string} $raw
- * @return array{settings: array{default: string, rows: array<string, string>, probe_name: string,
+ * @return array{settings: array{default: string, rows: array<string, string>,
  *     failback_delay: int, group_uuid: string, fallback: bool, fail_closed: list<string>,
  *     fail_closed_networks: list<string>}, problems: list<string>}
  *   rows: gateway UUID => canonical address
@@ -484,11 +483,6 @@ function uu_settings_clean(array $raw): array
     }
     $rows = uu_rows_clean($raw['rows']);
     array_push($problems, ...$rows['problems']);
-    $probe = $raw['probe_name'];
-    if (preg_match(UU_PROBE_NAME_MASK . 'D', $probe) !== 1) {
-        $problems[] = 'settings: probe name is not a host name or "."; probing the root';
-        $probe = '.';
-    }
     if (preg_match('/^\d+$/D', $raw['failback_delay']) !== 1) {
         $problems[] = 'settings: failback delay is not a number of seconds; using ' . UU_FAILBACK_DEFAULT;
         $delay = UU_FAILBACK_DEFAULT;
@@ -518,7 +512,7 @@ function uu_settings_clean(array $raw): array
     }
     $networks = array_keys($networks);
     sort($networks);
-    return ['settings' => ['default' => $resolver, 'rows' => $rows['rows'], 'probe_name' => $probe,
+    return ['settings' => ['default' => $resolver, 'rows' => $rows['rows'],
                            'failback_delay' => $delay, 'group_uuid' => $uuid, 'fallback' => $raw['fallback'] !== '0',
                            'fail_closed' => $interfaces, 'fail_closed_networks' => $networks],
             'problems' => $problems];
@@ -532,7 +526,7 @@ function uu_settings_clean(array $raw): array
  * record do not.
  *
  * @return array{enabled: bool, dry_run: bool, group: string, default: string,
- *     rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *     rows: array<string, string>, failback_delay: int, fallback: bool,
  *     fail_closed: list<string>, fail_closed_networks: list<string>}
  */
 function uu_settings(bool $warn = false): array
@@ -546,7 +540,6 @@ function uu_settings(bool $warn = false): array
     $clean = uu_settings_clean([
         'resolver' => $mdl->resolver->getValue(),
         'rows' => $rows,
-        'probe_name' => $mdl->probe_name->getValue(),
         'failback_delay' => $mdl->failback_delay->getValue(),
         'group_uuid' => $mdl->gateway_group->getValue(),
         'fallback' => $mdl->fallback->getValue(),
@@ -572,7 +565,6 @@ function uu_settings(bool $warn = false): array
         'default' => $clean['settings']['default'],
         'rows' => $clean['settings']['rows'],
         'failback_delay' => $clean['settings']['failback_delay'],
-        'probe_name' => $clean['settings']['probe_name'],
         'fallback' => $clean['settings']['fallback'],
         'fail_closed' => $clean['settings']['fail_closed'],
         'fail_closed_networks' => $clean['settings']['fail_closed_networks'],
@@ -852,7 +844,7 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         rows: array<string, string>, failback_delay: int, fallback: bool,
  *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -886,7 +878,7 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  * @param string $mode the saved state's mode
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         rows: array<string, string>, failback_delay: int, fallback: bool,
  *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
@@ -983,7 +975,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  * The Snapshot (planner.php) for the given settings. now is monotonic seconds (every timer runs on it); wall is the wall clock, for display only.
  *
  * @param array{enabled: bool, dry_run: bool, group: string, default: string,
- *     rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *     rows: array<string, string>, failback_delay: int, fallback: bool,
  *     fail_closed: list<string>, fail_closed_networks: list<string>} $settings uu_settings()
  * @param list<string> $named the gateways the monitor hook passed
  * @param ?string $stop why this run stops whatever the settings say (a UU_STOP_* cause), or null
@@ -997,7 +989,7 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  * @param bool $upgrade whether this run is a package upgrade's deinstall (pkg's PKG_UPGRADE is set)
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string, fallback: bool,
+ *         rows: array<string, string>, failback_delay: int, fallback: bool,
  *         fail_closed: list<string>, fail_closed_networks: list<string>},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,

@@ -528,3 +528,11 @@ function uu_apply_same(?array $live, array $want): bool
 {
     return $live !== null && uu_apply_bare($live) === uu_apply_bare($want);
 }
+
+const UU_NOTIFY_URL_MASK = '/^https?:\/\/[^\s\/?#]+(\/\S*)?$/'; /* the URL shape the settings and the run share */
+
+/** Whether the URL is an http or https URL; 'D' keeps a trailing newline out, which the mask's own $ would let through. */
+function uu_notify_url_ok(string $url): bool
+{
+    return preg_match(UU_NOTIFY_URL_MASK . 'D', $url) === 1;
+}

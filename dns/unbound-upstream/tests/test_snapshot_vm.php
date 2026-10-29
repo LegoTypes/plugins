@@ -56,7 +56,7 @@ uu_register_suite('snapshot_vm', function (): int {
             return $ok;
         }));
     $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp',
-                 'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
+                 'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120,
                  'fallback' => true, 'fail_closed' => [], 'fail_closed_networks' => []];
     $s = uu_snapshot($settings, [], null, false, []);
     uu_check($t, 'settings pass through, trigger is the group\'s', $s['settings'] === $settings && $s['trigger'] === 'downloss');
@@ -117,7 +117,7 @@ uu_register_suite('snapshot_vm', function (): int {
     /* the four contract inputs come from the snapshot's own reads: an IPv6 group with an IPv4 Default, and the same
      * group with an IPv4 member added in memory (config.xml is put back and compared) */
     $far6 = ['enabled' => true, 'dry_run' => true, 'group' => 'uu_far6_grp', 'default' => '10.2.0.1', 'rows' => [],
-             'failback_delay' => 120, 'probe_name' => '.', 'fallback' => true, 'fail_closed' => [],
+             'failback_delay' => 120, 'fallback' => true, 'fail_closed' => [],
              'fail_closed_networks' => []];
     if (isset((new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()['uu_far6_grp'])) {
         $v6 = uu_snapshot($far6, [], null, false, []);

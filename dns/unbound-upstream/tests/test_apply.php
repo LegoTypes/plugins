@@ -23,7 +23,7 @@ require_once __DIR__ . '/scratch.php';
  *
  * @return array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     trigger: string, tiers: list<list<string>>, family: string,
  *     members: array<string, array{name: string, interface: string, if: string, ipprotocol: string,
  *         resolver: string, next_hop: string, disabled: bool, force_down: bool, monitor_disable: bool,
@@ -68,7 +68,7 @@ function uu_test_apply_snapshot(): array
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
- *         rows: array<string, string>, failback_delay: int, probe_name: string},
+ *         rows: array<string, string>, failback_delay: int},
  *     unbound: array{enabled: bool, pid_alive: bool, control_ok: bool, live_root: ?list<string>},
  *     routes: array<string, array{present: bool, gateway: string, interface: string, reject: bool,
  *         ours: bool}>,
@@ -3612,6 +3612,22 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'drill: "ad" only inside another word (a name) is not the flag',
         !uu_drill_passed(";; ->>HEADER<<- opcode: QUERY, rcode: NOERROR, id: 1\n;; flags: qr rd ra ; QUERY: 1\nbad.example.\n"));
 
+    uu_check($t, 'apply: the direct probe asks the root whatever the settings hold',
+        uu_try_case(function () use ($usable, $probe, $through): bool {
+            $scratch = new ArrayObject();
+            $ok = true;
+            foreach ([[], ['probe_name' => 'probe.example.test']] as $extra) {
+                $s = uu_test_apply_snapshot();
+                $s['settings'] += $extra;
+                $p = uu_plan($s, uu_test_plan_state(null, $usable));
+                $r = uu_test_io($s, $scratch);
+                uu_apply($p, $s, $r['io']);
+                $acts = uu_test_acts($r['calls']);
+                $ok = $ok && in_array($probe, $acts, true) && array_slice($acts, -2) === $through
+                    && array_values(array_filter($acts, fn (string $c): bool => str_contains($c, 'example'))) === [];
+            }
+            return $ok;
+        }));
     uu_check($t, 'bare addresses: @port and #name stripped, IPv6 canonical, sorted, unique',
         uu_apply_bare(['2001:DB8:0::53@853#dns.example', '192.0.2.53@853', '192.0.2.53']) === ['192.0.2.53', '2001:db8::53']);
 

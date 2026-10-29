@@ -63,6 +63,19 @@ class UnboundUpstream extends BaseModel
         if ($this->notify->isEqual('1') && $this->notify_url->isEmpty()) {
             $messages->appendMessage(new Message(gettext('Enter the URL to notify.'), $this->notify_url->__reference));
         }
+        /* UrlField passes URLs the run refuses (https://host?x); the field's own refusal already says this */
+        if (!$this->notify_url->isEmpty() && !uu_notify_url_ok($this->notify_url->getValue())) {
+            $named = false;
+            foreach ($messages as $message) {
+                $named = $named || $message->getField() === $this->notify_url->__reference;
+            }
+            if (!$named) {
+                $messages->appendMessage(new Message(
+                    gettext('Enter an http or https URL.'),
+                    $this->notify_url->__reference
+                ));
+            }
+        }
         if ($this->fallback->isEqual('1')) {
             $this->checkFailClosed($messages);
         }

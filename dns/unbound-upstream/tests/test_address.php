@@ -206,6 +206,10 @@ uu_register_suite('address', function (): int {
             && uu_net_entry('192.0.2.0', null) === null && uu_net_entry('192.0.2.0/', null) === null
             && uu_net_entry('192.0.2.0/24/1', null) === null && uu_net_entry('192.0.2.0/+24', null) === null
             && uu_net_entry('192.0.2.0/24 ', null) === null && uu_net_entry('192.0.2.0/ 24', null) === null));
+    uu_check($t, 'address: uu_notify_url_ok',
+        uu_try_case(fn (): bool => uu_notify_url_ok('http://ha.example.test/x') && uu_notify_url_ok('https://ha.example.test')
+            && !uu_notify_url_ok('https://ha.example.test?x') && !uu_notify_url_ok('ftp://ha.example.test/x')
+            && !uu_notify_url_ok("https://ha.example.test/x\n")));
     uu_check($t, 'address: uu_root_forward_conflicts names each root forwarder that is a member\'s resolver, '
         . 'canonical, port and name dropped',
         uu_try_case(fn (): bool => uu_root_forward_conflicts(['2001:DB8:A::0053@53#x', '192.0.2.53'],

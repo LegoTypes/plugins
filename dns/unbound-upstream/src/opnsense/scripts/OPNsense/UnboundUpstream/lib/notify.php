@@ -46,15 +46,6 @@ function uu_notify_body(array $st, bool $switched): string
 }
 
 /**
- * Whether the URL is an http or https URL, as the settings model's Mask admits it; 'D' keeps a trailing newline
- * out, which the Mask's own $ would let through.
- */
-function uu_notify_url_ok(string $url): bool
-{
-    return preg_match(UU_NOTIFY_URL_MASK . 'D', $url) === 1;
-}
-
-/**
  * What a stored notify URL means: the URL to use, or no URL and, for a value that fails the mask (a restored config,
  * a hand edit), the warning to log. An empty value is no URL and no problem.
  *

@@ -371,9 +371,9 @@ uu_register_suite('model', function (): int {
         }));
     uu_check(
         $t,
-        'defaults: disabled, dry run on, failback 120, probe ".", notify off with no URL',
+        'defaults: disabled, dry run on, failback 120, notify off with no URL',
         $m->enabled->isEqual('0') && $m->dry_run->isEqual('1') && $m->failback_delay->isEqual('120')
-            && $m->probe_name->isEqual('.') && $m->notify->isEqual('0') && $m->notify_url->isEmpty()
+            && $m->notify->isEqual('0') && $m->notify_url->isEmpty()
     );
 
     $hook = 'https://ha.example.test/api/webhook/example-id';
@@ -402,11 +402,64 @@ uu_register_suite('model', function (): int {
     );
 
     $xml = simplexml_load_file(__DIR__ . '/../src/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.xml');
+    $urlMessage = 'Enter an http or https URL.';
     uu_check(
         $t,
-        'the XML masks of notify_url and probe_name are UU_NOTIFY_URL_MASK and UU_PROBE_NAME_MASK, byte for byte',
-        $xml !== false && (string)$xml->items->notify_url->Mask === UU_NOTIFY_URL_MASK
-            && (string)$xml->items->probe_name->Mask === UU_PROBE_NAME_MASK
+        'model: notify_url is a UrlField that Save also holds to the run\'s URL shape',
+        uu_try_case(function () use ($xml, $url, $urlMessage): bool {
+            $shape = uu_test_model_field(uu_test_model_messages(['notify' => '1',
+                'notify_url' => 'https://ha.example.test?x']), 'notify_url');
+            $ftp = uu_test_model_field(uu_test_model_messages(['notify' => '1',
+                'notify_url' => 'ftp://ha.example.test/x']), 'notify_url');
+            return $xml !== false && (string)$xml->items->notify_url['type'] === 'UrlField'
+                && !isset($xml->items->notify_url->Mask)
+                && !$url('https://ha.example.test?x') && $shape === [$urlMessage] && $ftp === [$urlMessage];
+        })
+    );
+    uu_check(
+        $t,
+        'model: a stored URL UrlField refuses still loads and is still used',
+        uu_try_case(function () use ($urlMessage): bool {
+            $stored = 'http://ha_box.example:8123/x';
+            $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+            $m->setNodes(['notify' => '1', 'notify_url' => $stored]);
+            $named = uu_test_model_field(uu_test_model_messages(['notify' => '1', 'notify_url' => $stored]),
+                'notify_url');
+            if ($named !== [$urlMessage]) {
+                printf("  notify_url messages for %s: %s\n", $stored, implode('; ', $named));
+            }
+            return $m->notify_url->getValue() === $stored && uu_notify_url_ok($m->notify_url->getValue())
+                && $named !== [];
+        })
+    );
+    uu_check(
+        $t,
+        'model: no probe_name field, and a config holding one loads',
+        uu_try_case(function (): bool {
+            $root = \OPNsense\Core\Config::getInstance()->object();
+            $added = [];
+            foreach (['OPNsense', 'UnboundUpstream'] as $name) {
+                if (!isset($root->$name)) {
+                    $root->addChild($name);
+                    $added[] = $name;
+                }
+                $root = $root->$name;
+            }
+            $root->addChild('probe_name', 'probe.example.test');
+            try {
+                $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+                $messages = uu_test_model_messages([]);
+                $mentions = array_filter($messages, fn (array $x): bool => $x['field'] === 'probe_name'
+                    || str_contains($x['message'], 'probe'));
+                return $m->getNodeByReference('probe_name') === null && $mentions === [];
+            } finally {
+                unset($root->probe_name);
+                if ($added !== []) {
+                    $top = \OPNsense\Core\Config::getInstance()->object();
+                    unset($top->OPNsense->UnboundUpstream);
+                }
+            }
+        })
     );
 
     $bad = ['59', '3601'];
@@ -441,13 +494,6 @@ uu_register_suite('model', function (): int {
         'resolver required when enabled',
         in_array('resolver', uu_test_model_refused(['enabled' => '1']), true)
     );
-    $probe = fn (string $v): bool => !in_array('probe_name', uu_test_model_refused(['probe_name' => $v]), true);
-    uu_check(
-        $t,
-        'probe_name: "." and "example.com" accepted, "bad name!" refused',
-        $probe('.') && $probe('example.com') && !$probe('bad name!')
-    );
-
     $uuid = '00000000-0000-0000-0000-000000000000';
     uu_check(
         $t,

@@ -326,7 +326,7 @@ uu_register_suite('snapshot', function (): int {
         $o['rules'] === ['state' => 'missing', 'problems' => ['pf status unreadable'], 'verified_at' => null,
                          'record' => null] && !in_array('-vsr', $calls, true));
 
-    $good = ['resolver' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => '120',
+    $good = ['resolver' => '192.0.2.1', 'rows' => [], 'failback_delay' => '120',
              'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60', 'fallback' => '1', 'fail_closed' => '',
              'fail_closed_networks' => ''];
     $clean = fn (array $over): array => uu_settings_clean($over + $good);
@@ -370,7 +370,7 @@ uu_register_suite('snapshot', function (): int {
     /* each settings_clean case runs inside uu_try_case(), so on a version without it each fails on its own */
     uu_check($t, 'settings_clean: the defaults pass unchanged with no problem',
         uu_try_case(fn (): bool => uu_settings_clean($good) === ['settings' => [
-            'default' => '192.0.2.1', 'rows' => [], 'probe_name' => '.', 'failback_delay' => 120,
+            'default' => '192.0.2.1', 'rows' => [], 'failback_delay' => 120,
             'group_uuid' => '0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60', 'fallback' => true, 'fail_closed' => [],
             'fail_closed_networks' => []], 'problems' => []]));
     uu_check($t, 'settings_clean: a resolver with a prefix length or a host name is unset, one problem each',
@@ -397,8 +397,6 @@ uu_register_suite('snapshot', function (): int {
                 && $clean(['resolver' => '0.0.0.0'])['problems']
                     === ['settings: the resolver is unspecified; evaluating as unset'];
         }));
-    uu_check($t, 'settings_clean: a probe name with a space is the root, one problem',
-        uu_try_case(fn (): bool => $one(['probe_name' => 'a b'], 'probe_name', '.')));
     uu_check($t, 'settings_clean: failback_delay is clamped to 60..UU_FAILBACK_DELAY_MAX, one problem each',
         uu_try_case(fn (): bool => $one(['failback_delay' => '10'], 'failback_delay', 60)
             && $one(['failback_delay' => '99999'], 'failback_delay', UU_FAILBACK_DELAY_MAX)));
@@ -413,13 +411,12 @@ uu_register_suite('snapshot', function (): int {
             && $one(['failback_delay' => ''], 'failback_delay', 120)
             && $one(['failback_delay' => '-5'], 'failback_delay', 120)
             && !str_contains(implode(' ', $clean(['failback_delay' => '120abc'])['problems']), '120abc')));
-    uu_check($t, 'settings_clean: a trailing newline never passes the probe name or the group id masks',
-        uu_try_case(fn (): bool => $one(['probe_name' => "example.org\n"], 'probe_name', '.')
-            && $one(['group_uuid' => "0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60\n"], 'group_uuid', '')));
+    uu_check($t, 'settings_clean: a trailing newline never passes the group id mask',
+        uu_try_case(fn (): bool => $one(['group_uuid' => "0b6a7f9e-5c1d-4e0a-9d2b-3f8a1c4e5d60\n"], 'group_uuid', '')));
     uu_check($t, 'settings_clean: no problem quotes the value',
         uu_try_case(function () use ($clean): bool {
-            $r = $clean(['resolver' => 'secret.example', 'probe_name' => 'a b secret']);
-            return count($r['problems']) === 2 && !str_contains(implode(' ', $r['problems']), 'secret');
+            $r = $clean(['resolver' => 'secret.example']);
+            return count($r['problems']) === 1 && !str_contains(implode(' ', $r['problems']), 'secret');
         }));
 
     uu_check($t, '(g11) adopt per address: the Default\'s route and a row\'s address, each matching its record and '
