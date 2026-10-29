@@ -11,7 +11,7 @@ declare(strict_types=1);
  * regular files only, the state's shape checked on load, and the crash-test flag.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/state.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/log.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/judge.php';

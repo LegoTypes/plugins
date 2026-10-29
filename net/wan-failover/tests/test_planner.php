@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Planner scenarios: the specified cases, then the cases each later fix added.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/planner.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contract.php';
 

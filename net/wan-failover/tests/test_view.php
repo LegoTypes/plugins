@@ -12,7 +12,7 @@ declare(strict_types=1);
  * count of hold records that were not this plugin's and the core drift only the package removal depends on.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 
 wf_register_suite('view', function (): int {
     $t = ['fail' => 0, 'total' => 0];

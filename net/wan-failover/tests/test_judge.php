@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Readings and judgements.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/judge.php';
 
 /** @return array{disabled: bool, manual_down: bool, present: bool, status: string, tilde: bool, carrier: bool, has_ipv4: bool, loss: ?float, sock_age: ?int, losslow: float, losshigh: float, time_period: int, interval: int, loss_interval: int} */

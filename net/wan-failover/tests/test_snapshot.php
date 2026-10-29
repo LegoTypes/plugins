@@ -10,7 +10,7 @@ declare(strict_types=1);
  * The snapshot's pure parsers (the live collectors need a box and are checked on the VM).
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parsers.php';
 
 wf_register_suite('snapshot', function (): int {

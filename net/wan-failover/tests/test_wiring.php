@@ -12,7 +12,7 @@ declare(strict_types=1);
  * and runs the tree's own scripts with the VM's php. Changes nothing lasting.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/constants.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contract.php';
 
@@ -245,6 +245,21 @@ wf_register_suite('wiring', function (): int {
     if (!$ok) {
         printf("    exit %d, config.xml %s, output: %s\n", $r['rc'], $written ? 'WRITTEN: restore the VM to the '
             . "'wan-failover base' checkpoint" : 'unchanged', trim($r['out']) === '' ? '(none)' : trim($r['out']));
+    }
+    /* the package ships only what runs on the box: the test helper is under tests/, not src/ */
+    $shipped = [];
+    $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(dirname(__DIR__) . '/src',
+        FilesystemIterator::SKIP_DOTS));
+    foreach ($files as $file) {
+        $body = $file->isFile() ? (string)file_get_contents($file->getPathname()) : '';
+        if ($file->getFilename() === 'selftest.php' || str_contains($body, 'function wf_check(')
+            || str_contains($body, 'function wf_register_suite(')) {
+            $shipped[] = substr($file->getPathname(), strlen(dirname(__DIR__)) + 1);
+        }
+    }
+    wf_check($t, 'the package ships no test helper', $shipped === []);
+    if ($shipped !== []) {
+        printf("    under src/: %s\n", implode(', ', $shipped));
     }
     /* the run-time names check against the box's own core, at the path the snapshot reads */
     $names = wf_contract_name_mask(is_readable(WF_CORE_GATEWAYS_XML) ? (string)file_get_contents(WF_CORE_GATEWAYS_XML) : null);

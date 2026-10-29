@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Holds every copyright line in the plugin tree to the handle-only form.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 
 wf_register_suite('headers', function (): int {
     $t = ['fail' => 0, 'total' => 0];

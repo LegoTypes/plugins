@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Tailscale restart decision.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/tailscale.php';
 
 wf_register_suite('tailscale', function (): int {

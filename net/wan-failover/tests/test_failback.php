@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Failback preference and live-rule gate.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/pfstate.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/failback.php';
 

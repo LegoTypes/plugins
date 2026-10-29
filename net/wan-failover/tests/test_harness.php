@@ -10,7 +10,7 @@ declare(strict_types=1);
  * Proves the selftest harness itself counts passes and failures.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 
 wf_register_suite('harness', function (): int {
     $t = ['fail' => 0, 'total' => 0];

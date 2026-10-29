@@ -11,7 +11,7 @@ declare(strict_types=1);
  * state-kill targets. Pure; runs anywhere.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/parsers.php';
 
 wf_register_suite('parsers', function (): int {

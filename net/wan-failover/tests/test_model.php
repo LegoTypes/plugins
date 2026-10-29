@@ -38,7 +38,7 @@ declare(strict_types=1);
 use OPNsense\Routing\Gateways;
 use OPNsense\WanFailover\WanFailover;
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 
 /**
  * The messages on the wans field after a fresh model takes the selection $post makes of the saved one.

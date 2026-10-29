@@ -10,7 +10,7 @@ declare(strict_types=1);
  * pfctl -vvss / -vvsr parsing and flow pairing.
  */
 
-require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/selftest.php';
+require_once __DIR__ . '/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/pfstate.php';
 
 /** @return array<string, string> gateway ip => WAN name */
