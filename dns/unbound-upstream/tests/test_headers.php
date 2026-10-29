@@ -91,7 +91,7 @@ function uu_headers_scan(string $root, callable $read, array $licence): array
             $held = is_int($at);
             foreach ($licence as $k => $want) {
                 $got = $lines[(is_int($at) ? $at : 0) + 1 + $k] ?? null;
-                $held = $held && $got !== null && preg_match('/^( \*|#| #)(?: (.*))?$/', $got, $m) === 1
+                $held = $held && $got !== null && preg_match('/^( \*|#| #)(?: (.+))?$/', $got, $m) === 1
                     && ($m[2] ?? '') === $want;
             }
             $rows[] = ['path' => $rel, 'bad' => $bad, 'licence' => $held];
@@ -118,6 +118,7 @@ uu_register_suite('headers', function (): int {
                    'full.py' => "# $m 2026 cayossarian\n# All rights reserved.\n#\n# Redistribution.\n",
                    'full.volt' => "{#\n # $m 2026 cayossarian\n # All rights reserved.\n #\n # Redistribution.\n #}\n",
                    'ref.php' => "/*\n * $m 2026 cayossarian\n * All rights reserved.\n * BSD 2-Clause License\n */\n",
+                   'trail.php' => "/*\n * $m 2026 cayossarian\n * All rights reserved.\n * \n * Redistribution.\n */\n",
                    'short.py' => "# $m 2026 cayossarian\n# All rights reserved.\n#\n",
                    'ref.volt' => "{#\n # $m 2026 cayossarian\n # All rights reserved.\n # BSD 2-Clause License\n #}\n"];
             foreach ($mk as $name => $text) {
@@ -135,6 +136,8 @@ uu_register_suite('headers', function (): int {
             uu_check($t, 'scan: the one-line reference fails, naming the file',
                 ($has['ref.php'] ?? null) === false && ($has['ref.volt'] ?? null) === false
                 && ($has['short.py'] ?? null) === false && ($has['ok.php'] ?? null) === false);
+            uu_check($t, 'scan: a blank licence line is the comment prefix alone, so trailing space on it fails',
+                ($has['trail.php'] ?? null) === false && ($has['full.php'] ?? null) === true);
             uu_check($t, 'scan: an unreadable file is a row, not a skip', array_key_exists('locked.php', $by) && $by['locked.php'] === null);
         } finally {
             foreach (glob($dir . '/*') ?: [] as $file) {
