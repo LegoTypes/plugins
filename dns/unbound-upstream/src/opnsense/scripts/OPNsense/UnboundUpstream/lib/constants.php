@@ -34,6 +34,11 @@ const UU_CONFIGD_TIMEOUT_SECONDS = 30;    /* a core command configctl has not an
 const UU_CORE_FILTER_RELOAD = '/usr/local/etc/rc.filter_configure'; /* actions_filter.conf [reload] */
 const UU_CORE_CRON_RESTART = '/usr/local/sbin/pluginctl -s cron restart'; /* actions_cron.conf [restart] */
 const UU_CORE_UNBOUND_RESTART = '/usr/local/sbin/pluginctl -c unbound_start'; /* actions_unbound.conf [restart] */
+/* core 26.7.7's files the snapshot reads, verbatim (%s is the gateway's name); the contract notes any that core no
+ * longer keeps there (uu_core_paths_changed()) */
+const UU_DPINGER_PID = '/var/run/dpinger_%s.pid';   /* dpinger.inc, dpinger -p */
+const UU_DPINGER_SOCK = '/var/run/dpinger_%s.sock'; /* dpinger.inc, dpinger -u */
+const UU_UNBOUND_PID = '/var/run/unbound.pid';      /* unbound.inc, unbound.conf's pidfile: */
 const UU_STOP_DRAIN_SECONDS = 1;          /* stop holds the reject route this long after flush_requestlist, before
                                            * the delete: the VM measured the last send to the resolver within 13 ms
                                            * of the flush (without it, retries ran up to 14.5 s) */

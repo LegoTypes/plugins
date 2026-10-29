@@ -142,6 +142,36 @@ function uu_core_commands_changed(string $dir = '/usr/local/opnsense/service/con
 }
 
 /**
+ * The core files the snapshot reads that core no longer keeps where the plugin's constants say, each as the text of
+ * its contract note, so a moved file is named instead of reading as no data. dpinger's count as moved only when every
+ * member core reads a loss for lacks its pid or socket file, so one dpinger restarting never raises it, and a member
+ * with no loss judges nothing. Unbound's pidfile is unbound.conf's; a null $confText judges nothing (the contract
+ * already fails "unbound.conf unreadable"). Pure.
+ *
+ * @param array<string, array{loss: string, pid: bool, sock: bool}> $dpinger per member: the loss core reads, whether
+ *     its UU_DPINGER_PID file is readable, and whether its UU_DPINGER_SOCK file exists
+ * @param ?string $confText unbound.conf as uu_conf_expanded_text() reads it (null: unreadable)
+ * @return list<string>
+ */
+function uu_core_paths_changed(array $dpinger, ?string $confText): array
+{
+    $changed = [];
+    $reading = array_filter($dpinger, fn (array $d): bool => uu_loss_value($d['loss']) !== null);
+    if ($reading !== [] && array_filter($reading, fn (array $d): bool => $d['pid'] && $d['sock']) === []) {
+        $changed[] = "dpinger's pid or socket file is not at " . sprintf(UU_DPINGER_PID, '<gateway>')
+            . ' or .sock while core reads a loss: no member can settle';
+    }
+    if ($confText !== null) {
+        $pidfile = uu_unbound_conf_pidfile($confText);
+        if ($pidfile !== UU_UNBOUND_PID) {
+            $changed[] = "Unbound's pidfile is " . ($pidfile ?? 'unset') . ' in unbound.conf, not ' . UU_UNBOUND_PID
+                . ': Unbound reads as not running';
+        }
+    }
+    return $changed;
+}
+
+/**
  * `ps -o pid= -o etimes=`: seconds since each process started. Monotonic, so a clock step cannot make a young
  * dpinger window look settled.
  *
@@ -378,8 +408,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
+ *         core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *         group_family: string, mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
@@ -413,8 +443,8 @@ function uu_pfctl_run(array $args, string $binary = '/sbin/pfctl', string $runDi
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
+ *         core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *         group_family: string, mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
@@ -865,8 +895,8 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
+ *         core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *         group_family: string, mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
@@ -899,8 +929,8 @@ function uu_view_snapshot(array $settings, bool $zones, callable $uc, callable $
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
+ *         core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *         group_family: string, mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
@@ -941,7 +971,8 @@ function uu_wait_control(array $s, string $mode, ?callable $liveRoot = null, ?ca
  * contract_input.core_commands, which reads as nothing drifted, since that version did not check; an earlier 1.4
  * recording has no route_flags, which reads as no flags read (only the status shows them), placed right after routes
  * so the top-level order is this version's; one made before 1.5 has no view and no upgrade, which read as no view
- * command run and no upgrade, last. A recording made before 1.4 (a route and no routes) is refused: it has
+ * command run and no upgrade, last; one made before 1.6 has no contract_input.core_paths, which reads as no path
+ * changed, since that version did not check. A recording made before 1.4 (a route and no routes) is refused: it has
  * one resolver's route and none of the per-member fields, and a recording is a diagnostic of one box at one time, so
  * it is recorded again rather than converted. Anything else is as recorded; replay checks the top-level shape.
  *
@@ -957,6 +988,10 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
     if (is_array($snapshot['contract_input'] ?? null)
         && !array_key_exists('core_commands', $snapshot['contract_input'])) {
         $snapshot['contract_input']['core_commands'] = [];
+    }
+    if (is_array($snapshot['contract_input'] ?? null)
+        && !array_key_exists('core_paths', $snapshot['contract_input'])) {
+        $snapshot['contract_input']['core_paths'] = [];
     }
     if (!array_key_exists('route_flags', $snapshot)) {
         $after = (int)array_search('routes', array_keys($snapshot), true) + 1;
@@ -1010,8 +1045,8 @@ function uu_snapshot_recorded(array $snapshot, string $path): array
  *         rules: array{state: string, problems: list<string>},
  *         zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *         fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *         unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *         mixed_family: bool, family_mismatch: list<string>},
+ *         core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *         group_family: string, mixed_family: bool, family_mismatch: list<string>},
  *     rules: array{state: string, problems: list<string>, verified_at: ?int,
  *         record: ?array{checksum: string, inputs: string, at: int, loaded: bool, problems: list<string>}},
  *     block_table: array{table: ?array{addresses: int, references: int, out_block: int}, addresses: list<string>},
@@ -1099,7 +1134,8 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     }
 
     /* dpinger: status and loss with the watcher cache substituted for a window with no data, the raw cache, and
-     * the age of each member's dpinger process (null without a process or its socket) */
+     * the age of each member's dpinger process (null without a process or its socket); and, for the contract, each
+     * member's loss beside whether its pid and socket files are where the plugin reads them */
     $status = return_gateways_status();
     $watcher = dpinger_watcher();
     $statusFields = true;
@@ -1110,7 +1146,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     }
     $pids = [];
     foreach (array_keys($members) as $name) {
-        $pidFile = "/var/run/dpinger_{$name}.pid";
+        $pidFile = sprintf(UU_DPINGER_PID, $name);
         $pid = is_readable($pidFile) ? (int)trim((string)file_get_contents($pidFile)) : 0;
         if ($pid > 0) {
             $pids[$name] = $pid;
@@ -1119,23 +1155,27 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
     $ages = $pids === [] ? [] : uu_parse_ps_etimes((string)shell_exec('/bin/ps -o pid= -o etimes= -p '
         . escapeshellarg(implode(',', $pids)) . ' 2>/dev/null'));
     $probes = [];
+    $dpinger = [];
     foreach (array_keys($members) as $name) {
         $st = $status[$name] ?? null;
         if ($st === null) {
             continue;
         }
-        $age = isset($pids[$name]) && file_exists("/var/run/dpinger_{$name}.sock") ? ($ages[$pids[$name]] ?? null) : null;
+        $sock = file_exists(sprintf(UU_DPINGER_SOCK, $name));
+        $age = isset($pids[$name]) && $sock ? ($ages[$pids[$name]] ?? null) : null;
         $probes[$name] = [
             'status' => (string)$st['status'],
             'loss' => (string)$st['loss'],
             'sock_age' => $age,
             'cached' => isset($watcher[$name]) ? (string)$watcher[$name] : null,
         ];
+        $dpinger[(string)$name] = ['loss' => (string)$st['loss'], 'pid' => is_readable(sprintf(UU_DPINGER_PID, $name)),
+            'sock' => $sock];
     }
 
     /* Unbound */
     $unboundMdl = new \OPNsense\Unbound\Unbound();
-    $pidAlive = isvalidpid('/var/run/unbound.pid');
+    $pidAlive = isvalidpid(UU_UNBOUND_PID);
     $liveRoot = $pidAlive ? uu_live_root() : null;
     $zone = uu_root_zone(uu_zone_texts());
     $confText = uu_conf_expanded_text();
@@ -1246,6 +1286,7 @@ function uu_snapshot(array $settings, array $named, ?string $stop, bool $listRul
             'group_found' => $group !== null,
             'members' => count($members),
             'core_commands' => uu_core_commands_changed(),
+            'core_paths' => uu_core_paths_changed($dpinger, $confText),
             'unbound_conf' => $unboundConf,
             'group_family' => $groupFamily['family'],
             'mixed_family' => $groupFamily['mixed'],

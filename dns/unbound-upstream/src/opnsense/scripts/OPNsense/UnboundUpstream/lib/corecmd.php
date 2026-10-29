@@ -82,7 +82,7 @@ function uu_core_shell(string $cmdline): array
 /** Unbound's pid from its pid file, read as a regular file; null when it cannot be read or is not a pid. */
 function uu_unbound_pid(): ?int
 {
-    $text = uu_read_regular_file('/var/run/unbound.pid')['text'];
+    $text = uu_read_regular_file(UU_UNBOUND_PID)['text'];
     return $text !== null && preg_match('/^\s*([1-9][0-9]*)\s*$/D', $text, $m) === 1 ? (int)$m[1] : null;
 }
 

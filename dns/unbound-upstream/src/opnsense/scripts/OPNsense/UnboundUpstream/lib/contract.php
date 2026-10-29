@@ -71,14 +71,15 @@ function uu_contract_scoped(array $c, bool $anyResolver): array
  *     resolver_notes: list<string>, no_next_hop: list<string>, rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *     unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *     mixed_family: bool, family_mismatch: list<string>} $c
+ *     core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *     group_family: string, mixed_family: bool, family_mismatch: list<string>} $c
  *   monitors and statics are keyed by address (the gateways whose monitor it is, the static routes it lies in),
  *   foreign lists the addresses whose route the plugin did not make, member_resolvers is each member's effective
  *   resolver ('' for none), resolver_notes uu_member_resolvers()'s notes, no_next_hop the members whose gateway
  *   record has no address to route through, unbound_conf uu_unbound_conf_facts() of the generated unbound.conf (null:
  *   unreadable), group_family the group's family (uu_group_family()), mixed_family whether it has members of both,
- *   family_mismatch the effective resolvers of the other family (uu_family_mismatch()). The whole-plugin failures
+ *   family_mismatch the effective resolvers of the other family (uu_family_mismatch()), core_paths the core files
+ *   core no longer keeps where the plugin reads them (uu_core_paths_changed()), each a note. The whole-plugin failures
  *   these add refuse tunnel mode for every member: the configuration would not send the group's family, an outgoing
  *   interface is set, the group has both families, a resolver is of the other family, and Unbound's configured root
  *   zone names an effective resolver (compared as the planner compares a live root with it: bare, canonical)
@@ -198,6 +199,11 @@ function uu_contract(array $c): array
      * the plugin's blocks until core's next reload), so refusing tunnel mode would buy nothing */
     foreach ($c['core_commands'] as $name) {
         $notes[] = "core command changed: $name (a removal that configd does not answer runs the old command)";
+    }
+    /* a note, not a failure: each moved path already fails safe (no member settles, or Unbound reads as not
+     * running), so the note names the cause */
+    foreach ($c['core_paths'] as $text) {
+        $notes[] = "core path changed: $text";
     }
 
     /* the members that are no candidate, in member order, each with its note (uu_member_resolvers() wrote the note

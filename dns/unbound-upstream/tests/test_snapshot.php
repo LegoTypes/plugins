@@ -9,7 +9,8 @@ declare(strict_types=1);
  *
  * Live snapshot parsers: route get, unbound-control forward, sysctl, ps, group tiers; and the pf
  * observation the snapshot makes through an injected pfctl: what it reads, and that a status never
- * lists the ruleset; and the pfctl runner, whose stderr file lives in the root-only run directory.
+ * lists the ruleset; and the pfctl runner, whose stderr file lives in the root-only run directory; and which
+ * moved core files the contract names.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -26,6 +27,18 @@ function uu_snapshot_fixture(string $name): string
 
 uu_register_suite('snapshot', function (): int {
     $t = ['fail' => 0, 'total' => 0];
+
+    $dpingerMoved = "dpinger's pid or socket file is not at /var/run/dpinger_<gateway>.pid or .sock while core reads a "
+        . 'loss: no member can settle';
+    uu_check($t, 'recorded: a recording without core_paths reads as nothing changed',
+        uu_try_case(function () use ($dpingerMoved): bool {
+            $old = uu_snapshot_recorded(['routes' => [], 'contract_input' => ['core_commands' => ['cron restart']]],
+                '/root/r.json')['contract_input'];
+            $kept = uu_snapshot_recorded(['routes' => [], 'contract_input' => ['core_commands' => [],
+                'core_paths' => [$dpingerMoved]]], '/root/r.json')['contract_input'];
+            return $old === ['core_commands' => ['cron restart'], 'core_paths' => []]
+                && $kept === ['core_commands' => [], 'core_paths' => [$dpingerMoved]];
+        }));
 
     $r = uu_parse_route_get(uu_snapshot_fixture('route_get_member.txt'));
     uu_check($t, 'route via a member: present, gateway and device as printed, no reject',
@@ -485,7 +498,7 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, '(p17) recorded: a recording with routes passes through unchanged',
         uu_try_case(function (): bool {
             $rec = ['routes' => [], 'route_flags' => ['10.2.0.1' => ['UP', 'HOST']],
-                    'contract_input' => ['core_commands' => ['cron restart']]];
+                    'contract_input' => ['core_commands' => ['cron restart'], 'core_paths' => []]];
             $read = uu_snapshot_recorded($rec, '/root/new.json');
             return array_slice($read, 0, 3) === $rec
                 && array_keys($read) === [...array_keys($rec), 'upgrade', 'view'];
@@ -635,6 +648,37 @@ uu_register_suite('snapshot', function (): int {
     uu_check($t, 'recorded: a 1.4 recording gains upgrade false and a skipped view with scope none, last',
         $converted['upgrade'] === false && $converted['view']['loaded'] === 'skipped'
         && $converted['view']['scope'] === 'none' && array_slice(array_keys($converted), -2) === ['upgrade', 'view']);
+
+    /* the core paths the snapshot reads: dpinger's files count as moved only when no member with a loss has both */
+    $coreConf = "server:\npidfile: /var/run/unbound.pid\n";
+    $member = fn (string $loss, bool $pid, bool $sock): array => ['loss' => $loss, 'pid' => $pid, 'sock' => $sock];
+    uu_check($t, 'paths: dpinger files missing beside a live loss on every member is drift',
+        uu_try_case(fn (): bool => uu_core_paths_changed(['wg-a' => $member('0.0 %', false, true),
+                'wg-b' => $member('5.0 %', true, false)], $coreConf) === [$dpingerMoved]
+            && uu_core_paths_changed(['wg-a' => $member('0.0 %', false, false)], $coreConf) === [$dpingerMoved]
+            && uu_core_paths_changed(['wg-a' => $member('100.0 %', false, false), 'wg-b' => $member('~', true, true)],
+                $coreConf) === [$dpingerMoved]));
+    uu_check($t, 'paths: one member without its files beside a member with them is no drift',
+        uu_try_case(fn (): bool => uu_core_paths_changed(['wg-a' => $member('0.0 %', false, false),
+                'wg-b' => $member('0.0 %', true, true)], $coreConf) === []
+            && uu_core_paths_changed(['wg-a' => $member('0.0 %', true, true),
+                'wg-b' => $member('0.0 %', true, false)], $coreConf) === []));
+    uu_check($t, 'paths: no member with a loss is no drift',
+        uu_try_case(fn (): bool => uu_core_paths_changed([], $coreConf) === []
+            && uu_core_paths_changed(['wg-a' => $member('~', false, false), 'wg-b' => $member('', false, false)],
+                $coreConf) === []));
+    $pidfileMoved = fn (string $value): string => "Unbound's pidfile is $value in unbound.conf, not "
+        . '/var/run/unbound.pid: Unbound reads as not running';
+    uu_check($t, 'paths: a pidfile other than /var/run/unbound.pid is drift, as is none; an unreadable configuration '
+        . 'is not judged',
+        uu_try_case(fn (): bool => uu_core_paths_changed([], "server:\npidfile: /var/unbound/unbound.pid\n")
+                === [$pidfileMoved('/var/unbound/unbound.pid')]
+            && uu_core_paths_changed([], "server:\n") === [$pidfileMoved('unset')]
+            && uu_core_paths_changed([], "pidfile: /var/run/unbound.pid\npidfile: \"\"\n") === [$pidfileMoved('unset')]
+            && uu_core_paths_changed([], null) === []
+            && uu_core_paths_changed(['wg-a' => $member('0.0 %', false, false)], "server:\n")
+                === [$dpingerMoved, $pidfileMoved('unset')]
+            && uu_core_paths_changed(['wg-a' => $member('0.0 %', false, false)], null) === [$dpingerMoved]));
 
     return uu_tally_report('snapshot', $t);
 });

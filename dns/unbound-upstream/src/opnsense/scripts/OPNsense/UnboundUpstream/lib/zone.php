@@ -188,3 +188,21 @@ function uu_unbound_conf_facts(string $text): array
     }
     return ['do_ip4' => $doIp4, 'do_ip6' => $doIp6, 'outgoing_interface' => $outgoing];
 }
+
+/**
+ * The pid file Unbound's configuration (uu_conf_expanded_text()) names: the last "pidfile:" line wins, as Unbound
+ * reads it, and quotes around the value and a comment after it are not part of it, as uu_unbound_conf_facts() reads a
+ * line; a comment line or a similar name says nothing. Null when no line names one, or the last names "", for which
+ * Unbound writes none. Pure.
+ */
+function uu_unbound_conf_pidfile(string $text): ?string
+{
+    $pidfile = null;
+    foreach (preg_split('/\R/', $text) ?: [] as $line) {
+        if (preg_match('/^\s*pidfile:\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\']+))\s*(#.*)?$/D', $line, $m) === 1) {
+            $value = $m[1] . ($m[2] ?? '') . ($m[3] ?? '');
+            $pidfile = $value === '' ? null : $value;
+        }
+    }
+    return $pidfile;
+}

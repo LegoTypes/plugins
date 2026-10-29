@@ -8,8 +8,8 @@ declare(strict_types=1);
  * BSD 2-Clause License
  *
  * Core contract: each broken input refuses tunnel mode with its own named failure; a core
- * command a removal falls back to that no longer matches core is a note, and the package scripts run the
- * same commands.
+ * command a removal falls back to that no longer matches core is a note, as is a core file the snapshot reads that
+ * core no longer keeps there, and the package scripts run the same commands.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -29,8 +29,8 @@ require_once __DIR__ . '/scratch.php';
  *     rules: array{state: string, problems: list<string>},
  *     zone: array{shape: string, addrs: list<string>, tls: bool, problems: list<string>},
  *     fib_sync_ms: ?int, cacheflush: bool, group_found: bool, members: int, core_commands: list<string>,
- *     unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool}, group_family: string,
- *     mixed_family: bool, family_mismatch: list<string>}
+ *     core_paths: list<string>, unbound_conf: ?array{do_ip4: bool, do_ip6: bool, outgoing_interface: bool},
+ *     group_family: string, mixed_family: bool, family_mismatch: list<string>}
  */
 function uu_test_contract_input(): array
 {
@@ -53,6 +53,7 @@ function uu_test_contract_input(): array
         'group_found' => true,
         'members' => 2,
         'core_commands' => [],
+        'core_paths' => [],
         'unbound_conf' => ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false],
         'group_family' => 'inet',
         'mixed_family' => false,
@@ -87,6 +88,15 @@ uu_register_suite('contract', function (): int {
                 && $two['failures'] === ["Unbound's root zone forwards to 192.0.2.54, the resolver of wg-b: the plugin "
                     . 'cannot tell that forwarding from its own', "Unbound's root zone forwards to 2001:db8:b::53, the "
                     . 'resolver of wg-a: the plugin cannot tell that forwarding from its own'];
+        }));
+    uu_check($t, 'contract: a changed core path is a note, never a failure',
+        uu_try_case(function (): bool {
+            $paths = ["dpinger's pid or socket file is not at /var/run/dpinger_<gateway>.pid or .sock while core reads "
+                . 'a loss: no member can settle',
+                "Unbound's pidfile is unset in unbound.conf, not /var/run/unbound.pid: Unbound reads as not running"];
+            $c = uu_contract(['core_paths' => $paths] + uu_test_contract_input());
+            return $c['ok'] && $c['failures'] === [] && $c['excluded'] === []
+                && $c['notes'] === ['core path changed: ' . $paths[0], 'core path changed: ' . $paths[1]];
         }));
 
     $c = uu_contract(uu_test_contract_input());

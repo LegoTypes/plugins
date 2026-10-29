@@ -669,5 +669,16 @@ uu_register_suite('zone', function (): int {
                 && uu_conf_expanded_text('/nonexistent-dir/unbound.conf') === null;
         }));
 
+    uu_check($t, 'pidfile: the last line wins, quotes and a trailing comment dropped, none is null',
+        uu_try_case(fn (): bool => uu_unbound_conf_pidfile("server:\npidfile: /var/run/a.pid\n"
+                . "  pidfile:\t\"/var/run/b.pid\" # moved\n") === '/var/run/b.pid'
+            && uu_unbound_conf_pidfile("pidfile: '/var/run/c.pid'\r\n") === '/var/run/c.pid'
+            && uu_unbound_conf_pidfile("pidfile:/var/run/d.pid # moved\n") === '/var/run/d.pid'
+            && uu_unbound_conf_pidfile(uu_test_fixture('unbound_core.conf')) === '/var/run/unbound.pid'
+            && uu_unbound_conf_pidfile('') === null
+            && uu_unbound_conf_pidfile("server:\n# pidfile: /var/run/e.pid\nxpidfile: /x\npidfile-x: /y\n") === null
+            && uu_unbound_conf_pidfile("pidfile: /var/run/f.pid\npidfile: \"\"\n") === null
+            && uu_unbound_conf_pidfile("pidfile: \"/var/run/g.pid'\n") === null));
+
     return uu_tally_report('zone', $t);
 });

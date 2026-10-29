@@ -351,5 +351,23 @@ uu_register_suite('snapshot_vm', function (): int {
         && $vw['copy'] === $viewText && $vw['acl'] !== null && $vw['zones'] !== null && $vw['data'] !== null
         && ($viewSnap['upgrade'] ?? null) === false);
 
+    /* the constants are where this VM's core keeps dpinger's and Unbound's files, so a path note means core moved
+     * one; both checks judged something (a member with a loss, a readable unbound.conf) */
+    uu_check($t, 'snapshot_vm: on the base, the copied core paths match core',
+        uu_try_case(function () use ($s, $c): bool {
+            $conf = uu_conf_expanded_text();
+            $losses = array_map(fn (array $p): string => $p['loss'], $s['probes']);
+            $pidfile = $conf === null ? null : uu_unbound_conf_pidfile($conf);
+            $ok = array_key_exists('core_paths', $c) && $c['core_paths'] === [] && $pidfile === UU_UNBOUND_PID
+                && array_filter($losses, fn (string $loss): bool => uu_loss_value($loss) !== null) !== []
+                && is_readable(sprintf(UU_DPINGER_PID, 'wg-test-429'))
+                && file_exists(sprintf(UU_DPINGER_SOCK, 'wg-test-429'));
+            if (!$ok) {
+                printf("  core_paths %s; losses %s; unbound.conf pidfile %s\n", json_encode($c['core_paths'] ?? null),
+                    json_encode($losses), $conf === null ? '(unreadable)' : ($pidfile ?? 'unset'));
+            }
+            return $ok;
+        }));
+
     return uu_tally_report('snapshot_vm', $t);
 });
