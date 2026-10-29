@@ -34,6 +34,7 @@ class IndexController extends \OPNsense\Base\IndexController
     {
         $this->view->generalForm = $this->getForm('general');
         $this->view->resolverForm = $this->getForm('dialogResolver');
+        $this->view->formGridResolver = $this->getFormGrid('dialogResolver');
         $this->view->pick('OPNsense/UnboundUpstream/index');
     }
 }

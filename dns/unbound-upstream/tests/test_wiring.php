@@ -254,20 +254,33 @@ uu_register_suite('wiring', function (): int {
     $index = (string)@file_get_contents('/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/'
         . 'IndexController.php');
     $members = preg_match('~<table[^>]*id="unboundupstream-members".*?</thead>~s', $view, $m) === 1 ? $m[0] : '';
-    uu_check($t, '(l5) the installed view has the grid-resolvers grid under its heading, over the five resolver '
-        . 'actions, with the dialog the page controller supplies',
-        str_contains($view, '<table id="grid-resolvers" class="table table-condensed table-hover table-striped"'
-            . "\n                   data-editDialog=\"DialogResolver\">")
-        && str_contains($view, "{{ lang._('Per-member resolvers') }}")
-        && str_contains($view, "$('#grid-resolvers').UIBootgrid({\n"
+    /* the content-box that holds the resolvers' heading, up to its first closing div */
+    $resolversBox = preg_match('~<div class="content-box">((?:(?!<div class="content-box">).)*?'
+        . "\\{\\{ lang\\._\\('Per-member resolvers'\\) \\}\\}.*?)</div>~s", $view, $m) === 1 ? $m[1] : '';
+    uu_check($t, 'the resolver grid is core\'s base_bootgrid_table from getFormGrid(\'dialogResolver\'), with no '
+        . 'column labels or width of its own',
+        str_contains($index, "\$this->view->resolverForm = \$this->getForm('dialogResolver');")
+        && str_contains($index, "\$this->view->formGridResolver = \$this->getFormGrid('dialogResolver');")
+        && str_contains($resolversBox, "            {{ partial('layout_partials/base_bootgrid_table', "
+            . "formGridResolver) }}\n")
+        && !str_contains($resolversBox, '<thead') && !str_contains($view, 'data-width')
+        && !str_contains($view, 'grid-resolvers')
+        && str_contains($view, "$('#{{ formGridResolver['table_id'] }}').UIBootgrid({\n"
             . "            search: '/api/unboundupstream/settings/search_resolver',\n"
             . "            get: '/api/unboundupstream/settings/get_resolver/',\n"
             . "            set: '/api/unboundupstream/settings/set_resolver/',\n"
             . "            add: '/api/unboundupstream/settings/add_resolver/',\n"
             . "            del: '/api/unboundupstream/settings/del_resolver/',\n")
         && str_contains($view, "{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': "
-            . "'DialogResolver',")
-        && str_contains($index, "\$this->view->resolverForm = \$this->getForm('dialogResolver');"));
+            . "formGridResolver['edit_dialog_id'],\n    'label': lang._('Edit per-member resolver')]) }}"));
+    uu_check($t, 'page: the note about Unbound\'s own page shows only in tunnel mode',
+        str_contains($view, "<p id=\"unboundupstream-tunnel-note\" style=\"display: none;\">{{ lang._(\"Unbound's "
+            . "own settings page keeps showing its configured forwarders while the tunnel is in use\") }}</p>")
+        && str_contains($view, "body.append(\$('<tr/>').append(\$('<td colspan=\"2\"/>').text(\"{{ lang._('Status "
+            . "unavailable.') }}\")));\n                    \$('#unboundupstream-tunnel-note').hide();\n"
+            . "                    return;\n                }\n"
+            . "                \$('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel');\n")
+        && substr_count($view, 'unboundupstream-tunnel-note') === 3);
     uu_check($t, '(l5) the member table has the Resolver column after Tier, each member\'s resolver set as text, and '
         . 'the view still builds no markup with .html(',
         str_contains($members, "<th>{{ lang._('Tier') }}</th>\n                <th>{{ lang._('Resolver') }}</th>")
@@ -314,7 +327,7 @@ VOLT;
             }
             stdDialogRemoveItem(question, function () {
                 ajaxCall('/api/unboundupstream/settings/del_resolver/' + ids.join(','), {}, function (data, status) {
-                    $('#grid-resolvers').bootgrid('reload');
+                    $('#{{ formGridResolver['table_id'] }}').bootgrid('reload');
                     if (status === 'success' && data && data.result === 'deleted') {
                         $(document).trigger('settings-changed');
                     }
@@ -334,7 +347,7 @@ VOLT;
                 'delete-selected': {
                     method: function (event) {
                         event.stopPropagation();
-                        deleteResolvers($('#grid-resolvers').bootgrid('getSelectedRows') || [],
+                        deleteResolvers($('#{{ formGridResolver['table_id'] }}').bootgrid('getSelectedRows') || [],
                             "{{ lang._('Remove the selected per-member resolvers?') }}");
                     }
                 }
@@ -345,7 +358,7 @@ VOLT;
         str_contains($view, $applyHandler . "\n")
         && str_contains($view, "            {{ lang._('Each row is applied as soon as it is saved or deleted; the "
             . "settings above still need Apply.') }}\n"));
-    uu_check($t, '(l5) a refused delete is not applied, and a saved one always is: the row delete and delete-selected '
+    uu_check($t, 'a refused delete is not applied, and a saved one always is: the row delete and delete-selected '
         . 'send all their rows in one call and fire settings-changed only when the reply says deleted',
         str_contains($view, $deleteCommand . "\n") && str_contains($view, $deleteCommands . "\n"));
     $inc = '/usr/local/etc/inc/plugins.inc.d/unboundupstream.inc';
@@ -358,6 +371,17 @@ VOLT;
     require_once 'plugins.inc';
     require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
     require_once $inc;
+
+    /* the resolver grid's ids and columns, as core's getFormGrid() builds them from the installed dialog form for the
+     * page controller: the hidden ID, then the dialog's Member and Resolver, the fields the search's rows carry */
+    uu_check($t, 'the resolver grid\'s ids and columns are getFormGrid\'s over dialogResolver.xml: the hidden ID, then '
+        . 'Member and Resolver',
+        uu_try_case(function (): bool {
+            $grid = (new \OPNsense\UnboundUpstream\IndexController())->getFormGrid('dialogResolver');
+            return $grid['table_id'] === 'dialogResolver' && $grid['edit_dialog_id'] === 'dialog_dialogResolver'
+                && array_map(fn (array $f): array => [$f['column-id'], $f['label'], $f['visible']], $grid['fields'])
+                    === [['uuid', 'ID', 'false'], ['gateway', 'Member', 'true'], ['address', 'Resolver', 'true']];
+        }));
 
     /* the settings model tests addresses with the scripts' library, and a copy of it with no library beside it throws
      * an exception (which the hooks catch) rather than dying on a require */

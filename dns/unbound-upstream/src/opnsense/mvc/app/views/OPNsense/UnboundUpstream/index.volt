@@ -69,8 +69,10 @@
                 var members = $('#unboundupstream-members tbody').empty();
                 if (!data || data.status === 'failed') {
                     body.append($('<tr/>').append($('<td colspan="2"/>').text("{{ lang._('Status unavailable.') }}")));
+                    $('#unboundupstream-tunnel-note').hide();
                     return;
                 }
+                $('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel');
                 var route = data.route || {};
                 var contract = data.contract || {};
                 body.append(row("{{ lang._('Mode') }}", plain(data.mode) + (data.dry_run ? " ({{ lang._('dry run') }})" : '')));
@@ -139,14 +141,14 @@
             }
             stdDialogRemoveItem(question, function () {
                 ajaxCall('/api/unboundupstream/settings/del_resolver/' + ids.join(','), {}, function (data, status) {
-                    $('#grid-resolvers').bootgrid('reload');
+                    $('#{{ formGridResolver['table_id'] }}').bootgrid('reload');
                     if (status === 'success' && data && data.result === 'deleted') {
                         $(document).trigger('settings-changed');
                     }
                 });
             });
         };
-        $('#grid-resolvers').UIBootgrid({
+        $('#{{ formGridResolver['table_id'] }}').UIBootgrid({
             search: '/api/unboundupstream/settings/search_resolver',
             get: '/api/unboundupstream/settings/get_resolver/',
             set: '/api/unboundupstream/settings/set_resolver/',
@@ -163,7 +165,7 @@
                 'delete-selected': {
                     method: function (event) {
                         event.stopPropagation();
-                        deleteResolvers($('#grid-resolvers').bootgrid('getSelectedRows') || [],
+                        deleteResolvers($('#{{ formGridResolver['table_id'] }}').bootgrid('getSelectedRows') || [],
                             "{{ lang._('Remove the selected per-member resolvers?') }}");
                     }
                 }
@@ -216,37 +218,13 @@
             </p>
         </td></tr>
         <tr><td>
-            <table id="grid-resolvers" class="table table-condensed table-hover table-striped"
-                   data-editDialog="DialogResolver">
-                <thead>
-                    <tr>
-                        <th data-column-id="uuid" data-type="string" data-identifier="true" data-visible="false">
-                            {{ lang._('ID') }}</th>
-                        <th data-column-id="gateway" data-type="string">{{ lang._('Member') }}</th>
-                        <th data-column-id="address" data-type="string">{{ lang._('Resolver') }}</th>
-                        <th data-column-id="commands" data-width="7em" data-formatter="commands" data-sortable="false">
-                            {{ lang._('Commands') }}</th>
-                    </tr>
-                </thead>
-                <tbody></tbody>
-                <tfoot>
-                    <tr>
-                        <td></td>
-                        <td>
-                            <button data-action="add" type="button" class="btn btn-xs btn-primary">
-                                <span class="fa fa-fw fa-plus"></span></button>
-                            <button data-action="deleteSelected" type="button" class="btn btn-xs btn-default">
-                                <span class="fa fa-fw fa-trash-o"></span></button>
-                        </td>
-                    </tr>
-                </tfoot>
-            </table>
+            {{ partial('layout_partials/base_bootgrid_table', formGridResolver) }}
         </td></tr>
     </table>
 </div>
 <div class="content-box">
     <div class="alert alert-info" id="unboundupstream-notes" style="display: none;"></div>
-    <p>{{ lang._("Unbound's own settings page keeps showing its configured forwarders while the tunnel is in use") }}</p>
+    <p id="unboundupstream-tunnel-note" style="display: none;">{{ lang._("Unbound's own settings page keeps showing its configured forwarders while the tunnel is in use") }}</p>
     <table class="table table-condensed" id="unboundupstream-state">
         <tbody></tbody>
     </table>
@@ -268,5 +246,5 @@
     </table>
 </div>
 {{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/unboundupstream/service/reconfigure'}) }}
-{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': 'DialogResolver',
+{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': formGridResolver['edit_dialog_id'],
     'label': lang._('Edit per-member resolver')]) }}
