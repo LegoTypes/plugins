@@ -87,5 +87,24 @@ wf_register_suite('failback', function (): int {
         wf_rule_pref(['r1' => 'G_ONE', 'r7' => 'G_STR', 'r8' => 'G_ROW', 'r9' => 'G_INT', 'r10' => 'G_SCALAR'], $drifted)
             === ['r1' => ['WAN_A'], 'r7' => [], 'r8' => [], 'r9' => [], 'r10' => []]
         && wf_rule_pref($ruleGateways, null) === ['r1' => [], 'r2' => [], 'r3' => [], 'r4' => [], 'r5' => [], 'r6' => []]);
+
+    /* the dry run reads the same pf state the gate would and says what the gate would do with it */
+    $pf = ['flows' => $flows, 'renderings' => $rules, 'pinned' => $pinned, 'rule_pref' => $pref, 'default' => 'WAN_A',
+           'selfcheck' => true, 'drift' => []];
+    $ready = wf_failback_gate('WAN_A', $flows, $pref, $rules, $gwIp, 'WAN_A', true, $pinned);
+    $stale = wf_failback_gate('WAN_A', $flows, $pref, $rules, $gwIp, 'WAN_B', true, $pinned);
+    wf_check($t, 'failback dry run: a read the gate would suspend on says failback suspended, as the gate logs it',
+        wf_failback_dry('WAN_A', array_merge($pf, ['drift' => ['x']]), $gwIp, true)
+            === '[dry] failback WAN_A: x (core contract); failback suspended'
+        && wf_failback_dry('WAN_A', array_merge($pf, ['selfcheck' => false]), $gwIp, true)
+            === '[dry] failback WAN_A: pf state format did not parse (core contract); failback suspended'
+        && wf_failback_dry('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => ['x']]), $gwIp, true)
+            === '[dry] failback WAN_A: x; pf state format did not parse (core contract); failback suspended');
+    wf_check($t, 'failback dry run: a read the gate would act on says what it would kill and spare',
+        $ready['ready'] && $ready['kills'] !== [] && !$stale['ready']
+        && wf_failback_dry('WAN_A', $pf, $gwIp, true) === sprintf('[dry] failback WAN_A would kill %d states, spare %d flows',
+            count($ready['kills']), $ready['spared'])
+        && wf_failback_dry('WAN_A', array_merge($pf, ['default' => 'WAN_B']), $gwIp, true)
+            === sprintf('[dry] failback WAN_A would kill %d states, spare %d flows (not ready)', count($stale['kills']), $stale['spared']));
     return wf_tally_report('failback', $t);
 });

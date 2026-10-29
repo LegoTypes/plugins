@@ -202,6 +202,23 @@ wf_register_suite('apply', function (): int {
             === ['log failback WAN_A: x (core contract); failback suspended']
         && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd filter kill state')) === []
         && isset($r['state']['pending_failbacks']['WAN_A']));
+    $f = wf_t_io([], true, true, [$pfStale, array_merge($pfMoved, ['selfcheck' => false])]);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'failback: a state listing that does not parse on the read after the alarm replay kills nothing, says so once '
+        . 'and keeps it pending',
+        in_array('configd wanfailover replay_alarm WAN_A', $c, true)
+        && array_values(array_filter($c, fn (string $x): bool => str_starts_with($x, 'log failback')))
+            === ['log failback WAN_A: pf state format did not parse (core contract); failback suspended']
+        && array_filter($c, fn (string $x): bool => str_starts_with($x, 'configd filter kill state')) === []
+        && isset($r['state']['pending_failbacks']['WAN_A']));
+    $f = wf_t_io([], true, true, [array_merge($pfMoved, ['selfcheck' => false, 'drift' => ['x', 'y']])]);
+    $r = wf_apply(wf_t_plan(['failback' => ['WAN_A' => ['top' => true]]]), $fb, $snap, $f['io']);
+    wf_check($t, 'failback: a contract drift and a state listing that does not parse on one read are said in one line, the '
+        . 'drift first',
+        array_values(array_filter($f['calls']->getArrayCopy(), fn (string $x): bool => str_starts_with($x, 'log failback')))
+            === ['log failback WAN_A: x; y; pf state format did not parse (core contract); failback suspended']
+        && isset($r['state']['pending_failbacks']['WAN_A']));
 
     $ts = wf_state_new('b1');
     $ts['ts'] = ['default_gw' => '198.51.100.254@vtnet2', 'restarted_at' => null, 'cur_default' => '198.51.100.254@vtnet2', 'cur_since' => 1,

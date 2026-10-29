@@ -197,6 +197,9 @@ wf_register_suite('wiring', function (): int {
     if ($misplaced !== []) {
         printf("    gate at %s; misplaced: %s\n", $gate === false ? '(not found)' : (string)$gate, implode(' | ', $misplaced));
     }
+    wf_check($t, "evaluate.php's dry run says what the failback gate would do, through wf_failback_dry()",
+        str_contains($src, 'wf_log(wf_failback_dry($n, wf_snapshot_pf($wanTargets), $wanTargets, $fb[\'top\']));')
+        && !str_contains($src, 'would kill'));
     /* a cron-only drift is a removal drift too, and must not stop the removal running core's routing command itself */
     wf_check($t, '(d12) the removal decides its routing fallback with wf_contract_routes_fallback(), not from an empty removal list',
         str_contains($src, "wf_contract_routes_fallback(\$snap['contract']['removal'])")

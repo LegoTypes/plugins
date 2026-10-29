@@ -212,10 +212,7 @@ function wf_main(string $mode, array $args): int
 
     if ($dry) {
         foreach ($plan['failback'] as $n => $fb) {
-            $pf = wf_snapshot_pf($wanTargets);
-            $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $fb['top'], $pf['pinned']);
-            wf_log(sprintf('[dry] failback %s would kill %d states, spare %d flows%s', $n, count($g['kills']), $g['spared'],
-                $g['ready'] ? '' : ' (not ready)'));
+            wf_log(wf_failback_dry($n, wf_snapshot_pf($wanTargets), $wanTargets, $fb['top']));
             unset($state['pending_failbacks'][$n]);
         }
         $d = wf_tailscale_decide(array_merge($state['ts'], ['expected_default' => $plan['expected_default'] ?? $state['ts']['expected_default']]),

@@ -102,3 +102,37 @@ function wf_failback_gate(string $recovering, array $flows, array $rulePref, arr
     return ['ready' => $defaultOk && $stale === [], 'kills' => $kills, 'stale_labels' => array_keys($stale),
             'default_ok' => $defaultOk, 'spared' => $spared];
 }
+
+/**
+ * Whether failback may act on a pf read: only when its state listing parsed (wf_pf_selfcheck()) and its rule listing
+ * and groups show no drift (wf_contract_failback()). Otherwise the line saying why failback is suspended, the drift
+ * first, which the apply gate logs and a dry run says too.
+ *
+ * @param array{selfcheck: bool, drift: list<string>} $pf wf_snapshot_pf()
+ */
+function wf_failback_suspended(string $n, array $pf): ?string
+{
+    if ($pf['selfcheck'] && $pf['drift'] === []) {
+        return null;
+    }
+    $why = array_merge($pf['drift'], $pf['selfcheck'] ? [] : ['pf state format did not parse']);
+    return "failback {$n}: " . implode('; ', $why) . ' (core contract); failback suspended';
+}
+
+/**
+ * What a dry run says for a due failback: what the apply gate would do on this pf read, suspend it or kill.
+ *
+ * @param array{flows: list<array>, renderings: array<string, list<array>>, pinned: array<string, true>,
+ *              rule_pref: array<string, list<string>>, default: ?string, selfcheck: bool, drift: list<string>} $pf wf_snapshot_pf()
+ * @param array<string, string> $wanTargets WAN name => route target
+ */
+function wf_failback_dry(string $n, array $pf, array $wanTargets, bool $top): string
+{
+    $suspended = wf_failback_suspended($n, $pf);
+    if ($suspended !== null) {
+        return "[dry] {$suspended}";
+    }
+    $g = wf_failback_gate($n, $pf['flows'], $pf['rule_pref'], $pf['renderings'], $wanTargets, $pf['default'], $top, $pf['pinned']);
+    return sprintf('[dry] failback %s would kill %d states, spare %d flows%s', $n, count($g['kills']), $g['spared'],
+        $g['ready'] ? '' : ' (not ready)');
+}
