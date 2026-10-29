@@ -146,20 +146,18 @@ class UnboundUpstream extends BaseModel
     /**
      * What is wrong with one listed network besides host bits: a default route, the loopback network
      * (UU_LOOPBACK_NETS), a member interface's network. Pure, on the scripts' network tests (lib/address.php). A
-     * string that is no "address/length" network is the field's own validation. The length is read as the run reads
-     * it (uu_settings_clean()): one to three digits, so 127.0.0.0/08 is tested as 127.0.0.0/8 and named as entered.
+     * string that is no "address/length" network is the field's own validation. The entry is read as the run reads
+     * it (uu_net_entry() with UU_NET_LENGTH_DIGITS, as uu_settings_clean()), so 127.0.0.0/08 is tested as
+     * 127.0.0.0/8 and named as entered.
      *
      * @param array<string, list<string>> $memberNets interface id => its live networks
      * @return list<string>
      */
     private static function networkProblems(string $net, array $memberNets): array
     {
-        $parts = explode('/', $net);
-        if (count($parts) !== 2 || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1) {
-            return [];
-        }
-        $cidr = $parts[0] . '/' . (int)$parts[1];
-        $parsed = uu_net_parse($cidr);
+        $entry = uu_net_entry($net, UU_NET_LENGTH_DIGITS);
+        $cidr = $entry === null ? '' : $entry['addr'] . '/' . $entry['len'];
+        $parsed = $entry === null ? null : uu_net_parse($cidr);
         if ($parsed === null) {
             return [];
         }

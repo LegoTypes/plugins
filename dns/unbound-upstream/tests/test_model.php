@@ -134,9 +134,13 @@ uu_register_suite('model', function (): int {
         uu_try_case(function () use ($netField, $loopback, $listed): bool {
             $loop = $netField(['fail_closed_networks' => '127.0.0.0/08']);
             $all = $netField(['fail_closed_networks' => '0.0.0.0/00']);
-            $ok = in_array('127.0.0.0/08' . $loopback, $loop, true) && in_array('0.0.0.0/00' . $listed, $all, true);
+            /* four digits are more than the run reads: it ignores the entry, so Save names nothing of the plugin's */
+            $long = $netField(['fail_closed_networks' => '127.0.0.0/0008']);
+            $ok = in_array('127.0.0.0/08' . $loopback, $loop, true) && in_array('0.0.0.0/00' . $listed, $all, true)
+                && !in_array('127.0.0.0/0008' . $loopback, $long, true);
             if (!$ok) {
-                printf("  127.0.0.0/08: %s; 0.0.0.0/00: %s\n", implode('; ', $loop), implode('; ', $all));
+                printf("  127.0.0.0/08: %s; 0.0.0.0/00: %s; 127.0.0.0/0008: %s\n", implode('; ', $loop),
+                    implode('; ', $all), implode('; ', $long));
             }
             return $ok;
         }));
@@ -167,6 +171,13 @@ uu_register_suite('model', function (): int {
         uu_try_case(fn (): bool => \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems('2001:db8::50',
             'uu_far6_grp', 'inet6', true, [], ['2001:DB8::0050'])
             === ['Resolver 2001:db8::50 lies inside the static route 2001:DB8::0050.']));
+    uu_check($t, 'model: the static-route refusal reads a route\'s length as core does, leading zeros included',
+        uu_try_case(fn (): bool => \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems('192.0.2.5',
+            'proton_test_grp', 'inet', true, [], ['192.0.2.0/024'])
+            === ['Resolver 192.0.2.5 lies inside the static route 192.0.2.0/024.']
+            && \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems('2001:db8::5', 'uu_far6_grp', 'inet6',
+                true, [], ['2001:db8::/0064'])
+            === ['Resolver 2001:db8::5 lies inside the static route 2001:db8::/0064.']));
     uu_check($t, 'model: the networks field refuses host bits and a default route while fallback is on',
         in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '192.0.2.1/24']), true)
         && in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '0.0.0.0/0']), true)

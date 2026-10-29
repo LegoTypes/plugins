@@ -134,14 +134,39 @@ function uu_net_touches_loopback(string $net): bool
     return false;
 }
 
+/** The digits a listed fail-closed network's length may have, as the settings check and the run both read it. */
+const UU_NET_LENGTH_DIGITS = 3;
+
 /**
- * Whether an address lies in a static route's network ("addr/n", or a bare network, which is a host of its parsed
- * family: /32 or /128), in the address's own family; never for another family, a string with no family (see
- * uu_ip_family()) or a malformed network.
+ * A stored "address/length" entry, split as its reader reads it: the length is digits only, at most $digits of them
+ * (null: any number, as core's Util::isSubnet() reads a static route's), taken as a number, so 192.0.2.0/024 is
+ * ['addr' => '192.0.2.0', 'len' => 24]. Null for anything else: no '/' or more than one, an empty or signed length,
+ * white space in the length. The address is left as written, white space included, and the length is not held to the
+ * family: the caller reads both (uu_net_parse(), uu_ip_canonical()).
+ *
+ * @return ?array{addr: string, len: int}
+ */
+function uu_net_entry(string $entry, ?int $digits): ?array
+{
+    $parts = explode('/', $entry);
+    $pattern = $digits === null ? '/^\d+$/D' : '/^\d{1,' . $digits . '}$/D';
+    if (count($parts) !== 2 || preg_match($pattern, $parts[1]) !== 1) {
+        return null;
+    }
+    return ['addr' => $parts[0], 'len' => (int)$parts[1]];
+}
+
+/**
+ * Whether an address lies in a static route's network, in the address's own family: "addr/n", its length read as core
+ * reads a route's (uu_net_entry() with any number of digits, so 192.0.2.0/024 is 192.0.2.0/24), host bits masked; or
+ * a bare network, which is a host of its parsed family (/32 or /128). Never for another family, a string with no
+ * family (see uu_ip_family()) or a malformed network.
  */
 function uu_in_static(string $addr, string $network): bool
 {
-    return uu_ip_family($addr) !== null && uu_net_contains($network, $addr);
+    $entry = str_contains($network, '/') ? uu_net_entry($network, null) : null;
+    $cidr = $entry === null ? $network : $entry['addr'] . '/' . $entry['len'];
+    return uu_ip_family($addr) !== null && uu_net_contains($cidr, $addr);
 }
 
 /**

@@ -508,14 +508,13 @@ function uu_settings_clean(array $raw): array
     sort($interfaces);
     $networks = [];
     foreach (array_filter(explode(',', $raw['fail_closed_networks']), 'strlen') as $entry) {
-        $parts = explode('/', $entry);
-        $addr = count($parts) === 2 ? uu_ip_canonical($parts[0]) : null;
-        if ($addr === null || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1
-            || (int)$parts[1] > (uu_ip_family($addr) === 'inet6' ? 128 : 32)) {
+        $read = uu_net_entry($entry, UU_NET_LENGTH_DIGITS);
+        $addr = $read === null ? null : uu_ip_canonical($read['addr']);
+        if ($read === null || $addr === null || $read['len'] > (uu_ip_family($addr) === 'inet6' ? 128 : 32)) {
             $problems[] = 'settings: fail-closed network ' . $entry . ' is not a network; ignored';
             continue;
         }
-        $networks[$addr . '/' . (int)$parts[1]] = true;
+        $networks[$addr . '/' . $read['len']] = true;
     }
     $networks = array_keys($networks);
     sort($networks);

@@ -217,6 +217,17 @@ uu_register_suite('snapshot_vm', function (): int {
             && !uu_in_static('', '10.2.0.0/24')));
     uu_check($t, '(t8) static routes: the address is compared in canonical form',
         uu_try_case(fn (): bool => uu_in_static('2001:DB8:A:0::53', '2001:db8:a::/48')));
+    /* a route's length is read as core's Util::isSubnet() reads it, any number of digits taken as a number: one case
+     * per spelling core's Route field accepts, each as 1.5 answered it through Util::isIPInCIDR() */
+    foreach ([['192.0.2.5', '192.0.2.0/024', true], ['192.0.2.5', '192.0.2.0/0024', true],
+              ['192.0.2.5', '192.0.2.0/00', true], ['192.0.2.0', '192.0.2.0/032', true],
+              ['192.0.2.5', '192.0.2.0/032', false], ['2001:db8::5', '2001:db8::/064', true],
+              ['2001:db8::5', '2001:db8::/0064', true], ['2001:db8::5', '2001:db8::5/0128', true],
+              ['2001:db8::5', '2001:db8::/0128', false]] as [$addr, $route, $in]) {
+        uu_check($t, sprintf('static routes: %s lies %s the route %s, its length read as core reads it', $addr,
+            $in ? 'in' : 'outside', $route),
+            uu_try_case(fn (): bool => uu_in_static($addr, $route) === $in));
+    }
 
     /* (p18) the members' own fields and the per-address routes, as core's records and the rows give them: a row is
      * matched to its gateway by the record's uuid, a recorded address is read beside the effective ones */

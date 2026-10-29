@@ -196,6 +196,16 @@ uu_register_suite('address', function (): int {
             && uu_net_touches_loopback('::1/128') && uu_net_touches_loopback('::ffff:127.0.0.0/104')
             && uu_net_touches_loopback('::ffff:127.0.0.5/128') && !uu_net_touches_loopback('100.64.0.0/10')
             && !uu_net_touches_loopback('fd7a:115c:a1e0::/48') && !uu_net_touches_loopback('2001:db8::/32')));
+    uu_check($t, 'address: uu_net_entry takes a stored length as a number of at most the digits its reader allows',
+        uu_try_case(fn (): bool => uu_net_entry('192.0.2.0/024', 3) === ['addr' => '192.0.2.0', 'len' => 24]
+            && uu_net_entry('2001:DB8::/064', 3) === ['addr' => '2001:DB8::', 'len' => 64]
+            && uu_net_entry('0.0.0.0/00', 3) === ['addr' => '0.0.0.0', 'len' => 0]
+            && uu_net_entry('127.0.0.0/0008', 3) === null
+            && uu_net_entry('127.0.0.0/0008', null) === ['addr' => '127.0.0.0', 'len' => 8]
+            && uu_net_entry('192.0.2.0/33', 3) === ['addr' => '192.0.2.0', 'len' => 33]
+            && uu_net_entry('192.0.2.0', null) === null && uu_net_entry('192.0.2.0/', null) === null
+            && uu_net_entry('192.0.2.0/24/1', null) === null && uu_net_entry('192.0.2.0/+24', null) === null
+            && uu_net_entry('192.0.2.0/24 ', null) === null && uu_net_entry('192.0.2.0/ 24', null) === null));
 
     return uu_tally_report('address', $t);
 });

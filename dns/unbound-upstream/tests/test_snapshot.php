@@ -347,6 +347,12 @@ uu_register_suite('snapshot', function (): int {
                 && $r['problems'] === ['settings: fail-closed network 192.0.2.0/33 is not a network; ignored',
                                        'settings: fail-closed network 2001:db8::/129 is not a network; ignored'];
         }));
+    uu_check($t, 'settings: a network\'s length is read as one to three digits, leading zeros included',
+        uu_try_case(function () use ($clean): bool {
+            $r = $clean(['fail_closed_networks' => '192.0.2.0/024,2001:db8::/064,198.51.100.0/0024']);
+            return $r['settings']['fail_closed_networks'] === ['192.0.2.0/24', '2001:db8::/64']
+                && $r['problems'] === ['settings: fail-closed network 198.51.100.0/0024 is not a network; ignored'];
+        }));
     uu_check($t, 'settings: fail-closed lists cleaned',
         uu_try_case(fn (): bool => $clean(['fail_closed' => 'opt3,opt1,opt3'])['settings']['fail_closed']
                 === ['opt1', 'opt3']
