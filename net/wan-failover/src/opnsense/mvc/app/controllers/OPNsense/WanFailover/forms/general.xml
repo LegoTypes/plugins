@@ -15,7 +15,7 @@
         <id>wanfailover.wans</id>
         <label>WAN gateways</label>
         <type>select_multiple</type>
-        <help>The IPv4 gateways to manage, normally the two WANs. Only saved gateways are listed; save an automatic gateway once on System: Gateways: Configuration to select it.</help>
+        <help>The IPv4 gateways to manage, normally the two WANs. Each must be enabled with gateway monitoring on. Only saved gateways are listed; save an automatic gateway once on System: Gateways: Configuration to select it.</help>
     </field>
     <field>
         <id>wanfailover.failback</id>

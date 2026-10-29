@@ -18,8 +18,8 @@ require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/WanFailover/lib/contra
 function wf_t_wan(string $uuid, string $gw, int $rank, array $over = []): array
 {
     return array_merge([
-        'uuid' => $uuid, 'gateway_ip' => $gw, 'rank' => $rank, 'disabled' => false, 'force_down' => false,
-        'status' => 'none', 'present' => true, 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
+        'uuid' => $uuid, 'gateway_ip' => $gw, 'rank' => $rank, 'disabled' => false, 'monitor_disable' => false,
+        'force_down' => false, 'status' => 'none', 'present' => true, 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
         'loss' => 0.0, 'sock_age' => 300, 'losslow' => 10.0, 'losshigh' => 20.0, 'time_period' => 60,
         'interval' => 1, 'loss_interval' => 4,
     ], $over);
@@ -568,5 +568,21 @@ wf_register_suite('planner', function (): int {
     }
     @unlink("{$dir}/state.json");
     @rmdir($dir);
+
+    /* core runs no dpinger for a gateway with monitoring off: WAN_B reads unknown, and is judged bad after 180 s */
+    $off = ['present' => false, 'loss' => null, 'sock_age' => null];
+    $flag = ['monitor_disable' => true];
+    $r1 = wf_plan(wf_t_snap(30000, [], $off + $flag), wf_state_new('b1'));
+    $r2 = wf_plan(wf_t_snap(30200, [], $off + $flag), $r1['state']);
+    wf_check($t, 'planner: an unjudgeable WAN is logged once',
+        in_array('WAN_B can never be judged (gateway monitoring is disabled): it is never held and never lets another WAN be '
+            . 'held', $r1['plan']['log'], true)
+        && $lines($r2['plan'], 'can never be judged') === 0);
+    $p1 = wf_plan(wf_t_snap(30000, [], $off), wf_state_new('b1'));
+    $p2 = wf_plan(wf_t_snap(30200, [], $off), $p1['state']);
+    $alike = fn (array $a, array $b): bool => $a['plan']['hold'] === $b['plan']['hold']
+        && $a['plan']['release'] === $b['plan']['release'] && $a['state']['judgements'] === $b['state']['judgements'];
+    wf_check($t, "planner: an unjudgeable WAN's judgement and holds are as before",
+        $alike($r1, $p1) && $alike($r2, $p2) && $r2['state']['judgements']['WAN_B']['value'] === WF_BAD);
     return wf_tally_report('planner', $t);
 });

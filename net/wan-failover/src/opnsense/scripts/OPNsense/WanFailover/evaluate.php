@@ -57,6 +57,8 @@ function wf_main(string $mode, array $args): int
         $snap = json_decode((string)file_get_contents($args[1] ?? ''), true, 64, JSON_THROW_ON_ERROR);
         $snap += ['release' => null, 'failback_now' => false, 'failback_delay' => 0, 'holds' => [], 'holds_stale' => [],
                   'holds_dupes' => [], 'legacy_held' => []];
+        /* a snapshot 1.4_3 or earlier wrote carries no monitor_disable */
+        $snap['wans'] = array_map(fn (array $w): array => $w + ['monitor_disable' => false], $snap['wans']);
         $state = isset($args[2]) ? wf_state_load($args[2], (string)$snap['boot_id'])['state'] : wf_state_new((string)$snap['boot_id']);
         echo json_encode(wf_plan($snap, $state)['plan'], JSON_PRETTY_PRINT), "\n";
         return 0;
@@ -95,7 +97,7 @@ function wf_main(string $mode, array $args): int
         foreach ($snap['wans'] as $n => $w) {
             $j = $s['judgements'][$n] ?? null;
             $rows[] = ['name' => $n, 'held' => in_array($n, $owned, true), 'simulated' => in_array($n, $s['dry_held'], true),
-                       'force_down' => $w['force_down'],
+                       'force_down' => $w['force_down'], 'unjudgeable' => wf_unjudgeable($w),
                        'status' => $w['status'], 'loss' => $w['loss'], 'judgement' => $j['value'] ?? null,
                        'since' => $j['since'] ?? null, 'failback_pending' => isset($s['pending_failbacks'][$n]),
                        'failback' => isset($s['pending_failbacks'][$n])

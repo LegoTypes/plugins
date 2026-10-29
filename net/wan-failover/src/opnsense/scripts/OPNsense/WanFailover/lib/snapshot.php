@@ -64,10 +64,18 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
 /**
  * @return array{now: int, boot_id: string, release: ?string, failback_now: bool, enabled: bool, dry: bool, failback: bool,
  *               failback_delay: int, tailscale_restart: bool,
- *               default_gw: ?string, wans: array<string, array>, unresolved: list<string>,
+ *               default_gw: ?string,
+ *               wans: array<string, array{uuid: string, gateway_ip: string, if: string, route_target: string, rank: int,
+ *                                         disabled: bool, monitor_disable: bool, force_down: bool, status: string,
+ *                                         present: bool, tilde: bool, carrier: bool, has_ipv4: bool, loss: ?float,
+ *                                         sock_age: ?int, losslow: float, losshigh: float, time_period: int,
+ *                                         interval: int, loss_interval: int}>,
+ *               unresolved: list<string>,
  *               holds: array<string, array{boot: string, since: int}>, holds_stale: list<string>, holds_dupes: list<string>,
  *               legacy_held: list<string>, force_down: array<string, bool>,
  *               contract: array{judging: list<string>, command: list<string>, tailscale: list<string>, removal: list<string>}}
+ *     wans: by gateway name; disabled and monitor_disable are the gateway's own settings, either of which means the
+ *     engine can never judge it (wf_unjudgeable());
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
  *     legacy_held: the gateways 1.3_1's held list names while it is still in the config
  */
@@ -140,6 +148,7 @@ function wf_snapshot(): array
             'route_target' => wf_route_target((string)($g['gateway'] ?? ''), (string)($g['if'] ?? '')),
             'rank' => 0,
             'disabled' => !empty($g['disabled']),
+            'monitor_disable' => !empty($g['monitor_disable']),
             'force_down' => !empty($g['force_down']),
             'status' => (string)($st['status'] ?? 'none'),
             'present' => $st !== null,

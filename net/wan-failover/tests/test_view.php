@@ -38,6 +38,13 @@ wf_register_suite('view', function (): int {
     wf_check($t, '(v3) the page reads the count of foreign hold records', str_contains($view, 'data.foreign'));
     wf_check($t, '(v4) the page notes a drift that only the package removal\'s re-sync depends on',
         str_contains($view, '(data.contract || {}).removal'));
+    wf_check($t, 'the page notes an unjudgeable WAN in one whole sentence',
+        str_contains($view, "w.unjudgeable === 'monitor_disable'") && str_contains($view, "w.unjudgeable === 'disabled'")
+        && str_contains($view, ".replace('%s', plain(w.name))")
+        && str_contains($view, "lang._('%s is disabled: the plugin can never judge it, so it never backs a hold. Enable it "
+            . "under System: Gateways: Configuration, or deselect it.')")
+        && str_contains($view, "lang._('%s has gateway monitoring disabled: the plugin can never judge it, so it never backs "
+            . "a hold. Enable monitoring under System: Gateways: Configuration, or deselect it.')"));
 
     return wf_tally_report('view', $t);
 });

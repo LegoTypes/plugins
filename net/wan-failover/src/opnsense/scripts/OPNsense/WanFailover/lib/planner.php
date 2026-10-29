@@ -117,6 +117,20 @@ function wf_plan(array $snap, array $state): array
     if ($line !== null) {
         $log[] = $line;
     }
+    /* a selection saved before the settings model refused such a gateway keeps running: say so once per change */
+    $unjudgeable = [];
+    foreach ($snap['wans'] as $n => $w) {
+        $why = wf_unjudgeable($w);
+        if ($why !== null) {
+            $unjudgeable[] = "{$n} can never be judged ("
+                . ($why === 'disabled' ? 'the gateway is disabled' : 'gateway monitoring is disabled')
+                . '): it is never held and never lets another WAN be held';
+        }
+    }
+    $line = wf_once($state['said'], 'unjudgeable', $unjudgeable === [] ? null : implode('; ', $unjudgeable));
+    if ($line !== null) {
+        $log[] = $line;
+    }
     foreach (array_keys($state['judgements']) as $n) {
         if (!isset($snap['wans'][$n])) {
             unset($state['judgements'][$n]);

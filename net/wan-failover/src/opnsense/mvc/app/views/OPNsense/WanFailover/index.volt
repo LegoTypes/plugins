@@ -40,6 +40,10 @@
                 if (data.foreign > 0) { notes.push("{{ lang._('A hold record that does not belong to this plugin was ignored; its gateway keeps force_down until it is cleared by hand.') }}"); }
                 if (data.state_corrupt) { notes.push("{{ lang._('The runtime state was unreadable and started fresh.') }}"); }
                 $.each(data.unresolved || [], function (i, u) { notes.push("{{ lang._('A selected gateway no longer exists:') }} " + plain(u)); });
+                $.each(data.wans || [], function (i, w) {
+                    if (w.unjudgeable === 'disabled') { notes.push("{{ lang._('%s is disabled: the plugin can never judge it, so it never backs a hold. Enable it under System: Gateways: Configuration, or deselect it.') }}".replace('%s', plain(w.name))); }
+                    if (w.unjudgeable === 'monitor_disable') { notes.push("{{ lang._('%s has gateway monitoring disabled: the plugin can never judge it, so it never backs a hold. Enable monitoring under System: Gateways: Configuration, or deselect it.') }}".replace('%s', plain(w.name))); }
+                });
                 $.each((data.contract || {}).judging || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds; all holds released if it lasts 3 minutes):') }} " + plain(p)); });
                 $.each((data.contract || {}).command || [], function (i, p) { notes.push("{{ lang._('Core changed (no new holds):') }} " + plain(p)); });
                 $.each((data.contract || {}).tailscale || [], function (i, p) { notes.push("{{ lang._('Tailscale restarts off:') }} " + plain(p)); });

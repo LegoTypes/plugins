@@ -66,5 +66,10 @@ wf_register_suite('judge', function (): int {
     wf_check($t, 'a settled "~" while core reports the gateway down is no data, not a perfect link',
         wf_effective_loss(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down'])) === null
         && wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down']), $d) === WF_UNKNOWN);
+    wf_check($t, 'unjudgeable: disabled first, then monitoring, else none',
+        wf_unjudgeable(['disabled' => true, 'monitor_disable' => true]) === 'disabled'
+        && wf_unjudgeable(['disabled' => true, 'monitor_disable' => false]) === 'disabled'
+        && wf_unjudgeable(['disabled' => false, 'monitor_disable' => true]) === 'monitor_disable'
+        && wf_unjudgeable(['disabled' => false, 'monitor_disable' => false]) === null);
     return wf_tally_report('judge', $t);
 });

@@ -125,3 +125,19 @@ function wf_up(array $j): bool
 {
     return $j['value'] === WF_CLEAN || $j['value'] === WF_MARGINAL;
 }
+
+/**
+ * Why a WAN's gateway can never be judged, or null when it can: a disabled gateway reads unavailable, and one with
+ * monitoring off has no dpinger, so while its link is up it reads unknown. Neither ever backs a hold of another WAN.
+ * The settings model refuses a Save that adds one; the page and the log name one saved before.
+ *
+ * @param array{disabled: bool, monitor_disable: bool} $w
+ * @return 'disabled'|'monitor_disable'|null disabled first
+ */
+function wf_unjudgeable(array $w): ?string
+{
+    if ($w['disabled']) {
+        return 'disabled';
+    }
+    return $w['monitor_disable'] ? 'monitor_disable' : null;
+}

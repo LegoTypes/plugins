@@ -362,7 +362,7 @@ wf_register_suite('apply', function (): int {
 
     /* a removal whose first write finds WAN_B's force_down moved: the second try plans from a new snapshot */
     $wan = fn (string $gw, string $if, bool $down): array => ['uuid' => '', 'gateway_ip' => $gw, 'if' => $if,
-        'route_target' => "{$gw}@{$if}", 'rank' => 1, 'disabled' => false, 'force_down' => $down,
+        'route_target' => "{$gw}@{$if}", 'rank' => 1, 'disabled' => false, 'monitor_disable' => false, 'force_down' => $down,
         'status' => $down ? 'force_down' : 'none', 'present' => true, 'tilde' => false, 'carrier' => true, 'has_ipv4' => true,
         'loss' => 0.0, 'sock_age' => 300, 'losslow' => 10.0, 'losshigh' => 20.0, 'time_period' => 60, 'interval' => 1,
         'loss_interval' => 4];
