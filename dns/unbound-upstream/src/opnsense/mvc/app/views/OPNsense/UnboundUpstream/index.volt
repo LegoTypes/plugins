@@ -101,7 +101,7 @@
                 body.append(row("{{ lang._('Live root forwarders') }}", data.live_root === null ? "{{ lang._('unknown') }}" : plain(data.live_root.join(', '))));
                 body.append(row("{{ lang._('Configured root forwarders') }}", plain((data.configured_root.addrs || []).join(', ')) + (data.configured_root.tls ? ' (TLS)' : '')));
                 body.append(row("{{ lang._('TLS flag last applied') }}", data.tls_applied === null ? '' : yesno(data.tls_applied)));
-                /* one address: the route row as it always read; several: a row for each */
+                /* one address: one "Resolver route" row, from route; several: a row for each, named by its address */
                 if ((data.addresses || []).length <= 1) {
                     body.append(row("{{ lang._('Resolver route') }}", routeText(route)));
                 } else {
