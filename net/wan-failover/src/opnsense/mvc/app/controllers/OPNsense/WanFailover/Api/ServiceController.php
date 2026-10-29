@@ -49,7 +49,7 @@ class ServiceController extends ApiMutableServiceControllerBase
     /**
      * Status for the page: per-WAN readings, held flags, pending failbacks, core-contract findings.
      */
-    public function holdsAction(): array
+    public function wanStatusAction(): array
     {
         $data = json_decode(trim((new Backend())->configdRun('wanfailover holds')), true);
         return is_array($data) ? $data : ['status' => 'failed'];
@@ -71,7 +71,7 @@ class ServiceController extends ApiMutableServiceControllerBase
     /**
      * End the failback delay for every pending failback, now.
      */
-    public function failbacknowAction(): array
+    public function failbackNowAction(): array
     {
         if (!$this->request->isPost()) {
             return ['status' => 'failed'];

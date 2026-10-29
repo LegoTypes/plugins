@@ -204,6 +204,11 @@ wf_register_suite('wiring', function (): int {
     $boot = (string)@file_get_contents(dirname($evaluate) . '/boot.php');
     wf_check($t, '(d7) boot.php checks the removal marker before it reads or writes anything',
         str_contains($boot, "\ntry {\n    if (wf_removing()) {\n        exit(0);\n    }\n    \$bootId = wf_boot_id();\n"));
+    $service = (string)@file_get_contents(dirname(__DIR__)
+        . '/src/opnsense/mvc/app/controllers/OPNsense/WanFailover/Api/ServiceController.php');
+    wf_check($t, 'the service controller names its actions failbackNowAction and wanStatusAction',
+        str_contains($service, 'function failbackNowAction(') && str_contains($service, 'function wanStatusAction(')
+        && !str_contains($service, 'function failbacknowAction(') && !str_contains($service, 'function holdsAction('));
     /* the tree's snapshot, as an evaluation takes it, of WAN_DHCP and WAN_B selected with WAN_B's monitoring off: both
      * changed in the child's configuration object only (serialized, never saved), with config.xml's md5 as the guard */
     $config = '/conf/config.xml';

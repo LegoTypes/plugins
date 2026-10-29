@@ -19,7 +19,7 @@
             return "{{ lang._('pending:') }} " + mins + " {{ lang._('min left') }}";
         }
         function refreshHolds() {
-            ajaxGet('/api/wanfailover/service/holds', {}, function (data) {
+            ajaxGet('/api/wanfailover/service/wan_status', {}, function (data) {
                 var body = $('#wanfailover-holds tbody').empty();
                 if (!data || data.status === 'failed') {
                     body.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('Status unavailable.') }}")));
@@ -91,6 +91,6 @@
         <tbody></tbody>
     </table>
     <button class="btn btn-default" id="releaseAct" data-endpoint="/api/wanfailover/service/release" data-label="{{ lang._('Release holds') }}" type="button"></button>
-    <button class="btn btn-default" id="failbackNowAct" data-endpoint="/api/wanfailover/service/failbacknow" data-label="{{ lang._('Fail back now') }}" type="button"></button>
+    <button class="btn btn-default" id="failbackNowAct" data-endpoint="/api/wanfailover/service/failback_now" data-label="{{ lang._('Fail back now') }}" type="button"></button>
 </div>
 {{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/wanfailover/service/reconfigure'}) }}
