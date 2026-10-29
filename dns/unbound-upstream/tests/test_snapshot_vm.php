@@ -70,14 +70,14 @@ uu_register_suite('snapshot_vm', function (): int {
     /* (c6) the generated configuration, read as core wrote it, on a base that allows both families */
     uu_check($t, '(c6) the live unbound.conf reads do-ip4 and do-ip6 on and no outgoing interface; the contract input '
         . 'carries them with the group\'s family and no mix or mismatch',
-        uu_try_case(fn (): bool => uu_unbound_conf_facts((string)uu_conf_file_text())
+        uu_try_case(fn (): bool => uu_unbound_conf_facts((string)uu_conf_expanded_text())
                 === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
             && $c['unbound_conf'] === ['do_ip4' => true, 'do_ip6' => true, 'outgoing_interface' => false]
             && $c['group_family'] === 'inet' && $c['mixed_family'] === false && $c['family_mismatch'] === []));
     /* a read that lands in a rewrite of the live file sees a prefix of it: none refuses what the whole does not */
     uu_check($t, '(c6) no byte prefix of the live unbound.conf reports a refusal',
         uu_try_case(function (): bool {
-            $text = (string)uu_conf_file_text();
+            $text = (string)uu_conf_expanded_text();
             for ($n = 0; $n <= strlen($text); $n++) {
                 $f = uu_unbound_conf_facts(substr($text, 0, $n));
                 if (!$f['do_ip4'] || !$f['do_ip6'] || $f['outgoing_interface']) {

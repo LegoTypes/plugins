@@ -30,6 +30,63 @@ uu_register_suite('zone', function (): int {
     $comments = uu_test_fixture('dot_comments.conf');
     $addrs = ['192.0.2.53@853#dns.example', '2001:db8::53@853#dns.example'];
 
+    /* the configuration's own PATH, read through the expanded form the contract uses */
+    $confRun = function (string $path, string $max = '1048576'): array {
+        $out = [];
+        $rc = -1;
+        $helper = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/zone_read.py';
+        exec(UU_PYTHON . ' -I ' . escapeshellarg($helper) . ' --conf ' . escapeshellarg($path) . ' ' . $max
+            . ' 64 8388608 2>/dev/null', $out, $rc);
+        return [$rc, implode("\n", $out)];
+    };
+    uu_check($t, 'the configuration\'s own PATH: a regular file is its text and an empty file is the empty string, '
+        . 'never null; a link, a directory, a named pipe, a device, a missing file, a PATH under a linked directory, a '
+        . 'PATH naming no file, a relative PATH and a helper that does not exist are null',
+        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir): bool {
+            file_put_contents($dir . '/a.conf', "server:\n  do-ip6: no\n");
+            symlink($dir . '/a.conf', $dir . '/b.conf');
+            mkdir($dir . '/c.conf');
+            mkdir($dir . '/real');
+            file_put_contents($dir . '/real/d.conf', "y\n");
+            symlink($dir . '/real', $dir . '/link');
+            file_put_contents($dir . '/empty.conf', '');
+            uu_scratch_place('fifo', $dir . '/f.conf', '');
+            return uu_conf_expanded_text($dir . '/a.conf') === "server:\n  do-ip6: no\n"
+                && uu_conf_expanded_text($dir . '/empty.conf') === ''
+                && uu_conf_expanded_text($dir . '/b.conf') === null
+                && uu_conf_expanded_text($dir . '/c.conf') === null
+                && uu_conf_expanded_text($dir . '/f.conf') === null
+                && uu_conf_expanded_text('/dev/null') === null
+                && uu_conf_expanded_text($dir . '/none.conf') === null
+                && uu_conf_expanded_text($dir . '/link/d.conf') === null
+                && uu_conf_expanded_text($dir . '/') === null
+                && uu_conf_expanded_text('a.conf') === null
+                && uu_conf_expanded_text($dir . '/a.conf', $dir . '/nohelper.py') === null;
+        })));
+    uu_check($t, 'a helper that runs past its limit is null within 3 s',
+        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir): bool {
+            file_put_contents($dir . '/a.conf', "server:\n  do-ip6: no\n");
+            file_put_contents($dir . '/slow.py', "import time\ntime.sleep(30)\n");
+            $t0 = hrtime(true);
+            $slow = uu_conf_expanded_text($dir . '/a.conf', $dir . '/slow.py', 1);
+            return $slow === null && hrtime(true) - $t0 < 3 * 1000000000;
+        })));
+    uu_check($t, 'zone_read.py --conf: a PATH over MAX_BYTES is cut after its last line end; a bad MAX_BYTES is a '
+        . 'usage error (exit 2)',
+        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir) use ($confRun): bool {
+            file_put_contents($dir . '/a.conf', "aa\nbb\ncc\n");
+            return $confRun($dir . '/a.conf', '7') === [0, '{"texts": ["YWEKYmIK"], "skipped": 0}']
+                && $confRun($dir . '/a.conf', 'x') === [2, ''];
+        })));
+    uu_check($t, 'zone_read.py --file is a usage error (exit 2)',
+        uu_try_case(function (): bool {
+            $out = [];
+            $rc = -1;
+            $helper = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/zone_read.py';
+            exec(UU_PYTHON . ' -I ' . escapeshellarg($helper) . ' --file /dev/null 1048576 2>/dev/null', $out, $rc);
+            return $rc === 2 && $out === [];
+        }));
+
     $z = uu_root_zone([$dot]);
     uu_check($t, 'DoT root: shape one, tls, addresses verbatim incl. [v6]@853#name',
         $z['shape'] === 'one' && $z['tls'] && $z['addrs'] === $addrs && $z['problems'] === []);
@@ -316,68 +373,6 @@ uu_register_suite('zone', function (): int {
                 return $got === null && hrtime(true) - $t0 < 3 * 1000000000;
             }));
     }
-
-    /* (c1) the single-file mode: the file is opened as a directory's entry is, its directory reached without a link */
-    $fileRun = function (string $path, string $max = '1048576'): array {
-        $out = [];
-        $rc = -1;
-        $helper = __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/zone_read.py';
-        exec(UU_PYTHON . ' -I ' . escapeshellarg($helper) . ' --file ' . escapeshellarg($path) . ' ' . $max
-            . ' 2>/dev/null', $out, $rc);
-        return [$rc, implode("\n", $out)];
-    };
-    uu_check($t, '(c1) zone_read.py --file: a regular file gives its text; a link, a directory, a named pipe, a '
-        . 'device and a missing file give skipped 1; a PATH whose directory is a link or missing, and a relative '
-        . 'PATH, exit 1 with nothing on stdout',
-        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir) use ($fileRun): bool {
-            file_put_contents($dir . '/a.conf', "x\n");
-            symlink($dir . '/a.conf', $dir . '/b.conf');
-            mkdir($dir . '/c.conf');
-            mkdir($dir . '/real');
-            file_put_contents($dir . '/real/d.conf', "y\n");
-            symlink($dir . '/real', $dir . '/link');
-            uu_scratch_place('fifo', $dir . '/f.conf', '');
-            return $fileRun($dir . '/f.conf') === [0, '{"texts": [], "skipped": 1}']
-                && $fileRun('/dev/null') === [0, '{"texts": [], "skipped": 1}']
-                && $fileRun($dir . '/a.conf') === [0, '{"texts": ["eAo="], "skipped": 0}']
-                && $fileRun($dir . '/b.conf') === [0, '{"texts": [], "skipped": 1}']
-                && $fileRun($dir . '/c.conf') === [0, '{"texts": [], "skipped": 1}']
-                && $fileRun($dir . '/none.conf') === [0, '{"texts": [], "skipped": 1}']
-                && $fileRun($dir . '/link/d.conf') === [1, '']
-                && $fileRun($dir . '/nodir/d.conf') === [1, '']
-                && $fileRun($dir . '/') === [1, '']
-                && $fileRun('a.conf') === [1, ''];
-        })));
-    uu_check($t, '(c1) zone_read.py --file: a file over MAX_BYTES is cut after its last line end, as an entry is; '
-        . 'the two-argument form is unchanged; a bad MAX_BYTES is a usage error (exit 2)',
-        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir) use ($fileRun, $helperRun): bool {
-            file_put_contents($dir . '/a.conf', "aa\nbb\ncc\n");
-            file_put_contents($dir . '/b.conf', 'x');
-            return $fileRun($dir . '/a.conf', '7') === [0, '{"texts": ["YWEKYmIK"], "skipped": 0}']
-                && $helperRun($dir) === [0, '{"texts": ["YWEKYmIKY2MK", "eA=="], "skipped": 0}']
-                && $fileRun($dir . '/a.conf', 'x') === [2, ''];
-        })));
-    uu_check($t, '(c1) uu_conf_file_text: a regular file is its text; an empty file is the empty string (what a read '
-        . 'between the truncate and the write of a rewrite gets), never null; a link, a directory, a missing file, a '
-        . 'link in the directory path and a helper that fails or runs past its limit are null',
-        uu_try_case(fn (): bool => uu_scratch_case(function (string $dir): bool {
-            file_put_contents($dir . '/a.conf', "server:\n  do-ip6: no\n");
-            symlink($dir . '/a.conf', $dir . '/b.conf');
-            mkdir($dir . '/c.conf');
-            mkdir($dir . '/real');
-            file_put_contents($dir . '/real/d.conf', "y\n");
-            symlink($dir . '/real', $dir . '/link');
-            file_put_contents($dir . '/slow.py', "import time\ntime.sleep(30)\n");
-            file_put_contents($dir . '/empty.conf', '');
-            $t0 = hrtime(true);
-            $slow = uu_conf_file_text($dir . '/a.conf', $dir . '/slow.py', 1);
-            return uu_conf_file_text($dir . '/a.conf') === "server:\n  do-ip6: no\n"
-                && uu_conf_file_text($dir . '/empty.conf') === ''
-                && uu_conf_file_text($dir . '/b.conf') === null && uu_conf_file_text($dir . '/c.conf') === null
-                && uu_conf_file_text($dir . '/none.conf') === null && uu_conf_file_text($dir . '/link/d.conf') === null
-                && uu_conf_file_text($dir . '/a.conf', $dir . '/nohelper.py') === null
-                && $slow === null && hrtime(true) - $t0 < 3 * 1000000000;
-        })));
 
     /* (c2) the facts: the last do-ip4 / do-ip6 line wins and none means yes; an outgoing-interface line with a value */
     $facts = fn (string $text): array => uu_unbound_conf_facts($text);

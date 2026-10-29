@@ -617,21 +617,6 @@ function uu_zone_texts(string $dir = '/var/unbound/etc', string $helper = __DIR_
 }
 
 /**
- * Unbound's generated unbound.conf (a single file, not a directory's *.conf), read as uu_zone_texts() reads a
- * directory's: zone_read.py --file opens its directory without following a link and the file as a regular file only.
- * Null when the read failed in any way uu_zone_texts() names (the helper cannot start, runs past $seconds, exits
- * non-zero, prints what uu_zone_decode() refuses) and when the file is a link, anything but a regular file, missing
- * or unreadable; the contract then refuses tunnel mode, since "could not look" is never "do-ip6 is on". It logs
- * nothing. $path, $helper and $seconds are for the tests.
- */
-function uu_conf_file_text(string $path = '/var/unbound/unbound.conf', string $helper = __DIR__ . '/../zone_read.py',
-    int $seconds = UU_ZONE_READ_SECONDS): ?string
-{
-    $doc = uu_zone_read_run(['--file', $path], $helper, $seconds);
-    return $doc === null || $doc['skipped'] > 0 || count($doc['texts']) !== 1 ? null : $doc['texts'][0];
-}
-
-/**
  * Unbound's configuration as Unbound reads it: $path's text with every "include:" line replaced, in place, by the
  * included files' text (zone_read.py --conf, which does it all in one process, so the directory core empties and
  * refills at every Unbound start is looked at once: a file a glob listed that is gone by the time it is opened is no
@@ -651,7 +636,7 @@ function uu_conf_expanded_text(string $path = '/var/unbound/unbound.conf',
 }
 
 /**
- * zone_read.py run with $args (a DIR, or --file or --conf and a PATH), UU_FILE_MAX_BYTES and $tail, from its argv (no
+ * zone_read.py run with $args (a DIR, or --conf and a PATH), UU_FILE_MAX_BYTES and $tail, from its argv (no
  * shell), for at most $seconds, its stdout decoded (uu_zone_decode()); null for a helper that cannot start, runs
  * past that (it is killed), exits non-zero or prints what the decoder refuses.
  *
