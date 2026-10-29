@@ -351,8 +351,9 @@ function uu_test_logged(ArrayObject $calls, int $prio, string ...$needles): bool
     return false;
 }
 
-uu_register_suite('apply', function (): int {
-    $t = ['fail' => 0, 'total' => 0];
+/** @param array{fail: int, total: int} $t */
+function uu_test_apply_cases(array &$t): void
+{
     $all = new ArrayObject();
     $now = 10000;
     $usable = ['wg-a' => uu_test_timer(500, null, $now - 60), 'wg-b' => uu_test_timer(500, null, $now - 60)];
@@ -3612,6 +3613,23 @@ uu_register_suite('apply', function (): int {
     uu_check($t, 'drill: "ad" only inside another word (a name) is not the flag',
         !uu_drill_passed(";; ->>HEADER<<- opcode: QUERY, rcode: NOERROR, id: 1\n;; flags: qr rd ra ; QUERY: 1\nbad.example.\n"));
 
+    uu_check($t, 'bare addresses: @port and #name stripped, IPv6 canonical, sorted, unique',
+        uu_apply_bare(['2001:DB8:0::53@853#dns.example', '192.0.2.53@853', '192.0.2.53']) === ['192.0.2.53', '2001:db8::53']);
+
+}
+
+uu_register_suite('apply', function (): int {
+    $t = ['fail' => 0, 'total' => 0];
+    /* the cases share one fixture that carries no probe name, which a version still typing one dies on at the first
+     * uu_apply(): that is one failed case, and the cases below still run */
+    try {
+        uu_test_apply_cases($t);
+    } catch (\Throwable $e) {
+        uu_check($t, 'apply: the cases above ran to the end (' . get_class($e) . ': ' . $e->getMessage() . ')', false);
+    }
+    $usable = ['wg-a' => uu_test_timer(500, null, 9940), 'wg-b' => uu_test_timer(500, null, 9940)];
+    $probe = 'probe_direct 10.2.0.1 .';
+    $through = ['uc flush_type . SOA', 'probe_unbound .'];
     uu_check($t, 'apply: the direct probe asks the root whatever the settings hold',
         uu_try_case(function () use ($usable, $probe, $through): bool {
             $scratch = new ArrayObject();
@@ -3628,8 +3646,5 @@ uu_register_suite('apply', function (): int {
             }
             return $ok;
         }));
-    uu_check($t, 'bare addresses: @port and #name stripped, IPv6 canonical, sorted, unique',
-        uu_apply_bare(['2001:DB8:0::53@853#dns.example', '192.0.2.53@853', '192.0.2.53']) === ['192.0.2.53', '2001:db8::53']);
-
     return uu_tally_report('apply', $t);
 });
