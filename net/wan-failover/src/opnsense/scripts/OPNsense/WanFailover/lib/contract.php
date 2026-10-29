@@ -31,10 +31,11 @@ declare(strict_types=1);
 /*
  * Core contract, by class. Judging (without it no WAN can be read): a drift blocks new holds, and one that persists
  * releases every hold and stops planning. Command (copied or invoked core internals): blocks new holds only. Failback
- * (the pf rule listing failback reads, the gateway groups' tiers): suspends failback, blocks nothing else. Removal
- * (the package removal's fallbacks when configd does not answer): blocks nothing, and the removal no longer runs the
- * routing copy. Names (core's gateway-name mask, copied as WF_GATEWAY_NAME_MASK): blocks nothing, as a name the copy
- * refuses only reads as unresolved. Pure, except wf_contract_groups_read(), the one guarded call into core.
+ * (the pf rule listing failback reads, the gateway groups' tiers): suspends failback, blocks nothing else. Tailscale
+ * (its [restart] action): turns Tailscale restarts off. Removal (the package removal's fallbacks when configd does not
+ * answer): blocks nothing; after a [routes.configure] drift the removal leaves core's routing command unrun. Names
+ * (core's gateway-name mask, copied as WF_GATEWAY_NAME_MASK): blocks nothing, as a name the copy refuses only reads as
+ * unresolved. Pure, except wf_contract_groups_read(), the one guarded call into core.
  */
 
 require_once __DIR__ . '/constants.php';

@@ -34,9 +34,10 @@ declare(strict_types=1);
  * backup, since nobody knows how long the firewall was down or whether the modems rebooted too. A record proves a hold
  * only by the boot before's id, the one the state file names; every other record is pruned in the same save, its
  * gateway's force_down left as it is. 1.3_1's held list goes in the same save, the entries the state proves released
- * (wf_boot_legacy()). With the state file missing or unreadable nothing is written. The state is reset only once the
- * save landed; otherwise it keeps the boot before's id, so evaluate's boot detector releases the holds. Every outcome
- * goes in the state's boot note, which the first evaluation logs. While the removal's marker exists it writes nothing.
+ * (wf_boot_legacy()). With the state file missing or unreadable no config is written. After a config save the state is
+ * reset only once the save landed; otherwise it keeps the boot before's id, so evaluate's boot detector releases the
+ * holds. Every outcome but finding nothing to release or prune goes in the state's boot note, which the first
+ * evaluation logs. While the removal's marker exists it writes nothing.
  */
 
 require_once 'script/load_phalcon.php';

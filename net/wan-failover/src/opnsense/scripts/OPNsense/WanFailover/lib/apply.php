@@ -31,9 +31,9 @@ declare(strict_types=1);
 /*
  * Apply a plan in the planned order, through injected I/O so order and failure handling are testable. wf_live_io()
  * binds the real I/O: configd for every reconfigure, kill and restart (never exec of an rc script), close-on-exec
- * locks, and the config writer wf_write_holds(); wf_deinstall_io() binds the package removal's. The functions here call
- * snapshot.php, which evaluate.php loads first; it is not required here, so the pure tests can load this file without
- * OPNsense's includes.
+ * locks, and the config writer wf_write_holds(); wf_deinstall_io() binds the package removal's. wf_live_io()'s closures
+ * and wf_holds_import_legacy() call snapshot.php, which evaluate.php, the one entry point that reaches them, loads
+ * first; it is not required here, so the pure tests can load this file without OPNsense's includes.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -239,15 +239,18 @@ function wf_removing(): bool
 
 /**
  * The config writer: force_down on the changed gateways and exactly the plan's hold records after the write
- * (wf_holds_rows()), every other row removed, in one save without a config backup. The caller holds core's gateway
- * lock; this takes Config::lock() and builds both models after it, so they read the config as it is now. Nothing is
+ * (wf_holds_rows()), every other row removed, in one save without a config backup. An evaluation calls it under core's
+ * gateway lock; the early boot hook, before routing starts, takes none. This takes Config::lock() and builds both
+ * models after it, so they read the config as it is now. Nothing is
  * written when a changed gateway's force_down moved since the snapshot (wf_write_guard(); those gateways come back as
  * skipped), or, unless this is the removal's own write, when the removal's marker exists, read under Config::lock(). A
  * write that only releases skips model validation, so a gateway field that fails validation can never pin a hold. It
  * never throws and logs nothing: a write that did not land returns why, and the priority, for its caller to log.
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
- * configd or a syshook, with no session, and the page buttons that lead here call the guard in ServiceController.
+ * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
+ * ServiceController; its Apply, core's reconfigureAction(), does not, and only starts an evaluation, whose writes are
+ * the engine's own decisions from the saved settings.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
@@ -404,7 +407,9 @@ function wf_holds_drop_legacy(): void
  * names the list's gateways (legacy_held).
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
- * configd or a syshook, with no session, and the page buttons that lead here call the guard in ServiceController.
+ * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
+ * ServiceController; its Apply, core's reconfigureAction(), does not, and only starts an evaluation, whose writes are
+ * the engine's own decisions from the saved settings.
  *
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  */
