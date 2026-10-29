@@ -29,20 +29,11 @@ declare(strict_types=1);
  */
 
 /*
- * Apply a plan in the planned order, through injected I/O so order and failure
- * handling are testable. wf_live_io() binds the real I/O: configd for every reconfigure, kill and restart
- * (never exec of an rc script), close-on-exec locks, and wf_write_holds() -- the evaluation's config writer, which
- * saves force_down and exactly the plan's hold records together without a config backup (the owner's decision), and
- * writes nothing when a changed gateway's force_down moved since the snapshot the plan decided on. The one other
- * writer imports 1.3_1's held list when an upgrade's migration has not (wf_holds_import_legacy()), carrying over only
- * the holds the plugin's own state proves; the migration shares its import (wf_holds_import_into()). While the package
- * removal's marker exists, neither writes, except the
- * removal's own write. wf_deinstall_io() is the removal's I/O: wf_live_io()'s, re-syncing routing through core's
- * commands only (wf_core_command()), since the plugin's own configd actions go with the package; wf_deinstall_run()
- * tries the removal's release until it lands or its time is up. wf_apply() reports a change that did not land, and its
- * caller logs it as it goes on (a next tick, or a next try). wf_live_io()'s closures and wf_write_holds() call
- * snapshot.php functions; evaluate.php loads snapshot.php first. They are not required here so the pure tests can load
- * this file without OPNsense's includes.
+ * Apply a plan in the planned order, through injected I/O so order and failure handling are testable. wf_live_io()
+ * binds the real I/O: configd for every reconfigure, kill and restart (never exec of an rc script), close-on-exec
+ * locks, and the config writer wf_write_holds(); wf_deinstall_io() binds the package removal's. The functions here call
+ * snapshot.php, which evaluate.php loads first; it is not required here, so the pure tests can load this file without
+ * OPNsense's includes.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -247,20 +238,16 @@ function wf_removing(): bool
 }
 
 /**
- * The one config writer: force_down on the changed gateways and the plugin's hold records, in one locked save without
- * a config backup. An evaluation calls it under core's gateway lock; Config::lock() comes next, and both models are
- * built after it, so they read the config as it is now. Each changed gateway's force_down there is compared with the
- * value the plan decided on (wf_write_guard()): when one moved under it (a settings save, a restored config), nothing
- * is written and those gateways come back as skipped. Otherwise the hold records become exactly the plan's records
- * after the write (wf_holds_rows()), every other row removed, so a record the plan proved is never left behind for one
- * it did not. It never throws and logs nothing itself: a write that did not land says why (problem, and the priority
- * to log it at) for its caller to log, with the caller's own prefix, as the change waits for the next tick or try. A
- * write that only releases skips model validation, so a gateway field that fails validation (after a firmware update
- * tightened a rule, say) can never pin a hold; the plugin itself only touches force_down and its hold records. While
- * the package removal's marker exists, only the removal's own write lands: the marker is read once Config::lock() is
- * held, and the removal writes it before anything else, so an evaluation that was waiting for the lock cannot re-take
- * a hold the removal releases. The early hook also removes 1.3_1's held list in the same save ($dropLegacy), once it
- * has dealt with its entries.
+ * The config writer: force_down on the changed gateways and exactly the plan's hold records after the write
+ * (wf_holds_rows()), every other row removed, in one save without a config backup. The caller holds core's gateway
+ * lock; this takes Config::lock() and builds both models after it, so they read the config as it is now. Nothing is
+ * written when a changed gateway's force_down moved since the snapshot (wf_write_guard(); those gateways come back as
+ * skipped), or, unless this is the removal's own write, when the removal's marker exists, read under Config::lock(). A
+ * write that only releases skips model validation, so a gateway field that fails validation can never pin a hold. It
+ * never throws and logs nothing: a write that did not land returns why, and the priority, for its caller to log.
+ *
+ * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
+ * configd or a syshook, with no session, and the page buttons that lead here call the guard in ServiceController.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
@@ -360,10 +347,9 @@ function wf_gateway_unlock(mixed $lock): void
 
 /**
  * 1.3_1's held list ($csv, the raw node's text; null when the config has none) added to $holds as hold records, as
- * wf_legacy_import_plan() decides, against the gateways in the config as it now is and the plugin's own state
- * ($proof). It changes the model only. The caller saves it, and only then removes the raw list
- * (wf_holds_drop_legacy()), so a save that fails leaves the list for the next try. The migration runs this on the
- * model core hands it, which core then saves; an evaluation runs it under its own locks (wf_holds_import_legacy()).
+ * wf_legacy_import_plan() decides against the gateways configured now and the plugin's own state ($proof). It changes
+ * the model only: the caller saves it and only then removes the raw list (wf_holds_drop_legacy()), so a save that
+ * fails leaves the list for the next try.
  *
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  * @return array{import: bool, lines: list<array{0: int, 1: string}>} import: the list is to be removed once saved;
@@ -411,13 +397,14 @@ function wf_holds_drop_legacy(): void
 }
 
 /**
- * An evaluation's import of 1.3_1's held list, when the upgrade's migration has not run yet or failed, or a restored
- * backup carries the list: the gateway lock, then Config::lock() (which reloads the config), the models built after
- * it, the records the plugin's state proves added ($proof), the raw list removed, one save without a backup, then the
- * unlocks. It never throws: a failure is logged and the list stays for the next evaluation, whose snapshot then names
- * the list's gateways (legacy_held), which the planner neither alerts on nor re-syncs for. A package removal under way
- * imports nothing: the marker is read once Config::lock() is held. The raw list is read with wf_holds_legacy_csv()
- * (snapshot.php).
+ * An evaluation's import of 1.3_1's held list, for a config that still carries it: under core's gateway lock and
+ * Config::lock(), with the model built after it, the records the plugin's state proves added ($proof), the raw list
+ * removed, and one save without a backup. Nothing is imported while the removal's marker exists, read under
+ * Config::lock(). It never throws: a failure is logged and the list stays for the next evaluation, whose snapshot
+ * names the list's gateways (legacy_held).
+ *
+ * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
+ * configd or a syshook, with no session, and the page buttons that lead here call the guard in ServiceController.
  *
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  */
@@ -542,13 +529,11 @@ function wf_core_shell(string $cmdline): int
 }
 
 /**
- * The package removal's I/O: $io (wf_live_io()'s) with its write made the removal's own, which the removal's marker
- * lets through, its crash points inert, and its configd replaced, since the plugin's own configd actions go with the
- * package. Core's routing reconfigure runs through core's configd action, else core's own command (wf_core_command()),
- * which is not run when the core contract reports that core's action no longer runs it ($fallback false: one error
- * then names the fix); the alarm replay runs the command the plugin's [replay_alarm] action wraps
- * (WF_REPLAY_ALARM_CMD), directly, with the names as its one argument; any other action is refused with one line and
- * never run. Every line apply logs through it starts "deinstall: ".
+ * The package removal's I/O: $io (wf_live_io()'s) with the removal's own write, which its marker lets through, inert
+ * crash points, and a configd of its own, since the plugin's configd actions go with the package. The routing
+ * reconfigure runs through wf_core_command(), which does not fall back to core's own command when $fallback is false
+ * (one error then names the fix); the alarm replay runs WF_REPLAY_ALARM_CMD directly, the names its one argument; any
+ * other action is refused with one line and never run. Every line apply logs through it starts "deinstall: ".
  *
  * @param array $io the shape returned by wf_live_io()
  * @param callable(string): int $run runs a shell command line and returns its exit status (wf_core_shell())
@@ -610,15 +595,13 @@ function wf_deinstall_retry(int $startedAt, int $now, bool $ok): string
 }
 
 /**
- * The package removal's release, tried until it lands or its time is up (wf_deinstall_retry()). Each try reads a fresh
- * snapshot and the state, plans it as with the plugin disabled and the cause "package removal" (every hold the plugin
- * proves it took released, every other record pruned and its gateway left as it is), and applies it through the
- * removal's I/O. A try that did not land (the gateway lock busy, a force_down moved since its snapshot, the write
- * failed) says why, once for each new reason; the plan's own lines only when they changed since the try before. The
- * last line says what the release left undone, since no plugin is left afterwards to say it: a routing re-sync that
- * did not complete, and any gateway left forced down that the plugin may have held but cannot prove (kern.boot_id
- * unreadable, or 1.3_1's held list not yet carried over), each with the fix. Giving up leaves one error naming the
- * gateways the plugin still holds and the fix.
+ * The package removal's release, tried until it lands or its time is up (wf_deinstall_retry()). Each try plans a fresh
+ * snapshot and state as with the plugin disabled and the cause "package removal" (every hold the plugin proves it took
+ * released, every other record pruned, its gateway left as it is) and applies the plan through the removal's I/O. A
+ * try that did not land says why once for each new reason; the plan's own lines are logged only when they changed.
+ * The last line names what the release left undone, each with the fix, since no plugin is left afterwards to say it:
+ * a routing re-sync that did not complete, and any gateway left forced down that the plugin may have held but cannot
+ * prove. Giving up leaves one error naming the gateways the plugin still holds and the fix.
  *
  * @param callable(): array{snap: array, loaded: array{state: array, corrupt: bool, problem: ?string}} $read a fresh
  *     snapshot (wf_snapshot()) and the state loaded for its boot id (wf_state_load())

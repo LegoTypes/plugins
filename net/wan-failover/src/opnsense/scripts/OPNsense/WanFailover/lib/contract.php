@@ -29,15 +29,12 @@ declare(strict_types=1);
  */
 
 /*
- * Core contract. Judging dependencies: without them no WAN can be read,
- * so a drift releases every hold and stops planning. Command dependencies: copied or invoked core
- * internals; a drift blocks new holds only. Removal dependencies: what only the package removal copies, its
- * fallbacks for core's routing reconfigure and cron restart when configd does not answer; a drift there blocks
- * nothing, and the removal no longer runs the routing copy. Failback dependencies: the pf rule listing failback reads
- * and the gateway groups' tiers; a drift suspends failback and blocks nothing else. Names dependency: core's
- * gateway-name mask, which WF_GATEWAY_NAME_MASK copies; a drift blocks nothing, since a name the copy refuses only
- * reads as unresolved. Pure: callers pass the file contents and core's returns, except wf_contract_groups_read(),
- * the one guarded call into core.
+ * Core contract, by class. Judging (without it no WAN can be read): a drift blocks new holds, and one that persists
+ * releases every hold and stops planning. Command (copied or invoked core internals): blocks new holds only. Failback
+ * (the pf rule listing failback reads, the gateway groups' tiers): suspends failback, blocks nothing else. Removal
+ * (the package removal's fallbacks when configd does not answer): blocks nothing, and the removal no longer runs the
+ * routing copy. Names (core's gateway-name mask, copied as WF_GATEWAY_NAME_MASK): blocks nothing, as a name the copy
+ * refuses only reads as unresolved. Pure, except wf_contract_groups_read(), the one guarded call into core.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -89,12 +86,11 @@ function wf_contract_commands(?string $interfaceActions, ?string $filterActions,
 }
 
 /**
- * The package removal runs two of core's commands itself when configd does not answer: [routes.configure]'s
+ * The two core commands the package removal runs itself when configd does not answer: [routes.configure]'s
  * (WF_CORE_ROUTES_CONFIGURE), and actions_cron.conf's [restart] (WF_CORE_CRON_RESTART), which +POST_DEINSTALL.post
- * runs once the plugin's files, its cron job's among them, are gone. A drift of either is reported here; the removal
- * then leaves the routing command unrun (wf_contract_routes_fallback()). Evaluations run neither, so no drift here
- * blocks a hold. An unreadable actions_interface.conf is the command contract's to report; an unreadable
- * actions_cron.conf is reported here.
+ * runs. After a routing drift the removal leaves that command unrun (wf_contract_routes_fallback()). Evaluations run
+ * neither, so no drift here blocks a hold. An unreadable actions_cron.conf is reported here, an unreadable
+ * actions_interface.conf by the command contract.
  *
  * @return list<string>
  */
@@ -140,8 +136,7 @@ function wf_contract_tailscale(?string $tailscaleActions): array
 /**
  * Does core run a dpinger for this WAN right now? Only for a monitored, enabled gateway whose interface
  * has carrier and an IPv4 address: dpinger binds the interface's address, and core stops it when the
- * link or the address goes (2026-10-07: a flapping WAN lost both, and its missing socket was taken for
- * core drift). The judge reads such a WAN as unavailable; the contract must not read it as drift.
+ * link or the address goes. The judge reads such a WAN as unavailable; the contract must not read it as drift.
  *
  * @param array{carrier: bool, has_ipv4: bool} $link wf_parse_ifconfig()
  */

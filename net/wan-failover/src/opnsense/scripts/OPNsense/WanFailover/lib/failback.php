@@ -42,8 +42,7 @@ require_once __DIR__ . '/contract.php';
 /**
  * Each rule's preferred gateways: none without a gateway, a group's first tier that has members (wf_first_tier()),
  * else the gateway itself. A group whose row drifted (wf_contract_groups()) gives none, and so does every rule while
- * the groups are unreadable (null), since a group cannot be told from a gateway then: a drift never throws here, and
- * the failback contract reports it.
+ * the groups are unreadable (null), since a group cannot be told from a gateway then. A drift never throws here.
  *
  * @param array<string, string> $ruleGateways rule UUID => its gateway field
  * @param array<array-key, mixed>|null $groups wf_contract_groups_read()'s groups

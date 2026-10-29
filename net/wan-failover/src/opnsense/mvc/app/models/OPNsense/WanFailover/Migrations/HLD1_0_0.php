@@ -34,22 +34,13 @@ use OPNsense\WanFailover\Holds;
 
 /**
  * Holds 1.0.0: the gateways the plugin holds down leave the settings model, which the API edits, for the Holds model,
- * which no API reaches. 1.3_1 kept them as a list of gateway UUIDs in the settings node; the settings model no longer
- * declares it, so the list is read from the raw config. Each UUID whose gateway the plugin's own state proves it held
- * in this boot (its state file names this boot and the gateway in last_held, as 1.3_1 wrote them) becomes one hold
- * record, stamped with this boot's kern.boot_id. Any other entry (a restored backup's list, or one met with the state
- * file missing or damaged) makes no record, and its gateway keeps its force_down, never released on a guess. Core runs
- * this on a new install too, as the Holds node is missing; there it finds no list and does nothing.
- *
- * The import is the plugin's own (wf_holds_import_into()), the one an evaluation runs when it finds the list still
- * there, and it adds the records to the model core hands it: core saves that model after run(), so a save of the
- * migration's own would be overwritten by it. The raw list is removed, and the outcome logged, in post(), once core
- * has written the records to the config, and only when run()'s import completed (wf_legacy_import_attempt()): a run()
- * that failed, even part way through, or could not read kern.boot_id, or records that cannot be written, leave the list
- * in place. A run() that threw after adding some records still has them saved by core, beside the list it left: the
- * next evaluation imports the list again, and the records of this boot that repeat a gateway are pruned to one, the
- * newest. Nothing is thrown into core, whose runner catches Exception only, so an Error would end run_migrations.php:
- * a failure is logged, the list stays, and the next evaluation imports it.
+ * which no API reaches. 1.3_1's held list of gateway UUIDs, which the settings model no longer declares, is read from
+ * the raw config, and each entry the plugin's state proves it held in this boot becomes one hold record stamped with
+ * this boot's kern.boot_id (wf_holds_import_into()); any other entry makes none, and its gateway keeps its force_down.
+ * The records go into the model core hands run(), which core saves; post() then removes the raw list, only when run()'s
+ * import completed (wf_legacy_import_attempt()), and logs the outcome. On a new install there is no list and nothing to
+ * do. Nothing is thrown into core, whose runner catches Exception only: a failure is logged, the list stays, and the
+ * next evaluation imports it.
  */
 class HLD1_0_0 extends BaseModelMigration
 {

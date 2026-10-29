@@ -29,13 +29,12 @@ declare(strict_types=1);
  */
 
 /*
- * Runtime state: what does not belong in config. Ownership itself -- the
- * hold records -- is in the plugin's Holds model, saved with force_down, and a record proves a hold by the boot id it
- * carries (wf_reconcile()); this file only resumes an apply a crash interrupted, notices held changes the engine did
- * not make, knows the boot before, which the early hook releases, and proves which entries of 1.3_1's held list were
- * the plugin's own (wf_legacy_import_plan()). The file is root's alone and read as a regular file
- * only, and a field of the wrong type discards it: wrong-typed state would throw a TypeError every minute, which
- * stops failover. The file helpers below touch the paths they are given; the rest is pure.
+ * Runtime state: what does not belong in config. A hold's ownership is its record in the Holds model, saved with
+ * force_down (wf_reconcile()); this file resumes an apply a crash interrupted, notices held changes the engine did not
+ * make, names the boot before for the early hook, and proves which entries of 1.3_1's held list were the plugin's own
+ * (wf_legacy_import_plan()). It is root's alone, read as a regular file only, and a field of the wrong type discards
+ * it, since wrong-typed state would throw a TypeError every minute. The file helpers touch only the paths they are
+ * given; the rest is pure.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -486,10 +485,7 @@ function wf_boot_unread(string $stateBootId): bool
 /**
  * The gateways a state shows the engine really holding: its last_held without the holds dry run only simulates
  * (dry_held). In dry run last_held names the simulated holds too (wf_dry_after()), and a simulated hold never forced a
- * gateway down, so it proves nothing about a held list in the config. A real hold is released before dry run
- * simulates one, by 1.3_1 as by 1.4, so no hold 1.3_1 left in place is ever left out; only a 1.3_1 hold already
- * released by hand, whose import waits while 1.4's dry run simulates the same gateway, loses its proof, and that
- * gateway is free already.
+ * gateway down, so it proves nothing about a held list in the config.
  *
  * @param array{last_held: list<string>, dry_held: list<string>} $state the shape returned by wf_state_new()
  * @return list<string>
@@ -501,9 +497,8 @@ function wf_really_held(array $state): array
 
 /**
  * What the plugin's own state file proves of the holds it took: the boot it names and the gateways the engine last
- * wrote as really held in it (wf_really_held()), or no boot and nothing when the file could not be read. 1.3_1 writes
- * last_held after every engine write too, so this proves 1.3_1's holds as well as 1.4's. Load the state without the
- * live boot id (wf_state_load($path, '')), so that a missing file names no boot.
+ * wrote as really held in it (wf_really_held()), or no boot and nothing when the file could not be read. Load the
+ * state without the live boot id (wf_state_load($path, '')), so that a missing file names no boot.
  *
  * @param array{state: array, corrupt: bool} $loaded wf_state_load()
  * @return array{boot: string, held: list<string>}
@@ -723,13 +718,11 @@ function wf_import_legacy_held(string $csv, array $nameByUuid, string $bootId, i
 }
 
 /**
- * The import of 1.3_1's held list, decided: whether to import (the raw config node is there; null when absent), the
- * records it makes (wf_import_legacy_held()) and the lines to log. An entry the plugin's state does not prove (a
- * restored backup's, or one met with the state file missing or damaged) makes no record and leaves its gateway's
- * force_down as it is, which the unowned alert then covers: it is never released on a guess. A node that is there is
- * imported even when empty, as 1.3_1 left it with nothing held, so that the node is removed. With the boot id
- * unreadable nothing is imported and the node stays, for an evaluation that can read it. Both the migration and an
- * evaluation that finds the node still there apply this one decision.
+ * The import of 1.3_1's held list, decided once for the migration and an evaluation alike: whether to import (the raw
+ * config node is there; null when absent), the records it makes (wf_import_legacy_held()) and the lines to log. An
+ * entry the plugin's state does not prove makes no record and leaves its gateway's force_down as it is, for the
+ * unowned alert: it is never released on a guess. A node that is there is imported even when empty, so that it is
+ * removed. With the boot id unreadable nothing is imported and the node stays.
  *
  * @param array<string, string> $nameByUuid every configured gateway's UUID => its name
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()

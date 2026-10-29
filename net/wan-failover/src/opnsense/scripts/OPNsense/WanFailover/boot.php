@@ -30,17 +30,13 @@ declare(strict_types=1);
  */
 
 /*
- * Early-boot release. Nobody knows how long the firewall was down or
- * whether the modems rebooted too, so every hold the plugin took is released before routing starts, in one
- * config save without a backup. A record proves the plugin took it only by carrying the boot before's id, the one
- * the state file names; every other record is pruned in the same save, its gateway's force_down left as it is. 1.3_1's
- * held list, still in the config when an upgrade's migration did not run before the reboot, goes in the same save:
- * the entries the state's last_held proves are released, the others left as they are. With the state file missing
- * or unreadable nothing is proven and nothing is written: the first evaluation prunes the records as foreign. The
- * runtime state is reset only after the save landed: if it did not, the state keeps the old boot id, so evaluate's
- * own boot detector releases the holds instead, and the reason is left in the state's boot note. syslog is not
- * running yet, so every outcome is a boot note, which the first evaluation logs. While the package removal's marker
- * exists it does nothing and writes nothing.
+ * Early-boot release: every hold the plugin took is released before routing starts, in one config save without a
+ * backup, since nobody knows how long the firewall was down or whether the modems rebooted too. A record proves a hold
+ * only by the boot before's id, the one the state file names; every other record is pruned in the same save, its
+ * gateway's force_down left as it is. 1.3_1's held list goes in the same save, the entries the state proves released
+ * (wf_boot_legacy()). With the state file missing or unreadable nothing is written. The state is reset only once the
+ * save landed; otherwise it keeps the boot before's id, so evaluate's boot detector releases the holds. Every outcome
+ * goes in the state's boot note, which the first evaluation logs. While the removal's marker exists it writes nothing.
  */
 
 require_once 'script/load_phalcon.php';

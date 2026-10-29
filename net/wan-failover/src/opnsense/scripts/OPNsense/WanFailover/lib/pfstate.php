@@ -29,19 +29,16 @@ declare(strict_types=1);
  */
 
 /*
- * Parsers for `pfctl -vvss` and `pfctl -vvsr`, and flow pairing for
- * failback. Pure.
+ * Parsers for `pfctl -vvss` and `pfctl -vvsr`, and flow pairing for failback. Pure.
  *
- * Failback pairs floating states ("all") only. An outgoing state ("->") whose route-to is a
- * WAN gateway is a flow's anchor; its partner is the incoming state ("<-")
- * with the same protocol and src/dst as the anchor's pre-NAT source. Incoming
- * states are never anchors, even when they carry route-to (route-to LAN rules
- * put it on the incoming state too). ICMP is skipped until its pairing has
- * been verified against a live capture.
+ * Failback pairs floating states ("all") only. An outgoing state ("->") whose route-to is a WAN gateway is a flow's
+ * anchor; its partner is the incoming state ("<-") with the same protocol and src/dst as the anchor's pre-NAT source.
+ * Incoming states are never anchors, even when they carry route-to, as route-to LAN rules put it there too. ICMP is
+ * skipped.
  *
- * A hold kills the states whose route target is the WAN's gateway@interface, floating or interface-bound,
- * by state id. pf prints a state's target at the end of its id line as "<token>: <gateway>@<interface>",
- * the token being route-to, reply-to or dup-to.
+ * A hold kills by state id the states whose route target is the WAN's gateway@interface, floating or bound. pf prints
+ * a state's target at the end of its id line as "<token>: <gateway>@<interface>", the token being route-to, reply-to
+ * or dup-to.
  */
 
 require_once __DIR__ . '/parsers.php';
@@ -233,11 +230,9 @@ function wf_flows(array $states, array $wanTargets): array
 }
 
 /**
- * pf output format drift check. A live firewall always has states (dpinger's own probes at
- * least), every rule-created state carries an rlabel and every state an id, so any of these coming back
- * empty means pfctl failed or its format moved, not that there is nothing to do. Every route target pf
- * printed must parse: one token form that moved while another still parses would leave a hold's kill, or
- * failback, silently missing states.
+ * pf's state listing format check: false when the listing has no states, no state with an rlabel or none with an id,
+ * which a live firewall always has (dpinger's own probes at least), so pfctl failed or its format moved; and false
+ * when a route target pf printed does not parse, so that no hold's kill or failback silently misses states.
  *
  * @param list<array{rlabel: ?string, id: ?string, rt_target: ?string}> $states wf_parse_states($raw)
  */
@@ -275,11 +270,10 @@ function wf_states_via(array $states, string $target): array
 }
 
 /**
- * Kill every state routed via $target, one state id at a time, as core's kill.state does. Unlike core's
- * kill by gateway address, it leaves the states of another WAN that shares the address alone. A kill counts
- * as done when pfctl exits 0. A listing that fails or does not parse kills nothing and says so, rather than
- * reading as no states to kill. The parser reads ids and creator ids as hex only, so the kill's command line
- * needs no quoting.
+ * Kill every state routed via $target, one state id at a time as core's kill.state does, so another WAN that shares
+ * the gateway address keeps its states. A kill counts as done when pfctl exits 0. A listing that fails or does not
+ * parse kills nothing and says so. The parser reads ids and creator ids as hex only, so the command line needs no
+ * quoting.
  *
  * @param callable(string): array{out: string, rc: int} $run runs one command line
  * @return array{line: string, rc: int}

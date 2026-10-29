@@ -269,13 +269,11 @@ function wf_main(string $mode, array $args): int
 }
 
 /**
- * The package removal's release. +PRE_DEINSTALL.pre runs it on a real removal only, after writing the removal's marker,
- * which stops every other evaluation and its writes from then on: the dpinger alarms this re-sync raises queue
- * evaluations that would otherwise re-hold a lossy WAN before pkg removes the files. It waits for an evaluation in
- * flight, then goes on regardless: one already writing holds Config::lock(), and this write builds its models after
- * taking it. The release is tried until it lands, each try from a fresh snapshot (wf_deinstall_run()); the wait and
- * the tries share WF_DEINSTALL_WAIT_SECONDS from the start of this mode. It always returns 0, so pkg delete completes;
- * every failure is logged.
+ * The package removal's release, run by +PRE_DEINSTALL.pre on a real removal only, after it writes the removal's
+ * marker, which stops every other evaluation and its writes. It waits for an evaluation in flight, then goes on
+ * regardless: one already writing holds Config::lock(), and this write builds its models after taking it. The release
+ * is tried until it lands (wf_deinstall_run()); the wait and the tries share WF_DEINSTALL_WAIT_SECONDS from the start
+ * of this mode. It always returns 0, so pkg delete completes; every failure is logged.
  */
 function wf_deinstall(): int
 {
