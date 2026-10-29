@@ -19,6 +19,23 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.5
+
+* Saving the settings refuses a WAN gateway the plugin can never judge
+  (gateway monitoring disabled, or the gateway disabled) and names it;
+  a selection saved before keeps running, and the page and the log
+  name the gateway until it is fixed or deselected
+* The core contract also checks dpinger's pid file and process age and
+  core's gateway name mask; a change in how pf prints its rules or in the
+  gateway groups' shape (or a groups API that cannot be read) suspends
+  failback only, a change in the mask blocks nothing, and each shows on
+  the page; a dry run reports the same
+* The page's API calls are renamed: service/holds is now
+  service/wan_status and service/failbacknow is now
+  service/failback_now. Anything else that called the old names must
+  move to the new ones
+* The selftest helper is no longer installed
+
 1.4_3
 
 * The source moved to github.com/LegoTypes/plugins; no change to
