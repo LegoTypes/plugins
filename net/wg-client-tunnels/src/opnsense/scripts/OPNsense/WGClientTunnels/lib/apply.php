@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * The apply half of every action:
  *
@@ -32,6 +52,81 @@ const WGCT_GATEWAY_LOCK_FILE = '/tmp/filter_reload_gateway.lock';
 /* core files the contract check reads (wgct_core_contract) */
 const WGCT_CORE_ACTIONS_INTERFACE = '/usr/local/opnsense/service/conf/actions.d/actions_interface.conf';
 const WGCT_CORE_ROUTING_SCRIPT = '/usr/local/etc/rc.routing_configure';
+/*
+ * Every core internal the plugin copies, with the texts in core's file that show core still does what the copy
+ * assumes, as 26.7.7 holds them: each the line the copy relies on, exact enough that a similar line elsewhere in the
+ * file cannot stand in for it. A file that cannot be read, or that lacks a text, is drift. With a section, the
+ * texts are looked for only in the command line of that ini section, and a missing section or command is drift too.
+ */
+const WGCT_CORE_COPIES = [
+    /* replay_alarm and the config-write order take routes.alarm's lock and run its command */
+    'routes_alarm' => [
+        'path' => WGCT_CORE_ACTIONS_INTERFACE, 'section' => 'routes.alarm',
+        'texts' => [WGCT_GATEWAY_LOCK_FILE, 'rc.routing_configure alarm'],
+    ],
+    /*
+     * Edit's and Rebind's kernel route deletes are core's /tmp/delete_route_<key>.todo hand-off, a file holding the
+     * network (wgct_write_route_todos())
+     */
+    'route_todo' => [
+        'path' => WGCT_CORE_ROUTING_SCRIPT,
+        'texts' => ['glob("/tmp/delete_route_*.todo")', 'trim(file_get_contents($filename))'],
+    ],
+    /* the filter hook tells a filter reload from a rules listing by this frame (wgclienttunnels_in_filter_reload()) */
+    'filter_frame' => ['path' => '/usr/local/etc/inc/filter.inc', 'texts' => ['function filter_configure_sync(']],
+    /* the prime and wgct.sh read dpinger's socket, and the monitor repair and wgct.sh its pid file, by path */
+    'dpinger_socket' => [
+        'path' => '/usr/local/etc/inc/plugins.inc.d/dpinger.inc',
+        'texts' => ['"/var/run/dpinger_{$name}.sock"', '"/var/run/dpinger_{$name}.pid"'],
+    ],
+    /*
+     * WGCT_PIN_PRIORITY's band 0 is the Rules page's first "Automatically generated rules" group, and the page files a
+     * row under the band its sort_order's first digit names
+     */
+    'rules_band' => [
+        'path' => '/usr/local/opnsense/mvc/app/views/OPNsense/Firewall/filter_rule.volt',
+        'texts' => ['{ idx: 0, uuid: "auto0"', 'Number(sortOrder.charAt(0))'],
+    ],
+    /* the tunnel list's plain() undoes core's escaping of an array reply, which leaves quotes as they are */
+    'reply_escape' => [
+        'path' => '/usr/local/opnsense/mvc/app/library/OPNsense/Mvc/Response.php',
+        'texts' => ['htmlspecialchars($result, ENT_NOQUOTES)'],
+    ],
+    /* wgct_core_read_routes() reads the static routes raw, keeping the Routes model's view of them: enabled by default */
+    'route_model' => [
+        'path' => '/usr/local/opnsense/mvc/app/models/OPNsense/Routes/Route.xml',
+        'texts' => [
+            '<mount>//staticroutes</mount>', '<route type="ArrayField">', '<network type="NetworkField">', '<gateway type=',
+            "<enabled type=\"BooleanField\">\n                <Default>1</Default>",
+        ],
+    ],
+];
+/*
+ * The core defects a workaround of the plugin waits for, each with the texts of core's file before the fix. A
+ * readable file that holds none of them may carry the fix: the note says the workaround is a backstop from then on.
+ */
+const WGCT_CORE_FIXES = [
+    /* the unfixed line, from the fix's own diff (opnsense/core 2db64b96c9, interfaces.inc), since 26.7.6 */
+    'no_dad' => [
+        'path' => '/usr/local/etc/inc/interfaces.inc',
+        'unfixed' => ['inet6 -accept_rtadv -no_dad description %s up'],
+        'note' => 'core may now carry the fix for opnsense/core#10951: the IPv6 monitor repair is a backstop',
+    ],
+    /*
+     * The two 26.7.7 lines that skip inet6 far gateways: the far gateway host route skipped for inet6, and
+     * system_interface_route()'s IPv4-only check, at its line start since the proposed fix (opnsense/core 060af78d31,
+     * branch far_ipv6) keeps "} elseif (!is_ipaddrv4($gateway)) {". A fix that lands in another form may keep one;
+     * the note says only what the file no longer holds.
+     */
+    'far_gw6' => [
+        'path' => '/usr/local/etc/inc/system.inc',
+        'unfixed' => ["if (!empty(\$gateway['fargw']) && \$gateway['ipprotocol'] != 'inet6') {", "\n    if (!is_ipaddrv4(\$gateway)) {"],
+        'note' => "core's system.inc no longer holds the lines that skip inet6 far-gateway host routes (opnsense/core#10578),"
+            . " so core may carry the fix: the plugin's IPv6 next-hop routes are a backstop",
+    ],
+];
+/* ModelRelationField's private option caches, which wgct_reset_field_caches() clears by reflection */
+const WGCT_RELATION_STATICS = ['internalCacheModelStruct', 'internalCacheOptionList'];
 /* as long as the replay action's `flock -w 120` waits */
 const WGCT_GATEWAY_LOCK_WAIT_MS = 120000;
 const WGCT_TIMEOUT = '/usr/bin/timeout';
@@ -307,18 +402,19 @@ function wgct_failure_footer(string $cmd, string $uuid): string {
  * Run a configd action and decode its JSON boundary once, for every API
  * caller (both controllers). A reply that does not decode to an array --
  * Backend::configdRun()/configdpRun() return '' on a timeout, a dropped
- * socket or a stripped 'Execute error' -- used to be reported as
- * "ok: false, errors: ['backend: ']", which reads as nothing happened even
- * though the action may still be running on the box; it is now a clear message naming the timeout used and telling
+ * socket or a stripped 'Execute error', which reads as nothing happened even
+ * though the action may still be running on the box; the reply is a message naming the timeout used and telling
  * the caller to reload and check the log instead. `errors`, when the action
  * supplied one, is flattened to a plain list (array_values()): the GUI
  * reads one shape regardless of whether the underlying
- * wgct_result() keyed it by request field or apply step.
+ * wgct_result() keyed it by request field or apply step. `status` is 'ok'
+ * when the action's `ok` is true and 'failed' otherwise, the no-reply
+ * failure included.
  *
  * @param string       $action
  * @param list<string> $params  uuids, gateway names and addresses only (configd shows argv in ps)
  * @param int          $timeout
- * @return array the action's decoded JSON result, or a failure of the same shape
+ * @return array the action's decoded JSON result with its status, or a failure of the same shape
  */
 function wgct_configd_json(string $action, array $params, int $timeout): array {
     $backend = new Backend();
@@ -327,7 +423,7 @@ function wgct_configd_json(string $action, array $params, int $timeout): array {
         : $backend->configdpRun($action, $params, false, $timeout));
     $data = json_decode($raw, true);
     if (!is_array($data)) {
-        return ['ok' => false, 'errors' => [
+        return ['status' => 'failed', 'ok' => false, 'errors' => [
             "no reply from the backend within {$timeout} s (timeout or configd error); "
             . 'the action may still be running — reload the list and check ' . WGCT_LOG_PAGE,
         ]];
@@ -335,7 +431,7 @@ function wgct_configd_json(string $action, array $params, int $timeout): array {
     if (isset($data['errors']) && is_array($data['errors'])) {
         $data['errors'] = array_values($data['errors']);
     }
-    return $data;
+    return ['status' => ($data['ok'] ?? false) === true ? 'ok' : 'failed'] + $data;
 }
 
 /**
@@ -541,16 +637,11 @@ function wgct_failed_steps(array $apply): array {
     $out = [];
     foreach ($apply as $step) {
         /*
-         * Success-only: wgct_step_summary() already maps a JSON reply to
-         * 'OK', and every step in the tunnel apply lists and every
-         * writer's 'steps' list answers exactly 'OK' on success -- so a step
-         * failed iff its summarized result is anything else. A fixed list of
-         * failure prefixes missed cases: inline.py's template.reload (the
-         * first apply step) can reply 'ERR', which the case-sensitive
-         * 'Error' prefix never matched, and script.py can surface an
-         * arbitrary str(e) that matches no prefix at all; Backend also
-         * returns '' (summarized as '(no output)') on a timeout, a dropped
-         * socket, or an 'Execute error' reply it strips before returning.
+         * Success-only: wgct_step_summary() maps a JSON reply to 'OK', and every step in the tunnel apply lists and
+         * every writer's 'steps' list answers exactly 'OK' on success, so a step failed iff its summarized result
+         * is anything else. No fixed list of failure prefixes covers it: template.reload can reply 'ERR',
+         * script.py can surface an arbitrary str(e), and Backend returns '' (summarized as '(no output)') on a
+         * timeout, a dropped socket or an 'Execute error' reply.
          */
         if ($step['result'] !== 'OK') {
             $out[] = $step['action'];
@@ -769,19 +860,14 @@ function wgct_routing_action(callable $commit, bool $dry): array {
         $pending = $e;
     }
     /*
-     * Always replay, once the lock is released, whether the commit refused
-     * to save, something above threw, or everything succeeded: routes.alarm
-     * (flock -n) silently drops any alarm raised while we held it, for our
-     * own gateways and for
-     * any other gateway whose status changed meanwhile regardless.
+     * Always replay, once the lock is released, whether the commit refused to save, something above threw, or
+     * everything succeeded: routes.alarm (flock -n) silently drops any alarm raised while we held it, for our own
+     * gateways and for any other gateway whose status changed meanwhile.
      *
-     * When $pending is set we are already unwinding a real failure, so a
-     * second failure out of wgct_after_apply() here must not silently
-     * replace it as the exception the caller sees: it is caught, logged
-     * (never with key material -- nothing replayed here carries one), and
-     * the original exception is what gets rethrown. With nothing pending,
-     * an after_apply failure is the only error there is, so it propagates
-     * exactly as it would from a direct call.
+     * When $pending is set we are already unwinding a real failure, so a second failure out of wgct_after_apply()
+     * must not replace it as the exception the caller sees: it is caught, logged (nothing replayed here carries
+     * key material) and the original is rethrown. With nothing pending, an after_apply failure is the only error
+     * and propagates as from a direct call.
      */
     if ($pending !== null) {
         try {
@@ -873,7 +959,7 @@ function wgct_filter_action(callable $commit): array {
  * @throws \InvalidArgumentException for an unknown mode, before anything runs
  */
 function wgct_apply_only(string $uuid, ?string $mode = null): array {
-    /* No apply while the 3.1.0 migration is pending, before any lock or step. */
+    /* No apply while a migration is pending, before any lock or step. */
     if (wgct_pending_refuses('apply', WGCT_ACTION_LOG_TAG)) {
         return wgct_result(['errors' => [WGCT_MIGRATION_PENDING], 'uuid' => $uuid, 'apply_mode' => $mode ?? '']);
     }
@@ -930,50 +1016,137 @@ function wgct_apply_only(string $uuid, ?string $mode = null): array {
 }
 
 /**
- * What no longer matches in core among the internals the plugin copies: replay_alarm and the
- * config-write order reuse core's routes.alarm lock and command.
+ * What no longer matches in core among the internals the plugin copies, and the fixes core may now carry for the
+ * defects a workaround waits for. Reads files only.
  *
- * @return list<string> one line per mismatch; empty when core matches
+ * @param array<string, array{path: string, texts: list<string>, section?: string}> $copies WGCT_CORE_COPIES
+ * @param array<string, array{path: string, unfixed: list<string>, note: string}>   $fixes  WGCT_CORE_FIXES
+ * @param string $relationClass the class whose WGCT_RELATION_STATICS the writer clears (item relation_cache)
+ * @return array{drift: list<string>, fixed: list<string>} one line per drifted item and per note, each starting
+ *                                                          "<item>: "; drift empty when core matches
  */
-function wgct_core_contract(string $actions = WGCT_CORE_ACTIONS_INTERFACE, string $routing = WGCT_CORE_ROUTING_SCRIPT): array {
-    $problems = [];
-    $text = is_readable($actions) ? (string)file_get_contents($actions) : null;
-    if ($text === null) {
-        $problems[] = "{$actions} cannot be read";
-    } elseif (!preg_match('/^\[routes\.alarm\]\s*$(.*?)(?=^\[|\z)/ms', $text, $section)
-        || !preg_match('/^command:(.*)$/m', $section[1], $command)) {
-        $problems[] = "{$actions} has no [routes.alarm] command";
-    } else {
-        if (!str_contains($command[1], WGCT_GATEWAY_LOCK_FILE)) {
-            $problems[] = '[routes.alarm] no longer takes ' . WGCT_GATEWAY_LOCK_FILE;
-        }
-        if (!str_contains($command[1], 'rc.routing_configure alarm')) {
-            $problems[] = '[routes.alarm] no longer runs rc.routing_configure alarm';
+function wgct_core_contract(array $copies = WGCT_CORE_COPIES, array $fixes = WGCT_CORE_FIXES,
+    string $relationClass = \OPNsense\Base\FieldTypes\ModelRelationField::class): array {
+    $drift = [];
+    foreach ($copies as $item => $copy) {
+        $problem = wgct_core_copy_drift($copy);
+        if ($problem !== null) {
+            $drift[] = "{$item}: {$problem}";
         }
     }
-    if (!is_file($routing)) {
-        $problems[] = "{$routing} is missing";
+    $relation = wgct_relation_cache_drift($relationClass);
+    if ($relation !== null) {
+        $drift[] = $relation;
     }
-    return $problems;
+    $fixed = [];
+    foreach ($fixes as $item => $fix) {
+        $text = wgct_core_file_text($fix['path']);
+        if ($text !== null && array_filter($fix['unfixed'], fn (string $u): bool => str_contains($text, $u)) === []) {
+            $fixed[] = "{$item}: {$fix['note']}";
+        }
+    }
+    return ['drift' => $drift, 'fixed' => $fixed];
 }
 
 /**
- * Log a contract result once per change: a drift when it first appears or changes, and the return
- * to a match. The last result is kept in $file.
+ * The relation_cache drift line: the class missing, or without WGCT_RELATION_STATICS as statics.
  *
- * @param list<string>                $problems wgct_core_contract()
- * @param callable(int, string): mixed $log     syslog-shaped
+ * @param string $relationClass ModelRelationField, or a stand-in in a test
+ * @return ?string "relation_cache: ..." when it drifted, null when the class has them
  */
-function wgct_core_contract_log(array $problems, string $file, callable $log): void {
-    $now = implode("\n", $problems);
+function wgct_relation_cache_drift(string $relationClass = \OPNsense\Base\FieldTypes\ModelRelationField::class): ?string {
+    if (!class_exists($relationClass)) {
+        return "relation_cache: {$relationClass} is missing";
+    }
+    $class = new \ReflectionClass($relationClass);
+    $gone = array_values(array_filter(WGCT_RELATION_STATICS,
+        fn (string $p): bool => !$class->hasProperty($p) || !$class->getProperty($p)->isStatic()));
+    return $gone === [] ? null : "relation_cache: {$relationClass} no longer has the statics " . implode(', ', $gone);
+}
+
+/**
+ * The refusal of a config write when core's relation class no longer has the caches the writer clears after each
+ * model it writes (wgct_reset_field_caches()); null when it has them.
+ *
+ * @param string $relationClass ModelRelationField, or a stand-in in a test
+ * @return ?string the refusal, naming the drift
+ */
+function wgct_relation_cache_refusal(string $relationClass = \OPNsense\Base\FieldTypes\ModelRelationField::class): ?string {
+    $drift = wgct_relation_cache_drift($relationClass);
+    return $drift === null ? null : "core changed an internal the plugin's config writes rely on ({$drift}), so nothing was"
+        . ' changed; install a plugin update that matches this core';
+}
+
+/**
+ * One copied internal's drift: its file unreadable, its section or command gone, or the texts it no longer holds.
+ *
+ * @param array{path: string, texts: list<string>, section?: string} $copy a WGCT_CORE_COPIES item
+ * @return ?string what drifted, null when core matches
+ */
+function wgct_core_copy_drift(array $copy): ?string {
+    $text = wgct_core_file_text($copy['path']);
+    if ($text === null) {
+        return "{$copy['path']} cannot be read";
+    }
+    $where = $copy['path'];
+    if (isset($copy['section'])) {
+        if (!preg_match('/^\[' . preg_quote($copy['section'], '/') . '\]\s*$(.*?)(?=^\[|\z)/ms', $text, $section)
+            || !preg_match('/^command:(.*)$/m', $section[1], $command)) {
+            return "{$copy['path']} has no [{$copy['section']}] command";
+        }
+        $text = $command[1];
+        $where = "the [{$copy['section']}] command in {$copy['path']}";
+    }
+    $gone = array_values(array_filter($copy['texts'], fn (string $s): bool => !str_contains($text, $s)));
+    /* a text spanning lines is shown on one */
+    return $gone === [] ? null : "{$where} no longer holds "
+        . implode(', ', array_map(fn (string $s): string => '"' . preg_replace('/\s+/', ' ', $s) . '"', $gone));
+}
+
+/**
+ * @return ?string a core file's text, null when it is not a readable file
+ */
+function wgct_core_file_text(string $path): ?string {
+    if (!is_file($path) || !is_readable($path)) {
+        return null;
+    }
+    $text = file_get_contents($path);
+    return $text === false ? null : $text;
+}
+
+/**
+ * Log a contract result once per change: the drift when it first appears or changes, and the return to a match, at
+ * warning and notice; each note once, at notice, when it appears and when it clears (a core downgrade that removes a
+ * fix). The last result is kept in $file as JSON; an older release kept its drift lines there, one per line.
+ *
+ * @param array{drift: list<string>, fixed: list<string>} $result wgct_core_contract()
+ * @param callable(int, string): mixed                    $log    syslog-shaped
+ */
+function wgct_core_contract_log(array $result, string $file, callable $log): void {
+    $now = (string)json_encode($result);
     $last = (string)wgct_read_state_file($file, WGCT_STATE_MAX_BYTES);
     if ($now === $last) {
         return;
     }
-    if ($problems !== []) {
-        $log(LOG_WARNING, '[wgct-contract] core changed what the plugin copies: ' . implode('; ', $problems));
-    } else {
-        $log(LOG_NOTICE, '[wgct-contract] core matches again');
+    $decoded = json_decode($last, true);
+    $before = is_array($decoded) && is_array($decoded['drift'] ?? null) && is_array($decoded['fixed'] ?? null)
+        ? ['drift' => $decoded['drift'], 'fixed' => $decoded['fixed']]
+        : ['drift' => $last === '' ? [] : explode("\n", $last), 'fixed' => []];
+    if ($result['drift'] !== $before['drift']) {
+        if ($result['drift'] !== []) {
+            $log(LOG_WARNING, '[wgct-contract] core changed what the plugin copies: ' . implode('; ', $result['drift']));
+        } else {
+            $log(LOG_NOTICE, '[wgct-contract] core matches again');
+        }
+    }
+    $added = array_values(array_diff($result['fixed'], $before['fixed']));
+    if ($added !== []) {
+        $log(LOG_NOTICE, '[wgct-contract] ' . implode('; ', $added));
+    }
+    $cleared = array_values(array_diff($before['fixed'], $result['fixed']));
+    if ($cleared !== []) {
+        $log(LOG_NOTICE, '[wgct-contract] no longer noted (core holds the unfixed text again, or its file cannot be read): '
+            . implode('; ', $cleared));
     }
     file_put_contents($file, $now);
 }
@@ -1151,42 +1324,135 @@ function wgct_apply_selftest(): int {
         wgct_failure_footer('list', '') === '' && wgct_failure_footer('status', '') === ''
         && wgct_failure_footer('reconcile', '') === '' && wgct_failure_footer('measure-mtu', '') === '');
 
+    /* the core contract, against this core's own files (the test VM's 26.7.7) and temporary copies of them */
     $dir = sys_get_temp_dir() . '/wgct-contract-' . getmypid();
     mkdir($dir);
-    $routing = "$dir/rc.routing_configure";
-    file_put_contents($routing, "#!/bin/sh\n");
-    $good = "[routes.configure]\ncommand:/usr/local/etc/rc.routing_configure\ntype:script\n\n"
-        . "[routes.alarm]\ncommand:/usr/local/bin/flock -n -E 0 -o /tmp/filter_reload_gateway.lock "
-        . "/usr/local/etc/rc.routing_configure alarm\nparameters: %s\ntype:script\n\n[routes.other]\ncommand:x\n";
-    file_put_contents("$dir/ok.conf", $good);
-    wgct_check($t, 'contract: core as of 26.7 matches', wgct_core_contract("$dir/ok.conf", $routing) === []);
-    file_put_contents("$dir/lock.conf", str_replace('/tmp/filter_reload_gateway.lock', '/var/run/gw.lock', $good));
-    $p = wgct_core_contract("$dir/lock.conf", $routing);
-    wgct_check($t, 'contract: a renamed gateway lock is named', count($p) === 1 && str_contains($p[0], WGCT_GATEWAY_LOCK_FILE));
-    file_put_contents("$dir/cmd.conf", str_replace('rc.routing_configure alarm', 'rc.routing_alarm', $good));
-    $p = wgct_core_contract("$dir/cmd.conf", $routing);
-    wgct_check($t, 'contract: a changed alarm command is named', count($p) === 1 && str_contains($p[0], 'rc.routing_configure alarm'));
-    file_put_contents("$dir/none.conf", "[routes.configure]\ncommand:x\n");
-    $p = wgct_core_contract("$dir/none.conf", $routing);
-    wgct_check($t, 'contract: a missing [routes.alarm] section is named', count($p) === 1 && str_contains($p[0], '[routes.alarm]'));
-    $p = wgct_core_contract("$dir/absent.conf", $routing);
-    wgct_check($t, 'contract: an unreadable actions file is a finding, not a warning', count($p) === 1 && str_contains($p[0], 'absent.conf'));
-    $p = wgct_core_contract("$dir/ok.conf", "$dir/gone");
-    wgct_check($t, 'contract: a missing rc.routing_configure is named', count($p) === 1 && str_contains($p[0], 'gone'));
+    wgct_check($t, 'contract: core as of 26.7.7 has no drift', (wgct_core_contract()['drift'] ?? null) === []);
+    /* $copy(path, search, replace): a copy of core's file at path with search replaced, by its path */
+    $copies = 0;
+    $copy = function (string $path, string $search, string $replace) use ($dir, &$copies): string {
+        $copies++;
+        $to = "{$dir}/copy.{$copies}";
+        file_put_contents($to, str_replace($search, $replace, (string)file_get_contents($path)));
+        return $to;
+    };
+    $drift = fn (array $copied): ?array => wgct_core_contract($copied, [])['drift'] ?? null;
+    $alarm = WGCT_CORE_COPIES['routes_alarm'];
+    $actions = (string)file_get_contents($alarm['path']);
+    /* the lock gone from [routes.alarm]'s command, yet still in the file: another section's command holds it */
+    $noLock = preg_replace('/^(\[routes\.alarm\]\s*\ncommand:[^\n]*?)' . preg_quote(WGCT_GATEWAY_LOCK_FILE, '/') . '/m',
+        '$1/var/run/other.lock', $actions, -1, $replaced) . "\n[routes.elsewhere]\ncommand:/usr/local/bin/flock " . WGCT_GATEWAY_LOCK_FILE . " true\n";
+    file_put_contents("{$dir}/nolock.conf", $noLock);
+    $lockDrift = $drift(['routes_alarm' => ['path' => "{$dir}/nolock.conf"] + $alarm]);
+    /* the section renamed: its command, lock and all, is still in the file */
+    $sectionDrift = $drift(['routes_alarm' => ['path' => $copy($alarm['path'], '[routes.alarm]', '[routes.alarm_retired]')] + $alarm]);
+    wgct_check($t, 'contract: routes_alarm drift is named when the lock or the command leaves its section',
+        $replaced === 1 && $lockDrift === ["routes_alarm: the [routes.alarm] command in {$dir}/nolock.conf no longer holds \"" . WGCT_GATEWAY_LOCK_FILE . '"']
+        && $sectionDrift !== null && count($sectionDrift) === 1 && str_starts_with($sectionDrift[0], 'routes_alarm: ')
+        && str_ends_with($sectionDrift[0], ' has no [routes.alarm] command'));
+    foreach (WGCT_CORE_COPIES as $item => $entry) {
+        $named = true;
+        foreach ($entry['texts'] as $text) {
+            $gone = $drift([$item => ['path' => $copy($entry['path'], $text, '')] + $entry]);
+            $named = $named && $gone !== null && count($gone) === 1 && str_starts_with($gone[0], "{$item}: ")
+                && str_ends_with($gone[0], ' no longer holds "' . preg_replace('/\s+/', ' ', $text) . '"');
+        }
+        wgct_check($t, "contract: {$item} drift is named when its text is gone", $named);
+    }
+    /* the page files a row under the band its sort_order's first digit names, so band 0 needs that rule as well */
+    $band = WGCT_CORE_COPIES['rules_band'];
+    $bandDrift = $drift(['rules_band' => ['path' => $copy($band['path'], 'sortOrder.charAt(0)', 'sortOrder.charAt(1)')] + $band]);
+    wgct_check($t, 'contract: rules_band drift is named when the band no longer comes from the first digit of sort_order',
+        $bandDrift === ["rules_band: {$dir}/copy.{$copies} no longer holds \"Number(sortOrder.charAt(0))\""]);
+    /* core changes a looser text would still match: each must be named */
+    $moved = [
+        'route_todo' => ['glob("/tmp/delete_route_*.todo")', 'glob("/var/run/delete_route_*.todo")'],
+        'dpinger_socket' => ['"/var/run/dpinger_{$name}.sock"', '"/var/run/dpinger/{$name}.sock"'],
+        'reply_escape' => ['htmlspecialchars($result, ENT_NOQUOTES)', 'htmlspecialchars($result, ENT_QUOTES)'],
+    ];
+    foreach ($moved as $item => [$from, $to]) {
+        $entry = WGCT_CORE_COPIES[$item];
+        $changed = $drift([$item => ['path' => $copy($entry['path'], $from, $to)] + $entry]);
+        wgct_check($t, "contract: {$item} drift is named when core changes the line the plugin relies on, though similar text stays",
+            $changed !== null && count($changed) === 1 && str_ends_with($changed[0], " no longer holds \"{$from}\""));
+    }
+    $routeModel = WGCT_CORE_COPIES['route_model'];
+    /* enabled's default turned 0 while another field gains a Default 1 */
+    $otherDefault = $copy($routeModel['path'], '<Default>1</Default>', '<Default>0</Default>');
+    file_put_contents($otherDefault, str_replace('<descr type="DescriptionField"/>',
+        "<descr type=\"DescriptionField\">\n                <Default>1</Default>\n            </descr>", (string)file_get_contents($otherDefault)));
+    $defaultDrift = $drift(['route_model' => ['path' => $otherDefault] + $routeModel]);
+    wgct_check($t, "contract: route_model drift is named when enabled's Default 1 goes, though another field has one",
+        str_contains((string)file_get_contents($otherDefault), '<Default>1</Default>') && $defaultDrift !== null && count($defaultDrift) === 1
+        && str_contains($defaultDrift[0], '<enabled type="BooleanField"> <Default>1</Default>'));
+    wgct_check($t, 'contract: an unreadable file is drift',
+        $drift([
+            'route_todo' => ['path' => "{$dir}/absent"] + WGCT_CORE_COPIES['route_todo'],
+            'routes_alarm' => ['path' => "{$dir}/absent.conf"] + $alarm,
+        ]) === ["route_todo: {$dir}/absent cannot be read", "routes_alarm: {$dir}/absent.conf cannot be read"]);
+    $bare = get_class(new class {
+    });
+    $half = get_class(new class {
+        private static array $internalCacheModelStruct = [];
+        public array $internalCacheOptionList = [];
+    });
+    $relation = fn (string $class): ?array => wgct_core_contract([], [], $class)['drift'] ?? null;
+    wgct_check($t, 'contract: a relation class without the statics is drift',
+        $relation($bare) === ["relation_cache: {$bare} no longer has the statics internalCacheModelStruct, internalCacheOptionList"]
+        && $relation($half) === ["relation_cache: {$half} no longer has the statics internalCacheOptionList"]
+        && $relation('OPNsense\\Base\\FieldTypes\\NoSuchRelationField') === ['relation_cache: OPNsense\\Base\\FieldTypes\\NoSuchRelationField is missing']);
+    $notes = fn (array $fixes): ?array => wgct_core_contract([], $fixes)['fixed'] ?? null;
+    $noDad = WGCT_CORE_FIXES['no_dad'];
+    wgct_check($t, 'contract: the no_dad note shows on a core with the fix', $notes(['no_dad' => $noDad]) === ['no_dad: ' . $noDad['note']]);
+    $unfixed = $copy($noDad['path'], 'inet6 -accept_rtadv description %s up', $noDad['unfixed'][0]);
+    wgct_check($t, 'contract: no note on a core without the fix',
+        str_contains((string)file_get_contents($unfixed), $noDad['unfixed'][0]) && $notes(['no_dad' => ['path' => $unfixed] + $noDad]) === []
+        && $notes(['no_dad' => ['path' => "{$dir}/absent"] + $noDad]) === []);
+    $farGw6 = WGCT_CORE_FIXES['far_gw6'];
+    wgct_check($t, 'contract: far_gw6 has no note on 26.7.7', $notes(['far_gw6' => $farGw6]) === []);
+    /* the two edits of the proposed fix's diff (opnsense/core 060af78d31) */
+    $fixedV6 = $copy($farGw6['path'], "\n    if (!is_ipaddrv4(\$gateway)) {",
+        "\n    if (is_ipaddrv6(\$gateway)) {\n        \$family = 'inet6';\n    } elseif (!is_ipaddrv4(\$gateway)) {");
+    file_put_contents($fixedV6, str_replace($farGw6['unfixed'][0], "if (!empty(\$gateway['fargw'])) {", (string)file_get_contents($fixedV6)));
+    wgct_check($t, 'contract: the far_gw6 note shows on a core with the proposed fix applied',
+        $notes(['far_gw6' => ['path' => $fixedV6] + $farGw6]) === ['far_gw6: ' . $farGw6['note']]);
 
     $logged = [];
     $log = function (int $prio, string $msg) use (&$logged): void {
-        $logged[] = $msg;
+        $logged[] = [$prio, $msg];
     };
     $state = "$dir/logged";
-    wgct_core_contract_log(['x changed'], $state, $log);
-    wgct_core_contract_log(['x changed'], $state, $log);
-    wgct_check($t, 'contract: a drift is logged once, not every reconcile', count($logged) === 1 && str_contains($logged[0], 'x changed'));
-    wgct_core_contract_log([], $state, $log);
-    wgct_core_contract_log([], $state, $log);
-    wgct_check($t, 'contract: the return to a match is logged once', count($logged) === 2 && str_contains($logged[1], 'matches again'));
-    wgct_core_contract_log([], "$dir/fresh", $log);
-    wgct_check($t, 'contract: a match on a fresh state logs nothing', count($logged) === 2);
+    $both = ['drift' => ['route_todo: x changed'], 'fixed' => ['no_dad: y fixed']];
+    wgct_core_contract_log($both, $state, $log);
+    wgct_core_contract_log($both, $state, $log);
+    wgct_check($t, 'contract: drift and notes are logged once each', $logged === [
+        [LOG_WARNING, '[wgct-contract] core changed what the plugin copies: route_todo: x changed'],
+        [LOG_NOTICE, '[wgct-contract] no_dad: y fixed'],
+    ]);
+    $noted = ['drift' => [], 'fixed' => ['no_dad: y fixed']];
+    wgct_core_contract_log($noted, $state, $log);
+    wgct_core_contract_log($noted, $state, $log);
+    wgct_check($t, 'contract: the return to a match is logged once, and a note already logged is not logged again',
+        count($logged) === 3 && $logged[2] === [LOG_NOTICE, '[wgct-contract] core matches again']);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/fresh", $log);
+    wgct_check($t, 'contract: a match on a fresh state logs nothing', count($logged) === 3);
+    /* an older release kept its drift lines, one per line */
+    file_put_contents("$dir/older", '[routes.alarm] no longer takes ' . WGCT_GATEWAY_LOCK_FILE);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log);
+    wgct_check($t, 'contract: a drift an older release recorded returns to a match once',
+        count($logged) === 4 && $logged[3] === [LOG_NOTICE, '[wgct-contract] core matches again']);
+    /* the notes: a second note logs only itself; a note that clears is logged once */
+    $notesState = "$dir/notes";
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['no_dad: y fixed']], $notesState, $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['no_dad: y fixed', 'far_gw6: z fixed']], $notesState, $log);
+    wgct_check($t, 'contract: a second note logs only itself, not the note already logged',
+        count($logged) === 6 && $logged[5] === [LOG_NOTICE, '[wgct-contract] far_gw6: z fixed']);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['far_gw6: z fixed']], $notesState, $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['far_gw6: z fixed']], $notesState, $log);
+    wgct_check($t, 'contract: a note that clears is logged once, at notice, naming it',
+        count($logged) === 7 && $logged[6][0] === LOG_NOTICE && str_starts_with($logged[6][1], '[wgct-contract] no longer noted')
+        && str_ends_with($logged[6][1], ': no_dad: y fixed'));
     array_map('unlink', glob("$dir/*"));
     rmdir($dir);
 

@@ -68,12 +68,19 @@ function wgclienttunnels_configure()
 
 /**
  * Re-add any missing IPv6 addresses and gateway host routes. Idempotent, so it
- * is safe to run on every event; only actual repairs are logged.
+ * is safe to run on every event; only actual repairs are logged. After a Stop
+ * from the service controls it adds nothing until the next start or Apply.
  *
- * Invoked directly rather than through configd: "monitor" fires from inside
- * actions that hold the gateway lock (routes.alarm, replay_alarm), and a
- * configd action started from here that waits on that lock would stall until
- * its timeout. configd itself is threaded and would not deadlock.
+ * Only the route set runs before this returns (wgct.sh hook): core's routing
+ * configure needs the routes in place before it continues. The default-route
+ * guard, freshness and the core-contract check follow in a queued reconcile,
+ * so no hook waits on them or on configd.
+ *
+ * Invoked directly rather than through configd. Core's alarm path
+ * ([routes.alarm], rc.routing_configure alarm) does not fire "monitor"; the
+ * hook runs under the gateway lock only when the plugin's own mirror, Create
+ * or Edit holds it around "interface routes configure", and a configd action
+ * started from here that waited on that lock would stall until its timeout.
  */
 function wgclienttunnels_configure_do($verbose = false)
 {
@@ -87,7 +94,7 @@ function wgclienttunnels_configure_do($verbose = false)
         flush();
     }
 
-    mwexecf('/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh reconcile');
+    mwexecf('/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh hook');
 
     if ($verbose) {
         echo "done.\n";
@@ -106,48 +113,35 @@ function wgclienttunnels_firewall($fw)
 }
 
 /**
- * The filter hook. Never throws into core.
+ * The filter hook. Never throws into core, and does nothing (no register, read,
+ * write or log) while the package removal's marker ($runDir/removing) exists.
  *
- * While the package removal's marker ($runDir/removing) exists,
- * nothing is registered, read, written or logged: removing the package is
- * the user's configured removal of the pins. Otherwise:
+ * 1. lib/render.php registers the rules it derives and records them as the
+ *    footprint (footprint.json) inside a filter reload.
+ * 2. When the library is missing, throws while loading or the render did not
+ *    register its rules, the footprint is read here with no library and its
+ *    rules are registered at this hook's pin priority (the band core's Rules
+ *    page groups, whatever priority the footprint recorded), plus the MSS anchor if
+ *    the render did not get that far. The anchor's contents are not reloaded:
+ *    pf keeps a named anchor's rules across a main ruleset load.
+ * 3. A warning names the reason once per distinct reason and outcome
+ *    (fallback.logged); fallback.json tells the views since when the footprint
+ *    is enforced. A later successful render removes both and logs the recovery.
+ *    With no usable footprint nothing is registered and the warning says so.
  *
- * 1. The normal path: lib/render.php registers the rules it derives, and
- *    records them as the footprint (footprint.json) inside a filter reload.
- * 2. When the library is missing or throws while loading, or the render
- *    could not register its rules, the footprint is read here, with no
- *    library: the pins the plugin last put in place.
- * 3. A usable footprint's rules are registered at this hook's pin priority
- *    (the band core's Rules page groups, whatever a footprint from another
- *    version recorded), with the MSS anchor when the render did not get as
- *    far as registering it. The anchor's contents are not reloaded: pf keeps
- *    a named anchor's rules across a main ruleset load.
- * 4. A warning names the reason, once per distinct reason and outcome
- *    (fallback.logged), and fallback.json tells the views since when the
- *    footprint is enforced. A later successful render removes both and logs
- *    the recovery once.
- * 5. With no usable footprint nothing is registered, as before the
- *    footprint existed, and the same warning says there is none.
+ * The library can be missing in whole or in part during a deploy swap, so this
+ * file requires only render.php, after an is_readable() check. Every require in
+ * render.php's own chain checks its file and throws a \RuntimeException naming
+ * it, which the try/catch below turns into the fallback.
  *
- * During a deploy swap window (plugin directories replaced while this file,
- * which core loads separately, stays) or after a failed deploy the library
- * can be missing in whole or in part, and a filter reload (a gateway alarm,
- * boot) must not die of it. What holds: this hook checks the one file it
- * requires, render.php, for readability; every require in render.php's own
- * chain (tunnels.php, addr.php, selftest.php) checks its file the same way and
- * throws a \RuntimeException naming it ("plugin library file <name>
- * missing"), which the try/catch below turns into the fallback with the
- * reason "hook failed: <message>". So no file of the chain is ever required
- * unchecked, whatever PHP does with a failed require.
+ * core also calls this hook to list rules for display (list_non_mvc_rules.php,
+ * firewall_rule_lookup.php): rules are registered either way so the Rules
+ * page shows what pf holds, while state files, the rendered record and the log
+ * change only inside a real filter reload.
  *
- * core also calls this hook only to list rules for display
- * (list_non_mvc_rules.php, firewall_rule_lookup.php). Rules are registered
- * either way, so the Rules page shows what pf holds; state files, the
- * rendered record and the log change only inside a real filter reload.
- *
- * The literals here (the pin priority 99999, the anchor wgclienttunnels_mss,
- * the state paths) copy render.php's constants because the library may be
- * the thing that is missing; wgct_render_selftest() holds them equal.
+ * The literals here (pin priority 99999, anchor wgclienttunnels_mss, state
+ * paths) copy render.php's constants because the library may be the thing
+ * that is missing; wgct_render_selftest() holds them equal.
  *
  * @param string                    $libDir    the plugin's lib/ directory
  * @param string                    $footprint the footprint file
@@ -426,15 +420,4 @@ function wgclienttunnels_forget_render(string $runDir): void
     if (is_file($rendered)) {
         unlink($rendered);
     }
-}
-
-function wgclienttunnels_xmlrpc_sync()
-{
-    $result = [];
-    $result[] = [
-        'description' => gettext('WireGuard Upstream Tunnels'),
-        'section' => 'OPNsense.WGClientTunnels',
-        'id' => 'wgclienttunnels',
-    ];
-    return $result;
 }

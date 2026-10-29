@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * The action writers. Each runs its
  * planner on a snapshot taken under Config::lock(), writes the models in the
@@ -36,11 +56,17 @@ require_once __DIR__ . '/mirror.php';
  * the retired scripts did). InterfaceField keeps the interface list --
  * filtered by `enable` for gateways -- in BaseListField's statics
  * (resetStaticOptions()). DeviceField is never involved: the assignment is
- * written into the tree, not through the NetworkInterface model.
+ * written into the tree, not through the NetworkInterface model. Throws a
+ * RuntimeException naming the drift when ModelRelationField lacks those
+ * statics; wgct_action_commit() refuses before any write in that case.
  */
 function wgct_reset_field_caches(): void {
+    $refusal = wgct_relation_cache_refusal();
+    if ($refusal !== null) {
+        throw new \RuntimeException($refusal);
+    }
     $relation = new \ReflectionClass(\OPNsense\Base\FieldTypes\ModelRelationField::class);
-    foreach (['internalCacheModelStruct', 'internalCacheOptionList'] as $property) {
+    foreach (WGCT_RELATION_STATICS as $property) {
         $relation->getProperty($property)->setValue(null, []);
     }
     (new \OPNsense\Base\FieldTypes\InterfaceField())->resetStaticOptions();
@@ -73,32 +99,32 @@ function wgct_action_snapshot(): array {
     $ports = [];
     $instancePubkeys = [];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $server) {
-        $ports[(string)$uuid] = (string)$server->port;
-        $instancePubkeys[(string)$uuid] = (string)$server->pubkey;
+        $ports[(string)$uuid] = $server->port->getValue();
+        $instancePubkeys[(string)$uuid] = $server->pubkey->getValue();
     }
     $peerFields = [];
     foreach ((new \OPNsense\Wireguard\Client())->clients->client->iterateItems() as $uuid => $client) {
-        $peerFields[(string)$uuid] = ['tunneladdress' => (string)$client->tunneladdress, 'pubkey' => (string)$client->pubkey];
+        $peerFields[(string)$uuid] = ['tunneladdress' => $client->tunneladdress->getValue(), 'pubkey' => $client->pubkey->getValue()];
     }
     $gatewayFields = [];
     foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $gw) {
         $row = [];
         foreach (WGCT_GATEWAY_COPY_FIELDS as $field) {
-            $row[$field] = (string)$gw->{$field};
+            $row[$field] = $gw->{$field}->getValue();
         }
-        $gatewayFields[(string)$gw->name] = $row;
+        $gatewayFields[$gw->name->getValue()] = $row;
     }
     $snat = [];
     foreach ((new \OPNsense\Firewall\Filter())->snatrules->rule->iterateItems() as $uuid => $rule) {
         $fields = [];
         foreach ($rule->iterateItems() as $field => $node) {
             if (!in_array((string)$field, WGCT_SNAT_SKIP_FIELDS, true) && !$node->getInternalIsVolatile()) {
-                $fields[(string)$field] = (string)$node;
+                $fields[(string)$field] = $node->getValue();
             }
         }
         $snat[(string)$uuid] = [
-            'interface' => (string)$rule->interface, 'ipprotocol' => (string)$rule->ipprotocol,
-            'enabled' => (string)$rule->enabled, 'sequence' => (string)$rule->sequence, 'fields' => $fields,
+            'interface' => $rule->interface->getValue(), 'ipprotocol' => $rule->ipprotocol->getValue(),
+            'enabled' => $rule->enabled->getValue(), 'sequence' => $rule->sequence->getValue(), 'fields' => $fields,
         ];
     }
     $groups = [];
@@ -153,22 +179,23 @@ function wgct_local6_files(array $devices, callable $read): array {
 }
 
 /**
- * The firewall's own IPv6 networks, for Create's and Edit's IPv6 monitor check: configd's ifconfig
- * dump (`interface list ifconfig`, which runs `pluginctl -D`) and the delegated prefixes dhcp6c records for the
- * devices core knows (wgct_local6_files()). Called only from the prepare steps, which hold no lock:
- * never inside Config::lock(), never from the mirror, reconcile or the filter hook.
+ * The firewall's own addresses: configd's ifconfig dump (`interface list ifconfig`, which runs `pluginctl -D`) and
+ * the delegated prefixes dhcp6c records for the devices core knows (wgct_local6_files()). The one read behind the
+ * IPv6 monitor check's networks (wgct_local6_parse()) and the address-scheme check's (wgct_scheme_clash_networks()),
+ * both taken from it with wgct_snapshot_own_networks(). Called only from Create's and Edit's prepare steps, which
+ * hold no lock: never inside Config::lock(), never from the mirror, reconcile or the filter hook.
  *
- * @return list<string>|null null when configd's dump cannot be read or is empty (a live firewall always has lo0);
- *                            the check then fails closed
+ * @return array{ifconfig: array<mixed>, prefix_files: list<string>}|null null when configd's dump cannot be read
+ *         or is empty (a live firewall always has lo0); the checks then fail closed
  */
-function wgct_local6_snapshot(): ?array {
+function wgct_own_addresses_read(): ?array {
     $dump = json_decode((string)(new Backend())->configdRun('interface list ifconfig'), true);
     if (!is_array($dump) || $dump === []) {
         return null;
     }
     $devices = array_column(wgct_core_snapshot()['interfaces'], 'if');
     $files = array_values(wgct_local6_files(array_filter($devices, fn ($dev): bool => $dev !== ''), 'wgct_read_state_file'));
-    return wgct_local6_parse($dump, $files);
+    return ['ifconfig' => $dump, 'prefix_files' => $files];
 }
 
 /**
@@ -176,17 +203,25 @@ function wgct_local6_snapshot(): ?array {
  * 'result' => wgct_result()]. Unless it saved, config is re-read. Every
  * action writer (Create, Edit, Remove, Rebind, Adopt, the sentinel, a dry run
  * of each included) comes through here, so here, under the lock, an action
- * refuses while the 3.1.0 migration is pending: the engine model
- * it writes does not hold the managed list and the holds yet.
+ * refuses while a migration is pending: the engine model
+ * it writes does not hold the managed list and the holds as this version reads them yet.
+ * It also refuses while core's ModelRelationField lacks the caches the writes
+ * clear (the contract's relation_cache drift), before anything is changed.
  *
  * @param callable(): array $mutate
- * @param string            $description the config-history text of the save
+ * @param string            $description   the config-history text of the save
+ * @param string            $relationClass the class whose caches the writes clear (wgct_relation_cache_refusal())
  * @return array wgct_result()
  */
-function wgct_action_commit(callable $mutate, string $description): array {
-    $guarded = function () use ($mutate): array {
+function wgct_action_commit(callable $mutate, string $description,
+    string $relationClass = \OPNsense\Base\FieldTypes\ModelRelationField::class): array {
+    $guarded = function () use ($mutate, $relationClass): array {
         if (wgct_pending_refuses('action', WGCT_ACTION_LOG_TAG)) {
             return ['save' => false, 'result' => wgct_result(['errors' => ['general' => WGCT_MIGRATION_PENDING]])];
+        }
+        $refusal = wgct_relation_cache_refusal($relationClass);
+        if ($refusal !== null) {
+            return ['save' => false, 'result' => wgct_result(['errors' => ['general' => $refusal]])];
         }
         return $mutate();
     };
@@ -209,11 +244,11 @@ function wgct_action_commit(callable $mutate, string $description): array {
  *
  * @param array $raw         the API form or the CLI JSON (see wgct_create_request())
  * @param bool  $mtuRequired the API requires an MTU; the CLI measures one
- * @return array{errors: array<string, string>, req: array, public: array, secret: array{privkey: string, psk: string, pubkey: string}, notes: list<string>, local6: list<string>|null}
+ * @return array{errors: array<string, string>, req: array, public: array, secret: array{privkey: string, psk: string, pubkey: string}, notes: list<string>, own_addresses: array{ifconfig: array<mixed>, prefix_files: list<string>}|null}
  */
 function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequired): array {
     $in = wgct_create_request($raw, $mtuRequired);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => [], 'local6' => null];
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'public' => [], 'secret' => ['privkey' => '', 'psk' => '', 'pubkey' => ''], 'notes' => [], 'own_addresses' => null];
     if ($in['text'] !== '') {
         $conf = wgct_parse_wgquick($in['text']);
         if ($conf['errors'] !== []) {
@@ -241,10 +276,8 @@ function wgct_create_prepare(#[\SensitiveParameter] array $raw, bool $mtuRequire
         $prep['req']['mtu'] = $m['mtu'];
         $prep['notes'][] = "mtu {$m['mtu']}: {$m['why']}";
     }
-    /* the firewall's own IPv6 networks, read here outside any lock, only when there is a monitor to check */
-    if ($prep['req']['monitor6'] !== '') {
-        $prep['local6'] = wgct_local6_snapshot();
-    }
+    /* the firewall's own addresses, read here outside any lock: every Create checks its address scheme against them */
+    $prep['own_addresses'] = wgct_own_addresses_read();
     return $prep;
 }
 
@@ -334,9 +367,7 @@ function wgct_write_create(array $plan, #[\SensitiveParameter] array $secret): a
     wgct_reset_field_caches();
 
     $engine = new \OPNsense\WGClientTunnels\Engine();
-    $managed = wgct_split_csv($engine->managed->getValue());
-    $managed[] = $uuid;
-    $engine->managed = implode(',', $managed);
+    $engine->setManaged(array_merge($engine->managedList(), [$uuid]));
     wgct_add_start_holds($engine, $plan['holds'], $added);
     $errors = wgct_model_errors($engine, 'plugin');
     if ($errors !== []) {
@@ -367,8 +398,7 @@ function wgct_add_start_holds(\OPNsense\WGClientTunnels\Engine $engine, array $h
  */
 function wgct_create_commit(#[\SensitiveParameter] array $prep, bool $dry): array {
     $result = wgct_action_commit(function () use ($prep, $dry): array {
-        $snap = wgct_action_snapshot();
-        $snap['local6'] = $prep['local6'];
+        $snap = wgct_snapshot_own_networks(wgct_action_snapshot(), $prep['own_addresses']);
         $plan = wgct_plan_create($snap, $prep['req'], $prep['public']);
         $changes = array_merge($prep['notes'], $plan['changes']);
         if ($plan['errors'] !== []) {
@@ -443,7 +473,7 @@ function wgct_adopt_commit(string $uuid, bool $dry): array {
             return ['save' => false, 'result' => wgct_result(['errors' => $plan['errors'], 'dry' => $dry, 'uuid' => $uuid])];
         }
         $engine = new \OPNsense\WGClientTunnels\Engine();
-        $engine->managed = implode(',', $plan['managed']);
+        $engine->setManaged($plan['managed']);
         $errors = wgct_model_errors($engine, 'plugin');
         if ($errors !== []) {
             return ['save' => false, 'result' => wgct_result(['errors' => $errors, 'dry' => $dry, 'uuid' => $uuid])];
@@ -510,7 +540,7 @@ function wgct_remove_commit(string $uuid, bool $dry): array {
             $filter->snatrules->rule->del($ruleUuid);
         }
         $engine = new \OPNsense\WGClientTunnels\Engine();
-        $engine->managed = implode(',', $plan['managed']);
+        $engine->setManaged($plan['managed']);
         foreach (wgct_hold_items_of($engine->holdRows(), $plan['gateways']) as $item) {
             $engine->holds->del($item);
         }
@@ -556,7 +586,7 @@ function wgct_sentinel_commit(bool $dry): array {
         $loopbacks = new \OPNsense\Interfaces\Loopback();
         $loopback = null;
         foreach ($loopbacks->loopback->iterateItems() as $node) {
-            if ((string)$node->description === WGCT_SENTINEL_LOOPBACK_DESCR) {
+            if ($node->description->isEqual(WGCT_SENTINEL_LOOPBACK_DESCR)) {
                 $loopback = $node;
             }
         }
@@ -567,7 +597,7 @@ function wgct_sentinel_commit(bool $dry): array {
             $changes[] = 'loopback device (' . WGCT_SENTINEL_LOOPBACK_DESCR . ')';
         }
         $errors = wgct_model_errors($loopbacks, 'loopback');
-        $device = 'lo' . (string)$loopback->deviceId;
+        $device = 'lo' . $loopback->deviceId->getValue();
         $interfaces = [];
         foreach ($root->interfaces->children() as $key => $if) {
             $interfaces[(string)$key] = [
@@ -580,9 +610,9 @@ function wgct_sentinel_commit(bool $dry): array {
             $row = [];
             foreach (['disabled', 'name', 'descr', 'interface', 'ipprotocol', 'gateway', 'defaultgw', 'monitor_disable',
                       'monitor_killstates', 'force_down', 'priority'] as $field) {
-                $row[$field] = (string)$gw->{$field};
+                $row[$field] = $gw->{$field}->getValue();
             }
-            $gateways[(string)$gw->name] = $row;
+            $gateways[$gw->name->getValue()] = $row;
         }
         $plan = wgct_plan_sentinel($interfaces, $gateways, $device, $loopbackAdded);
         $changes = array_merge($changes, $plan['changes']);
@@ -610,7 +640,7 @@ function wgct_sentinel_commit(bool $dry): array {
         $model = new \OPNsense\Routing\Gateways();
         $byName = [];
         foreach ($model->gateway_item->iterateItems() as $gw) {
-            $byName[(string)$gw->name] = $gw;
+            $byName[$gw->name->getValue()] = $gw;
         }
         foreach ($plan['gateways'] as $name => $g) {
             if ($g['action'] === 'add') {
@@ -639,13 +669,15 @@ function wgct_sentinel_commit(bool $dry): array {
  *
  * @param array  $raw  the API form's edit.* or the CLI's JSON
  * @param string $uuid the managed instance
- * @return array{errors: array<string, string>, req: array, swap: ?array{public: array, own_pubkey: string}, secret: array{privkey: string, psk: string}, notes: list<string>, local6: ?array}
+ * @return array{errors: array<string, string>, req: array, swap: ?array{public: array, own_pubkey: string}, secret: array{privkey: string, psk: string}, notes: list<string>, own_addresses: array{ifconfig: array<mixed>, prefix_files: list<string>}|null}
  */
 function wgct_edit_prepare(#[\SensitiveParameter] array $raw, string $uuid): array {
     $in = wgct_edit_request($raw, $uuid);
-    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => [], 'local6' => null];
-    if ($prep['errors'] === [] && $prep['req']['monitor6'] !== null) {
-        $prep['local6'] = wgct_local6_snapshot();
+    $prep = ['errors' => $in['errors'], 'req' => $in['req'], 'swap' => null, 'secret' => ['privkey' => '', 'psk' => ''], 'notes' => [], 'own_addresses' => null];
+    /* the firewall's own addresses, only when there may be something to check: a new IPv6 monitor, or IPv6 requested
+     * on (whether that turns IPv6 on needs the snapshot, which prepare does not take; the planner checks only then) */
+    if ($prep['errors'] === [] && ($prep['req']['monitor6'] !== null || $prep['req']['ipv6'] === true)) {
+        $prep['own_addresses'] = wgct_own_addresses_read();
     }
     if (trim($in['text']) === '') {
         return $prep;
@@ -684,7 +716,7 @@ function wgct_edit_swap_state(array $snap, #[\SensitiveParameter] array $prep): 
     $same = false;
     if (count($peers) === 1) {
         $node = (new \OPNsense\Wireguard\Client())->getNodeByReference('clients.client.' . $peers[0]);
-        $same = $node !== null && hash_equals((string)$node->psk, $prep['secret']['psk']);
+        $same = $node !== null && hash_equals($node->psk->getValue(), $prep['secret']['psk']);
     }
     return ['public' => $prep['swap']['public'], 'own_pubkey' => $prep['swap']['own_pubkey'], 'psk_same' => $same];
 }
@@ -734,7 +766,7 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
         $gateways = new \OPNsense\Routing\Gateways();
         $updated = [];
         foreach ($gateways->gateway_item->iterateItems() as $node) {
-            $name = (string)$node->name;
+            $name = $node->name->getValue();
             if (isset($g['update'][$name])) {
                 $node->setNodes($g['update'][$name]);
                 $updated[] = $name;
@@ -829,8 +861,7 @@ function wgct_write_edit(array $plan, #[\SensitiveParameter] array $secret): arr
 function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $gatewayHeld): array {
     $uuid = $prep['req']['uuid'];
     $result = wgct_action_commit(function () use ($prep, $dry, $gatewayHeld, $uuid): array {
-        $snap = wgct_action_snapshot();
-        $snap['local6'] = $prep['local6'];
+        $snap = wgct_snapshot_own_networks(wgct_action_snapshot(), $prep['own_addresses']);
         $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
         $fail = fn (array $errors): array => ['save' => false, 'result' => wgct_result([
             'errors' => $errors, 'changes' => $plan['changes'], 'dry' => $dry, 'uuid' => $uuid,
@@ -870,8 +901,7 @@ function wgct_edit_commit(#[\SensitiveParameter] array $prep, bool $dry, bool $g
  * @return string none, filter, routes or tunnel
  */
 function wgct_edit_mode_unlocked(#[\SensitiveParameter] array $prep): string {
-    $snap = wgct_action_snapshot();
-    $snap['local6'] = $prep['local6'];
+    $snap = wgct_snapshot_own_networks(wgct_action_snapshot(), $prep['own_addresses']);
     $plan = wgct_plan_edit($snap, wgct_refs_snapshot($snap['core']['groups']), $prep['req'], wgct_edit_swap_state($snap, $prep));
     return $plan['errors'] === [] ? $plan['mode'] : 'none';
 }
@@ -897,7 +927,8 @@ function wgct_edit_action(#[\SensitiveParameter] array $prep, bool $dry): array 
 
 /**
  * Self-tests for the engine model's writers: the 3.0.0 -> 3.1.0 migration's planner (M3_1_0::plan(), loaded from
- * beside the Engine model, as core's migration runner finds it) and Remove's choice of hold rows. Pure.
+ * beside the Engine model, as core's migration runner finds it) and Remove's choice of hold rows, both pure, and the
+ * managed rows' setter and reader on an unsaved model.
  *
  * @return int exit code, 0 when every case passed
  */
@@ -949,7 +980,7 @@ function wgct_engine_selftest(): int {
     wgct_check($t, 'migrate: a gateway of a tunnel that left the managed list => dropped',
         $plan([$iUpper], [$gA], $gateways, $ipv4, [], true, true, $boot) === ['rows' => [], 'dropped' => [$gA], 'manual' => []]);
 
-    /* (p6) the IPv6 gateways pass 2 governs: 3.7_1's pass 2 rewrote their force_down every tick */
+    /* (p6) the IPv6 gateways pass 2 governs: it rewrote their force_down every tick */
     $gA6 = '2222222a-2222-4222-8222-22222222222a';
     $gD6 = '2222222d-2222-4222-8222-22222222222d';
     $gateways6 = $gateways + [$gA6 => true, $gD6 => false];
@@ -1031,5 +1062,98 @@ function wgct_engine_selftest(): int {
     ];
     wgct_check($t, 'remove: every hold row of the removed gateways goes, duplicates included, and no other row',
         wgct_hold_items_of($rows, [$gA, $gD]) === ['r1', 'r3'] && wgct_hold_items_of($rows, []) === []);
+
+    /* an unsaved model, set twice: the second set replaces the first rows rather than adding to them */
+    wgct_check($t, 'engine: setManaged keeps the order and managedList reads it back',
+        (function () use ($iA, $iUpper, $iD): bool {
+            try {
+                $engine = new \OPNsense\WGClientTunnels\Engine();
+                $engine->setManaged([$iD, $iA]);
+                $engine->setManaged([$iA, $iUpper, $iD]);
+                return $engine->managedList() === [$iA, $iUpper, $iD];
+            } catch (\Throwable $e) {
+                printf("       threw %s: %s\n", get_class($e), $e->getMessage());
+                return false;
+            }
+        })());
+
+    /* a row whose instance or gateway stays keeps its item uuid, so Config History shows only the rows that changed */
+    $onModel = function (callable $case): bool {
+        try {
+            return $case(new \OPNsense\WGClientTunnels\Engine());
+        } catch (\Throwable $e) {
+            printf("       threw %s: %s\n", get_class($e), $e->getMessage());
+            return false;
+        }
+    };
+    $tunnelItems = function (\OPNsense\WGClientTunnels\Engine $engine): array {
+        $items = [];
+        foreach ($engine->tunnels->iterateItems() as $item => $node) {
+            $items[] = [(string)$item, $node->instance->getValue()];
+        }
+        return $items;
+    };
+    wgct_check($t, 'engine: setManaged with one tunnel added keeps the other rows\' uuids and order',
+        $onModel(function ($engine) use ($tunnelItems, $iA, $iUpper, $iD): bool {
+            $engine->setManaged([$iA, $iUpper]);
+            [$a, $u] = $tunnelItems($engine);
+            $engine->setManaged([$iA, $iUpper, $iD]);
+            $after = $tunnelItems($engine);
+            return count($after) === 3 && $after[0] === $a && $after[1] === $u && $after[2][1] === $iD
+                && !in_array($after[2][0], [$a[0], $u[0]], true);
+        }));
+    wgct_check($t, 'engine: setManaged with one tunnel removed keeps the rest\'s uuids and order',
+        $onModel(function ($engine) use ($tunnelItems, $iA, $iUpper, $iD): bool {
+            $engine->setManaged([$iA, $iUpper, $iD]);
+            [$a, , $d] = $tunnelItems($engine);
+            $engine->setManaged([$iA, $iD]);
+            return $tunnelItems($engine) === [$a, $d];
+        }));
+    wgct_check($t, 'engine: setManaged in another order keeps each row\'s uuid, in the new order',
+        $onModel(function ($engine) use ($tunnelItems, $iA, $iUpper, $iD): bool {
+            $engine->setManaged([$iA, $iUpper, $iD]);
+            [$a, $u, $d] = $tunnelItems($engine);
+            $engine->setManaged([$iD, $iA, $iUpper]);
+            return $tunnelItems($engine) === [$d, $a, $u];
+        }));
+    $hold = fn (string $gateway, string $hex): array => ['gateway' => $gateway, 'boot' => $hex, 'underlay' => 'WAN_B', 'taken_at' => 1760000000];
+    wgct_check($t, 'engine: setHolds with one hold added keeps the other rows\' uuids and order, a re-stamped hold its own',
+        $onModel(function ($engine) use ($hold, $gA, $gD, $gX, $boot): bool {
+            $engine->setHolds([$hold($gA, $boot), $hold($gD, 'ffff')]);
+            $before = array_keys($engine->holdRows());
+            $engine->setHolds([$hold($gA, $boot), $hold($gD, $boot), $hold($gX, $boot)]);
+            $after = $engine->holdRows();
+            $items = array_keys($after);
+            return count($items) === 3 && $items[0] === $before[0] && $items[1] === $before[1]
+                && !in_array($items[2], $before, true)
+                && array_values($after) === [$hold($gA, $boot), $hold($gD, $boot), $hold($gX, $boot)];
+        }));
+    wgct_check($t, 'engine: setHolds with one hold removed keeps the rest\'s uuids and order',
+        $onModel(function ($engine) use ($hold, $gA, $gD, $gX, $boot): bool {
+            $engine->setHolds([$hold($gA, $boot), $hold($gD, $boot), $hold($gX, $boot)]);
+            $before = $engine->holdRows();
+            $engine->setHolds([$hold($gA, $boot), $hold($gX, $boot)]);
+            $items = array_keys($before);
+            return $engine->holdRows() === [$items[0] => $before[$items[0]], $items[2] => $before[$items[2]]];
+        }));
+    wgct_check($t, 'engine: setHolds in another order keeps each row\'s uuid, in the new order',
+        $onModel(function ($engine) use ($hold, $gA, $gD, $gX, $boot): bool {
+            $engine->setHolds([$hold($gA, $boot), $hold($gD, $boot), $hold($gX, $boot)]);
+            $before = $engine->holdRows();
+            $items = array_keys($before);
+            $engine->setHolds([$hold($gX, $boot), $hold($gA, $boot), $hold($gD, $boot)]);
+            return $engine->holdRows() === [$items[2] => $before[$items[2]], $items[0] => $before[$items[0]],
+                $items[1] => $before[$items[1]]];
+        }));
+    /* a config write needs ModelRelationField's caches cleared: without them it refuses before it changes anything */
+    $bareRelation = get_class(new class {
+    });
+    $mutated = false;
+    $refused = wgct_action_commit(function () use (&$mutated): array {
+        $mutated = true;
+        return ['save' => false, 'result' => wgct_result(['ok' => true])];
+    }, 'selftest', $bareRelation);
+    wgct_check($t, 'writer: an action refuses, naming the drift, when core\'s relation class lacks the caches it clears',
+        !$mutated && $refused['ok'] === false && str_contains(implode(' ', $refused['errors']), "relation_cache: {$bareRelation} no longer has the statics"));
     return wgct_tally_report('engine', $t);
 }

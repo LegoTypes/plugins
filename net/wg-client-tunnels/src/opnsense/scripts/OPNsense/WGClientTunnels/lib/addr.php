@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Address helpers for derivation, the planners and the views. Every endpoint, route network and peer server
  * address the plugin compares goes through these, so a value typed by hand
@@ -29,6 +49,23 @@ function wgct_canon_ip(string $ip): ?string {
 }
 
 /**
+ * @return string|null the canonical text of an IP address with an IPv6 zone kept as given (`FE80::0001%wg1` gives
+ *                     `fe80::1%wg1`), null when the part before `%` is no IP or the zone is empty or not a device name
+ */
+function wgct_canon_ip_zoned(string $ip): ?string {
+    $at = strpos($ip, '%');
+    if ($at === false) {
+        return wgct_canon_ip($ip);
+    }
+    $bare = wgct_canon_ip(substr($ip, 0, $at));
+    $zone = substr($ip, $at + 1);
+    if ($bare === null || wgct_ip_family($bare) !== 'inet6' || preg_match('/^[A-Za-z0-9_.]+$/D', $zone) !== 1) {
+        return null;
+    }
+    return $bare . '%' . $zone;
+}
+
+/**
  * @return string|null 'inet', 'inet6', or null when $ip is not an IP address
  */
 function wgct_ip_family(string $ip): ?string {
@@ -36,6 +73,15 @@ function wgct_ip_family(string $ip): ?string {
         return 'inet';
     }
     return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? 'inet6' : null;
+}
+
+/**
+ * @return string|null 'inet' or 'inet6' by the part of $cidr before the first `/` (the whole text when it has none),
+ *                     null when that part is not an IP address
+ */
+function wgct_cidr_family(string $cidr): ?string {
+    $slash = strpos($cidr, '/');
+    return wgct_ip_family($slash === false ? $cidr : substr($cidr, 0, $slash));
 }
 
 /**
@@ -124,6 +170,26 @@ function wgct_in_network(string $ip, string $network): bool {
     return (ord($a[$whole]) & $mask) === (ord($n[$whole]) & $mask);
 }
 
+/**
+ * @return string|null the network of "address/bits" with its host bits cleared, canonical (`2001:DB8:1::5/64` gives
+ *                     `2001:db8:1::/64`), null when the address is no IP or the prefix length is missing or out of range
+ */
+function wgct_cidr_network(string $cidr): ?string {
+    [$ip, $bits] = array_pad(explode('/', $cidr, 2), 2, '');
+    $bin = wgct_canon_ip($ip) !== null ? inet_pton($ip) : false;
+    if ($bin === false || !ctype_digit($bits) || (int)$bits > strlen($bin) * 8) {
+        return null;
+    }
+    $keep = (int)$bits;
+    $net = '';
+    foreach (str_split($bin) as $i => $byte) {
+        $own = max(0, min(8, $keep - 8 * $i));
+        $net .= chr(ord($byte) & ((0xff << (8 - $own)) & 0xff));
+    }
+    $text = inet_ntop($net);
+    return $text === false ? null : "{$text}/{$keep}";
+}
+
 function wgct_addr_selftest(): int {
     $t = ['fail' => 0, 'total' => 0];
     wgct_check($t, 'addr: canonical IPv4 is unchanged; IPv6 is compressed and lower case',
@@ -160,5 +226,17 @@ function wgct_addr_selftest(): int {
         && wgct_in_network('2001:db8:2:1ff::5', '2001:db8:2:100::/56') && wgct_in_network('2001:db8::10', '2001:db8::10/128')
         && wgct_in_network('198.51.100.7', '198.51.100.0/24') && !wgct_in_network('198.51.100.7', '2001:db8::/32')
         && !wgct_in_network('2001:db8::1', '2001:db8::/129') && !wgct_in_network('2001:db8::1', '2001:db8::') && !wgct_in_network('x', '::/0'));
+    wgct_check($t, 'addr: a zoned address keeps its zone, canonical',
+        wgct_canon_ip_zoned('FE80::0001%wg1') === 'fe80::1%wg1' && wgct_canon_ip_zoned('2001:DB8::0050') === '2001:db8::50'
+        && wgct_canon_ip_zoned('192.0.2.1') === '192.0.2.1' && wgct_canon_ip_zoned('x%wg1') === null);
+    wgct_check($t, 'addr: family of a network from parsing',
+        wgct_cidr_family('2001:DB8::0050/128') === 'inet6' && wgct_cidr_family('2001:db8::50') === 'inet6'
+        && wgct_cidr_family('192.0.2.2/32') === 'inet' && wgct_cidr_family('::ffff:192.0.2.2/128') === 'inet6'
+        && wgct_cidr_family('host:name/1') === null && wgct_cidr_family('') === null);
+    wgct_check($t, 'addr: the network of an address and prefix length, host bits cleared, canonical',
+        wgct_cidr_network('192.0.2.5/24') === '192.0.2.0/24' && wgct_cidr_network('2001:DB8:1::5/64') === '2001:db8:1::/64'
+        && wgct_cidr_network('2001:db8:2:1ff::5/56') === '2001:db8:2:100::/56' && wgct_cidr_network('192.0.2.77/26') === '192.0.2.64/26' && wgct_cidr_network('198.51.100.7/32') === '198.51.100.7/32'
+        && wgct_cidr_network('198.51.100.7/0') === '0.0.0.0/0' && wgct_cidr_network('198.51.100.7/33') === null
+        && wgct_cidr_network('198.51.100.7') === null && wgct_cidr_network('fe80::1%wg1/64') === null && wgct_cidr_network('x/8') === null);
     return wgct_tally_report('addr', $t);
 }

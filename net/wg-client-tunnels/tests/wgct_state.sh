@@ -2,7 +2,27 @@
 
 # Copyright (C) 2026 cayossarian
 # All rights reserved.
-# BSD 2-Clause License
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+# OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 #
 # VM tests for the plugin's state directories and the one reader every trusted state file goes through. Root on the
 # disposable test VM only (vm_selftest.sh), never on a firewall: it moves /var/run/wgclienttunnels and
@@ -30,7 +50,7 @@ LIB="$(dirname "$SRC")/lib"
 RUN=/var/run/wgclienttunnels
 DB=/var/db/wgclienttunnels
 PHP=/usr/local/bin/php
-PENDING='WGClientTunnels/(health_mirror|prime)[.]php|WGClientTunnels/wgct[.]sh (reconcile|_reconcile)'
+PENDING='WGClientTunnels/(health_mirror|prime)[.]php|wgct[.]sh (tick|reconcile|_reconcile)'
 T=$(mktemp -d /tmp/wgct-state.XXXXXX)
 PASS=0
 FAIL=0
@@ -146,7 +166,8 @@ check "the resume removes the marker" "$([ -f "$RUN/health.skipped" ] && echo ye
 check "no /tmp/wgct_health.lock is created by a run" "$(rm -f /tmp/wgct_health.lock; $PHP -d log_errors=0 "$MIRROR" --dry > /dev/null 2>&1; [ -e /tmp/wgct_health.lock ] && echo yes || echo no)" no
 
 # (f) a health.lock that cannot be opened (a directory stands where the file belongs) ends the tick quietly:
-# exit 0, one log line across two runs, no output (a PHP fatal would print and, outside this test's log_errors=0, reach the crash reporter); the lock is a file again afterwards
+# exit 0, one log line across two runs, no output (a PHP fatal would print and, outside this test's log_errors=0,
+# reach the crash reporter); the lock is a file again afterwards
 rm -f "$RUN/health.lock" "$RUN/health.skipped" "$RUN/health.unopenable"
 mkdir "$RUN/health.lock"
 mark=$(lmark wireguard)

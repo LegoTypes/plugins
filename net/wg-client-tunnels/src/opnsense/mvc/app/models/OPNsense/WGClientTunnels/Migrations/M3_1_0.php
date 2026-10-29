@@ -38,7 +38,8 @@ use OPNsense\WGClientTunnels\Engine;
  * longer declares them, so the 3.0.0 values are read from the raw config nodes; the settings model's own
  * serialize after this run drops those nodes.
  *
- * The managed list is carried byte for byte. A held gateway becomes a hold record only when it is a managed
+ * The managed list is carried in order as the engine's `tunnels` rows, split as 3.7_1 split it, upper case kept.
+ * A held gateway becomes a hold record only when it is a managed
  * tunnel's IPv4 gateway and is forced down; the record carries this boot's kern.boot_id, since a hold active at
  * the upgrade was taken in this boot. Every other held gateway is dropped and logged, its force_down left as it
  * is for a person to clear. A managed tunnel's IPv6 gateway that is forced down becomes a hold record too, its
@@ -198,8 +199,7 @@ class M3_1_0 extends BaseModelMigration
             throw new \RuntimeException(self::TUNNELS_LIB . ' cannot be read; the managed list and holds stay where they are');
         }
         require_once self::TUNNELS_LIB;
-        $managedRaw = (string)$node->managed;
-        $managed = wgct_split_csv($managedRaw);
+        $managed = wgct_split_csv((string)$node->managed);
         $held = wgct_split_csv((string)$node->held);
         $bootId = Engine::liveBootId();
         $this->bootId = $bootId;
@@ -209,7 +209,7 @@ class M3_1_0 extends BaseModelMigration
         try {
             [$gateways, $ipv4Gateways, $ipv6Gateways, $names] = self::tunnelGateways($managed);
             $plan = self::plan($managed, $held, $gateways, $ipv4Gateways, $ipv6Gateways,
-                (string)$node->enabled === '1', (string)$node->health_mirror === '1', $bootId);
+                $model->enabled->isEqual('1'), $model->health_mirror->isEqual('1'), $bootId);
         } catch (\Throwable $e) {
             $gatewaysError = $e->getMessage();
         }
@@ -217,7 +217,7 @@ class M3_1_0 extends BaseModelMigration
         $engine = new Engine();
         $engine->runMigrations();
         if (isset($node->managed)) {
-            $engine->managed = $managedRaw;
+            $engine->setManaged($managed);
         }
         $now = time();
         $engine->setHolds(array_map(fn (array $row): array => $row + ['taken_at' => $now], $plan['rows']));

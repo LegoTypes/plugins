@@ -44,7 +44,7 @@
         <label>IPv4 status</label>
         <grid_view>
             <formatter>status4</formatter>
-            <width>90</width>
+            <min-width>90</min-width>
         </grid_view>
     </field>
     <field>
@@ -60,7 +60,7 @@
         <label>IPv6 status</label>
         <grid_view>
             <formatter>status6</formatter>
-            <width>90</width>
+            <min-width>90</min-width>
         </grid_view>
     </field>
     <field>

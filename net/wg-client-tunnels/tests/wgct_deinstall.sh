@@ -2,7 +2,27 @@
 
 # Copyright (C) 2026 cayossarian
 # All rights reserved.
-# BSD 2-Clause License
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+# OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 #
 # VM test of what a package removal does:
 # `tunnel.php --json release-holds` and the plugin's +PRE_DEINSTALL.pre, +POST_DEINSTALL.post and +POST_INSTALL.pre, run
@@ -57,7 +77,7 @@ RUN=/var/run/wgclienttunnels
 MARKER="$RUN/removing"
 ANCHOR=wgclienttunnels_mss
 PHPLOG=/var/lib/php/tmp/PHP_errors.log
-PENDING='WGClientTunnels/(health_mirror|prime)[.]php|wgct[.]sh (reconcile|_reconcile)'
+PENDING='WGClientTunnels/(health_mirror|prime)[.]php|wgct[.]sh (tick|reconcile|_reconcile)'
 T=$(mktemp -d /tmp/wgct-deinstall.XXXXXX)
 LOOP=""
 HOLDER=""

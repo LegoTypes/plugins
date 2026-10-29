@@ -1,14 +1,28 @@
 {#
  # Copyright (C) 2026 cayossarian
  # All rights reserved.
- # BSD 2-Clause License
+ #
+ # Redistribution and use in source and binary forms, with or without
+ # modification, are permitted provided that the following conditions are met:
+ #
+ # 1. Redistributions of source code must retain the above copyright notice,
+ #    this list of conditions and the following disclaimer.
+ #
+ # 2. Redistributions in binary form must reproduce the above copyright
+ #    notice, this list of conditions and the following disclaimer in the
+ #    documentation and/or other materials provided with the distribution.
+ #
+ # THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ # INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ # AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ # AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ # OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ # SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ # INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ # CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ # POSSIBILITY OF SUCH DAMAGE.
  #}
-
-<style>
-    a.wgct-link { color: inherit; text-decoration: none; border-bottom: 1px dotted currentColor; }
-    a.wgct-link:hover { text-decoration: none; border-bottom-style: solid; }
-    .wgct-result pre { white-space: pre-wrap; }
-</style>
 
 <script>
     $(document).ready(function () {
@@ -51,7 +65,7 @@
         }
 
         function link(text, href) {
-            return $('<a/>').addClass('wgct-link').attr('href', href).text(plain(text));
+            return $('<a/>').attr('href', href).text(plain(text));
         }
 
         function dash() {
@@ -135,7 +149,17 @@
             }
         };
 
-        /* ---- action results ---- */
+        /* the unmanaged instances grid's cells, built the same way */
+        var unmanagedFormatters = {
+            instance: function (column, u) { return link(u.name, links.instance)[0]; },
+            device: function (column, u) { return $('<span/>').text(plain(u.device))[0]; },
+            endpoint: function (column, u) { return linkOrDash(u.endpoint, links.peers); },
+            enabled: function (column, u) {
+                return (u.enabled
+                    ? $('<span/>').text("{{ lang._('yes') }}")
+                    : $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"))[0];
+            }
+        };
 
         /* status is jQuery's: 'success' only for a completed request whose reply parsed as JSON. An error
          * page, a timeout or a login redirect reaches the callback as a jqXHR without any of our keys,
@@ -169,7 +193,7 @@
         }
 
         function resultBody(r, status) {
-            var body = $('<div class="wgct-result"/>');
+            var body = $('<div/>');
             var errors = errorList(r, status);
             $.each(errors, function (i, m) { body.append($('<div class="alert alert-danger"/>').text(m)); });
             var lines = errors.length && !(r && 'changes' in r) ? [] : resultLines(r);
@@ -252,11 +276,9 @@
             });
         }
 
-        /* ---- dialogs ---- */
-
         function loadOptions(done) {
             /* POST like the lists: the choices (templates, stale routes) change with every action */
-            ajaxCall('/api/wgclienttunnels/tunnels/options', {}, function (data, status) {
+            ajaxCall('/api/wgclienttunnels/tunnels/choices', {}, function (data, status) {
                 if (!data || status !== 'success' || data.status !== 'ok') {
                     showResult("{{ lang._('Upstream tunnels') }}", null, status);
                     return;
@@ -534,8 +556,6 @@
             });
         }
 
-        /* ---- Edit ---- */
-
         /* the tunnel whose Edit dialog is open: {uuid, name (decoded), form (the prefill)} */
         var editState = null;
         /* the last parsed IPv6 list of the replacement config (as lastV6 for Create) */
@@ -553,24 +573,18 @@
             fillSelect(selector, choices, selected);
         }
 
-        /* Edit's own WAN list, for the endpoint family of the pasted replacement config (pasted: wgPublic()'s
-         * result, or null when none is pasted). The gateways offered are the ENDPOINT's family -- the pasted
-         * config's, else the tunnel's own endpoint's, IPv4 when unknown -- never the bound gateway's: a WAN
-         * move is how a tunnel bound through a gateway of the other family is repaired, so an IPv6
-         * endpoint bound by a /128 via an IPv4 gateway is offered the IPv6 gateways. A family with no saved
-         * gateway gets one disabled hint option in its place (wansHint), never an empty list -- except under the
-         * unbound placeholder, which already keeps the list non-empty and shares the hint's empty value (two
-         * options of one value would let the later, disabled hint win the selection). First comes the
-         * unbound placeholder when the tunnel has no bound WAN (Rebind is what binds one), or, when the pasted
-         * config's family differs from the bound gateway's saved family AND also changes the endpoint address
-         * (else the planner infers nothing -- matching its own "on an endpoint change" rule), a placeholder for
-         * the same WAN's gateway of the new family: its value is the bound WAN itself, which the planner treats
-         * as none named and replaces with the single gateway of the new family on the same interface (edit.php,
-         * the endpoint route; an unsaved bound gateway has no family, and the planner infers nothing for it).
-         * The bound WAN is always listed: when neither that placeholder nor the family's gateways name it (the
-         * other family, a sentinel, a WireGuard-interface gateway, an unsaved automatic DHCPv6 gateway), it is
-         * appended under its own name, so neither the opener nor a later keystroke drops it out from under the
-         * tunnel. */
+        /* Edit's own WAN list for the endpoint family of the pasted replacement config (pasted: wgPublic()'s
+         * result, or null). The gateways offered are the ENDPOINT's family (the pasted config's, else the tunnel's
+         * own, IPv4 when unknown), never the bound gateway's: a WAN move is how a tunnel bound through a gateway of
+         * the other family is repaired. A family with no saved gateway gets one disabled hint option (wansHint),
+         * never an empty list, except under the unbound placeholder, which keeps the list non-empty and shares the
+         * hint's empty value (two options of one value would let the later, disabled hint win the selection).
+         * First comes the unbound placeholder when the tunnel has no bound WAN (Rebind binds one) or, when the
+         * pasted config changes both the family and the endpoint address, a placeholder for the same WAN's
+         * gateway of the new family: its value is the bound WAN itself, which the planner treats as none named and
+         * replaces with the single gateway of the new family on the same interface (edit.php, the endpoint route).
+         * The bound WAN is always listed: when neither that placeholder nor the family's gateways name it, it is
+         * appended under its own name, so neither the opener nor a keystroke drops it from under the tunnel. */
         function editWans(pasted) {
             var f = editState.form;
             var wans = [];
@@ -645,7 +659,7 @@
                 $('#edit\\.mtu'), $('#wgct-edit-mtu-why'), $('#wgct-edit-measure'));
         }
 
-        /* Tunnel References: what Create and Edit leave to the core pages, each linked as deep as the page allows --
+        /* Tunnel references: what Create and Edit leave to the core pages, each linked as deep as the page allows --
          * a gateway opens its dialog, the rules page selects the interface, Source NAT and the peers grid filter on
          * it. A topic with nothing that references the tunnel (every topic, before Create) still gets its row,
          * linking the page by its menu path. f: {gw4, gw4_uuid, gw6, gw6_uuid, groups, peer_name, interface} */
@@ -657,7 +671,7 @@
                 $.each(nodes.length > 0 ? nodes : [link(pageName, pageHref)], function (i, n) {
                     cell.append($('<div/>').append(n));
                 });
-                body.append($('<tr/>').append($('<th style="width: 35%;"/>').text(title), cell));
+                body.append($('<tr/>').append($('<th/>').text(title), cell));
             };
             var opt = f.interface;
             var gateways = [];
@@ -687,7 +701,7 @@
                     showResult(titleText("{{ lang._('Edit') }} " + plain(t.name)), data, status);
                     return;
                 }
-                /* edit_form's reply carries the same choices as the options action (plus form); wansFor() reads
+                /* edit_form's reply carries the same choices as the choices action (plus form); wansFor() reads
                  * them from here so it sees this dialog's own fresh WAN list, not a stale or absent one */
                 options = data;
                 var f = data.form;
@@ -772,8 +786,6 @@
             });
         }
 
-        /* ---- the lists ---- */
-
         /* the managed tunnels: core's grid over search_grid (POST, like every core grid), which pages,
          * sorts and searches server side. No selection column and no add/edit/delete: the row commands are
          * the plugin's own actions, Rebind and Apply only on the rows whose findings call for them. */
@@ -824,37 +836,40 @@
             }
         });
 
-        /* the global findings and the WireGuard instances the plugin does not manage */
+        /* the WireGuard instances the plugin does not manage: core's grid over search_unmanaged, with Adopt as its
+         * one row command */
+        var unmanagedGrid = $("#{{ formGridUnmanaged['table_id'] }}").UIBootgrid({
+            search: '/api/wgclienttunnels/tunnels/search_unmanaged',
+            options: {
+                selection: false,
+                responsive: true,
+                formatters: unmanagedFormatters
+            },
+            commands: {
+                wgct_adopt: {
+                    classname: 'fa fa-fw fa-plus',
+                    title: "{{ lang._('Adopt') }}",
+                    sequence: 10,
+                    method: function (event, cell) {
+                        var u = cell.getData();
+                        confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgclienttunnels/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
+                    }
+                }
+            }
+        });
+
+        /* the global findings */
         function renderLists(data) {
             var banners = [];
-            var ubody = $('<tbody/>');
             if (!data || data.status !== 'ok') {
                 banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? plain(data.errorMessage) : failedText));
             } else {
+                /* a finding that is information (level info) is never shown as a warning */
                 $.each(data.global, function (i, f) {
-                    banners.push($('<div class="alert alert-warning"/>').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
-                });
-                if (!data.unmanaged.length) {
-                    ubody.append($('<tr/>').append($('<td colspan="5"/>').text("{{ lang._('Every WireGuard instance is managed.') }}")));
-                }
-                $.each(data.unmanaged, function (i, u) {
-                    ubody.append($('<tr/>').append(
-                        $('<td/>').append(link(u.name, links.instance)),
-                        $('<td/>').text(plain(u.device)),
-                        $('<td/>').append(linkOrDash(u.endpoint, links.peers)),
-                        $('<td/>').append(u.enabled
-                            ? $('<span/>').text("{{ lang._('yes') }}")
-                            : $('<span class="label label-default"/>').text("{{ lang._('disabled') }}")),
-                        $('<td/>').append($('<button type="button" class="btn btn-default btn-xs"/>')
-                            .append($('<i class="fa fa-plus fa-fw"/>'), ' ', $('<span/>').text("{{ lang._('Adopt') }}"))
-                            .on('click', function () {
-                                confirmAction(titleText("{{ lang._('Adopt') }} " + plain(u.name)), '/api/wgclienttunnels/tunnels/adopt/' + u.uuid, "{{ lang._('Adopt') }}");
-                            }))
-                    ));
+                    banners.push($('<div class="alert"/>').addClass(f.level === 'info' ? 'alert-info' : 'alert-warning').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
                 });
             }
             $('#tunnel-banners').empty().append(banners);
-            $('#unmanaged-table tbody').replaceWith(ubody);
         }
 
         /* POST, like the grid: an action's reply is followed by a fresh read, never a stored one. Only the
@@ -862,7 +877,7 @@
         var listsRequest = 0;
         function refreshLists() {
             var request = ++listsRequest;
-            ajaxCall('/api/wgclienttunnels/tunnels/search', {}, function (data, status) {
+            ajaxCall('/api/wgclienttunnels/tunnels/lists', {}, function (data, status) {
                 if (request === listsRequest) {
                     renderLists(status === 'success' ? data : null);
                 }
@@ -872,15 +887,16 @@
         /* after every action that can change the list, and on Refresh view */
         function refreshAll() {
             tunnelsGrid.bootgrid('reload');
+            unmanagedGrid.bootgrid('reload');
             refreshLists();
         }
-
-        /* ---- wiring ---- */
 
         mapDataToFormUI({'frm_general': '/api/wgclienttunnels/settings/get'}).done(function () {
             formatTokenizersUI();
             $('.selectpicker').selectpicker('refresh');
         });
+        /* core's apply button: the settings are saved first, then the service's reconfigure runs; the button's
+         * service widget refreshes core's service controls after it */
         $('#reconfigureAct').SimpleActionButton({
             onPreAction: function () {
                 var dfObj = new $.Deferred();
@@ -889,20 +905,9 @@
             },
             onAction: function () { refreshAll(); }
         });
-        /* Settings: forms/general.xml gives each switch a <brief>, always shown in its row's wide third column,
-         * and a <help>, core's full help. Core renders the full help as a hidden block under the (narrow)
-         * checkbox; it moves, intact, under the brief, so core's "full help" toggle shows and hides it as on any
-         * other page. The rows' info icons go: the brief is always visible and the toggle covers the rest. */
-        $('#frm_general [data-for^="help_for_"]').each(function () {
-            var help = $(this);
-            var id = help.attr('data-for').substring('help_for_'.length);
-            var cell = help.closest('tr').children('td').eq(2);
-            cell.prepend(help.detach());
-            cell.prepend($('<div class="wgct-brief"/>').append($('#wgct-briefs [data-wgct-brief-for="' + id + '"]').contents()));
-        });
-        $('#frm_general .control-label > a.showhelp, #frm_general .control-label > i.fa-info-circle').remove();
+        updateServiceControlUI('wgclienttunnels');
         /* the sentinel's repair belongs with the switch for the other half of the default-route exclusion */
-        $('#wgclienttunnels\\.default_guard').closest('tr').children('td').eq(2).append($('#wgct-exclusion-wrap').detach().show());
+        $('#wgclienttunnels\\.default_guard').closest('tr').children('td').eq(1).append($('#wgct-exclusion-wrap').detach().show());
         $('#frm_dialogCreate').prepend($('<div id="wgct-create-errors"/>'));
         $('#frm_dialogRebind').prepend($('<div id="wgct-rebind-errors"/>'));
         /* the config textbox holds the private key while it is pasted: no browser cloud spellcheck, no
@@ -943,23 +948,17 @@
             confirmAction("{{ lang._('Check default-route exclusion') }}", '/api/wgclienttunnels/service/sentinel', "{{ lang._('Apply') }}");
         });
         $('#btn-refresh').on('click', refreshAll);
-        /* the grid's own refresh button reloads the grid; bring the banners and the unmanaged list along */
+        /* the tunnel grid's own refresh button reloads that grid; bring the banners along */
         $("#{{ formGridTunnels['table_id'] }}-refresh-button").on('click', refreshLists);
-        /* the grid loads itself */
+        /* the grids load themselves */
         refreshLists();
     });
 </script>
 
 <div class="content-box" id="settings">
-    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general', 'msgzone_width': 8]) }}
-    <div style="padding: 0 1em 1em 1em;">
-        <button class="btn btn-primary" id="reconfigureAct"
-                data-endpoint="/api/wgclienttunnels/service/reconfigure"
-                data-label="{{ lang._('Apply') }}"
-                data-error-title="{{ lang._('Error applying the WireGuard upstream tunnel settings') }}"
-                type="button"></button>
-    </div>
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
 </div>
+{{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/wgclienttunnels/service/reconfigure', 'data_service_widget': 'wgclienttunnels', 'data_error_title': 'Error applying the WireGuard upstream tunnel settings'}) }}
 <div class="content-box" id="tunnels" style="padding: 1em; margin-top: 1em;">
     <p>{{ lang._('Each managed tunnel is assembled from core configuration: its WireGuard instance and peer, its interface assignment, the /32 or /128 route that binds it to a WAN, the gateways on its interface, outbound NAT and gateway groups. Edit those on their own pages; this list follows. Create, Edit, Rebind and Remove change several of them at once. Hover a finding for what it means and where it is fixed.') }}
         <a href="/ui/interfaces/assignment">{{ lang._('Interfaces: Assignments') }}</a></p>
@@ -970,30 +969,9 @@
         {{ partial('layout_partials/base_bootgrid_table', formGridTunnels + {'command_width': '140', 'hide_add': true, 'hide_delete': true}) }}
     </div>
     <h4>{{ lang._('WireGuard instances the plugin does not manage') }}</h4>
-    <table class="table table-striped table-condensed" id="unmanaged-table">
-        <thead>
-            <tr>
-                <th>{{ lang._('Instance') }}</th>
-                <th>{{ lang._('Device') }}</th>
-                <th>{{ lang._('Endpoint') }}</th>
-                <th>{{ lang._('Enabled') }}</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody></tbody>
-    </table>
+    {{ partial('layout_partials/base_bootgrid_table', formGridUnmanaged + {'hide_add': true, 'hide_delete': true}) }}
 </div>
 
-{# each Settings switch's brief help (forms/general.xml <brief>), placed in its row by the script above #}
-<div id="wgct-briefs" style="display: none;">
-{% for section in generalForm['sections'] %}
-{% for field in section['children'] %}
-{% if field['brief'] is defined %}
-    <div data-wgct-brief-for="{{ field['id'] }}">{{ lang._(field['brief']) }}</div>
-{% endif %}
-{% endfor %}
-{% endfor %}
-</div>
 <div id="wgct-exclusion-wrap" style="display: none; margin-top: 0.5em;">
     <button class="btn btn-default btn-xs" id="btn-sentinel" type="button"><i class="fa fa-shield fa-fw"></i> {{ lang._('Check default-route exclusion') }}</button>
     {# full help, like the switches': core's "full help" toggle shows it once this sits inside the form #}

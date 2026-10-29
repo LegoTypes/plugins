@@ -1,14 +1,16 @@
 <model>
     <mount>//OPNsense/WGClientTunnelsEngine</mount>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
     <description>WireGuard upstream tunnels engine state</description>
     <!-- the settings model's migrations (M*) share Migrations/ with this model's -->
     <migration_prefix>ENG</migration_prefix>
     <items>
-        <managed type="CSVListField">
-            <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
-            <MaskPerItem>Y</MaskPerItem>
-        </managed>
+        <tunnels type="ArrayField">
+            <instance type="TextField">
+                <Required>Y</Required>
+                <Mask>/^[0-9a-fA-F-]{36}$/</Mask>
+            </instance>
+        </tunnels>
         <holds type="ArrayField">
             <gateway type="TextField">
                 <Required>Y</Required>

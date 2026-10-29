@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  */
 
 namespace OPNsense\WGClientTunnels\Api;
@@ -12,8 +32,8 @@ use OPNsense\Base\ApiControllerBase;
 use OPNsense\Core\Backend;
 
 /**
- * The Upstream tunnels page. search, search_grid, options and edit_form are
- * views derived from core on every request. Create and Edit are the writes
+ * The Upstream tunnels page. lists, search_grid, search_unmanaged, choices and
+ * edit_form are views derived from core on every request. Create and Edit are the writes
  * done in-process, because only they may see a private key;
  * each then runs the keyless configd action `wgclienttunnels apply_mode`.
  * Every other action runs in its own process through configd, with uuids,
@@ -29,17 +49,17 @@ class TunnelsController extends ApiControllerBase
     private const NAT_ALIAS_TYPES = ['host', 'network', 'networkgroup', 'dynipv6host'];
 
     /**
-     * The whole view: the managed tunnels, the global findings and the unmanaged
-     * instances. GET or POST; the tunnel list posts it for its banners and the
-     * unmanaged list.
+     * The whole view: the managed tunnels, the global findings with their banner
+     * level (wgct_global_banners()) and the unmanaged instances. GET or POST; the
+     * tunnel list posts it for its banners.
      */
-    public function searchAction(): array
+    public function listsAction(): array
     {
         require_once self::LIB . '/view.php';
         $view = wgct_tunnel_view();
         return [
             'status' => 'ok', 'tunnels' => wgct_tunnel_rows($view, $this->gatewayStatus()),
-            'global' => $view['global'], 'unmanaged' => $view['unmanaged'],
+            'global' => wgct_global_banners($view['global']), 'unmanaged' => $view['unmanaged'],
         ];
     }
 
@@ -55,7 +75,20 @@ class TunnelsController extends ApiControllerBase
         return $this->searchRecordsetBase($rows, WGCT_GRID_SEARCH_FIELDS, 'name');
     }
 
-    public function optionsAction(): array
+    /**
+     * The unmanaged instances grid: one row per WireGuard instance the plugin does
+     * not manage (wgct_tunnel_view()'s unmanaged rows: uuid, name, device, enabled,
+     * endpoint), paged, sorted (by name until the grid asks otherwise) and searched
+     * by core's recordset search from the grid's POST.
+     */
+    public function searchUnmanagedAction(): array
+    {
+        require_once self::LIB . '/view.php';
+        $rows = wgct_tunnel_view()['unmanaged'];
+        return $this->searchRecordsetBase($rows, WGCT_UNMANAGED_SEARCH_FIELDS, 'name');
+    }
+
+    public function choicesAction(): array
     {
         return ['status' => 'ok'] + $this->choices();
     }
@@ -113,8 +146,8 @@ class TunnelsController extends ApiControllerBase
             }
         }
         foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
-            if (in_array((string)$alias->type, self::NAT_ALIAS_TYPES, true)) {
-                $sources[] = ['value' => (string)$alias->name, 'label' => (string)$alias->name . ' (alias)'];
+            if (in_array($alias->type->getValue(), self::NAT_ALIAS_TYPES, true)) {
+                $sources[] = ['value' => $alias->name->getValue(), 'label' => $alias->name->getValue() . ' (alias)'];
             }
         }
         $stale = [];
@@ -133,14 +166,14 @@ class TunnelsController extends ApiControllerBase
     public function createAction(): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/writer.php';
         /* a form boundary: create.* arrives as an array of strings; wgct_create_request() checks every value */
         $raw = $this->request->getPost('create');
         if (!is_array($raw)) {
-            return ['result' => 'failed', 'errors' => ['the create form was empty']];
+            return ['status' => 'failed', 'result' => 'failed', 'errors' => ['the create form was empty']];
         }
         $secrets = [];
         /* the saved instance's uuid, once wgct_create_commit() has returned one */
@@ -160,7 +193,7 @@ class TunnelsController extends ApiControllerBase
             });
         } catch (\Throwable $e) {
             wgct_log(LOG_ERR, '[wgct-action] create failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
-            return ['result' => 'failed', 'uuid' => $uuid, 'errors' => [
+            return ['status' => 'failed', 'result' => 'failed', 'uuid' => $uuid, 'errors' => [
                 'Create failed; ' . WGCT_LOG_PAGE . ' has the reason (never the key). ' . wgct_failure_footer('create', $uuid)
                 . ' A saved tunnel shows the apply-pending finding and an Apply button once the list is reloaded.',
             ]];
@@ -176,8 +209,9 @@ class TunnelsController extends ApiControllerBase
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$result['uuid'], 'first'], 300);
         /* the save's own notes (a failed apply-pending mark) first, then the apply's */
         $applyErrors = array_merge(array_values($result['errors']), is_array($apply['errors'] ?? null) ? array_values($apply['errors']) : []);
+        $ok = ($apply['ok'] ?? false) === true && $applyErrors === [];
         return [
-            'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
+            'status' => $ok ? 'ok' : 'failed', 'result' => 'saved', 'ok' => $ok,
             'saved' => true, 'uuid' => $result['uuid'], 'changes' => $result['changes'],
             'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $applyErrors,
         ];
@@ -192,21 +226,21 @@ class TunnelsController extends ApiControllerBase
     public function editAction(string $uuid = ''): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/writer.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
-            return ['result' => 'failed', 'errors' => ['not a tunnel uuid']];
+            return ['status' => 'failed', 'result' => 'failed', 'errors' => ['not a tunnel uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
-            return ['result' => 'failed', 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+            return ['status' => 'failed', 'result' => 'failed', 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         /* a form boundary: edit.* arrives as an array of strings; wgct_edit_request() checks every value */
         $raw = $this->request->getPost('edit');
         if (!is_array($raw)) {
-            return ['result' => 'failed', 'errors' => ['the edit form was empty']];
+            return ['status' => 'failed', 'result' => 'failed', 'errors' => ['the edit form was empty']];
         }
         $secrets = [];
         $saved = false;
@@ -233,7 +267,7 @@ class TunnelsController extends ApiControllerBase
             }
         } catch (\Throwable $e) {
             wgct_log(LOG_ERR, '[wgct-action] edit failed: ' . wgct_redact(get_class($e) . ': ' . $e->getMessage(), $secrets));
-            return ['result' => 'failed', 'saved' => $saved, 'errors' => [
+            return ['status' => 'failed', 'result' => 'failed', 'saved' => $saved, 'errors' => [
                 'Edit failed; ' . WGCT_LOG_PAGE . ' has the reason (never the key). ' . wgct_failure_footer('edit', $uuid),
             ]];
         }
@@ -243,7 +277,7 @@ class TunnelsController extends ApiControllerBase
         }
         if ($dry || !$result['saved']) {
             return [
-                'result' => $dry ? 'preview' : 'unchanged', 'ok' => true, 'saved' => false, 'dry' => $dry,
+                'status' => 'ok', 'result' => $dry ? 'preview' : 'unchanged', 'ok' => true, 'saved' => false, 'dry' => $dry,
                 'changes' => $result['changes'], 'errors' => [],
             ];
         }
@@ -252,8 +286,9 @@ class TunnelsController extends ApiControllerBase
         $apply = wgct_configd_json('wgclienttunnels apply_mode', [$uuid, $result['apply_mode']], 300);
         /* the save's own notes (a failed apply-pending mark) first, then the apply's */
         $applyErrors = array_merge(array_values($result['errors']), is_array($apply['errors'] ?? null) ? array_values($apply['errors']) : []);
+        $ok = ($apply['ok'] ?? false) === true && $applyErrors === [];
         return [
-            'result' => 'saved', 'ok' => ($apply['ok'] ?? false) === true && $applyErrors === [],
+            'status' => $ok ? 'ok' : 'failed', 'result' => 'saved', 'ok' => $ok,
             'saved' => true, 'uuid' => $uuid, 'changes' => $result['changes'],
             'apply' => $apply['apply'] ?? [], 'after' => $apply['after'] ?? [], 'errors' => $applyErrors,
         ];
@@ -262,7 +297,7 @@ class TunnelsController extends ApiControllerBase
     public function measureMtuAction(): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
@@ -270,7 +305,7 @@ class TunnelsController extends ApiControllerBase
         $wan = $this->postString('wan');
         $endpoint = $this->postString('endpoint');
         if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || wgct_endpoint_ip($endpoint) === null) {
-            return ['ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 or [IPv6] endpoint first']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 or [IPv6] endpoint first']];
         }
         return wgct_configd_json('wgclienttunnels measure_mtu', [$wan, $endpoint], 120);
     }
@@ -278,16 +313,16 @@ class TunnelsController extends ApiControllerBase
     public function removeAction(string $uuid = ''): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
-            return ['ok' => false, 'errors' => ['not a tunnel uuid']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['not a tunnel uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
-            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         if ($dry) {
             return wgct_configd_json('wgclienttunnels remove_dry', [$uuid], 120);
@@ -298,12 +333,12 @@ class TunnelsController extends ApiControllerBase
     public function applyAction(string $uuid = ''): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
-            return ['ok' => false, 'errors' => ['not a tunnel uuid']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['not a tunnel uuid']];
         }
         return wgct_configd_json('wgclienttunnels apply', [$uuid], 300);
     }
@@ -311,7 +346,7 @@ class TunnelsController extends ApiControllerBase
     public function rebindAction(string $uuid = ''): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
@@ -321,7 +356,7 @@ class TunnelsController extends ApiControllerBase
         $stale = is_array($form) && is_string($form['stale'] ?? null) ? $form['stale'] : '';
         if (preg_match(self::UUID, $uuid) !== 1 || preg_match(self::GATEWAY_NAME, $wan) !== 1
             || ($stale !== '' && preg_match(self::UUID, $stale) !== 1)) {
-            return ['ok' => false, 'errors' => ['choose a WAN (and, optionally, a stale route to delete)']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['choose a WAN (and, optionally, a stale route to delete)']];
         }
         return wgct_configd_json('wgclienttunnels rebind', [$uuid, $wan, $stale], 300);
     }
@@ -329,16 +364,16 @@ class TunnelsController extends ApiControllerBase
     public function adoptAction(string $uuid = ''): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
         if (preg_match(self::UUID, $uuid) !== 1) {
-            return ['ok' => false, 'errors' => ['not an instance uuid']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['not an instance uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
-            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         if ($dry) {
             return wgct_configd_json('wgclienttunnels adopt_dry', [$uuid], 120);
@@ -364,7 +399,7 @@ class TunnelsController extends ApiControllerBase
                 $general[] = $message;
             }
         }
-        return ['result' => 'failed', 'validations' => $validations, 'errors' => $general, 'changes' => $changes];
+        return ['status' => 'failed', 'result' => 'failed', 'validations' => $validations, 'errors' => $general, 'changes' => $changes];
     }
 
     /**

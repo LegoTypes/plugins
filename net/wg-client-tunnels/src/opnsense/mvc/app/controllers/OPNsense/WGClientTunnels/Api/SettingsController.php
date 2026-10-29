@@ -40,9 +40,10 @@ class SettingsController extends ApiMutableModelControllerBase
     private const MIRROR_LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/mirror.php';
 
     /**
-     * Core's set, refused while the settings wait for their 3.1.0 migration: this model no longer
-     * declares the managed list and the holds 3.7_1 stored in its node, so a save then would drop them before the
-     * migration carries them over. Logged once per state, as every refused writer is.
+     * Core's set, refused while a migration is pending, as every state-changing run is: while the settings wait
+     * for their 3.1.0 migration this model no longer declares the managed list and the holds 3.7_1 stored in its node,
+     * so a save then would drop them before the migration carries them over. Logged once per state, as every refused
+     * writer is.
      *
      * @throws UserException while the migration is pending, or while the plugin's library cannot be read
      */

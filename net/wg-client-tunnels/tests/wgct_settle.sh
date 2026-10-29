@@ -2,19 +2,38 @@
 
 # Copyright (C) 2026 cayossarian
 # All rights reserved.
-# BSD 2-Clause License
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+# OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 #
 # Quiet points for the VM tests (sourced: . wgct_settle.sh). Root on the disposable test VM only, never on a
 # firewall. They poll the condition a test needs and never sleep a fixed time.
 #
-#   in_flight             exit 0 while a mirror tick, prime, reconcile or routing configure runs (their processes;
+#   in_flight             exit 0 while a mirror tick, prime, reconcile, hook or routing configure runs (their processes;
 #                         an offset round still asleep is not one)
 #   settle [MAX]          wait (at most MAX s, default 90) until nothing above runs
 #   cron_quiesce          stop cron and wait (at most 90 s) until no round of the plugin's cron is left and nothing
-#                         runs. An offset mirror round is `sh -c "sleep N && php health_mirror.php; php prime.php"`:
-#                         while its sleep runs it has run nothing, so the sleep is ended rather than waited out (up to
-#                         45 s); the round then skips its tick (`&&`) and runs only its prime, which is waited out.
-#                         Prints the seconds waited.
+#                         runs. An offset mirror round is `sh -c "sleep N && .../wgct.sh tick"`: while its sleep runs
+#                         it has run nothing, so the sleep is ended rather than waited out (up to 45 s); the round then
+#                         skips its whole tick (`&&`), the mirror and the prime. Prints the seconds waited.
 #   reconcile_drained [MAX] wait (at most MAX s, default 150) until no reconcile is queued (wgct.sh's
 #                         reconcile.pending, a `_reconcile_wait` waiter) and nothing runs: what a config save's syshook
 #                         set off has ended
@@ -34,13 +53,18 @@
 #                         (configctl system event config_changed), as the next save would: it runs the hooks of every
 #                         save not yet run, so a delivery still on its way finds nothing left to run. It drives it
 #                         once per newest save; a timeout prints the stamps and configctl's own answer.
+#   hooks_drained [MAX]   wait (at most MAX s, default 120) as gw_quiet does, the gateways aside: core has run the
+#                         config hooks of every config save (driving its trigger the same way), no reconcile is queued
+#                         and nothing above runs; for a config whose gateways are not what core's watcher acted on
 #   ws_hooks              "done" or "due", the newest /conf/backup save's stamp and the one core last ran hooks for
 # Each wait returns 1 when it times out, after printing "      | " lines with what it waited on (what still runs, the
 # gateway state); the caller's check turns that into a FAIL.
 # Their own variables are named ws_*, so a test's are left alone.
 
 WS_PHP="/usr/local/bin/php -d log_errors=0"
-WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|wgct[.]sh (reconcile|_reconcile)|rc[.]routing_configure|trigger_config_changed_events|rc[.]syshook'
+# A tick is matched as the script it runs (sh execs it in the round's process once the sleep ends): a round still asleep
+# is `/bin/sh -c sleep N && .../wgct.sh tick` and must not match.
+WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|^/bin/sh [^ ]*wgct[.]sh tick|wgct[.]sh (reconcile|_reconcile|hook)|rc[.]routing_configure|trigger_config_changed_events|rc[.]syshook'
 # the plugin's cron rounds, as cron runs them (cron.d/wgclienttunnels)
 WS_CRON='^/bin/sh -c (sleep [0-9]+ && )?/usr/local/(bin/php /usr/local/)?opnsense/scripts/OPNsense/WGClientTunnels/'
 
@@ -88,8 +112,7 @@ cron_quiesce() {
 
 reconcile_drained() {
     ws_end=$(($(date +%s) + ${1:-150}))
-    while [ -e /var/run/wgclienttunnels/reconcile.pending ] || pgrep -f 'wgct[.]sh _reconcile_(wait|queued)' > /dev/null \
-        || in_flight; do
+    while ! ws_drained; do
         if [ "$(date +%s)" -ge "$ws_end" ]; then
             echo "      | reconcile_drained: a reconcile is still queued or running after ${1:-150} s" \
                 "(reconcile.pending $([ -e /var/run/wgclienttunnels/reconcile.pending ] && echo present || echo absent))"
@@ -168,7 +191,34 @@ ws_gateways() {
 }
 
 gw_quiet() {
-    ws_max=${1:-120}
+    ws_quiet gw_quiet yes "${1:-120}"
+}
+
+hooks_drained() {
+    ws_quiet hooks_drained no "${1:-120}"
+}
+
+# ws_drained: no reconcile is queued (reconcile.pending, a waiter) and nothing runs
+ws_drained() {
+    [ ! -e /var/run/wgclienttunnels/reconcile.pending ] && ! pgrep -f 'wgct[.]sh _reconcile_(wait|queued)' > /dev/null \
+        && ! in_flight
+}
+
+# ws_settled GATEWAYS: with GATEWAYS yes, the gateways are quiet (ws_gateways, which also asks that no reconcile is
+# queued); with no, no reconcile is queued and nothing runs (ws_drained)
+ws_settled() {
+    if [ "$1" = yes ]; then
+        [ "$(ws_gateways)" = quiet ]
+    else
+        ws_drained
+    fi
+}
+
+# ws_quiet NAME GATEWAYS MAX: gw_quiet (GATEWAYS yes) or hooks_drained (no), as NAME
+ws_quiet() {
+    ws_name=$1
+    ws_gw=$2
+    ws_max=$3
     ws_end=$(($(date +%s) + ws_max))
     ws_fired=""
     ws_ctl="not run"
@@ -180,13 +230,15 @@ gw_quiet() {
                 ws_fired=$ws_newest
                 ws_ctl=$(/usr/local/sbin/configctl system event config_changed 2>&1)
                 ws_ctl="exit $? for save $ws_newest: $(printf '%s' "$ws_ctl" | tr '\n' ' ' | cut -c1-200)"
-            elif [ "${ws_h%% *}" = done ] && [ "$(ws_gateways)" = quiet ] && ! in_flight && [ "$(ws_hooks | cut -d' ' -f1)" = done ]; then
+            elif [ "${ws_h%% *}" = done ] && ws_settled "$ws_gw" && ! in_flight \
+                && [ "$(ws_hooks | cut -d' ' -f1)" = done ]; then
                 return 0
             fi
         fi
         sleep 0.25
     done
-    echo "      | gw_quiet: not quiet within ${ws_max} s: $(ws_gateways); config hooks $(ws_hooks); core's trigger driven: $ws_ctl"
+    echo "      | $ws_name: not quiet within ${ws_max} s: $(ws_gateways); config hooks $(ws_hooks);" \
+        "core's trigger driven: $ws_ctl"
     $WS_PHP /usr/local/opnsense/scripts/routes/gateway_status.php | $WS_PHP -r '
         foreach (json_decode(stream_get_contents(STDIN), true) as $n => $g) {
             echo "      |   $n: {$g["status"]} loss {$g["loss"]} delay {$g["delay"]} monitor {$g["monitor"]}\n";

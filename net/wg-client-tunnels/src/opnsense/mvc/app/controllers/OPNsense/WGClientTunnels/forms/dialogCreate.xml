@@ -4,19 +4,19 @@
         <label>WireGuard config</label>
         <type>textbox</type>
         <height>10</height>
-        <help>The provider's wg-quick file: paste it, or use "Load file" (read by your browser; nothing is uploaded). Only PrivateKey, Address, the peer's PublicKey, PresharedKey and Endpoint (an IPv4 address, or a global IPv6 address in brackets: [2001:db8::1]:51820) are used. The private key is stored in the WireGuard instance, as the WireGuard page stores it, and is never shown again.</help>
+        <help>The provider's wg-quick file: paste it, or use Load file (read by your browser; nothing is uploaded). Only PrivateKey, Address, the peer's PublicKey, PresharedKey and Endpoint (an IPv4 address, or a global IPv6 address in brackets: [2001:db8::1]:51820) are used. The private key is stored in the WireGuard instance, as the WireGuard page stores it, and is never shown again.</help>
     </field>
     <field>
         <id>create.name</id>
         <label>Name</label>
         <type>text</type>
-        <help>1 to 27 letters, digits, "_" or "-". Names the instance, the peer and the gateways (NAME and NAME-ipv6); the interface gets it without "-" and "_".</help>
+        <help>Letters, digits, underscores and hyphens. Names the instance, the peer and the gateways (NAME and NAME-ipv6); the interface gets it without hyphens and underscores.</help>
     </field>
     <field>
         <id>create.wan</id>
         <label>Bound WAN</label>
         <type>dropdown</type>
-        <help>The WAN gateway named by the /32 (IPv4) or /128 (IPv6) route to the endpoint. The tunnel never leaves by another WAN, and is held down while this one is down. The list shows gateways of the endpoint's family; save an automatic DHCPv6 gateway once on System > Gateways to see it.</help>
+        <help>The WAN gateway named by the /32 (IPv4) or /128 (IPv6) route to the endpoint. The tunnel never leaves by another WAN, and is held down while this one is down. The list shows gateways of the endpoint's family; save an automatic DHCPv6 gateway once on System: Gateways to see it.</help>
     </field>
     <field>
         <id>create.monitor</id>
@@ -40,13 +40,13 @@
         <id>create.unique</id>
         <label>Unique addressing</label>
         <type>checkbox</type>
-        <help>Give this tunnel the address fd00::N:1/128 instead of the config's IPv6 address. FreeBSD refuses one IPv6 address on two interfaces, and some providers hand every config the same one. The provider must accept and translate the substituted source address (Proton does). Checked by default when the config's IPv6 address is already on a WireGuard instance, or when the managed tunnels already use fd00::N:1 (this site's convention); uncheck it to use the config's address.</help>
+        <help>Give this tunnel the address fd00::N:1/128, the plugin's own address scheme, instead of the config's IPv6 address. FreeBSD refuses one IPv6 address on two interfaces, and some providers hand every config the same one. The provider must accept and translate the substituted source address. Checked by default when the config's IPv6 address is already on a WireGuard instance, or when the managed tunnels already use fd00::N:1; uncheck it to use the config's address.</help>
     </field>
     <field>
         <id>create.mtu</id>
         <label>MTU</label>
         <type>text</type>
-        <help>Measured from the bound WAN's address to the endpoint: path MTU minus 60, from 1280 to 1420. You may override it.</help>
+        <help>Measured from the bound WAN's address to the endpoint: path MTU minus 60. You may override it.</help>
     </field>
     <field>
         <id>create.template</id>
@@ -68,8 +68,8 @@
     </field>
     <field>
         <id>create.references</id>
-        <label>Tunnel References</label>
+        <label>Tunnel references</label>
         <type>info</type>
-        <help>Create builds the WireGuard instance and peer, the interface assignment, both gateways, the endpoint route and the outbound NAT. The rest is set on these core pages; add the new gateways to a gateway group there (or with set_gateway_tiers.php). After Create, each tunnel's Edit links its own gateways, groups, rules, peer and interface.</help>
+        <help>Create builds the WireGuard instance and peer, the interface assignment, both gateways, the endpoint route and the outbound NAT. The rest is set on these core pages; add the new gateways to a gateway group there. After Create, each tunnel's Edit links its own gateways, groups, rules, peer and interface.</help>
     </field>
 </form>

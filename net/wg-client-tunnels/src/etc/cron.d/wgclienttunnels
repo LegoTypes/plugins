@@ -1,13 +1,16 @@
-# WireGuard tunnel health mirror: holds each tunnel down while its bound WAN is
-# down, and each IPv6 tunnel gateway down while its own IPv4 tunnel is unhealthy.
-# After each tick, prime.php sends one TCP connect from a tunnel's IPv6 address
-# when its IPv6 gateway is down while its WireGuard session is up (a handshake
-# within 180 s): the provider learns the address to answer from such traffic,
-# and dpinger's pings never teach it.
-* * * * *	root	/usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
-* * * * *	root	sleep 15 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
-* * * * *	root	sleep 30 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
-* * * * *	root	sleep 45 && /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/health_mirror.php; /usr/local/bin/php /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/prime.php
+# The plugin's own cron.d file, not core's Cron: the health mirror ticks every
+# 15 s, and core's Cron schedules by the minute at best.
+
+# WireGuard tunnel health mirror (wgct.sh tick): holds each tunnel down while
+# its bound WAN is down, and each IPv6 tunnel gateway down while its own IPv4
+# tunnel is unhealthy. After each tick, prime.php sends one TCP connect from a
+# tunnel's IPv6 address when its IPv6 gateway is down while its WireGuard
+# session is up (a handshake within 180 s): the provider learns the address to
+# answer from such traffic, and dpinger's pings never teach it.
+* * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh tick
+* * * * *	root	sleep 15 && /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh tick
+* * * * *	root	sleep 30 && /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh tick
+* * * * *	root	sleep 45 && /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh tick
 
 # Route reconciliation safety net. The event hooks in plugins.inc.d cover the
 # known ways the gateway host routes get dropped; this catches anything that
@@ -18,4 +21,8 @@
 # core_contract.php, which reports a core update that changed what the plugin
 # copies, and (this cron line only) monitor_repair.php, which restarts a
 # missing IPv6 tunnel monitor.
+# This line stays while the plugin works around either core defect:
+# opnsense/core#10951 (dpinger skips a tentative WireGuard address;
+# monitor_repair.php is its backstop) and opnsense/core#10578 (no IPv6
+# far-gateway host routes; the route set adds them).
 * * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh reconcile --repair

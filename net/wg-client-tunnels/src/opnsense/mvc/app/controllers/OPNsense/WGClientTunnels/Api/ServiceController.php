@@ -29,7 +29,6 @@
 namespace OPNsense\WGClientTunnels\Api;
 
 use OPNsense\Base\ApiMutableServiceControllerBase;
-use OPNsense\Core\Backend;
 
 class ServiceController extends ApiMutableServiceControllerBase
 {
@@ -38,16 +37,11 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected static $internalServiceName = 'wgclienttunnels';
 
     /**
-     * Reconfigure: re-assert the IPv6 routes of the managed tunnels.
+     * Apply reloads the route set in place; a restart would remove every tunnel's IPv6 address and routes
      */
-    public function reconfigureAction(): array
+    protected function reconfigureForceRestart(): bool
     {
-        if (!$this->request->isPost()) {
-            return ['status' => 'failed'];
-        }
-        $this->throwReadOnly();
-        (new Backend())->configdRun('wgclienttunnels configure_routes');
-        return ['status' => 'ok'];
+        return false;
     }
 
     /**
@@ -56,13 +50,13 @@ class ServiceController extends ApiMutableServiceControllerBase
     public function sentinelAction(): array
     {
         if (!$this->request->isPost()) {
-            return ['result' => 'failed'];
+            return ['status' => 'failed', 'result' => 'failed'];
         }
         $this->throwReadOnly();
         require_once '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib/apply.php';
         $dry = wgct_dry_flag($this->request->getPost('dry'));
         if ($dry === null) {
-            return ['ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
+            return ['status' => 'failed', 'ok' => false, 'errors' => ['dry must be 1 (preview) or omitted/0 (run for real)']];
         }
         return wgct_configd_json($dry ? 'wgclienttunnels ensure_sentinel_dry' : 'wgclienttunnels ensure_sentinel', [], 300);
     }

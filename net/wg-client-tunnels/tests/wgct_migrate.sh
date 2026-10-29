@@ -2,7 +2,27 @@
 
 # Copyright (C) 2026 cayossarian
 # All rights reserved.
-# BSD 2-Clause License
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+# INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+# AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+# AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+# OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
 #
 # VM test of the settings model's 3.0.0 -> 3.1.0 migration: the
 # managed list and the mirror's holds move from the settings model into the engine model. Root on the disposable
@@ -19,23 +39,24 @@
 #     3.7_1 mirror leaves a hold, and WAN_B's gateway (force_down=0, and no tunnel's gateway);
 #   - an IPv6 gateway `rehearse-ipv6` on rehearse's interface (a synthetic uuid, monitoring off), force_down=1 as
 #     the 3.7_1 mirror's pass 2 leaves it while the IPv4 tunnel is unhealthy, and in no `held` list;
-#   - no engine node (scenarios A, B and D, a box that never ran 3.8), or an empty one at 1.0.0 (scenario C);
+#   - no engine node (scenarios A, B and D, a box that never ran 3.8), or an empty 3.8 one at 1.0.0 (scenario C);
 #   - the plugin and its health mirror on, as the 3.7_1 mirror runs (A to C), or the health mirror off (D).
 # The 3.7_1 tunnel.php, from the 3.7_1 package in pkg's cache, lists the tunnels on that config. Then:
 #   A: run_migrations.php OPNsense/WGClientTunnels, as the package's +POST_INSTALL runs it (both models);
 #   B: run_migrations.php OPNsense/WGClientTunnels/WGClientTunnels, the settings model alone: its migration first
 #      brings the engine model to its own version, so the order core runs the two in does not matter;
-#   C: as A, with the engine model already migrated;
+#   C: as A, with an empty 3.8 engine node at 1.0.0, which its own migration (ENG1_1_0) brings to 1.1.0 first;
 #   D: as A, with the health mirror off: the 3.7_1 mirror never ran, so the forced IPv6 gateway is not
 #      the plugin's.
-# Each scenario then asserts: the settings node is at 3.1.0 with neither field; the engine node is at 1.0.0 with
-# the managed list byte for byte and its holds rows, each with the live kern.boot_id and taken during the run:
-# rehearse's gateway on WAN_B, and (A to C) rehearse-ipv6 following rehearse; in D one line names rehearse-ipv6 as
-# left forced down as manual; force_down is as it was; one "not held by this plugin" line names WAN_B's gateway in
-# core's WireGuard log; the installed tunnel.php lists the same tunnels, findings and unmanaged instances as 3.7_1
-# did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped);
-# boot.json, removed before the run, names the live boot (a reboot before the mirror's first tick still finds
-# the carried rows its own). A second run changes nothing (A). boot.json is backed up first and put back at exit.
+# Each scenario then asserts: the settings node is at 3.1.0 with neither field; the engine node is at 1.1.0 with
+# the managed list as its `tunnels` rows, in order and upper case kept, and its holds rows, each with the live
+# kern.boot_id and taken during the run: rehearse's gateway on WAN_B, and (A to C) rehearse-ipv6 following rehearse;
+# in D one line names rehearse-ipv6 as left forced down as manual; force_down is as it was; one "not held by this
+# plugin" line names WAN_B's gateway in core's WireGuard log; the installed tunnel.php lists the same tunnels,
+# findings and unmanaged instances as 3.7_1 did (beside the pins fields 3.8 adds and the global core-fixed notes 3.9
+# adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped); boot.json, removed before the run,
+# names the live boot (a reboot before the mirror's first tick still finds the carried rows its own). A second run
+# changes nothing (A). boot.json is backed up first and put back at exit.
 #
 # Before scenario A's migration runs, the window between pkg installing 3.8's files and the migration, with cron stopped
 # from then on (started again at exit) and the runs it already started waited out, so none of them logs a refusal before
@@ -217,7 +238,11 @@ switch ($argv[1]) {
         echo count($x->xpath('/opnsense/OPNsense/WGClientTunnelsEngine')) === 1 ? (string)$e['version'] : 'no engine node';
         break;
     case 'engine_managed':
-        echo (string)$e->managed;
+        $instances = [];
+        foreach ($e->tunnels as $r) {
+            $instances[] = (string)$r->instance;
+        }
+        echo implode(',', $instances);
         break;
     case 'rows':
         echo count($rows);
@@ -239,8 +264,9 @@ switch ($argv[1]) {
 }
 PHPEOF
 
-# lists.php BEFORE AFTER: "same" when both lists match once `held` and the per-tunnel fields 3.8 adds (`pins`,
-# `pinned`) are set aside, then each `held`
+# lists.php BEFORE AFTER: "same" when both lists match once `held`, the per-tunnel fields 3.8 adds (`pins`,
+# `pinned`) and the global findings with code core-fixed 3.9 adds (they follow core's version, not the migration;
+# every other global finding is compared) are set aside, then each `held`
 cat > "$T/lists.php" <<'PHPEOF'
 <?php
 $a = json_decode((string)file_get_contents($argv[1]), true);
@@ -256,6 +282,8 @@ $strip = function (array $list): array {
     foreach (array_keys($list['tunnels'] ?? []) as $i) {
         unset($list['tunnels'][$i]['pins'], $list['tunnels'][$i]['pinned']);
     }
+    $list['global'] = array_values(array_filter($list['global'] ?? [],
+        fn (array $f): bool => ($f['code'] ?? '') !== 'core-fixed'));
     return $list;
 };
 $a = $strip($a);
@@ -290,7 +318,7 @@ PHPLOG=/var/lib/php/tmp/PHP_errors.log
 RECORD_PLANTED=""
 USERS="$(dirname "$0")/wgct_user.php"
 SET_USER=wgct-migrate-set
-REFUSED='the plugin settings are not migrated to 3.1.0 yet'
+REFUSED="the plugin's stored data is not migrated to this version yet"
 
 # drained WHEN: the reconcile a config save queued has ended (wgct_settle.sh reconcile_drained); a timeout is a FAIL
 # of its own, with what still runs
@@ -320,6 +348,14 @@ pending() {
     echo "    waited ${n} s for the runs cron started"
     check "pending: no run cron started is left" \
         "$(pgrep -f 'WGClientTunnels/((health_mirror|prime)[.]php|wgct[.]sh)|rc[.]routing_configure' > /dev/null && echo running || echo none)" none
+    # the reconcile core's config hook queues for the 3.7_1 config's save runs the route set, which logs its refusal
+    # and writes its marker: core has run the hooks of every save and that reconcile has ended before the markers go,
+    # so no refusal is logged between their removal and the window's opening mark
+    if ! q=$(hooks_drained 120); then
+        FAIL=$((FAIL + 1))
+        echo "[FAIL] pending: core ran the config hooks of every save and no reconcile runs or waits, within 120 s"
+        printf '%s\n' "$q"
+    fi
     rm -f "$RUN"/*.awaiting-migration
     cp /conf/config.xml "$T/pending.xml"
     mark=$(lmark wireguard)
@@ -468,8 +504,8 @@ scenario() {
     $PHP "$TUNNEL" --json list > "$T/after.json"
 
     check "$name: the settings node is at 3.1.0 with neither managed nor held" "$($PHP "$T/fact.php" settings)" "3.1.0 managed:no held:no"
-    check "$name: the engine node is at 1.0.0" "$($PHP "$T/fact.php" engine_version)" 1.0.0
-    check "$name: the engine holds the managed list byte for byte (m1: order and upper case kept)" \
+    check "$name: the engine node is at 1.1.0" "$($PHP "$T/fact.php" engine_version)" 1.1.0
+    check "$name: the engine holds the managed list as its rows (m1: order and upper case kept)" \
         "$($PHP "$T/fact.php" engine_managed)" "$inst,$UPPER"
     check "$name: exactly $rows holds rows" "$($PHP "$T/fact.php" rows)" "$rows"
     row=$($PHP "$T/fact.php" row "$gwr")
@@ -503,7 +539,7 @@ scenario() {
     if [ "$pend" = pending ]; then
         $PHP "$TUNNEL" --json adopt "$UPPER" > /dev/null
         check "pending: after the migration the first action logs that it runs again, and nothing refuses since" \
-            "$(lcount wireguard "$pend_mark" -e 'action runs again: the plugin settings are migrated to 3.1.0') $(lcount wireguard "$mark" -e "refused: $REFUSED")" "1 0"
+            "$(lcount wireguard "$pend_mark" -e "action runs again: the plugin's stored data is migrated") $(lcount wireguard "$mark" -e "refused: $REFUSED")" "1 0"
     fi
 }
 
@@ -514,7 +550,7 @@ check "A: a second run_migrations.php prints nothing" "$(cat "$T/again.out")" ""
 check "A: a second run_migrations.php leaves config.xml as it was" \
     "$(cmp -s /conf/config.xml "$T/after-a.xml" && echo unchanged || echo changed)" unchanged
 scenario "B (the settings model alone)" none OPNsense/WGClientTunnels/WGClientTunnels on
-scenario "C (the engine model already at 1.0.0)" empty OPNsense/WGClientTunnels on
+scenario "C (an empty 3.8 engine node at 1.0.0)" empty OPNsense/WGClientTunnels on
 scenario "D (the health mirror off)" none OPNsense/WGClientTunnels off
 
 echo "migrate: $PASS/$((PASS + FAIL)) passed"

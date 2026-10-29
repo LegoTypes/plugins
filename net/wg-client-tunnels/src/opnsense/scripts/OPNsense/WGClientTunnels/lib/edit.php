@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Edit: the request check, the outbound NAT
  * as Edit sees it, the dialog's prefill and the planner. All pure. The
@@ -512,14 +532,18 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
     }
 
     /* the tunnel addresses: rewritten only by a swap or an IPv6 change */
-    if (($pub !== null || $v6Change !== 'none') && !isset($e['ipv6'])) {
+    $unique6 = null;
+    $noFamily = array_values(array_filter($inst['tunneladdress'], fn (string $a): bool => wgct_cidr_family($a) === null));
+    if (($pub !== null || $v6Change !== 'none') && !isset($e['ipv6']) && $noFamily !== []) {
+        $e['general'] = "tunnel address {$noFamily[0]} is not an IP address; correct it on VPN > WireGuard > Instances";
+    } elseif (($pub !== null || $v6Change !== 'none') && !isset($e['ipv6'])) {
         $v4 = $pub !== null
             ? [$pub['addresses']['inet'][0]]
-            : array_values(array_filter($inst['tunneladdress'], fn (string $a): bool => !str_contains($a, ':')));
+            : array_values(array_filter($inst['tunneladdress'], fn (string $a): bool => wgct_cidr_family($a) === 'inet'));
         $v6 = [];
         $why6 = '';
         if ($ipv6After && $pub === null) {
-            $v6 = array_values(array_filter($inst['tunneladdress'], fn (string $a): bool => str_contains($a, ':')));
+            $v6 = array_values(array_filter($inst['tunneladdress'], fn (string $a): bool => wgct_cidr_family($a) === 'inet6'));
         } elseif ($ipv6After) {
             $a6 = wgct_edit_ipv6_address($core, $derived, $uuid, $n, $pub['addresses']['inet6'], $req['unique']);
             if ($a6['error'] !== null) {
@@ -527,6 +551,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             } else {
                 $v6 = [$a6['address']];
                 $why6 = $a6['why'];
+                $unique6 = $a6['address'] === "fd00::{$n}:1/128" ? "fd00::{$n}:1" : null;
             }
         }
         $after = array_merge($v4, $v6);
@@ -535,6 +560,19 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $need['tunnel'] = true;
             $c[] = "instance {$label}: tunnel addresses " . implode(',', $inst['tunneladdress']) . ' -> ' . implode(',', $after)
                 . ($why6 !== '' ? " ({$why6})" : '');
+        }
+    }
+
+    /* turning IPv6 on writes fd00::N:2, and fd00::N:1 with unique addressing: checked against this firewall's networks
+     * as Create checks them, refused by name; the saved IPv4 far gateway keeps its address and is not checked */
+    if ($v6Change === 'on' && !isset($e['ipv6']) && !isset($e['unique'])) {
+        if (!is_array($snap['clash_nets'] ?? null)) {
+            $e['ipv6'] = "could not read this firewall's networks (configd interface list ifconfig); try again";
+        } else {
+            $clash = wgct_scheme_clash((int)$n, null, $next6, $unique6, $snap['clash_nets']);
+            if ($clash !== null) {
+                $e['ipv6'] = $clash;
+            }
         }
     }
 
@@ -598,9 +636,12 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $need['tunnel'] = true;
         }
     }
-    if ($v6Change !== 'none' && !isset($e['ipv6'])) {
-        $allowed = wgct_split_csv($peerNow['tunneladdress']);
-        $allowed6 = array_values(array_filter($allowed, fn (string $a): bool => str_contains($a, ':')));
+    $allowed = wgct_split_csv($peerNow['tunneladdress']);
+    $allowedNoFamily = array_values(array_filter($allowed, fn (string $a): bool => wgct_cidr_family($a) === null));
+    if ($v6Change !== 'none' && !isset($e['ipv6']) && $allowedNoFamily !== []) {
+        $e['general'] = "allowed IP {$allowedNoFamily[0]} of the peer is not an IP network; correct it on VPN > WireGuard > Peers";
+    } elseif ($v6Change !== 'none' && !isset($e['ipv6'])) {
+        $allowed6 = array_values(array_filter($allowed, fn (string $a): bool => wgct_cidr_family($a) === 'inet6'));
         $allowedAfter = $v6Change === 'off'
             ? array_values(array_diff($allowed, $allowed6))
             : ($allowed6 === [] ? array_merge($allowed, ['::/0']) : $allowed);
@@ -867,7 +908,7 @@ function wgct_edit_selftest(): int {
     $plan = fn (array $req, ?array $swap = null, ?array $s = null, array $refs = []): array => wgct_plan_edit($s ?? $snap, $refs, $req, $swap);
     /* tun_b's current config, with public overrides */
     $swapB = fn (array $over = [], ?string $own = null, bool $pskSame = true): array => [
-        'public' => array_merge(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => []], 'peer_pubkey' => $key('Q'),
+        'public' => array_merge(['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => []], 'peer_pubkey' => $key('Q'),
                                  'endpoint_ip' => '198.51.100.11', 'endpoint_port' => '51820', 'has_psk' => false], $over),
         'own_pubkey' => $own ?? $key('F'), 'psk_same' => $pskSame,
     ];
@@ -879,6 +920,9 @@ function wgct_edit_selftest(): int {
     $emptyWrites = fn (array $p): bool => $p['instance'] === [] && $p['peer'] === [] && !$p['swap_keys']
         && $p['gateways'] === ['update' => [], 'add' => [], 'delete' => []]
         && $p['routes'] === ['add' => [], 'update' => [], 'delete' => []] && $p['nat'] === ['add' => [], 'delete' => []];
+
+    /* the form help states no range, so the refusal carries it (Edit has no name to refuse) */
+    wgct_check($t, 'refusal: the MTU refusal states its range', ($plan(['mtu' => 1500] + $keepA)['errors']['mtu'] ?? '') === '1280 to 1420');
 
     /* ---- the request ---- */
     $r = wgct_edit_request(['config' => '', 'name' => 'ignored', 'wan' => 'WAN_A', 'monitor' => '203.0.113.9', 'mtu' => '1420',
@@ -1022,8 +1066,18 @@ function wgct_edit_selftest(): int {
     $p = $plan(['ipv6' => false] + $keepA);
     wgct_check($t, 'edit: IPv6 off deletes the IPv6 gateway, the IPv6 tunnel address, ::/0 from the peer and the IPv6 NAT rules',
         $p['errors'] === [] && $p['mode'] === 'tunnel' && $p['gateways']['delete'] === ['g-a6']
-        && $p['instance'] === ['tunneladdress' => '10.2.0.2/32'] && $p['peer'] === ['tunneladdress' => '0.0.0.0/0']
+        && $p['instance'] === ['tunneladdress' => '192.0.2.2/32'] && $p['peer'] === ['tunneladdress' => '0.0.0.0/0']
         && $p['nat'] === ['add' => [], 'delete' => ['s-a3']] && $p['replay'] === ['tun_a']);
+    $s = $snap;
+    $s['core']['instances']['i-a']['tunneladdress'][] = 'bad';
+    wgct_check($t, 'edit: a tunnel address of no family is refused by name',
+        $plan(['ipv6' => false] + $keepA, null, $s)['errors']
+            === ['general' => 'tunnel address bad is not an IP address; correct it on VPN > WireGuard > Instances']);
+    $s = $snap;
+    $s['peer_fields']['p-a']['tunneladdress'] = '0.0.0.0/0,bogus:entry,::/0';
+    wgct_check($t, 'edit: an allowed IP of no family is refused by name',
+        $plan(['ipv6' => false] + $keepA, null, $s)['errors']
+            === ['general' => 'allowed IP bogus:entry of the peer is not an IP network; correct it on VPN > WireGuard > Peers']);
     $refs = [['id' => 'group:g6', 'what' => 'gateway group g6', 'gateways' => ['tun_a-ipv6'], 'interfaces' => []]];
     $p = $plan(['ipv6' => false] + $keepA, null, null, $refs);
     wgct_check($t, 'edit: IPv6 off while a group lists the IPv6 gateway => refused, naming it',
@@ -1031,10 +1085,10 @@ function wgct_edit_selftest(): int {
     wgct_check($t, 'edit: IPv6 on without a replacement config => refused on ipv6',
         isset($plan(['uuid' => 'i-b', 'ipv6' => true] + $none)['errors']['ipv6']));
     $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'monitor6' => '2001:db8:ffff::32', 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
-        $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
+        $swapB(['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
     $g6 = $p['gateways']['add'][0] ?? [];
-    wgct_check($t, 'edit: IPv6 on with a config that has an IPv6 address => fd00::2:1 (the site convention), a forced-down tun_b-ipv6 at fd00::2:2, ::/0, the IPv6 NAT; keys and route untouched',
-        $p['errors'] === [] && $p['mode'] === 'tunnel' && $p['instance'] === ['tunneladdress' => '10.2.0.2/32,fd00::2:1/128']
+    wgct_check($t, 'edit: IPv6 on with a config that has an IPv6 address => fd00::2:1 (the plugin\'s address scheme), a forced-down tun_b-ipv6 at fd00::2:2, ::/0, the IPv6 NAT; keys and route untouched',
+        $p['errors'] === [] && $p['mode'] === 'tunnel' && $p['instance'] === ['tunneladdress' => '192.0.2.2/32,fd00::2:1/128']
         && $p['peer'] === ['tunneladdress' => '0.0.0.0/0,::/0'] && ($g6['name'] ?? '') === 'tun_b-ipv6' && ($g6['gateway'] ?? '') === 'fd00::2:2'
         && ($g6['force_down'] ?? '') === '1' && ($g6['interface'] ?? '') === 'opt12'
         && ($g6['monitor'] ?? '') === '2001:db8:ffff::32' && ($g6['monitor_noroute'] ?? '') === '1' && ($g6['monitor_disable'] ?? '') === '0' && count($p['nat']['add']) === 1
@@ -1045,12 +1099,30 @@ function wgct_edit_selftest(): int {
     $s = $snap;
     $s['boot_id'] = '';
     $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'monitor6' => '2001:db8:ffff::32', 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
-        $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]), $s);
+        $swapB(['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]]), $s);
     wgct_check($t, 'edit: (3.5a) kern.boot_id unreadable => still forced down, no hold record, and the change list says to untick it by hand',
         $p['errors'] === [] && $p['holds'] === [] && (($p['gateways']['add'][0] ?? [])['force_down'] ?? '') === '1'
         && $has($p['changes'], 'kern.boot_id cannot be read, so the health mirror cannot record this hold: untick force_down on tun_b-ipv6 once the tunnel is up'));
     wgct_check($t, 'edit: (3.5a) IPv6 off and an edit that adds no IPv6 gateway => no hold record',
         $plan(['ipv6' => false] + $keepA)['holds'] === [] && $plan(['monitor6' => '2001:db8:ffff::30'] + $keepA)['holds'] === []);
+    /* turning IPv6 on writes fd00::2:2 and, with unique addressing (the default here), fd00::2:1 */
+    $on = ['uuid' => 'i-b', 'ipv6' => true, 'monitor6' => '2001:db8:ffff::32', 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none;
+    $onSwap = $swapB(['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]]);
+    $s = $snap;
+    $s['clash_nets']['inet6'][] = 'fd00::/64';
+    $s1 = $snap;
+    $s1['clash_nets']['inet6'][] = 'fd00::2:0/127';
+    $s4 = $snap;
+    $s4['clash_nets']['inet'][] = '10.2.0.0/24';
+    $refused = fn (array $p, string $addr, string $net): bool => ($p['errors']['ipv6'] ?? '')
+        === "{$addr}, the plugin's address for instance 2, lies inside {$net} on this firewall; free that range or remove the overlapping network"
+        && $p['gateways']['add'] === [];
+    $s0 = $snap;
+    $s0['clash_nets'] = null;
+    wgct_check($t, 'edit: IPv6 on whose fd00::N:2 or fd00::N:1 lies inside an own network => refused by name; the saved IPv4 far gateway is not checked; unread networks refuse with a retry',
+        $refused($plan($on, $onSwap, $s), 'fd00::2:2', 'fd00::/64') && $refused($plan($on, $onSwap, $s1), 'fd00::2:1', 'fd00::2:0/127')
+        && $plan($on, $onSwap, $s4)['errors'] === []
+        && str_contains($plan($on, $onSwap, $s0)['errors']['ipv6'] ?? '', 'could not read this firewall\'s networks'));
 
     /* ---- the IPv6 monitor ---- */
     $r0 = wgct_edit_request(['monitor6' => ''], $u);
@@ -1084,7 +1156,7 @@ function wgct_edit_selftest(): int {
     wgct_check($t, 'edit monitor6: (g) another gateway\'s monitor => refused on monitor6',
         str_contains($plan(['monitor6' => '2001:db8:ffff::31'] + $keepA, null, $s)['errors']['monitor6'] ?? '', 'the monitor of WAN_A6'));
     $p = $plan(['uuid' => 'i-b', 'ipv6' => true, 'nat' => ['inet' => null, 'inet6' => ['opt3']]] + $none,
-        $swapB(['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
+        $swapB(['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]]));
     wgct_check($t, 'edit monitor6: (h) turning IPv6 on without a monitor => refused on monitor6, no gateway added',
         str_contains($p['errors']['monitor6'] ?? '', 'required when turning IPv6 on') && $p['gateways']['add'] === []);
     wgct_check($t, 'edit monitor6: (i) a monitor for a tunnel whose IPv6 stays off => refused',
@@ -1139,7 +1211,7 @@ function wgct_edit_selftest(): int {
     $p = $plan(['uuid' => 'i-b'] + $none, $swapB());
     wgct_check($t, 'edit: an identical config (same keys, preshared key, endpoint, addresses) => nothing to change',
         $p['errors'] === [] && $p['mode'] === 'none' && $p['changes'] === [] && $emptyWrites($p));
-    $swapA = ['public' => ['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => []], 'peer_pubkey' => $key('P'),
+    $swapA = ['public' => ['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => []], 'peer_pubkey' => $key('P'),
                            'endpoint_ip' => '198.51.100.10', 'endpoint_port' => '51820', 'has_psk' => false],
               'own_pubkey' => $key('E'), 'psk_same' => true];
     $p1 = $plan($none, $swapA);
@@ -1219,7 +1291,7 @@ function wgct_edit_selftest(): int {
         && $p['routes']['add'] === [['network' => '2001:db8::14/128', 'gateway' => 'WAN_A6', 'descr' => 'wireguard - tun_d', 'enabled' => '1']]);
     /* (m) the tunnel's own peer serveraddress written non-canonically: a swap to the same endpoint with the
      * same keys is a no-op, not a spurious canonicalizing write */
-    $swapD = ['public' => ['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => []], 'peer_pubkey' => $key('R'),
+    $swapD = ['public' => ['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => []], 'peer_pubkey' => $key('R'),
                            'endpoint_ip' => '2001:db8::13', 'endpoint_port' => '51820', 'has_psk' => false],
               'own_pubkey' => $key('G'), 'psk_same' => true];
     $s = $snap;

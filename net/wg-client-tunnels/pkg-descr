@@ -1,16 +1,21 @@
 WireGuard Upstream Tunnels Plugin
 
 Creates, edits, binds, monitors and removes WireGuard upstream tunnels
-(ProtonVPN and similar) from one page. The core WireGuard, interface,
-gateway, route and NAT pages stay the source of truth: every tunnel is
-derived from core configuration on each use, and the plugin stores only
-which instances it manages, which gateways it holds down, and its switches.
+(from any provider that hands out wg-quick files) from one page. The core
+WireGuard, interface, gateway, route and NAT pages stay the source of
+truth: every tunnel is derived from core configuration on each use, and
+the plugin stores only which instances it manages, which gateways it
+holds down, and its switches.
 
 Features:
 - Create a tunnel from a pasted wg-quick config -- WireGuard instance and
   peer, interface, IPv4 and IPv6 gateways, endpoint route to the chosen WAN
   and outbound NAT, in one save -- with the MTU measured from that WAN, and
   the monitor IPs (IPv4, and IPv6 when IPv6 is on)
+- Gives tunnel N addresses from the plugin's own scheme: the far gateways
+  10.2.0.(3+N) and fd00::N:2 and, with unique addressing, the tunnel
+  address fd00::N:1/128. Create, and an Edit turning IPv6 on, refuses
+  addresses that lie inside a network on this firewall, and names both
 - Edit a tunnel in place -- outbound NAT sources, MTU, monitor IPs (IPv4
   and IPv6), bound WAN, IPv6 on or off, or a server swap from a
   replacement wg-quick config -- with a preview of exactly what changes;
@@ -62,9 +67,54 @@ Features:
   - clamps TCP MSS in both directions from each tunnel's MTU, so an
     MTU change on the WireGuard page takes effect without other edits
 - Leaves disabled gateways and an operator's manual force-down alone
+- Per node: not synchronised to a CARP peer; each firewall manages its
+  own tunnels
 
 Plugin Changelog
 ================
+
+3.9
+
+* The route set compares exact addresses and devices: fd00::1:1 is no
+  longer taken for fd00::1:10, nor wg1 for wg10.
+* The managed list is now typed rows, moved from the comma list by
+  migration ENG1_1_0 (engine model 1.1.0). Pins hold while the migration
+  waits, including after a Config History revert to a 3.8_1 configuration:
+  changes are refused and the wait is logged once, until
+  /usr/local/opnsense/mvc/script/run_migrations.php runs.
+* Core's hooks no longer wait for the default-route guard or the freshness
+  check. The filter hook reads only what the pins need and asks configd
+  nothing. The guard deletes only the route it judged.
+* Apply reloads in place while the plugin is enabled and tears no tunnel
+  down; with the plugin disabled it now stops it, removing the IPv6
+  addresses and routes it maintains. A read-only user can Apply saved
+  configuration, as with core's own plugins. The page header shows core's
+  service controls; Restart there tears down and rebuilds the tunnels' IPv6
+  addresses and routes. Stop there removes them and keeps them removed
+  until the next Start, Apply or boot; the pins, the default-route guard
+  and the health mirror keep running. With IPv6 addresses and routes
+  switched off the service shows as running, so Apply reloads it.
+* The core contract covers every core internal the plugin copies, and
+  logs a note when core carries a fix a workaround waits for, and when it
+  clears. The note for opnsense/core#10951 shows as information on 26.7.6
+  and later; #10578 will be noted the same way once core carries its fix.
+  A write refuses when core's relation caches drift.
+* Every reply of the plugin's own API actions carries a status: failed on
+  a refusal, ok on success. The two grids, tunnels/search_grid and
+  tunnels/search_unmanaged, answer in core's grid shape (rows, rowCount,
+  total, current) instead, and search only their text columns. The
+  tunnels endpoints search and options are renamed lists and choices.
+* Tunnel addresses (fd00::N:1, fd00::N:2, 10.2.0.(3+N)) are documented as
+  the plugin's own scheme. Create, and an Edit that turns IPv6 on, refuses
+  an address that overlaps this firewall's networks. Saved tunnels are
+  unchanged. Edit names an address of no family instead of guessing.
+* The plugin is per node: its settings are not offered to CARP/HA sync.
+* cron and configd enter through wgct.sh only. The configd actions list,
+  tunnel_status, health_mirror and configure_routes are removed; use
+  wgct.sh tunnel (tunnel.php list), routes_status, the cron's wgct.sh tick
+  and reload (so `configctl wgclienttunnels list` no longer works).
+* The always-visible setting briefs are gone; help comes from core's help.
+* Every source and test file carries the full BSD 2-Clause licence.
 
 3.8_1
 

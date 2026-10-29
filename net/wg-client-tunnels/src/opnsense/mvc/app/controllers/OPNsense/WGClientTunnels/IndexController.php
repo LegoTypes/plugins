@@ -37,6 +37,7 @@ class IndexController extends \OPNsense\Base\IndexController
         $this->view->rebindForm = $this->getForm('dialogRebind');
         $this->view->editForm = $this->getForm('dialogEdit');
         $this->view->formGridTunnels = $this->getFormGrid('gridTunnels');
+        $this->view->formGridUnmanaged = $this->getFormGrid('gridUnmanaged');
         $this->view->pick('OPNsense/WGClientTunnels/index');
     }
 }

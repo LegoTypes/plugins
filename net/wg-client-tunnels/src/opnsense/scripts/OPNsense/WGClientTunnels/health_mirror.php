@@ -4,7 +4,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Health mirror for the WireGuard tunnel gateways. Two passes, one save:
  *
@@ -17,50 +37,47 @@
  *    left alone.
  *
  * 2. IPv6: each IPv6 tunnel gateway follows its own IPv4 tunnel and nothing
- *    else. IPv6 rides inside the IPv4 tunnel and Proton NATs it server-side, so
- *    it depends on no native IPv6 upstream. It is forced down when its IPv4
- *    tunnel's loss crosses that gateway's losshigh (recovering at losslow,
- *    holding in between, exactly as dpinger does), when its dpinger socket is
- *    missing, or when the IPv4 gateway itself is force_down (pass 1, or by hand).
- *    As in pass 1, only a force_down this pass set itself is ever released: an
- *    IPv6 gateway forced down by hand is left alone.
+ *    else. IPv6 rides inside the IPv4 tunnel and the provider NATs it
+ *    server-side, so it depends on no native IPv6 upstream. It is forced down
+ *    when its IPv4 tunnel's loss crosses that gateway's losshigh (recovering at
+ *    losslow, holding in between, exactly as dpinger does), when its dpinger
+ *    socket is missing, or when the IPv4 gateway itself is force_down (pass 1,
+ *    or by hand). As in pass 1, only a force_down this pass set itself is ever
+ *    released: an IPv6 gateway forced down by hand is left alone.
  *
  * Keeping tunnel gateways out of the default-gateway election is NOT this
  * script's job: the sentinel gateways and default_guard.php do that.
  *
- * Tunnels come from the plugin's managed list, not a fixed naming convention:
- * lib/tunnels.php derives each one (WireGuard instance, peer, interface
- * assignment, WAN binding, gateways) from core config every time it is
- * needed. The held set -- which IPv4 tunnels pass 1 and which IPv6 gateways
- * pass 2 is holding down -- lives in the engine model as hold records (gateway,
- * the boot it was taken in, its underlay: the WAN of an IPv4 tunnel, the IPv4
- * tunnel of an IPv6 gateway; when), saved in the same Config::lock()/save()
- * write as the force_down values they explain. A record is ours only when its boot is the
- * live one, or the one boot.json names at the first tick after a reboot (that
- * tick re-stamps it); any other record is pruned with one log line and its
- * force_down left alone. Each tick ends by
+ * Tunnels come from the plugin's managed list: lib/tunnels.php derives each one
+ * from core config every time it is needed. The held set (the IPv4 tunnels
+ * pass 1 and the IPv6 gateways pass 2 hold down) lives in the engine model as
+ * hold records (gateway, boot, underlay, when; the underlay is the WAN of an
+ * IPv4 tunnel, the IPv4 tunnel of an IPv6 gateway), saved in the same
+ * Config::lock()/save() write as the force_down values they explain. A record
+ * is ours only when its boot is the live one, or the one boot.json names at the
+ * first tick after a reboot (that tick re-stamps it); any other record is
+ * pruned with one log line and its force_down left alone. Each tick ends by
  * recording the live boot id in boot.json, written only when it names another
- * boot. A tick that cannot read kern.boot_id takes, releases and records no
- * hold, and says so once per state. So does a tick while the plugin settings
- * wait for their 3.1.0 migration: the hold records are not in the
- * engine model yet.
+ * boot. A tick that cannot read kern.boot_id, or that runs while a migration of
+ * the stored data is pending, takes, releases and records no hold, and says so
+ * once per state.
  *
  * Settle guard: a dpinger that has just started has no samples yet, so what it
- * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing about
- * the path. Every routing reconfigure restarts all dpingers -- any gateway Apply,
- * and the reconfigure this script itself triggers when it changes a gateway -- so
- * without this the mirror releases gateways in the middle of an outage, or holds a
- * healthy WAN's tunnels down (seen on the firewall 2026-10-06: a gateway Apply
- * took WAN2's tunnels down for 1 min 45 s), and each change restarts the dpingers
- * again. While a gateway's dpinger socket is younger than the settle window, or
- * absent, its reading changes nothing: the previous decision stands. A WAN that
- * is disabled or forced down in configuration still holds its tunnels at once;
- * that is not a reading. A real outage that coincides with a restart is acted on
- * once the window has passed. The window is the gateway's own time_period
- * (SETTLE_FALLBACK_SECONDS if unset); --settle=N overrides it and --settle=0
- * disables the guard. It applies to the WAN reading in pass 1 and the tunnel
- * reading in pass 2. A bound WAN gateway with monitoring disabled counts as
- * settled at once: it has no dpinger to wait for.
+ * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing
+ * about the path. Every routing reconfigure restarts all dpingers -- any
+ * gateway Apply, and the reconfigure this script itself triggers when it
+ * changes a gateway -- so without this the mirror releases gateways in the
+ * middle of an outage, or holds a healthy WAN's tunnels down, and each change
+ * restarts the dpingers again. While a gateway's dpinger socket is younger than
+ * the settle window, or absent, its reading changes nothing: the previous
+ * decision stands. A WAN that is disabled or forced down in configuration still
+ * holds its tunnels at once; that is not a reading. A real outage that
+ * coincides with a restart is acted on once the window has passed. The window
+ * is the gateway's own time_period (SETTLE_FALLBACK_SECONDS if unset);
+ * --settle=N overrides it and --settle=0 disables the guard. It applies to the
+ * WAN reading in pass 1 and the tunnel reading in pass 2. A bound WAN gateway
+ * with monitoring disabled counts as settled at once: it has no dpinger to wait
+ * for.
  *
  * --dry reports every decision against live config and live gateway status
  * without writing or reconfiguring anything. --selftest exercises the decision
@@ -68,7 +85,7 @@
  * (config, live status, held tunnels) as JSON and writes nothing; --plan-from=FILE
  * decides from a snapshot saved that way and prints what --dry would.
  *
- * Runs from /etc/cron.d/wgclienttunnels four times a minute (offsets 0/15/30/45s).
+ * Runs from cron.d/wgclienttunnels through wgct.sh tick, four times a minute (offsets 0/15/30/45s).
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
@@ -127,11 +144,12 @@ if ($snapshotOut) {
 }
 
 /*
- * The 3.1.0 migration pending (between pkg installing these files and the
- * package's run_migrations.php): the hold records are still 3.7_1's list in the
- * settings node, so the tick takes, releases and records nothing, said once per
- * state. --dry only says so. A mirror switched off would not have
- * run either, so it ends quietly first, as it does below.
+ * A migration pending (between pkg installing these files and the package's
+ * run_migrations.php, or after a Config History revert to an older configuration):
+ * the managed list or the hold records are still where the older version stored
+ * them, so the tick takes, releases and records nothing, said once per state.
+ * --dry only says so. A mirror switched off would not have run either, so it
+ * ends quietly first, as it does below.
  */
 $switches = new \OPNsense\WGClientTunnels\WGClientTunnels();
 if (!$switches->enabled->isEqual('1') || !$switches->health_mirror->isEqual('1')) {
@@ -216,7 +234,7 @@ if (empty($plan['changes'])) {
          */
         $live = wgct_collect_live();
         $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
-            /* config as re-read under the lock: a migration pending again (a restored 3.7_1 backup) saves nothing */
+            /* config as re-read under the lock: a migration pending again (a restored older backup) saves nothing */
             if (wgct_migration_pending()) {
                 return ['save' => false, 'deferred' => true];
             }
@@ -275,7 +293,7 @@ try {
 wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, false, '', 'gateway lock available again');
 $live = wgct_collect_live();
 $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
-    /* config as re-read under the lock: a migration pending again (a restored 3.7_1 backup) saves nothing */
+    /* config as re-read under the lock: a migration pending again (a restored older backup) saves nothing */
     if (wgct_migration_pending()) {
         return ['save' => false, 'pending' => true];
     }

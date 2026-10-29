@@ -3,15 +3,36 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Tunnel derivation. Core config is the only
  * source of truth: a managed tunnel is assembled from its WireGuard instance
  * and peer, the interface assignment of its device, the /32 or /128 route to
  * its endpoint, the gateways on its interface, outbound NAT and the gateway
  * groups, every time it is needed. The plugin stores only which instances it
- * manages. wgct_core_snapshot() reads config through models; every other
- * function here is pure over that snapshot.
+ * manages. wgct_core_snapshot() reads config through models (the render
+ * snapshot reads the static routes raw: wgct_core_render_snapshot()); every
+ * other function here is pure over that snapshot.
  */
 
 use OPNsense\Core\Config;
@@ -71,8 +92,12 @@ const WGCT_FINDINGS = [
     'render-fallback' => [false, WGCT_LOG_PAGE . ': the plugin could not build its firewall rules at the last reload, so pf keeps the pins it last put in place; the next reload that succeeds replaces them'],
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
     'core-value-invalid' => [false, 'The named settings hold a value core would not accept (a restored or hand-edited configuration): correct or delete the entry under System > Gateways, Interfaces > Assignments, Firewall > Aliases or VPN > WireGuard > Instances; the plugin ignores the value until then'],
-    'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed the gateway lock or the routing alarm command the plugin copies, so its alarm replay may not match core; install a plugin update that matches this core'],
+    'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed an internal the plugin copies, so the part of the plugin that copies it may not match core; install a plugin update that matches this core'],
+    'core-fixed' => [false, "nothing to do: the plugin's workaround stays harmless until a plugin update retires it"],
 ];
+
+/* the findings that are information, not a problem: the tunnel list shows them as such, never as a warning */
+const WGCT_INFO_FINDINGS = ['core-fixed'];
 
 /*
  * The priority of the WAN pin and inner-source block rules: the top of core's early automatic band
@@ -385,13 +410,61 @@ function wgct_core_snapshot() {
  * The tunnels' part of the snapshot alone: instances, peers, interfaces and gateways, with the routes, outbound NAT,
  * gateway groups, aliases, DNS servers and forwarders left empty. The models of those ask configd while they load
  * (on 26.7.7 the routes and aliases 10 s each, outbound NAT 120 s and the gateway groups 100 s when configd does not
- * answer), so the package removal, which needs only each tunnel's gateways, reads this. Derived from
- * it, a tunnel's devices and gateways are as from the whole snapshot; its binding and findings are not.
+ * answer), so the package removal and the route set (gateway_config.php), which need only each tunnel's devices and
+ * gateways, read this. Derived from it, a tunnel's devices, gateways and route lines are as from the whole snapshot;
+ * its binding and its findings that are not blocking are not.
  *
  * @return array see wgct_derive()
  */
 function wgct_core_tunnel_snapshot(): array {
     return wgct_snapshot_validate(wgct_core_read(false));
+}
+
+/**
+ * What the pins and MSS lines read: the tunnels' part (wgct_core_read(false)) with the routes read raw
+ * (wgct_core_read_routes()). The filter hook and freshness derive from it, so neither waits on configd: core's Routes
+ * model asks it while it loads. Outbound NAT, gateway groups, aliases, DNS servers and forwarders stay empty; derived
+ * from it, a tunnel's pins and MSS lines are as from the whole snapshot.
+ *
+ * @param (callable(): array)|null $tunnelRead the tunnels' part as read, before wgct_snapshot_validate(); default
+ *                                             wgct_core_read(false)
+ * @param \SimpleXMLElement|null   $root       config.xml; default core's
+ * @return array see wgct_derive()
+ */
+function wgct_core_render_snapshot(?callable $tunnelRead = null, ?\SimpleXMLElement $root = null): array {
+    $core = ($tunnelRead ?? fn (): array => wgct_core_read(false))();
+    $core['routes'] = [];
+    wgct_core_read_routes($core, $root ?? Config::getInstance()->object());
+    return wgct_snapshot_validate($core);
+}
+
+/**
+ * The static routes, read raw from config.xml, for the render snapshot only: core's Routes model populates its
+ * gateway field from configd ("interface gateways list") in every process that loads it, which costs 10 s when
+ * configd does not answer (26.7.7). The raw read keeps the model's view of every route, as BaseModel loads it:
+ *  - a route node without children is skipped;
+ *  - the uuid attribute is the key; a route without one, or with an empty one, gets a uuid generated by the model
+ *    and is kept, so here it is kept under a key of its own ('#' and its position), which no uuid can be;
+ *  - network is stored as NetworkField stores it, trimmed and in lower case; gateway as stored;
+ *  - a route is enabled when its enabled node is 1 or absent (the field's default).
+ * Pure.
+ *
+ * @param array             $core the snapshot being read; its 'routes' are added to:
+ *                                key => ['network' => string, 'gateway' => string, 'enabled' => bool]
+ * @param \SimpleXMLElement $root config.xml
+ */
+function wgct_core_read_routes(array &$core, \SimpleXMLElement $root): void {
+    foreach (wgct_xml_list($root, 'staticroutes', 'route') as $position => $r) {
+        if ($r->count() === 0) {
+            continue;
+        }
+        $uuid = (string)$r['uuid'];
+        $core['routes'][empty($uuid) ? '#' . $position : $uuid] = [
+            'network' => trim(strtolower((string)$r->network)),
+            'gateway' => (string)$r->gateway,
+            'enabled' => !isset($r->enabled) || (string)$r->enabled === '1',
+        ];
+    }
 }
 
 /**
@@ -406,19 +479,19 @@ function wgct_core_read(bool $context): array {
     ];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $s) {
         $core['instances'][$uuid] = [
-            'name' => (string)$s->name,
-            'enabled' => (string)$s->enabled === '1',
-            'instance' => (string)$s->instance,
-            'mtu' => (string)$s->mtu,
-            'tunneladdress' => wgct_split_csv((string)$s->tunneladdress),
-            'peers' => wgct_split_csv((string)$s->peers),
+            'name' => $s->name->getValue(),
+            'enabled' => $s->enabled->isEqual('1'),
+            'instance' => $s->instance->getValue(),
+            'mtu' => $s->mtu->getValue(),
+            'tunneladdress' => wgct_split_csv($s->tunneladdress->getValue()),
+            'peers' => wgct_split_csv($s->peers->getValue()),
         ];
     }
     foreach ((new \OPNsense\Wireguard\Client())->clients->client->iterateItems() as $uuid => $c) {
         $core['peers'][$uuid] = [
-            'name' => (string)$c->name,
-            'serveraddress' => (string)$c->serveraddress,
-            'serverport' => (string)$c->serverport,
+            'name' => $c->name->getValue(),
+            'serveraddress' => $c->serveraddress->getValue(),
+            'serverport' => $c->serverport->getValue(),
         ];
     }
     foreach ($root->interfaces->children() as $opt => $if) {
@@ -432,21 +505,21 @@ function wgct_core_read(bool $context): array {
         ];
     }
     foreach ((new \OPNsense\Routing\Gateways())->gateway_item->iterateItems() as $uuid => $g) {
-        $core['gateways'][(string)$g->name] = [
+        $core['gateways'][$g->name->getValue()] = [
             'uuid' => $uuid,
-            'interface' => (string)$g->interface,
-            'ipprotocol' => (string)$g->ipprotocol,
-            'gateway' => (string)$g->gateway,
-            'monitor' => (string)$g->monitor,
-            'disabled' => (string)$g->disabled === '1',
-            'force_down' => (string)$g->force_down === '1',
-            'losshigh' => (string)$g->losshigh,
-            'losslow' => (string)$g->losslow,
-            'time_period' => (string)$g->time_period,
-            'monitor_disable' => (string)$g->monitor_disable === '1',
-            'monitor_noroute' => (string)$g->monitor_noroute === '1',
-            'latencylow' => (string)$g->latencylow,
-            'latencyhigh' => (string)$g->latencyhigh,
+            'interface' => $g->interface->getValue(),
+            'ipprotocol' => $g->ipprotocol->getValue(),
+            'gateway' => $g->gateway->getValue(),
+            'monitor' => $g->monitor->getValue(),
+            'disabled' => $g->disabled->isEqual('1'),
+            'force_down' => $g->force_down->isEqual('1'),
+            'losshigh' => $g->losshigh->getValue(),
+            'losslow' => $g->losslow->getValue(),
+            'time_period' => $g->time_period->getValue(),
+            'monitor_disable' => $g->monitor_disable->isEqual('1'),
+            'monitor_noroute' => $g->monitor_noroute->isEqual('1'),
+            'latencylow' => $g->latencylow->getValue(),
+            'latencyhigh' => $g->latencyhigh->getValue(),
         ];
     }
     if ($context) {
@@ -454,7 +527,7 @@ function wgct_core_read(bool $context): array {
     }
     /* the plugin's route switch (the monitor routes) and core's dpinger defaults, read once here so
      * the derivation stays pure */
-    $core['ipv6_routes'] = (string)(new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes === '1';
+    $core['ipv6_routes'] = (new \OPNsense\WGClientTunnels\WGClientTunnels())->ipv6_routes->isEqual('1');
     $core['dpinger_defaults'] = [];
     try {
         if (is_callable([\OPNsense\Routing\FieldTypes\GatewayField::class, 'getDpingerDefaults'])) {
@@ -475,26 +548,26 @@ function wgct_core_read(bool $context): array {
 function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
     foreach ((new \OPNsense\Routes\Route())->route->iterateItems() as $uuid => $r) {
         $core['routes'][$uuid] = [
-            'network' => (string)$r->network,
-            'gateway' => (string)$r->gateway,
-            'enabled' => (string)$r->enabled === '1',
+            'network' => $r->network->getValue(),
+            'gateway' => $r->gateway->getValue(),
+            'enabled' => $r->enabled->isEqual('1'),
         ];
     }
     foreach ((new \OPNsense\Firewall\Filter())->snatrules->rule->iterateItems() as $rule) {
-        if ((string)$rule->enabled === '1') {
+        if ($rule->enabled->isEqual('1')) {
             $core['snat'][] = [
-                'interface' => (string)$rule->interface,
-                'ipprotocol' => (string)$rule->ipprotocol,
-                'source' => (string)$rule->source_net,
+                'interface' => $rule->interface->getValue(),
+                'ipprotocol' => $rule->ipprotocol->getValue(),
+                'source' => $rule->source_net->getValue(),
             ];
         }
     }
     foreach ((new \OPNsense\Routing\GatewayGroups())->gateway_group->iterateItems() as $grp) {
         $members = [];
         foreach (['item', 'item2', 'item3', 'item4', 'item5'] as $tier) {
-            $members = array_merge($members, wgct_split_csv((string)$grp->$tier));
+            $members = array_merge($members, wgct_split_csv($grp->$tier->getValue()));
         }
-        $core['groups'][(string)$grp->name] = $members;
+        $core['groups'][$grp->name->getValue()] = $members;
     }
     foreach ($root->system->dnsserver as $dns) {
         if ((string)$dns !== '') {
@@ -502,11 +575,11 @@ function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
         }
     }
     foreach ((new \OPNsense\Firewall\Alias())->aliases->alias->iterateItems() as $alias) {
-        $core['aliases'][] = (string)$alias->name;
+        $core['aliases'][] = $alias->name->getValue();
     }
     foreach ((new \OPNsense\Unbound\Unbound())->dots->dot->iterateItems() as $dot) {
-        if ((string)$dot->enabled === '1' && (string)$dot->server !== '') {
-            $core['forwarders'][] = (string)$dot->server;
+        if ($dot->enabled->isEqual('1') && $dot->server->getValue() !== '') {
+            $core['forwarders'][] = $dot->server->getValue();
         }
     }
 }
@@ -514,9 +587,30 @@ function wgct_core_read_context(array &$core, \SimpleXMLElement $root): void {
 /* the settings model version whose migration (M3_1_0) moves the managed list and the holds into the engine model */
 const WGCT_SETTINGS_MIGRATED_VERSION = '3.1.0';
 
-/* what a state-changing run says while that migration is pending */
-const WGCT_MIGRATION_PENDING = 'the plugin settings are not migrated to 3.1.0 yet (the package install runs run_migrations.php);'
-    . ' nothing is held, released or written until they are';
+/* the engine model version whose migration (ENG1_1_0) turns 3.8's comma list into one row per managed tunnel */
+const WGCT_ENGINE_MIGRATED_VERSION = '1.1.0';
+
+/* what a state-changing run says while either migration is pending */
+const WGCT_MIGRATION_PENDING = 'the plugin\'s stored data is not migrated to this version yet (the package install runs it;'
+    . ' after a Config History revert, run /usr/local/opnsense/mvc/script/run_migrations.php); nothing is held, released'
+    . ' or written until it is';
+
+/**
+ * Whether the model node $node in $root is stored below $version, as core reads it: a stored version below it, or
+ * none (core reads that as 0.0.0), is. No such node is not. Pure.
+ *
+ * @param \SimpleXMLElement $root    config.xml's root
+ * @param string            $node    the node below OPNsense
+ * @param string            $version the version its migration brings it to
+ * @return bool
+ */
+function wgct_stored_below(\SimpleXMLElement $root, string $node, string $version): bool {
+    if (!isset($root->OPNsense->{$node})) {
+        return false;
+    }
+    $stored = (string)($root->OPNsense->{$node}['version'] ?? '');
+    return version_compare($stored !== '' ? $stored : '0.0.0', $version, '<');
+}
 
 /**
  * Whether the settings node in $root still waits for its 3.1.0 migration: between pkg installing 3.8's files and
@@ -528,65 +622,86 @@ const WGCT_MIGRATION_PENDING = 'the plugin settings are not migrated to 3.1.0 ye
  * @return bool
  */
 function wgct_settings_pending(\SimpleXMLElement $root): bool {
-    if (!isset($root->OPNsense->WGClientTunnels)) {
-        return false;
-    }
-    $stored = (string)($root->OPNsense->WGClientTunnels['version'] ?? '');
-    return version_compare($stored !== '' ? $stored : '0.0.0', WGCT_SETTINGS_MIGRATED_VERSION, '<');
+    return wgct_stored_below($root, 'WGClientTunnels', WGCT_SETTINGS_MIGRATED_VERSION);
 }
 
 /**
- * The managed list as 3.7_1 stored it in the 3.0.0 settings node: M3_1_0's own source, split as 3.7_1 split it, so
- * a render while the migration is pending pins what 3.7_1 pinned. No list stored is none. Pure.
+ * Whether the engine node in $root still waits for its 1.1.0 migration: between pkg installing 3.9's files and the
+ * package's run_migrations.php, for good when that migration failed, and after a Config History revert to a 3.8_1
+ * configuration, which brings the 1.0.0 node back and runs no migration. A stored version below 1.1.0, or none, is
+ * pending; a box with no engine node is not. Pure.
  *
  * @param \SimpleXMLElement $root config.xml's root
+ * @return bool
+ */
+function wgct_engine_pending(\SimpleXMLElement $root): bool {
+    return wgct_stored_below($root, 'WGClientTunnelsEngine', WGCT_ENGINE_MIGRATED_VERSION);
+}
+
+/**
+ * A managed list as an older version stored it, one comma-separated text value: 3.7_1's in the 3.0.0 settings node
+ * (M3_1_0's source) by default, or 3.8's in the 1.0.0 engine node (ENG1_1_0's source). Split as those versions
+ * split it, so a render while a migration is pending pins what they pinned. No list stored is none. Pure.
+ *
+ * @param \SimpleXMLElement $root config.xml's root
+ * @param string            $node the node below OPNsense that holds the list
+ * @param string            $what that node as the error names it
  * @return list<string> instance uuids, in order, as stored
  * @throws \RuntimeException when the node holds more than one list, or a list that is not one text value
  */
-function wgct_legacy_managed(\SimpleXMLElement $root): array {
-    $node = $root->OPNsense->WGClientTunnels;
-    if (!isset($node->managed)) {
+function wgct_legacy_managed(\SimpleXMLElement $root, string $node = 'WGClientTunnels', string $what = "the 3.0.0 settings'"): array {
+    $holder = $root->OPNsense->{$node};
+    if (!isset($holder->managed)) {
         return [];
     }
-    if (count($node->managed) !== 1 || $node->managed->children()->count() !== 0) {
-        throw new \RuntimeException('the 3.0.0 settings\' managed list cannot be read as one list');
+    if (count($holder->managed) !== 1 || $holder->managed->children()->count() !== 0) {
+        throw new \RuntimeException("{$what} managed list cannot be read as one list");
     }
-    return wgct_split_csv((string)$node->managed);
+    return wgct_split_csv((string)$holder->managed);
 }
 
 /**
- * The managed list wgct_managed() returns, from $root: the legacy one while the migration is pending (the engine
- * model is not read: it does not hold the list yet), else $engine's. Pure but for $engine.
+ * The managed list wgct_managed() returns, from $root: while the settings migration is pending, 3.7_1's list in the
+ * settings node; else while the engine migration is pending, 3.8's comma list in the 1.0.0 engine node; else
+ * $engine's. In either window the engine model is not read: it does not hold the list as rows yet. Pure but for
+ * $engine.
  *
  * @param \SimpleXMLElement        $root   config.xml's root
  * @param callable(): list<string> $engine the engine model's list
  * @return list<string> instance uuids
- * @throws \RuntimeException when the migration is pending and the legacy list cannot be read
+ * @throws \RuntimeException when a migration is pending and its legacy list cannot be read
  */
 function wgct_managed_in(\SimpleXMLElement $root, callable $engine): array {
-    return wgct_settings_pending($root) ? wgct_legacy_managed($root) : $engine();
+    if (wgct_settings_pending($root)) {
+        return wgct_legacy_managed($root);
+    }
+    if (wgct_engine_pending($root)) {
+        return wgct_legacy_managed($root, 'WGClientTunnelsEngine', "the 1.0.0 engine's");
+    }
+    return $engine();
 }
 
 /**
- * @return bool whether config.xml's settings node waits for its 3.1.0 migration (wgct_settings_pending()): every
- *              state-changing run refuses then
+ * @return bool whether config.xml's settings node waits for its 3.1.0 migration or its engine node for its 1.1.0
+ *              one (wgct_settings_pending(), wgct_engine_pending()): every state-changing run refuses then
  */
 function wgct_migration_pending(): bool {
-    return wgct_settings_pending(Config::getInstance()->object());
+    $root = Config::getInstance()->object();
+    return wgct_settings_pending($root) || wgct_engine_pending($root);
 }
 
 /**
- * The WireGuard instances the plugin manages, in order, from the engine model: the API cannot edit it.
- * While the 3.1.0 migration is pending, the list 3.7_1 stored in the settings node, which the migration carries
- * over (wgct_managed_in()): a render in that window pins what 3.7_1 pinned, and one that cannot read it
+ * The WireGuard instances the plugin manages, in order, from the engine model's rows: the API cannot edit them.
+ * While a migration is pending, the list the older version stored, which the migration carries over
+ * (wgct_managed_in()): a render in that window pins what that version pinned, and one that cannot read it
  * fails into the footprint.
  *
  * @return list<string> instance uuids
- * @throws \RuntimeException when the migration is pending and the legacy list cannot be read
+ * @throws \RuntimeException when a migration is pending and its legacy list cannot be read
  */
 function wgct_managed(): array {
     return wgct_managed_in(Config::getInstance()->object(),
-        fn (): array => wgct_split_csv((new \OPNsense\WGClientTunnels\Engine())->managed->getValue()));
+        fn (): array => (new \OPNsense\WGClientTunnels\Engine())->managedList());
 }
 
 /**
@@ -617,7 +732,7 @@ function wgct_dpinger_defaults(mixed $raw): array {
  * @return array ['tunnels' => [record, ...], 'global' => [finding, ...]]
  */
 function wgct_derive(array $core, array $managed) {
-    $canon = fn (string $a): string => wgct_canon_ip($a) ?? $a;
+    $canon = fn (string $a): string => wgct_canon_ip_zoned($a) ?? $a;
     $ctx = ['opt_by_device' => [], 'gw_by_if' => [], 'binding_routes' => [], 'stale_routes' => [],
             'monitor_users' => [], 'resolvers' => array_map($canon, array_merge($core['dns_servers'], $core['forwarders']))];
     foreach ($core['interfaces'] as $opt => $if) {
@@ -872,7 +987,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
 
     /* IPv6: the instance's tunnel address, the gateway's next hop */
     $v6 = array_values(array_filter($inst['tunneladdress'], function ($a) {
-        return strpos($a, ':') !== false;
+        return wgct_cidr_family($a) === 'inet6';
     }));
     if (count($v6) === 1) {
         $t['ipv6_address'] = $v6[0];
@@ -884,7 +999,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
     if ($t['gw6'] !== null) {
         $g6 = $core['gateways'][$t['gw6']];
         $t['monitor6_mode'] = !empty($g6['monitor_disable']) ? 'off' : ($g6['monitor'] === '' ? 'empty' : 'monitored');
-        $t['monitor6'] = $t['monitor6_mode'] === 'monitored' ? (wgct_canon_ip($g6['monitor']) ?? $g6['monitor']) : '';
+        $t['monitor6'] = $t['monitor6_mode'] === 'monitored' ? (wgct_canon_ip_zoned($g6['monitor']) ?? $g6['monitor']) : '';
     }
     if (count($v6) > 1) {
         $t['findings'][] = wgct_finding('ipv6-incomplete', count($v6) . ' IPv6 tunnel addresses');
@@ -925,7 +1040,7 @@ function wgct_derive_one(array $core, $uuid, array $ctx) {
         if ($m === '') {
             continue;
         }
-        $key = wgct_canon_ip($m) ?? $m;
+        $key = wgct_canon_ip_zoned($m) ?? $m;
         $others = array_values(array_diff($ctx['monitor_users'][$key] ?? [], [$own]));
         if (!empty($others)) {
             $t['findings'][] = wgct_finding('monitor-shared', "{$m} is also monitored by " . implode(', ', $others));
@@ -1031,8 +1146,9 @@ function wgct_mirror_inputs(array $derived) {
 }
 
 /**
- * gateway_config.php's output, read by wgct.sh's route set and status: `state|on` or
- * `state|off`, then one `route` line per tunnel the route set configures and one `keep` line per managed
+ * gateway_config.php's output, read by wgct.sh's route set and status: `state|on`, `state|off` (the
+ * plugin enabled, IPv6 routes off: the service runs with no route set) or `state|disabled` (the plugin off),
+ * then one `route` line per tunnel the route set configures and one `keep` line per managed
  * tunnel that is blocked (its recorded routes are kept, never deleted, while the finding stands). A tunnel
  * with no IPv6 or a disabled instance gets no line. Pure.
  *
@@ -1042,7 +1158,10 @@ function wgct_mirror_inputs(array $derived) {
  * @return list<string>
  */
 function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): array {
-    if (!$enabled || !$ipv6Routes) {
+    if (!$enabled) {
+        return ['state|disabled'];
+    }
+    if (!$ipv6Routes) {
         return ['state|off'];
     }
     $clean = fn (mixed $v): string => str_replace(['|', "\r", "\n"], ' ', trim((string)$v));
@@ -1066,14 +1185,20 @@ function wgct_route_lines(array $derived, bool $enabled, bool $ipv6Routes): arra
             || !wgct_valid_gateway_name($t['gw4']) || !wgct_valid_gateway_name($t['gw6'])) {
             continue;
         }
-        $lines[] = implode('|', array_map($clean,
-            ['route', $t['device'], $t['ipv6_address'], $t['ipv6_next_hop'], $t['gw4'], $t['gw6'], $t['monitor6']]));
+        /* canonical, so the shell compares whole fields: fd00::1:1 is not fd00::1:10 */
+        $canonAddress = wgct_canon_ip($address[0]);
+        $canonNextHop = wgct_canon_ip_zoned((string)$t['ipv6_next_hop']);
+        if ($canonAddress === null || $canonNextHop === null) {
+            continue;
+        }
+        $lines[] = implode('|', array_map($clean, ['route', $t['device'],
+            $canonAddress . (isset($address[1]) ? '/' . $address[1] : ''), $canonNextHop, $t['gw4'], $t['gw6'], $t['monitor6']]));
     }
     return $lines;
 }
 
 /**
- * gateway_config.php's output while the 3.1.0 migration is pending: `state|pending` in place of the
+ * gateway_config.php's output while a migration is pending: `state|pending` in place of the
  * state line, so wgct.sh's route set changes nothing, and the route lines kept for its status listing. Pure.
  *
  * @param list<string> $lines wgct_route_lines()
@@ -1266,7 +1391,7 @@ function wgct_tunnels_selftest() {
         return [
             'instances' => [
                 'i-a' => ['name' => 'tun_a', 'enabled' => true, 'instance' => '1', 'mtu' => '1376',
-                          'tunneladdress' => ['10.2.0.2/32', 'fd00::1:1/128'], 'peers' => ['p-a']],
+                          'tunneladdress' => ['192.0.2.2/32', 'fd00::1:1/128'], 'peers' => ['p-a']],
             ],
             'peers' => ['p-a' => ['name' => 'tun_a', 'serveraddress' => '198.51.100.10', 'serverport' => '51820']],
             'interfaces' => [
@@ -1329,7 +1454,7 @@ function wgct_tunnels_selftest() {
         ['two IPv4 gateways on the interface => ambiguous-gateway',
             function ($c) use ($gw) { $c['gateways']['tun_a_2'] = $gw(['interface' => 'opt11']); return $c; }, ['i-a'], ['ambiguous-gateway'], false],
         ['IPv6 gateway without IPv6 address => ipv6-incomplete',
-            function ($c) { $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32']; return $c; }, ['i-a'], ['ipv6-incomplete'], true],
+            function ($c) { $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32']; return $c; }, ['i-a'], ['ipv6-incomplete'], true],
         ['interface MTU differs => mtu-override',
             function ($c) { $c['interfaces']['opt11']['mtu'] = '1300'; return $c; }, ['i-a'], ['mtu-override'], true],
         ['interface MSS set => legacy-mss',
@@ -1386,6 +1511,12 @@ function wgct_tunnels_selftest() {
             function ($c) { $c['ipv6_routes'] = false; return $c; }, ['i-a'], ['ipv6-monitor-config'], true],
         ['(n) IPv6 monitor shared with another gateway, spelled differently => monitor-shared',
             function ($c) { $c['gateways']['WAN_A6']['monitor'] = '2001:DB8:FFFF:0::9'; return $c; }, ['i-a'], ['monitor-shared'], true],
+        ['(n) a zoned IPv6 monitor shared with another gateway, spelled differently => monitor-shared',
+            function ($c) {
+                $c['gateways']['tun_a-ipv6']['monitor'] = 'FE80::0001%wg1';
+                $c['gateways']['WAN_A6']['monitor'] = 'fe80::1%wg1';
+                return $c;
+            }, ['i-a'], ['monitor-shared'], true],
     ];
     $fail = 0;
     $total = 0;
@@ -1411,6 +1542,15 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] derive: unknown gateway name on the route => wan-unavailable, bound_wan is the route's gateway, wan_interface fails closed\n", $ok ? 'PASS' : 'FAIL');
+
+    /* a tunnel address that is no address counts in neither family */
+    $c = $base();
+    $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32', 'x:y/64', '2001:DB8::0050/128'];
+    $t = wgct_derive($c, ['i-a'])['tunnels'][0];
+    $ok = $t['ipv6_address'] === '2001:DB8::0050/128' && !in_array('ipv6-incomplete', $codes($t), true);
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] derive: a tunnel address that is no address is no IPv6 address\n", $ok ? 'PASS' : 'FAIL');
 
     /* (b) an unsupported IPv6 endpoint is still shown in brackets; a hostname as it is */
     $c = $base();
@@ -1609,7 +1749,7 @@ function wgct_tunnels_selftest() {
     printf("[%s] render: MSS lines both families, both directions\n", $ok ? 'PASS' : 'FAIL');
 
     $c = $base();
-    $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32'];
     unset($c['gateways']['tun_a-ipv6']);
     $ok = wgct_mss_lines(wgct_derive($c, ['i-a']), true) === ['match on wg1 inet proto tcp all scrub (max-mss 1336)']
         && wgct_mss_lines($d, false) === [];
@@ -1653,7 +1793,7 @@ function wgct_tunnels_selftest() {
     /* two enforceable tunnels bound to the same WAN, distinct endpoints => merged and sorted */
     $c = $base();
     $c['instances']['i-b'] = ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420',
-                              'tunneladdress' => ['10.3.0.2/32'], 'peers' => ['p-b']];
+                              'tunneladdress' => ['192.0.2.3/32'], 'peers' => ['p-b']];
     $c['peers']['p-b'] = ['name' => 'tun_b', 'serveraddress' => '198.51.100.30', 'serverport' => '51821'];
     $c['interfaces']['opt12'] = ['if' => 'wg2', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
     $c['routes']['r-b'] = ['network' => '198.51.100.30/32', 'gateway' => 'WAN_A', 'enabled' => true];
@@ -1666,7 +1806,7 @@ function wgct_tunnels_selftest() {
     /* two enforceable tunnels sharing the same endpoint => the endpoint is de-duplicated */
     $c = $base();
     $c['instances']['i-b'] = ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420',
-                              'tunneladdress' => ['10.3.0.2/32'], 'peers' => ['p-b']];
+                              'tunneladdress' => ['192.0.2.3/32'], 'peers' => ['p-b']];
     $c['peers']['p-b'] = ['name' => 'tun_b', 'serveraddress' => '198.51.100.10', 'serverport' => '51821'];
     $c['interfaces']['opt12'] = ['if' => 'wg2', 'enable' => true, 'mtu' => '', 'mss' => '', 'descr' => ''];
     $ps3 = wgct_pin_set(wgct_derive($c, ['i-a', 'i-b']), true, true);
@@ -1724,7 +1864,7 @@ function wgct_tunnels_selftest() {
     printf("[%s] clamp_for: disabled instance, clamp on => null\n", $ok ? 'PASS' : 'FAIL');
 
     $cV4Only = $base();
-    $cV4Only['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    $cV4Only['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32'];
     unset($cV4Only['gateways']['tun_a-ipv6']);
     $tV4Only = wgct_derive($cV4Only, ['i-a'])['tunnels'][0];
     $ok = wgct_clamp_for($tV4Only, true) === ['v4' => 1336, 'v6' => null];
@@ -1751,6 +1891,13 @@ function wgct_tunnels_selftest() {
         && $off['monitor6'] === '' && $off['monitor6_mode'] === 'off' && $empty['monitor6'] === '' && $empty['monitor6_mode'] === 'empty';
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] derive: (o) monitor6 is the canonical monitor only when monitored; mode monitored/off/empty\n", $ok ? 'PASS' : 'FAIL');
+    $c = $base();
+    $c['gateways']['tun_a-ipv6']['monitor'] = 'FE80::0001%wg1';
+    $zoned = wgct_derive($c, ['i-a']);
+    $ok = $zoned['tunnels'][0]['monitor6'] === 'fe80::1%wg1'
+        && wgct_route_lines($zoned, true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|fe80::1%wg1'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] derive: (o) a zoned monitor is canonical with its zone, in the record and the route line\n", $ok ? 'PASS' : 'FAIL');
 
     /* (p) the unmonitored detail says what each mode does */
     $detail6 = fn (array $t, string $code): string => implode(' ', array_column(array_filter($t['findings'], fn ($f) => $f['code'] === $code), 'detail'));
@@ -1770,7 +1917,7 @@ function wgct_tunnels_selftest() {
 
     /* (r) an IPv4-only tunnel has no IPv6 monitor state and no IPv6 findings */
     $c = $base();
-    $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32'];
     unset($c['gateways']['tun_a-ipv6']);
     $t = wgct_derive($c, ['i-a'])['tunnels'][0];
     $ok = $t['monitor6_mode'] === null && $t['monitor6'] === '' && $codes($t) === [];
@@ -1798,9 +1945,12 @@ function wgct_tunnels_selftest() {
     /* gateway_config.php's protocol */
     $c = $base();
     $d = wgct_derive($c, ['i-a']);
-    $ok = wgct_route_lines($d, false, true) === ['state|off'] && wgct_route_lines($d, true, false) === ['state|off'];
+    $ok = wgct_route_lines($d, false, true) === ['state|disabled']
+        && wgct_route_lines($d, false, false) === ['state|disabled']
+        && wgct_route_lines($d, true, false) === ['state|off'];
     $fail += $ok ? 0 : 1; $total++;
-    printf("[%s] routes: (a) plugin or IPv6 routes off => state|off and nothing else\n", $ok ? 'PASS' : 'FAIL');
+    printf("[%s] routes: (a) the plugin off => state|disabled, IPv6 routes off => state|off, nothing else\n",
+        $ok ? 'PASS' : 'FAIL');
     $ok = wgct_route_lines($d, true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|2001:db8:ffff::9'];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] routes: (b) a monitored tunnel => its route line with the monitor\n", $ok ? 'PASS' : 'FAIL');
@@ -1817,7 +1967,7 @@ function wgct_tunnels_selftest() {
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] routes: (d) a blocked tunnel (disabled or unassigned interface) => keep|wg1\n", $ok ? 'PASS' : 'FAIL');
     $c = $base();
-    $c['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32'];
+    $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32'];
     unset($c['gateways']['tun_a-ipv6']);
     $c2 = $base();
     $c2['instances']['i-a']['enabled'] = false;
@@ -1825,6 +1975,16 @@ function wgct_tunnels_selftest() {
         && wgct_route_lines(wgct_derive($c2, ['i-a']), true, true) === ['state|on'];
     $fail += $ok ? 0 : 1; $total++;
     printf("[%s] routes: (e) an IPv4-only or disabled tunnel => no line\n", $ok ? 'PASS' : 'FAIL');
+    $c = $base();
+    $c['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32', 'FD00:0:0:0:0:0:1:1/128'];
+    $c['gateways']['tun_a-ipv6']['gateway'] = 'FD00::0001:2';
+    $c['gateways']['tun_a-ipv6']['monitor'] = '2001:DB8::0050';
+    $c2 = $c;
+    $c2['gateways']['tun_a-ipv6']['monitor'] = '2001:db8::50';
+    $ok = wgct_route_lines(wgct_derive($c, ['i-a']), true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|2001:db8::50']
+        && wgct_route_lines(wgct_derive($c2, ['i-a']), true, true) === ['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|2001:db8::50'];
+    $fail += $ok ? 0 : 1; $total++;
+    printf("[%s] route lines: addresses are canonical, both notations\n", $ok ? 'PASS' : 'FAIL');
 
     /* values from a restored config: validated again where the snapshot is built and where they are used */
     $invalidOf = fn (array $core): array => wgct_snapshot_validate($core);
@@ -2107,7 +2267,7 @@ function wgct_tunnels_selftest() {
     $uUpper = 'ABCDEF00-0000-4000-8000-0000000000AB';
     $old = $cfg("<WGClientTunnels version=\"3.0.0\"><enabled>1</enabled><managed>{$uA},{$uUpper}</managed><held/></WGClientTunnels>");
     $new = $cfg('<WGClientTunnels version="3.1.0"><enabled>1</enabled></WGClientTunnels>',
-        "<WGClientTunnelsEngine version=\"1.0.0\"><managed>{$uA}</managed></WGClientTunnelsEngine>");
+        "<WGClientTunnelsEngine version=\"1.1.0\"><tunnels uuid=\"00000e01-0000-4000-8000-000000000e01\"><instance>{$uA}</instance></tunnels></WGClientTunnelsEngine>");
     wgct_check($p, 'migration: a settings node stored below 3.1.0 is pending; 3.1.0 or later is not',
         wgct_settings_pending($old) && !wgct_settings_pending($new)
         && !wgct_settings_pending($cfg('<WGClientTunnels version="3.2.0"/>')));
@@ -2147,9 +2307,149 @@ function wgct_tunnels_selftest() {
             }
             return false;
         })());
+
+    /* the window between pkg installing 3.9's files and the engine's 1.1.0 migration, and a Config History revert
+     * to a 3.8_1 configuration, which brings the 1.0.0 engine node back: the model does not read that node's list */
+    $settings31 = '<WGClientTunnels version="3.1.0"><enabled>1</enabled></WGClientTunnels>';
+    $noEngine = function (): array {
+        throw new \LogicException('the engine model was read');
+    };
+    $readOf = function (\SimpleXMLElement $root) use ($noEngine) {
+        try {
+            return wgct_managed_in($root, $noEngine);
+        } catch (\Throwable $e) {
+            return $e->getMessage();
+        }
+    };
+    $engine10 = $cfg($settings31, '<WGClientTunnelsEngine version="1.0.0"><managed> u1 ,U2</managed></WGClientTunnelsEngine>');
+    $engine11 = $cfg($settings31, '<WGClientTunnelsEngine version="1.1.0"><tunnels uuid="00000e01-0000-4000-8000-000000000e01">'
+        . '<instance>e1</instance></tunnels></WGClientTunnelsEngine>');
+    $reverted = $cfg($settings31, '<WGClientTunnelsEngine version="1.0.0"><managed>u3</managed></WGClientTunnelsEngine>');
+    wgct_check($p, 'managed: a 1.0.0 engine node is read from its comma list while its migration is pending',
+        $readOf($engine10) === ['u1', 'U2']);
+    wgct_check($p, 'managed: a 1.1.0 engine node is read from the model',
+        wgct_managed_in($engine11, fn (): array => ['e1']) === ['e1']);
+    wgct_check($p, 'managed: an engine list that is not one text value throws',
+        $readOf($cfg($settings31, '<WGClientTunnelsEngine version="1.0.0"><managed><item>x</item></managed></WGClientTunnelsEngine>'))
+            === 'the 1.0.0 engine\'s managed list cannot be read as one list');
+    wgct_check($p, 'managed: a reverted 1.0.0 engine node is pending again',
+        $safely(fn (): bool => !wgct_engine_pending($engine11) && wgct_engine_pending($reverted) && $readOf($reverted) === ['u3']));
+    wgct_check($p, 'pending: the engine at 1.0.0 or without a version is pending; absent or 1.1.0 is not',
+        $safely(fn (): bool => wgct_engine_pending($engine10)
+            && wgct_engine_pending($cfg($settings31, '<WGClientTunnelsEngine><managed>u1</managed></WGClientTunnelsEngine>'))
+            && !wgct_engine_pending($cfg($settings31)) && !wgct_engine_pending($engine11)));
     wgct_check($p, 'migration: a pending route set says so on its state line and keeps its route lines for the status listing',
         wgct_route_lines_pending(['state|on', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']) === ['state|pending', 'route|wg1|fd00::1:1/128|fd00::1:2|tun_a|tun_a-ipv6|']
         && wgct_route_lines_pending(['state|off']) === ['state|pending']);
+
+    /* the snapshots the hooks read, against the full one, over every fixture of the derive table and the two-peer
+     * one */
+    $fixtures = [];
+    foreach ($cases as [$desc, $mutate, $managed]) {
+        $fixtures[$desc] = [$mutate($base()), $managed];
+    }
+    $fixtures['two peers, each bound by its own route'] = [$twoPeers($base()), ['i-a']];
+    $tunnelPart = function (array $c): array {
+        foreach (['routes', 'snat', 'groups', 'aliases', 'dns_servers', 'forwarders'] as $part) {
+            $c[$part] = [];
+        }
+        return $c;
+    };
+    wgct_check($p, 'route lines: the tunnel snapshot gives the same lines as the full one',
+        $safely(function () use ($fixtures, $tunnelPart): bool {
+            foreach ($fixtures as $desc => [$c, $managed]) {
+                if (wgct_route_lines(wgct_derive($tunnelPart($c), $managed), true, true)
+                    !== wgct_route_lines(wgct_derive($c, $managed), true, true)) {
+                    printf("       differs: %s\n", $desc);
+                    return false;
+                }
+            }
+            return true;
+        }));
+    /* enabled 0, 1 or absent, and an IPv6 network in upper case, which NetworkField stores in lower case */
+    $routesXml = simplexml_load_string('<opnsense><staticroutes>'
+        . '<route uuid="r-0"><network>198.51.100.10/32</network><gateway>WAN_A</gateway><enabled>0</enabled></route>'
+        . '<route uuid="r-1"><network>198.51.100.11/32</network><gateway>WAN_B</gateway><enabled>1</enabled></route>'
+        . '<route uuid="r-n"><network>198.51.100.12/32</network><gateway>WAN_A</gateway></route>'
+        . '<route uuid="r-6"><network>2001:DB8::10/128</network><gateway>WAN_A6</gateway><enabled>1</enabled></route>'
+        . '</staticroutes></opnsense>');
+    wgct_check($p, 'routes: the raw reader keeps the model\'s view',
+        $safely(function () use ($routesXml, $v6, $base): bool {
+            $core = ['routes' => []];
+            wgct_core_read_routes($core, $routesXml);
+            $c = $v6($base());
+            $c['routes'] = [];
+            $t = wgct_derive(wgct_core_render_snapshot(fn (): array => $c, $routesXml), ['i-a'])['tunnels'][0];
+            return $core['routes'] === [
+                    'r-0' => ['network' => '198.51.100.10/32', 'gateway' => 'WAN_A', 'enabled' => false],
+                    'r-1' => ['network' => '198.51.100.11/32', 'gateway' => 'WAN_B', 'enabled' => true],
+                    'r-n' => ['network' => '198.51.100.12/32', 'gateway' => 'WAN_A', 'enabled' => true],
+                    'r-6' => ['network' => '2001:db8::10/128', 'gateway' => 'WAN_A6', 'enabled' => true],
+                ]
+                /* the derivation canonicalises the network, so it binds the endpoint 2001:DB8::10 */
+                && $t['bound_wan'] === 'WAN_A6';
+        }));
+    /* a hand-edited or restored config: what core's model makes of it is what the render snapshot must see */
+    $baseRoute = fn (string $attr, string $network): string
+        => "<route{$attr}><network>{$network}</network><gateway>WAN_A</gateway><enabled>1</enabled></route>";
+    $boundAsFull = function (\SimpleXMLElement $xml) use ($base, $tunnelPart): bool {
+        $c = $base();
+        $render = wgct_derive(wgct_core_render_snapshot(fn (): array => $tunnelPart($c), $xml), ['i-a']);
+        return wgct_pin_set($render, true, true) === wgct_pin_set(wgct_derive($c, ['i-a']), true, true);
+    };
+    wgct_check($p, 'routes: a padded network reads trimmed and in lower case, as NetworkField stores it, and binds',
+        $safely(function () use ($baseRoute, $boundAsFull): bool {
+            $xml = simplexml_load_string('<opnsense><staticroutes>' . $baseRoute(' uuid="r-a"', ' 198.51.100.10/32 ')
+                . '</staticroutes></opnsense>');
+            $core = ['routes' => []];
+            wgct_core_read_routes($core, $xml);
+            return ($core['routes']['r-a']['network'] ?? null) === '198.51.100.10/32' && $boundAsFull($xml);
+        }));
+    wgct_check($p, 'routes: a route with no or an empty uuid is kept under a key of its own, a childless one skipped',
+        $safely(function () use ($baseRoute, $boundAsFull): bool {
+            $xml = simplexml_load_string('<opnsense><staticroutes><route uuid="r-e"/>'
+                . $baseRoute('', '198.51.100.10/32') . '<route/>' . $baseRoute(' uuid=""', '198.51.100.11/32')
+                . '</staticroutes></opnsense>');
+            $core = ['routes' => []];
+            wgct_core_read_routes($core, $xml);
+            $networks = array_column($core['routes'], 'network');
+            sort($networks);
+            return count($core['routes']) === 2 && !isset($core['routes']['r-e']) && !isset($core['routes'][''])
+                && $networks === ['198.51.100.10/32', '198.51.100.11/32'] && $boundAsFull($xml);
+        }));
+    $routesOf = function (array $routes): \SimpleXMLElement {
+        $xml = new \SimpleXMLElement('<opnsense><staticroutes/></opnsense>');
+        foreach ($routes as $uuid => $r) {
+            $node = $xml->staticroutes->addChild('route');
+            $node->addAttribute('uuid', (string)$uuid);
+            $node->addChild('network', $r['network']);
+            $node->addChild('gateway', $r['gateway']);
+            $node->addChild('enabled', $r['enabled'] ? '1' : '0');
+        }
+        return $xml;
+    };
+    wgct_check($p, 'render: the render snapshot derives the same pins and MSS lines as the full snapshot',
+        $safely(function () use ($fixtures, $tunnelPart, $routesOf): bool {
+            $pinned = 0;
+            foreach ($fixtures as $desc => [$c, $managed]) {
+                $full = wgct_derive($c, $managed);
+                if (wgct_pin_set($full, true, true) === ['wan' => [], 'inner' => []]) {
+                    continue;
+                }
+                $pinned++;
+                $snapshot = wgct_core_render_snapshot(fn (): array => $tunnelPart($c), $routesOf($c['routes']));
+                $render = wgct_derive($snapshot, $managed);
+                if (wgct_pin_set($render, true, true) !== wgct_pin_set($full, true, true)
+                    || wgct_mss_lines($render, true) !== wgct_mss_lines($full, true)) {
+                    printf("       differs: %s\n", $desc);
+                    return false;
+                }
+            }
+            if ($pinned < 3) {
+                printf("       only %d fixtures pin\n", $pinned);
+            }
+            return $pinned >= 3;
+        }));
     $fail += $p['fail'];
     $total += $p['total'];
 

@@ -29,6 +29,7 @@
 namespace OPNsense\WGClientTunnels;
 
 use OPNsense\Base\BaseModel;
+use OPNsense\Base\FieldTypes\ArrayField;
 
 /**
  * The engine's own state: what the plugin manages and which gateway holds it took.
@@ -63,6 +64,36 @@ class Engine extends BaseModel
     }
 
     /**
+     * The managed instances: each `tunnels` row's instance, in document order.
+     *
+     * @return list<string> instance uuids
+     */
+    public function managedList(): array
+    {
+        $uuids = [];
+        foreach ($this->tunnels->iterateItems() as $node) {
+            $uuids[] = $node->instance->getValue();
+        }
+        return $uuids;
+    }
+
+    /**
+     * Replace the `tunnels` rows with one row per uuid, in order. A row whose instance stays keeps its item uuid,
+     * so Config History shows only the rows that changed.
+     *
+     * @param list<string> $uuids instance uuids
+     */
+    public function setManaged(array $uuids): void
+    {
+        $stored = [];
+        foreach ($this->tunnels->iterateItems() as $item => $node) {
+            $stored[(string)$item] = $node->instance->getValue();
+        }
+        $kept = self::keptItems($stored, $uuids, fn (string $old, string $new): bool => $old === $new);
+        self::rewrite($this->tunnels, $kept, array_map(fn (string $uuid): array => ['instance' => $uuid], $uuids));
+    }
+
+    /**
      * The hold records as they are, duplicates and all.
      *
      * @return array<string, array{gateway: string, boot: string, underlay: string, taken_at: int}> by item uuid
@@ -82,18 +113,18 @@ class Engine extends BaseModel
     }
 
     /**
-     * Replace every hold record with $rows.
+     * Replace every hold record with $rows, in order. A record of a gateway still held keeps its item uuid (the
+     * stored record equal to the new one first, else the first of that gateway's), its fields set to the new row's,
+     * so Config History shows only the records that changed.
      *
      * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $rows
      */
     public function setHolds(array $rows): void
     {
-        foreach (array_keys($this->holdRows()) as $item) {
-            $this->holds->del($item);
-        }
-        foreach ($rows as $row) {
-            $this->addHold($row);
-        }
+        $kept = self::keptItems($this->holdRows(), $rows,
+            fn (array $old, array $new): bool => $old === $new,
+            fn (array $old, array $new): bool => $old['gateway'] === $new['gateway']);
+        self::rewrite($this->holds, $kept, array_map(fn (array $row): array => self::holdNodes($row), $rows));
     }
 
     /**
@@ -103,9 +134,68 @@ class Engine extends BaseModel
      */
     public function addHold(array $row): void
     {
-        $this->holds->Add()->setNodes([
+        $this->holds->Add()->setNodes(self::holdNodes($row));
+    }
+
+    /**
+     * Which stored row each wanted row keeps, in the wanted order: each test in turn lets a wanted row that has
+     * none yet take the first stored row it accepts that no other wanted row took. Pure.
+     *
+     * @template T
+     * @param array<string, T>       $stored  item uuid => row, in document order
+     * @param list<T>                $wanted  the rows to store, in order
+     * @param callable(T, T): bool   ...$tests (stored row, wanted row) => whether the wanted row may keep it
+     * @return list<string|null> for each wanted row, the item uuid it keeps, or null for a new item
+     */
+    private static function keptItems(array $stored, array $wanted, callable ...$tests): array
+    {
+        $kept = array_fill(0, count($wanted), null);
+        foreach ($tests as $test) {
+            foreach ($wanted as $i => $row) {
+                if ($kept[$i] !== null) {
+                    continue;
+                }
+                foreach ($stored as $item => $old) {
+                    if ($test($old, $row)) {
+                        $kept[$i] = (string)$item;
+                        unset($stored[$item]);
+                        break;
+                    }
+                }
+            }
+        }
+        return $kept;
+    }
+
+    /**
+     * Rewrite $field's items as $nodes, in order, each under the item uuid $kept gives it or a new one. An item kept
+     * with the same fields serializes as it was; only its place can move.
+     *
+     * @param ArrayField                  $field
+     * @param list<string|null>           $kept  keptItems()
+     * @param list<array<string, string>> $nodes each item's fields
+     */
+    private static function rewrite(ArrayField $field, array $kept, array $nodes): void
+    {
+        foreach (array_keys(iterator_to_array($field->iterateItems())) as $item) {
+            $field->del((string)$item);
+        }
+        foreach ($nodes as $i => $fields) {
+            $field->Add($kept[$i])->setNodes($fields);
+        }
+    }
+
+    /**
+     * A hold record's fields as the model stores them. Pure.
+     *
+     * @param array{gateway: string, boot: string, underlay: string, taken_at: int} $row
+     * @return array{gateway: string, boot: string, underlay: string, taken_at: string}
+     */
+    private static function holdNodes(array $row): array
+    {
+        return [
             'gateway' => $row['gateway'], 'boot' => $row['boot'],
             'underlay' => $row['underlay'], 'taken_at' => (string)$row['taken_at'],
-        ]);
+        ];
     }
 }

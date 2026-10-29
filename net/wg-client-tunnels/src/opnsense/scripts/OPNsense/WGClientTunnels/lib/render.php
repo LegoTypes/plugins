@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Rendered enforcement: WAN pins and
  * inner-source blocks registered as filter rules, and the MSS clamp as match
@@ -76,8 +96,8 @@ const WGCT_RELOAD_MAX_WINDOW_SECONDS = 3600;
  * many of those labels pf did not hold. While both are unchanged the count is reused instead of listing again. */
 const WGCT_OBSERVED_FILE = WGCT_RUN_DIR . '/observed.json';
 
-/* Serializes freshness.php runs (cron minute, config syshook, monitor and
- * newwanip hooks can overlap): one run's derive -> observe -> plan -> act
+/* Serializes freshness.php runs (the minute cron, a queued reconcile and
+ * configctl's reconcile can overlap): one run's derive -> observe -> plan -> act
  * must not interleave with another's. A run waits for the lock at most
  * WGCT_FRESHNESS_LOCK_TIMEOUT_MS, polling every WGCT_FRESHNESS_LOCK_POLL_MS. */
 const WGCT_FRESHNESS_LOCK_FILE = WGCT_RUN_DIR . '/freshness.lock';
@@ -89,6 +109,10 @@ const WGCT_FRESHNESS_LOCK_POLL_MS = 200;
 const WGCT_FRESHNESS_ERROR_FILE = WGCT_RUN_DIR . '/freshness.err';
 
 /**
+ * What the filter hook renders and freshness compares pf with, from one derivation, so the two never disagree. It
+ * reads the render snapshot (wgct_core_render_snapshot()): what the pins and MSS lines need, and no model that asks
+ * configd while it loads, so a filter reload never waits on configd.
+ *
  * @return array ['enabled' => bool, 'pins' => wgct_pin_set(), 'mss' => list<string>]
  */
 function wgct_wanted_render(): array {
@@ -97,7 +121,7 @@ function wgct_wanted_render(): array {
     if (!$enabled) {
         return ['enabled' => false, 'pins' => ['wan' => [], 'inner' => []], 'mss' => []];
     }
-    $derived = wgct_derive(wgct_core_snapshot(), wgct_managed());
+    $derived = wgct_derive(wgct_core_render_snapshot(), wgct_managed());
     return [
         'enabled' => true,
         'pins' => wgct_pin_set($derived, $mdl->wan_pins->isEqual('1'), $mdl->inner_source->isEqual('1')),
@@ -694,7 +718,7 @@ function wgct_write_observed(array $record): bool {
 /**
  * Poll for an exclusive flock on $path: retry LOCK_EX|LOCK_NB every $pollMs
  * for up to $timeoutMs rather than blocking without bound. Shared by
- * freshness.php (which can run inside a configd action, via the monitor hook) and
+ * freshness.php (which can run inside a configd action, configctl wgclienttunnels reconcile) and
  * the gateway lock in lib/apply.php (which waits at most 120 s).
  * The lock is held for as long as the returned object is referenced; the
  * process exiting releases it.
@@ -772,66 +796,39 @@ function wgct_report_freshness_outcome(?string $error): void {
 }
 
 /**
- * The freshness decision, pure
- * over its inputs so it is directly testable -- freshness.php only does I/O
- * around it: read rendered.json, stat /tmp/rules.debug.error (through
- * wgct_error_file_stale()), read pf's live state (through
- * wgct_live_observation()), read freshness.json, call this, then act on
- * the plan and persist $plan['state'].
+ * The freshness decision, pure over its inputs: freshness.php does the I/O around it (rendered.json,
+ * /tmp/rules.debug.error through wgct_error_file_stale(), pf's live state through wgct_live_observation(),
+ * freshness.json), then acts on the plan and persists $plan['state'].
  *
  * Priority, most urgent first:
- *   1. no rendered record at all -> reload, but only if there is anything to
- *      render (non-empty pins, or MSS lines wanted even with no pins -- e.g.
- *      the clamp switch on with no WAN-pin tunnels): a disabled/empty plugin
- *      with no record yet has nothing to enforce and must not spin on this
- *      forever
- *   1b. the plugin enabled with pins wanted, but no footprint and no fallback
- *      record ($footprintRecorded false: a box upgraded from 3.7_1, which
- *      wrote none, whose render is otherwise current) -> reload, as for 1, so
- *      the first reconcile records the footprint a later failed render falls
- *      back to; once that reload has written it, the plan is current again,
- *      and a footprint that is still not written is asked for again only as
+ *   1. no rendered record -> reload, but only if there is anything to render (pins, or MSS lines wanted even with
+ *      no pins): a disabled or empty plugin has nothing to enforce and must not spin on this
+ *   1b. enabled with pins wanted, but no footprint and no fallback record ($footprintRecorded false: a box
+ *      upgraded from a release that wrote none) -> reload, as for 1, so the first reconcile records the
+ *      footprint a later failed render falls back to; a footprint still not written is asked for again only as
  *      the rate limit below allows
- *   2. rendered pins differ from wanted -> reload (this includes going from
- *      pins to none, e.g. the plugin was just disabled: the stale pins still
- *      need removing)
- *   3. /tmp/rules.debug.error is at least as new as the render (main ruleset
- *      load failed and the old ruleset was restored; the rendered pins may
- *      never have reached pf) -> reload, but only when the pins at stake are
- *      non-empty: an unrelated ruleset failure while this plugin renders
- *      nothing is not this plugin's problem to fix by reloading
- *   4. the render is marked failed for any other reason than the MSS anchor
- *      load specifically, again only when the pins are non-empty -> reload;
- *      an anchor-only failure retries just the anchor instead
- *   5. the render is not failed but pf does not hold every label the
- *      rendered pins produce ($live['missing_labels'] > 0: e.g. a filter
- *      reload ran while the hook could not render, so pf lost the pins while
- *      rendered.json still describes them) -> reload
- *   6. otherwise, the MSS anchor's live rule count differs from the rendered
- *      MSS line count -> reload the anchor directly
- *   7. otherwise, MSS lines differ -> reload the anchor directly
- *   8. otherwise -> nothing to do: "current" means the record matches what
- *      is wanted and, when $live is known, pf holds what the record says
- * A filter reload re-renders both the pins and the anchor, so cases 1-5 never
- * also need a separate anchor step. With $live null (pf could not be read)
- * cases 5 and 6 are skipped and the decision rests on the record alone.
- * Anchor loads (cases 6, 7 and the anchor-only retry) are not rate-limited:
- * they are cheap and idempotent.
+ *   2. rendered pins differ from wanted -> reload (also pins to none: the stale pins still need removing)
+ *   3. /tmp/rules.debug.error is at least as new as the render (the main ruleset load failed and the old one
+ *      was restored, so the pins may never have reached pf) -> reload, only when the pins at stake are
+ *      non-empty: an unrelated ruleset failure while this plugin renders nothing is not its to fix
+ *   4. the render is marked failed for any reason other than the MSS anchor load alone, again only when the
+ *      pins are non-empty -> reload; an anchor-only failure retries just the anchor
+ *   5. the render is not failed but pf does not hold every label the rendered pins produce
+ *      ($live['missing_labels'] > 0) -> reload
+ *   6. the MSS anchor's live rule count differs from the rendered MSS line count -> reload the anchor directly
+ *   7. MSS lines differ -> reload the anchor directly
+ *   8. otherwise nothing to do: the record matches what is wanted and, when $live is known, pf holds what the
+ *      record says
+ * A filter reload re-renders the pins and the anchor, so cases 1-5 never need a separate anchor step. With $live
+ * null (pf could not be read) cases 5 and 6 are skipped. Anchor loads (6, 7 and the anchor-only retry) are not
+ * rate-limited: they are cheap and idempotent.
  *
- * Reload requests are rate-limited with exponential back-off: repeating the
- * same wanted-pins hash within the current window of the last request is
- * suppressed rather than asking configd again; the window starts at
- * WGCT_RELOAD_SUPPRESS_SECONDS and doubles (capped at
- * WGCT_RELOAD_MAX_WINDOW_SECONDS) each time a request repeats for the same
- * hash, so a render that keeps failing asks configd less and less often. A
- * change to the wanted-pins hash resets the window to the base. A negative
- * elapsed time (the clock stepped back) is never treated as "within the
- * window" -- it cannot be trusted, so the safer default is to allow the
- * request. $plan['state'] is what freshness.php should now persist as the
- * reload half of freshness.json (null clears it -- nothing left to
- * remember); the caller can tell a first suppression from a repeat by
- * comparing $state['notified'] (input) against $plan['state']['notified']
- * (output) -- false-to-true is the moment to log.
+ * Reload requests are rate-limited with exponential back-off: a repeat of the same wanted-pins hash within the
+ * current window of the last request is suppressed. The window starts at WGCT_RELOAD_SUPPRESS_SECONDS and doubles
+ * (capped at WGCT_RELOAD_MAX_WINDOW_SECONDS) on each repeat for the same hash; a change of hash resets it. A
+ * negative elapsed time (the clock stepped back) is never "within the window", so the request is allowed.
+ * $plan['state'] is what freshness.php persists as the reload half of freshness.json (null clears it); the caller
+ * logs at $state['notified'] going false to true.
  *
  * @param array      $wanted     wgct_wanted_render()'s ['enabled','pins','mss']
  * @param array|null $rendered   wgct_read_rendered()'s record, or null
@@ -980,20 +977,15 @@ function wgct_anchor_log_plan(?string $priorFailHash, bool $success, array $mssL
 /**
  * The plugins_firewall hook body. Never throws.
  *
- * Returns whether the wanted rule set is registered: true when the render
- * got through registering its rules (an MSS anchor load that failed after
- * that included: the rules are in place), false when anything before or
- * during the registration failed. On false the hook enforces the footprint
- * instead (wgclienttunnels_firewall_at()). Inside a real filter reload a
- * true render also records what it registered as the footprint: the rules and MSS lines while the plugin
- * is enabled, the empty footprint while it is disabled.
+ * Returns whether the wanted rule set is registered: true once the render got through registering its rules (an
+ * MSS anchor load that failed after that included), false when anything before or during the registration
+ * failed. On false the hook enforces the footprint instead (wgclienttunnels_firewall_at()). Inside a real filter
+ * reload a true render also records what it registered as the footprint: the rules and MSS lines while the
+ * plugin is enabled, the empty footprint while it is disabled.
  *
- * $wanted, $loader, $writer, $inReload, $footprinter and $log are injectable so the
- * self-test can exercise every path without config, pf, the filesystem or syslog --
- * in particular, $inReload lets a case force "inside a real filter reload"
- * true or false without a stand-in for core's filter_configure_sync
- * (defining one globally would collide with the real function in a process
- * that has filter.inc loaded, and risks triggering an actual reload).
+ * $wanted, $loader, $writer, $inReload, $footprinter and $log are injectable so the self-test runs every path
+ * without config, pf, the filesystem or syslog. $inReload stands in for the call-stack check because a global
+ * stand-in for core's filter_configure_sync would collide with the real one where filter.inc is loaded.
  *
  * @param \OPNsense\Firewall\Plugin $fw          core's firewall plugin registry
  * @param callable|null             $wanted      returns wgct_wanted_render()'s shape; default wgct_wanted_render
@@ -1026,20 +1018,14 @@ function wgct_render_firewall(
     $inReload = $inReload ?? function () {
         return wgclienttunnels_in_filter_reload(debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS));
     };
-    /* $apply already lets the self-test force pfctl/write off; it is also
-     * gated on actually being inside a filter reload, so a rules-listing
-     * call (list_non_mvc_rules.php, firewall_rule_lookup.php) that merely
-     * enumerates rules for display never touches pf, rendered.json or the
-     * footprint. */
+    /* also gated on being inside a filter reload, so a rules-listing call (list_non_mvc_rules.php,
+     * firewall_rule_lookup.php) never touches pf, rendered.json or the footprint */
     $apply = $apply && $inReload();
     $registered = false;
     $rules = [];
     try {
-        /* register the anchor first: a later failure (derivation, malformed
-         * pins) still leaves it in the ruleset, with whatever it last
-         * loaded, instead of vanishing along with the rules. The hook relies
-         * on this: once the render ran, it does not register the anchor
-         * again. */
+        /* register the anchor first: a later failure still leaves it in the ruleset with whatever it last loaded.
+         * The hook relies on this and does not register it again once the render ran. */
         $fw->registerAnchor(WGCT_MSS_ANCHOR, 'fw', 0, 'head');
         $w = $wanted !== null ? $wanted() : wgct_wanted_render();
         /* every conf is built before the first is registered, so a malformed pin set registers none */
@@ -1445,8 +1431,8 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] freshness_plan: mss only differs => anchor retry\n", $ok ? 'PASS' : 'FAIL');
 
-    /* enabled, pins wanted, no footprint and no fallback record (a box upgraded from 3.7_1, whose render is
-     * current): the first reconcile asks for the reload that records the footprint, as for no rendered record */
+    /* enabled, pins wanted, no footprint and no fallback record (upgraded from a release that wrote none): the
+     * first reconcile asks for the reload that records the footprint, as for no rendered record */
     $p1 = wgct_freshness_plan($wanted, $current, null, null, 1000, ['anchor_count' => 1, 'missing_labels' => 0], false);
     $ok = $p1['reload'] === true && $p1['anchor'] === false && $p1['reason'] === 'no footprint recorded' && $p1['state'] !== null;
     $fail += $ok ? 0 : 1;

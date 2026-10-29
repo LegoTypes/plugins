@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Create's inputs: the wg-quick parser, the
  * request check and the public-key derivation. Everything here except
@@ -335,17 +355,22 @@ function wgct_wgconf_selftest(): int {
     $priv = base64_encode(str_repeat('A', 32));
     $peer = base64_encode(str_repeat('B', 32));
     $psk = base64_encode(str_repeat('C', 32));
-    $base = "[Interface]\n# provider comment\nPrivateKey = {$priv}\nAddress = 10.2.0.2/32, 2001:db8::2:2/128\nDNS = 192.0.2.53\n\n"
+    $base = "[Interface]\n# provider comment\nPrivateKey = {$priv}\nAddress = 192.0.2.2/32, 2001:db8::2:2/128\nDNS = 192.0.2.53\n\n"
         . "[Peer]\nPublicKey = {$peer}\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = 198.51.100.10:51820\n";
     $noKey = function (array $messages) use ($priv, $psk): bool {
         $all = implode("\n", $messages);
         return strpos($all, substr($priv, 0, 16)) === false && strpos($all, substr($psk, 0, 16)) === false;
     };
 
+    /* the form help states no range, so the refusals carry it */
+    $r = wgct_create_request(['config' => $base, 'name' => str_repeat('a', 28), 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'mtu' => '1421'], false);
+    wgct_check($t, 'refusal: the name and MTU refusals state their ranges',
+        str_starts_with($r['errors']['name'] ?? '', '1 to 27 letters, digits, "_" or "-"') && ($r['errors']['mtu'] ?? '') === '1280 to 1420');
+
     $p = wgct_parse_wgquick($base);
     wgct_check($t, 'wgconf: provider config => both addresses, peer key, endpoint; DNS ignored',
         $p['errors'] === []
-        && $p['public']['addresses'] === ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]
+        && $p['public']['addresses'] === ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]
         && $p['public']['peer_pubkey'] === $peer && $p['public']['endpoint_ip'] === '198.51.100.10'
         && $p['public']['endpoint_port'] === '51820' && $p['public']['has_psk'] === false
         && $p['public']['endpoint_family'] === 'inet'
@@ -355,9 +380,9 @@ function wgct_wgconf_selftest(): int {
     wgct_check($t, 'wgconf: no IPv6 address => inet6 empty, no error',
         $p['errors'] === [] && $p['public']['addresses']['inet6'] === []);
 
-    $p = wgct_parse_wgquick(str_replace("Address = 10.2.0.2/32, 2001:db8::2:2/128\n", "Address = 10.2.0.2\nAddress = 2001:db8::2:2\n", $base));
+    $p = wgct_parse_wgquick(str_replace("Address = 192.0.2.2/32, 2001:db8::2:2/128\n", "Address = 192.0.2.2\nAddress = 2001:db8::2:2\n", $base));
     wgct_check($t, 'wgconf: several Address lines without prefixes => collected, /32 and /128 added',
-        $p['errors'] === [] && $p['public']['addresses'] === ['inet' => ['10.2.0.2/32'], 'inet6' => ['2001:db8::2:2/128']]);
+        $p['errors'] === [] && $p['public']['addresses'] === ['inet' => ['192.0.2.2/32'], 'inet6' => ['2001:db8::2:2/128']]);
 
     $p = wgct_parse_wgquick(str_replace('Endpoint', "PresharedKey = {$psk}\nEndpoint", $base));
     wgct_check($t, 'wgconf: PresharedKey => kept as a secret, has_psk',
@@ -384,7 +409,7 @@ function wgct_wgconf_selftest(): int {
     $p = wgct_parse_wgquick(str_replace("PrivateKey = {$priv}\n", '', $base));
     wgct_check($t, 'wgconf: no PrivateKey => refused', $p['errors'] === ['PrivateKey is missing']);
 
-    $p = wgct_parse_wgquick(str_replace('10.2.0.2/32, 2001:db8::2:2/128', '10.2.0.2/32, 10.2.0.3/32', $base));
+    $p = wgct_parse_wgquick(str_replace('192.0.2.2/32, 2001:db8::2:2/128', '192.0.2.2/32, 192.0.2.3/32', $base));
     wgct_check($t, 'wgconf: two IPv4 addresses => refused',
         $p['errors'] === ['Address has several IPv4 addresses; exactly one is supported']);
 

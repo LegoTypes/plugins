@@ -1,0 +1,33 @@
+<form>
+    <!-- The unmanaged instances grid (getFormGrid()): one column per field of wgct_tunnel_view()'s
+         unmanaged rows; each formatter lives in index.volt -->
+    <field>
+        <id>unmanaged.name</id>
+        <label>Instance</label>
+        <grid_view>
+            <formatter>instance</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>unmanaged.device</id>
+        <label>Device</label>
+        <grid_view>
+            <formatter>device</formatter>
+        </grid_view>
+    </field>
+    <field>
+        <id>unmanaged.endpoint</id>
+        <label>Endpoint</label>
+        <grid_view>
+            <formatter>endpoint</formatter>
+            <min-width>120</min-width>
+        </grid_view>
+    </field>
+    <field>
+        <id>unmanaged.enabled</id>
+        <label>Enabled</label>
+        <grid_view>
+            <formatter>enabled</formatter>
+        </grid_view>
+    </field>
+</form>

@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * The action planners: Create, Rebind, Adopt,
  * Remove and the default-route sentinel. Each is a pure function from a
@@ -12,9 +32,14 @@
  * reasons it cannot proceed. Nothing here reads config or holds a key.
  *
  * Conventions the plugin owns: instance N is the lowest free from
- * 1; listen port 51820+N; IPv4 far gateway 10.2.0.(3+N); IPv6 next hop
- * fd00::N:2 and, with unique addressing, tunnel address fd00::N:1/128. "Free"
- * means all of those are unused, so a clash skips to the next N.
+ * 1, and listen port 51820+N. The plugin's own address scheme for instance N:
+ * IPv4 far gateway 10.2.0.(3+N), IPv6 next hop fd00::N:2 and, with unique
+ * addressing, tunnel address fd00::N:1/128. "Free" means all of those are
+ * unused in config, so a clash there skips to the next N. A scheme address
+ * of the N chosen that lies inside a network on this firewall refuses Create
+ * by name (wgct_scheme_clash()), and so does an IPv6 address an Edit turning
+ * IPv6 on would write. Not checked: saved addresses, and a swap that turns
+ * unique addressing on (fd00::N:1) for a tunnel whose IPv6 is already on.
  */
 
 require_once __DIR__ . '/tunnels.php';
@@ -119,6 +144,93 @@ function wgct_local6_parse(mixed $ifconfig, array $prefixFiles): array {
     $out = array_values(array_unique($out));
     sort($out);
     return $out;
+}
+
+/**
+ * The networks Create's address-scheme check compares against: every IPv4 and non-link-local IPv6 address of
+ * configd's ifconfig dump, as its network, and the delegated prefixes. Left out are host-length entries (/32, /128)
+ * and every address on a managed tunnel's own device: the plugin's own tunnel addresses, and one a failed Remove left
+ * on its wgN, are no clash with its own scheme, and a host address equal to a scheme address is already caught by
+ * Create's "taken" checks on config. An unmanaged WireGuard instance's wider network stays in: it is a real clash. Pure.
+ *
+ * @param mixed        $ifconfig       `interface list ifconfig` decoded: device => ['ipv4' => [['ipaddr', 'subnetbits'], ...],
+ *                                     'ipv6' => [['ipaddr', 'subnetbits', 'link-local'], ...]]
+ * @param list<string> $prefixFiles    the contents of /tmp/*_prefixv6
+ * @param list<string> $managedDevices the managed tunnels' wgN
+ * @return array{inet: list<string>, inet6: list<string>} canonical "network/bits" (host bits cleared), sorted, unique
+ */
+function wgct_scheme_clash_networks(mixed $ifconfig, array $prefixFiles, array $managedDevices): array {
+    $others = array_diff_key(is_array($ifconfig) ? $ifconfig : [], array_flip($managedDevices));
+    $cidrs = wgct_local6_parse($others, $prefixFiles);
+    foreach ($others as $dev) {
+        $rows = is_array($dev) && is_array($dev['ipv4'] ?? null) ? $dev['ipv4'] : [];
+        foreach ($rows as $a) {
+            $ip = is_array($a) ? wgct_canon_ip((string)($a['ipaddr'] ?? '')) : null;
+            $bits = is_array($a) ? ($a['subnetbits'] ?? null) : null;
+            if ($ip !== null && wgct_ip_family($ip) === 'inet' && is_numeric($bits)) {
+                $cidrs[] = $ip . '/' . (int)$bits;
+            }
+        }
+    }
+    $out = ['inet' => [], 'inet6' => []];
+    foreach ($cidrs as $cidr) {
+        $net = wgct_cidr_network($cidr);
+        $family = $net !== null ? wgct_cidr_family($net) : null;
+        if ($net !== null && $family !== null && wgct_host_route($net) === null) {
+            $out[$family][] = $net;
+        }
+    }
+    foreach ($out as $family => $nets) {
+        $nets = array_values(array_unique($nets));
+        sort($nets);
+        $out[$family] = $nets;
+    }
+    return $out;
+}
+
+/**
+ * The action snapshot with the two views of one read of the firewall's addresses: local6 for the IPv6 monitor check,
+ * and clash_nets for Create's address-scheme check, which leaves out the devices of the tunnels the snapshot manages.
+ * Each is null when the read failed. Pure.
+ *
+ * @param array                                                          $snap wgct_action_snapshot()
+ * @param array{ifconfig: array<mixed>, prefix_files: list<string>}|null $own  wgct_own_addresses_read()
+ * @return array the snapshot with local6 and clash_nets set
+ */
+function wgct_snapshot_own_networks(array $snap, ?array $own): array {
+    $managedDevices = [];
+    foreach ($snap['managed'] as $uuid) {
+        $dev = wgct_device_name((string)($snap['core']['instances'][$uuid]['instance'] ?? ''));
+        if ($dev !== '') {
+            $managedDevices[] = $dev;
+        }
+    }
+    $snap['local6'] = $own === null ? null : wgct_local6_parse($own['ifconfig'], $own['prefix_files']);
+    $snap['clash_nets'] = $own === null ? null : wgct_scheme_clash_networks($own['ifconfig'], $own['prefix_files'], $managedDevices);
+    return $snap;
+}
+
+/**
+ * Why Create, or an Edit turning IPv6 on, may not give instance N the scheme addresses it would write: the first of
+ * them that lies inside one of this firewall's networks of its family, named with that network, or null. Each address
+ * is null when it is not written. Pure.
+ *
+ * @param int                                            $n         the instance number
+ * @param string|null                                    $far4      10.2.0.(3+N) for Create; null for Edit, which keeps it
+ * @param string|null                                    $next6     fd00::N:2 with IPv6 on, else null
+ * @param string|null                                    $unique6   fd00::N:1 with unique addressing, else null
+ * @param array{inet: list<string>, inet6: list<string>} $clashNets wgct_scheme_clash_networks()
+ * @return string|null
+ */
+function wgct_scheme_clash(int $n, ?string $far4, ?string $next6, ?string $unique6, array $clashNets): ?string {
+    foreach (array_filter([$far4, $next6, $unique6], fn (?string $addr): bool => $addr !== null) as $addr) {
+        foreach ($clashNets[wgct_ip_family($addr) ?? ''] ?? [] as $net) {
+            if (wgct_in_network($addr, $net)) {
+                return "{$addr}, the plugin's address for instance {$n}, lies inside {$net} on this firewall; free that range or remove the overlapping network";
+            }
+        }
+    }
+    return null;
 }
 
 /**
@@ -379,7 +491,8 @@ function wgct_gw6_start_text(array $holds, string $gw6Name): string {
 /**
  * Everything Create will write, or why it cannot. Pure.
  *
- * @param array $snap the action snapshot
+ * @param array $snap the action snapshot, with local6 (wgct_local6_parse()) and clash_nets
+ *                    (wgct_scheme_clash_networks()) from one read, each null when it failed
  * @param array $req  wgct_create_request()['req'] with 'mtu' set
  * @param array $conf wgct_parse_wgquick()['public']
  * @return array
@@ -589,6 +702,10 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         }
     }
 
+    /* this firewall's networks, read with its IPv6 addresses, for the address-scheme check below */
+    if (!is_array($snap['clash_nets'] ?? null)) {
+        $e['general'] = "could not read this firewall's networks (configd interface list ifconfig); try again";
+    }
     $n = wgct_pick_instance($core, $snap['ports'], $ipv6, explode('/', $v4)[0]);
     if ($n === null) {
         $e['general'] = sprintf('no free instance number from 1 to %d (its instance number, listen port, far gateway and fd00::N addresses must all be unused)', WGCT_INSTANCE_MAX);
@@ -604,6 +721,12 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
     $far4 = '10.2.0.' . (3 + $n);
     $next6 = "fd00::{$n}:2";
     $addr6 = $ipv6 ? ($unique ? "fd00::{$n}:1/128" : $v6addr) : '';
+    /* the scheme addresses of this N inside a network on this firewall: refused by name, never skipped to another N */
+    $clash = wgct_scheme_clash($n, $far4, $ipv6 ? $next6 : null, $unique ? "fd00::{$n}:1" : null, $snap['clash_nets']);
+    if ($clash !== null) {
+        $plan['errors'] = ['general' => $clash];
+        return $plan;
+    }
     $plan['n'] = $n;
     $plan['device'] = $device;
     $plan['opt'] = $opt;
@@ -1021,9 +1144,9 @@ function wgct_actions_fixture(): array {
     ];
     $core = [
         'instances' => [
-            'i-a' => ['name' => 'tun_a', 'enabled' => true, 'instance' => '1', 'mtu' => '1420', 'tunneladdress' => ['10.2.0.2/32', 'fd00::1:1/128'], 'peers' => ['p-a']],
-            'i-b' => ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420', 'tunneladdress' => ['10.2.0.2/32'], 'peers' => ['p-b']],
-            'i-d' => ['name' => 'tun_d', 'enabled' => true, 'instance' => '4', 'mtu' => '1376', 'tunneladdress' => ['10.2.0.2/32'], 'peers' => ['p-d']],
+            'i-a' => ['name' => 'tun_a', 'enabled' => true, 'instance' => '1', 'mtu' => '1420', 'tunneladdress' => ['192.0.2.2/32', 'fd00::1:1/128'], 'peers' => ['p-a']],
+            'i-b' => ['name' => 'tun_b', 'enabled' => true, 'instance' => '2', 'mtu' => '1420', 'tunneladdress' => ['192.0.2.2/32'], 'peers' => ['p-b']],
+            'i-d' => ['name' => 'tun_d', 'enabled' => true, 'instance' => '4', 'mtu' => '1376', 'tunneladdress' => ['192.0.2.2/32'], 'peers' => ['p-d']],
             'i-x' => ['name' => 'site_x', 'enabled' => true, 'instance' => '7', 'mtu' => '', 'tunneladdress' => ['192.0.2.33/32'], 'peers' => ['p-x']],
         ],
         'peers' => [
@@ -1079,8 +1202,10 @@ function wgct_actions_fixture(): array {
         'aliases' => ['TailscaleNetworks', 'LocalNetworks'],
         'ifgroup_names' => ['LANGRP'],
         'wireguard_enabled' => true,
-        /* the firewall's own IPv6 networks (wgct_local6_snapshot()): a LAN /64 and a delegated /56 */
+        /* the firewall's own IPv6 networks (wgct_snapshot_own_networks()): a LAN /64 and a delegated /56 */
         'local6' => ['2001:db8:1:1::1/64', '2001:db8:2:100::/56'],
+        /* the networks the address-scheme check compares against (wgct_scheme_clash_networks()) */
+        'clash_nets' => ['inet' => ['192.0.2.0/24', '198.51.100.0/24'], 'inet6' => ['2001:db8:1:1::/64', '2001:db8:2:100::/56']],
         'boot_id' => 'a1b2c3d4e5f60718293a4b5c6d7e8f90',
     ];
 }
@@ -1095,7 +1220,7 @@ function wgct_actions_selftest(): int {
     $snap = wgct_actions_fixture();
     $req = ['name' => 'tun_c', 'wan' => 'WAN_A', 'monitor' => '203.0.113.12', 'monitor6' => '2001:db8:ffff::12', 'ipv6' => true, 'unique' => null, 'mtu' => 1376,
             'template' => 'i-a', 'nat' => ['inet' => [], 'inet6' => []]];
-    $conf = ['addresses' => ['inet' => ['10.2.0.2/32'], 'inet6' => ['fd00::1:1/128']], 'peer_pubkey' => base64_encode(str_repeat('B', 32)),
+    $conf = ['addresses' => ['inet' => ['192.0.2.2/32'], 'inet6' => ['fd00::1:1/128']], 'peer_pubkey' => base64_encode(str_repeat('B', 32)),
              'endpoint_ip' => '198.51.100.12', 'endpoint_port' => '51820', 'has_psk' => false];
     $has = fn (array $lines, string $needle): bool => array_filter($lines, fn (string $l): bool => strpos($l, $needle) !== false) !== [];
     $err = fn (array $plan, string $field): bool => isset($plan['errors'][$field]);
@@ -1107,7 +1232,7 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_create($snap, $req, $conf);
     wgct_check($t, 'create: template, config IPv6 shared with a managed tunnel => wg3 on opt4, unique addressing on',
         $p['errors'] === [] && $p['n'] === 3 && $p['device'] === 'wg3' && $p['opt'] === 'opt4' && $p['descr'] === 'tunc' && $p['unique'] === true
-        && $p['instance']['tunneladdress'] === '10.2.0.2/32,fd00::3:1/128' && $p['instance']['gateway'] === '10.2.0.6'
+        && $p['instance']['tunneladdress'] === '192.0.2.2/32,fd00::3:1/128' && $p['instance']['gateway'] === '10.2.0.6'
         && $p['instance']['port'] === '51823' && $p['instance']['mtu'] === '1376' && $p['instance']['disableroutes'] === '1'
         && !isset($p['instance']['privkey']));
     wgct_check($t, 'create: the peer allows both families, keepalive 25, no key material but the peer public key',
@@ -1200,14 +1325,14 @@ function wgct_actions_selftest(): int {
     $c['addresses']['inet6'] = ['2001:db8::2:2/128'];
     $p = wgct_plan_create($snap, $req, $c);
     wgct_check($t, 'create: unshared config address, managed tunnels use fd00::N:1 => unique addressing on by default',
-        $p['errors'] === [] && $p['unique'] === true && $p['instance']['tunneladdress'] === '10.2.0.2/32,fd00::3:1/128'
+        $p['errors'] === [] && $p['unique'] === true && $p['instance']['tunneladdress'] === '192.0.2.2/32,fd00::3:1/128'
         && $has($p['changes'], 'the managed tunnels use the fd00::N:1 convention'));
     $noConvention = $snap;
-    $noConvention['core']['instances']['i-a']['tunneladdress'] = ['10.2.0.2/32', '2001:db8:a::1/128'];
+    $noConvention['core']['instances']['i-a']['tunneladdress'] = ['192.0.2.2/32', '2001:db8:a::1/128'];
     $noConvention['core']['gateways']['tun_a-ipv6']['gateway'] = '2001:db8:a::2';
     $p = wgct_plan_create($noConvention, $req, $c);
     wgct_check($t, 'create: no convention in use, config address on no instance => off, the config address is used, next hop still fd00::3:2, reason text says why',
-        $p['errors'] === [] && $p['unique'] === false && $p['instance']['tunneladdress'] === '10.2.0.2/32,2001:db8::2:2/128'
+        $p['errors'] === [] && $p['unique'] === false && $p['instance']['tunneladdress'] === '192.0.2.2/32,2001:db8::2:2/128'
         && $p['gateways'][1]['fields']['gateway'] === 'fd00::3:2'
         && $has($p['changes'], 'the config address is on no instance and the managed tunnels do not use fd00::N:1'));
     $s = $noConvention;
@@ -1217,7 +1342,7 @@ function wgct_actions_selftest(): int {
         $p['errors'] === [] && $p['unique'] === true && $has($p['changes'], '2001:db8::2:2/128 is already on instance site_x'));
     $p = wgct_plan_create($snap, ['unique' => false] + $req, $c);
     wgct_check($t, 'create: convention in use but unique addressing explicitly off => allowed, the config address is used',
-        $p['errors'] === [] && $p['unique'] === false && $p['instance']['tunneladdress'] === '10.2.0.2/32,2001:db8::2:2/128');
+        $p['errors'] === [] && $p['unique'] === false && $p['instance']['tunneladdress'] === '192.0.2.2/32,2001:db8::2:2/128');
 
     $p = wgct_plan_create($snap, ['unique' => false] + $req, $conf);
     wgct_check($t, 'create: unique addressing off with an address already on an instance => refused', $err($p, 'unique'));
@@ -1230,12 +1355,12 @@ function wgct_actions_selftest(): int {
     $p = wgct_plan_create($snap, ['ipv6' => null] + $req, $c);
     wgct_check($t, 'create: IPv6 unset and no IPv6 address in the config => IPv6 off, one gateway, IPv4-only peer',
         $p['errors'] === [] && $p['ipv6'] === false && count($p['gateways']) === 1 && $p['peer']['tunneladdress'] === '0.0.0.0/0'
-        && $p['instance']['tunneladdress'] === '10.2.0.2/32');
+        && $p['instance']['tunneladdress'] === '192.0.2.2/32');
 
     $p = wgct_plan_create($snap, ['ipv6' => false] + $req, $conf);
     wgct_check($t, 'create: IPv6 off => one gateway, IPv4-only peer and address, IPv4 NAT only',
         $p['errors'] === [] && count($p['gateways']) === 1 && $p['peer']['tunneladdress'] === '0.0.0.0/0'
-        && $p['instance']['tunneladdress'] === '10.2.0.2/32' && count($p['nat']) === 2);
+        && $p['instance']['tunneladdress'] === '192.0.2.2/32' && count($p['nat']) === 2);
 
     $s = $snap;
     $s['ports']['i-x'] = '51823';
@@ -1251,6 +1376,51 @@ function wgct_actions_selftest(): int {
         $s['core']['instances']["f-{$n}"] = ['name' => "f{$n}", 'enabled' => false, 'instance' => (string)$n, 'mtu' => '', 'tunneladdress' => [], 'peers' => []];
     }
     wgct_check($t, 'create: every instance number 1..251 used => refused', $err(wgct_plan_create($s, $req, $conf), 'general'));
+
+    /* the address scheme of instance 3 (10.2.0.6, fd00::3:2, fd00::3:1 with unique) against this firewall's networks */
+    $s = $snap;
+    $s['clash_nets'] = ['inet' => ['192.0.2.0/24'], 'inet6' => ['2001:db8::/64']];
+    $p = wgct_plan_create($s, $req, $conf);
+    wgct_check($t, 'create: own networks elsewhere refuse nothing', $p['errors'] === [] && $p['n'] === 3);
+    $refusedBy = fn (array $plan, string $addr, string $net): bool => array_keys($plan['errors']) === ['general']
+        && $plan['errors']['general'] === "{$addr}, the plugin's address for instance 3, lies inside {$net} on this firewall; free that range or remove the overlapping network"
+        && $plan['n'] === 0 && $plan['gateways'] === [];
+    $s = $snap;
+    $s['clash_nets']['inet'][] = '10.2.0.0/24';
+    wgct_check($t, 'create: a far gateway inside an own IPv4 network is refused by name',
+        $refusedBy(wgct_plan_create($s, $req, $conf), '10.2.0.6', '10.2.0.0/24'));
+    $s = $snap;
+    $s['clash_nets']['inet6'][] = 'fd00::/64';
+    $s1 = $snap;
+    $s1['clash_nets']['inet6'][] = 'fd00::3:0/127';
+    $c = $conf;
+    $c['addresses']['inet6'] = ['2001:db8::2:2/128'];
+    wgct_check($t, 'create: a scheme address inside an own IPv6 network is refused by name',
+        $refusedBy(wgct_plan_create($s, $req, $conf), 'fd00::3:2', 'fd00::/64')
+        && $refusedBy(wgct_plan_create($s1, $req, $conf), 'fd00::3:1', 'fd00::3:0/127')
+        && wgct_plan_create($s1, ['unique' => false] + $req, $c)['errors'] === []);
+    wgct_check($t, 'create: IPv6 off => an own IPv6 network over fd00::N:2 refuses nothing (no IPv6 address is written)',
+        wgct_plan_create($s, ['ipv6' => false, 'monitor6' => ''] + $req, $conf)['errors'] === []);
+    /* the networks of a dump; a library without the scheme check has none, and its planner checks nothing */
+    $clashOf = fn (array $dump): array => function_exists('wgct_scheme_clash_networks')
+        ? wgct_scheme_clash_networks($dump, [], ['wg1', 'wg2', 'wg4']) : ['inet' => [], 'inet6' => []];
+    $s = $snap;
+    $s['clash_nets'] = $clashOf([
+        'wg1' => ['ipv4' => [['ipaddr' => '192.0.2.2', 'subnetbits' => 32]],
+                  'ipv6' => [['ipaddr' => 'fd00::1:1', 'subnetbits' => 128, 'link-local' => false]]],
+        'wg3' => ['ipv4' => [], 'ipv6' => [['ipaddr' => 'fd00::3:1', 'subnetbits' => 128, 'link-local' => false]]],
+    ]);
+    $p = wgct_plan_create($s, $req, $conf);
+    wgct_check($t, 'create: the plugin\'s own tunnel addresses refuse nothing', $p['errors'] === [] && $p['n'] === 3);
+    $s = $snap;
+    $s['clash_nets'] = $clashOf(['wg0' => ['ipv4' => [], 'ipv6' => [['ipaddr' => 'fd00::91:10', 'subnetbits' => 64, 'link-local' => false]]]]);
+    wgct_check($t, 'create: an unmanaged WireGuard network still clashes',
+        $refusedBy(wgct_plan_create($s, $req, $conf), 'fd00::3:2', 'fd00::/64'));
+    $s = $snap;
+    $s['clash_nets'] = null;
+    $p = wgct_plan_create($s, ['ipv6' => false, 'monitor6' => ''] + $req, $conf);
+    wgct_check($t, 'create: this firewall\'s networks unreadable => refused with a retry, nothing planned',
+        str_contains($p['errors']['general'] ?? '', 'could not read this firewall\'s networks') && $p['gateways'] === []);
 
     foreach ([
         ['a gateway named tun_a exists', ['name' => 'tun_a'], 'name'],
@@ -1509,6 +1679,28 @@ function wgct_actions_selftest(): int {
     $y['NO_DEFAULT4']['monitor_disable'] = '0';
     wgct_check($t, 'sentinel: a routing field drifted => the routing apply alone',
         wgct_plan_sentinel($ifs2, $y, 'lo1', false)['steps'] === [['interface routes configure', []]]);
+
+    /* ---- the networks of the address-scheme check ---- */
+    $dump = [
+        'lo0' => ['ipv4' => [['ipaddr' => '127.0.0.1', 'subnetbits' => 8]],
+                  'ipv6' => [['ipaddr' => '::1', 'subnetbits' => 128, 'link-local' => false], ['ipaddr' => 'fe80::1', 'subnetbits' => 64, 'link-local' => true]]],
+        'igc1' => ['ipv4' => [['ipaddr' => '192.0.2.5', 'subnetbits' => 24], ['ipaddr' => '192.0.2.6', 'subnetbits' => 24], ['ipaddr' => '192.0.2.9', 'subnetbits' => 32]],
+                   'ipv6' => [['ipaddr' => '2001:DB8:1::5', 'subnetbits' => 64, 'link-local' => false]]],
+        'igc2' => ['ipv4' => [['ipaddr' => 'not-an-ip', 'subnetbits' => 24], ['ipaddr' => '198.51.100.7', 'subnetbits' => 'x']]],
+        'wg1' => ['ipv4' => [['ipaddr' => '198.51.100.2', 'subnetbits' => 24]], 'ipv6' => [['ipaddr' => 'fd00::1:5', 'subnetbits' => 64, 'link-local' => false]]],
+        'wg0' => ['ipv6' => [['ipaddr' => 'fd00::91:10', 'subnetbits' => 64, 'link-local' => false]]],
+        'pflog0' => 'not a row',
+    ];
+    wgct_check($t, 'clash nets: networks from the ifconfig dump, canonical',
+        function_exists('wgct_scheme_clash_networks')
+        && wgct_scheme_clash_networks($dump, ["2001:db8:2:100::/56\n"], ['wg1', 'wg2', 'wg4'])
+            === ['inet' => ['127.0.0.0/8', '192.0.2.0/24'], 'inet6' => ['2001:db8:1::/64', '2001:db8:2:100::/56', 'fd00::/64']]
+        && wgct_scheme_clash_networks(null, [], []) === ['inet' => [], 'inet6' => []]);
+    $s = wgct_snapshot_own_networks($snap, ['ifconfig' => $dump, 'prefix_files' => []]);
+    $u = wgct_snapshot_own_networks($snap, null);
+    wgct_check($t, 'clash nets: the snapshot takes both views of one read and leaves out the devices of the tunnels it manages',
+        $s['local6'] === ['2001:db8:1::5/64', '::1/128', 'fd00::1:5/64', 'fd00::91:10/64'] && $s['clash_nets']['inet6'] === ['2001:db8:1::/64', 'fd00::/64']
+        && $s['clash_nets']['inet'] === ['127.0.0.0/8', '192.0.2.0/24'] && $u['local6'] === null && $u['clash_nets'] === null);
 
     return wgct_tally_report('actions', $t);
 }

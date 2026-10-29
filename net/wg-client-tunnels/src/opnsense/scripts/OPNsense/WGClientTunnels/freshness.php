@@ -4,19 +4,40 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Keep the rendered enforcement current between filter reloads. No event fires when a WireGuard instance or peer is
- * saved, so the reconcile (config syshook, monitor/newwanip hooks, minute cron) compares what the hook last rendered --
- * and what pf actually holds -- with what is wanted now and acts on wgct_freshness_plan()'s decision:
+ * saved, so the reconcile (queued by the config syshook and core's hooks, and the minute cron) compares what the
+ * hook last rendered -- and what pf actually holds -- with what is wanted now and acts on wgct_freshness_plan()'s
+ * decision:
  *   - MSS lines differ, the live anchor's rule count differs from the
  *     render, or the last render failed only at the anchor -> reload the
  *     anchor directly (pfctl -a), no filter reload needed;
  *   - pins differ, there is no rendered record, the render otherwise failed,
  *     the main ruleset failed to load since the last render, or pf is missing
  *     labels the rendered pins produce -> ask configd for a filter reload,
- *     DETACHED: this may run inside a configd action (the monitor hook's
- *     reconcile runs within routing configure), and a synchronous
+ *     DETACHED: this may run inside a configd action (configctl
+ *     wgclienttunnels reconcile), and a synchronous
  *     configctl there could re-enter configd. The hook
  *     re-renders during that reload.
  * While the hook enforces the footprint (no rendered record, fallback.json
@@ -59,7 +80,7 @@ try {
          * released when the process exits: two overlapping reconciles must
          * not interleave, or a run that derived before another one wrote
          * rendered.json could load its older MSS lines afterwards. Bounded,
-         * because this can run inside a configd action (the monitor hook); a
+         * because this can run inside a configd action (configctl wgclienttunnels reconcile); a
          * run that cannot get the lock leaves the work to the run holding
          * it. --dry only reads, so it never waits. */
         $lock = wgct_poll_lock(
@@ -92,28 +113,18 @@ try {
         }
     }
 
-    /* What pf holds right now, not just what rendered.json says was
-     * rendered: a filter reload while the hook could not render leaves pf
-     * without the pins and anchor while the record still describes them.
-     * Parsed from stdout only; $live stays null when a pfctl listing fails or
-     * no listing can be trusted (below), and the plan then rests on the record
-     * alone.
+    /* What pf holds right now, not just what rendered.json says: a filter reload while the hook could not render
+     * leaves pf without the pins and anchor while the record still describes them. $live stays null when a pfctl
+     * listing fails or none can be trusted, and the plan then rests on the record alone.
      *
-     * The main ruleset changes only when it is loaded, and pf recomputes its
-     * ruleset checksum over the rules' labels at every load (an identical
-     * load keeps it), so `pfctl -sr` (seconds on a large ruleset) runs only
-     * when the checksum or the rendered pin labels differ from observed.json's,
-     * or the record counts a miss; otherwise missing_labels is the recorded 0.
-     * A listing counts only when it is whole and the checksum read before it
-     * equals the one after (wgct_observe_listing). Any load during it, an
-     * identical one too, cuts it short: pfctl then prints
-     * `pfctl: DIOCGETRULE: Device busy` and still exits 0, so its stderr is
-     * kept apart and judged (wgct_pf_listing_usable); a load that changes the
-     * ruleset also moves the checksum. A listing cut short or straddled is
-     * listed once more; a second one leaves $live null and records nothing,
-     * and is no failure ($observeTransient: a notice, the next run lists
-     * again). An unreadable checksum lists as before (a cut listing is listed
-     * once more there too) and records nothing. */
+     * pf recomputes its ruleset checksum over the rules' labels at every load (an identical load keeps it), so
+     * `pfctl -sr` (seconds on a large ruleset) runs only when the checksum or the rendered pin labels differ from
+     * observed.json's, or the record counts a miss; otherwise missing_labels is the recorded 0. A listing counts
+     * only when it is whole and the checksum read before it equals the one after (wgct_observe_listing). Any load
+     * during it, an identical one too, cuts it short: pfctl then prints `pfctl: DIOCGETRULE: Device busy` and
+     * still exits 0, so its stderr is judged (wgct_pf_listing_usable). A listing cut short or straddled is listed
+     * once more; a second leaves $live null and records nothing, and is no failure ($observeTransient: a
+     * notice, the next run lists again). An unreadable checksum lists as before and records nothing. */
     $live = null;
     $liveFrom = null;
     /* The labels pf should hold: the rendered pins', or, while the hook enforces the footprint (no rendered
@@ -122,7 +133,7 @@ try {
     $footprint = wgct_read_footprint();
     $lookFor = wgct_rules_looked_for($rendered, $fallback, $fallback !== null ? $footprint : null);
     /* whether a failed render would have anything to fall back to: when not, the plan asks for the reload that
-     * records it (wgct_freshness_plan() case 1b; a box upgraded from 3.7_1 has none) */
+     * records it (wgct_freshness_plan() case 1b; an upgraded box may have none) */
     $footprintRecorded = $footprint !== null || ($fallback ?? wgct_read_fallback()) !== null;
     $labelsFrom = $rendered === null && $fallback !== null ? 'footprint' : 'rendered';
     $observeError = null;

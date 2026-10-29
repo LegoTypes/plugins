@@ -3,7 +3,27 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
  *
  * Health mirror library. The decisions are pure functions of a snapshot:
  *
@@ -93,11 +113,11 @@ function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $
 }
 
 /**
- * Whether a state-changing run must refuse because the 3.1.0 migration is pending (wgct_migration_pending()):
- * the engine model does not hold the managed list and the holds yet, so the run takes, releases and
- * writes nothing. Logged once per state, as an unreadable boot id is: the refusal once, and the first
- * run after the migration once, through the marker WGCT_RUN_DIR/<run>.awaiting-migration (a suffix of its own:
- * wgct.sh's queued-reconcile mark is reconcile.pending). A read-only listing never calls it.
+ * Whether a state-changing run must refuse because a migration of the plugin's stored data is pending
+ * (wgct_migration_pending()): the engine model does not hold the managed list and the holds as this version reads
+ * them yet, so the run takes, releases and writes nothing. Logged once per state, as an unreadable boot id is: the
+ * refusal once, and the first run after the migration once, through the marker WGCT_RUN_DIR/<run>.awaiting-migration
+ * (a suffix of its own: wgct.sh's queued-reconcile mark is reconcile.pending). A read-only listing never calls it.
  *
  * @param string $run what refuses, as the marker and the log lines name it (tick, action, apply, ...)
  * @param string $tag the log prefix without brackets
@@ -106,7 +126,7 @@ function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $
 function wgct_pending_refuses(string $run, string $tag): bool {
     $pending = wgct_migration_pending();
     wgct_note_lock(WGCT_RUN_DIR . "/{$run}.awaiting-migration", $pending, "{$run} refused: " . WGCT_MIGRATION_PENDING,
-        "{$run} runs again: the plugin settings are migrated to " . WGCT_SETTINGS_MIGRATED_VERSION, $tag);
+        "{$run} runs again: the plugin's stored data is migrated", $tag);
     return $pending;
 }
 
@@ -266,8 +286,7 @@ function wgct_gateway_status() {
  * filter is then never rebuilt with the new status of dpinger-monitored
  * gateways -- their status comes from the watcher, which had not re-read
  * config when our reconfigure generated the ruleset -- and 20-recover never
- * kills their states. Observed 2026-09-22: a forced-down tunnel stayed the
- * group's route-to until an unrelated reconfigure.
+ * kills their states.
  *
  * So, lock released: wait until gateway status shows what we wrote, then run
  * the alarm path ourselves, blocking on the lock. It reconfigures routing
@@ -279,14 +298,10 @@ function wgct_gateway_status() {
 function wgct_replay_alarm(array $expected, $logTag) {
     wgct_await_gateway_status($expected, $logTag);
     /*
-     * Run it through configd, never exec() from here: PHP opens files without
-     * close-on-exec, so anything this process starts inherits its open lock
-     * files -- including the single-instance lock -- and a daemon the
-     * reconfigure (re)starts keeps them for as long as it lives. Both happened
-     * on 2026-09-22: a restarted filterlog held first the gateway lock
-     * (blocking every reconfigure, dropping every alarm) and then this
-     * script's own lock (every later tick exited at the guard). configd starts
-     * the action from its own process, which holds neither.
+     * Run it through configd, never exec() from here: PHP opens files without close-on-exec, so anything this
+     * process starts inherits its open lock files (the gateway lock, the single-instance lock), and a daemon the
+     * reconfigure (re)starts keeps them for as long as it lives, blocking every reconfigure and every later tick.
+     * configd starts the action from its own process, which holds neither.
      */
     $result = trim((new OPNsense\Core\Backend())->configdpRun(
         'wgclienttunnels replay_alarm',
@@ -972,7 +987,7 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
  */
 function wgct_apply_changes($mdl, array $changes) {
     foreach ($mdl->gateway_item->iterateItems() as $gw) {
-        $name = (string)$gw->name;
+        $name = $gw->name->getValue();
         if (array_key_exists($name, $changes)) {
             $gw->force_down = $changes[$name] ? '1' : '0';
         }
@@ -988,6 +1003,10 @@ function wgct_apply_changes($mdl, array $changes) {
  * plugins_configure): it would wait for exclusive access while this process
  * waits for it to finish. Never start or wait on anything that may write
  * config inside $mutate; simplest is to start or wait on nothing at all.
+ * No read-only guard (throwReadOnly()) here: a user's save reaches this only
+ * from an API action that has already called it (Create and Edit in-process,
+ * the rest through configd); cron, configd and the package scripts run as
+ * root with no user session.
  *
  * @param callable $mutate builds models, changes and serializes them; returns an
  *                         array whose 'save' key says whether to save
@@ -1147,8 +1166,8 @@ function wgct_selftest() {
         ['no dpinger socket for IPv4 (restarting) => IPv6 unchanged',
             $config(), $live(['loss' => [], 'sock_age' => ['WAN_A' => 600]]), [],
             [], []],
-        /* 2026-10-06 14:28:15 on the firewall: a gateway Apply restarted every dpinger and the
-         * health mirror forced a healthy WAN's tunnels down on the fresh monitor's first reading */
+        /* a gateway Apply restarts every dpinger: a fresh monitor's first reading must not force a healthy WAN's
+         * tunnels down */
         ['every dpinger just restarted, WAN reads down => nothing changes',
             $config(), $live(['status' => ['WAN_A' => 'down', 'tun_a' => 'down'], 'loss' => ['WAN_A' => 100, 'tun_a' => 100],
                               'sock_age' => ['WAN_A' => 0, 'tun_a' => 0]]), [],

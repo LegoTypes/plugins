@@ -3,9 +3,29 @@
 /*
  * Copyright (C) 2026 cayossarian
  * All rights reserved.
- * BSD 2-Clause License
  *
- * VM test for the filter hook's fallback to the footprint.
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright notice,
+ *    this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+ * AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ *
+ * VM test for the filter hook's fallback to the footprint, and for what else the inc registers with core.
  * Root on the disposable test VM only (vm_selftest.sh), never on a firewall. It loads the working tree's
  * plugins.inc.d/wgclienttunnels.inc beside a stub \OPNsense\Firewall\Plugin that only records what is
  * registered, and calls wgclienttunnels_firewall_at() with a temporary library, footprint and run directory,
@@ -88,6 +108,9 @@ namespace {
         $tally['fail'] += $ok ? 0 : 1;
         printf("[%s] hook: %s\n", $ok ? 'PASS' : 'FAIL', $desc);
     }
+
+    /* the plugin is per node: core's HA sync is offered no section of it */
+    hooktest_check($tally, 'no CARP sync is offered', fn (): bool => !function_exists('wgclienttunnels_xmlrpc_sync'));
 
     $T = rtrim(sys_get_temp_dir(), '/') . '/wgct-hook.' . getmypid();
     mkdir($T, 0700);
