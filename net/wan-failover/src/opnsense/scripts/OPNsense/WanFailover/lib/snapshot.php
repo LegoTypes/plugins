@@ -19,6 +19,7 @@ require_once __DIR__ . '/judge.php';
 require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/pfstate.php';
 require_once __DIR__ . '/contract.php';
+require_once __DIR__ . '/failback.php';
 require_once __DIR__ . '/state.php';
 
 function wf_boot_id(): string
@@ -178,7 +179,7 @@ function wf_snapshot(): array
     $names = wf_contract_name_mask($read(WF_CORE_GATEWAYS_XML));
     $failbackOn = $mdl->failback->isEqual('1');
     $failback = $failbackOn ? wf_contract_failback((string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null'),
-        (new \OPNsense\Routing\GatewayGroups())->getGroupsConfig()) : [];
+        wf_contract_groups_read(WF_CORE_GROUPS_CLASS, WF_CORE_GROUPS_METHOD)) : [];
     return [
         'now' => $now, 'boot_id' => $bootId, 'release' => null,
         'enabled' => $mdl->enabled->isEqual('1'), 'dry' => $mdl->dry->isEqual('1'),
@@ -196,8 +197,9 @@ function wf_snapshot(): array
 }
 
 /**
- * drift is the failback contract on this read's own rule listing and groups (wf_contract_failback()); a group whose
- * shape drifted gives its rules no preference, so the read never throws on it.
+ * drift is the failback contract on this read's own rule listing and groups (wf_contract_failback()); groups that
+ * cannot be read, or a group whose shape drifted, give no preference (wf_rule_pref()), so the read never throws on
+ * them.
  *
  * @param array<string, string> $wanTargets WAN name => route target
  * @return array{flows: list<array>, renderings: array<string, list<array>>, pinned: array<string, true>,
@@ -215,18 +217,12 @@ function wf_snapshot_pf(array $wanTargets): array
         return $r['destination'] !== null && $r['destination'] !== 'default'
             && wf_route_get_target($r) === wf_route_target((string)$f['anchor']['route_to_gw'], (string)$f['anchor']['route_to_if']);
     }, 200);
-    $groups = (new \OPNsense\Routing\GatewayGroups())->getGroupsConfig();
-    $pref = [];
+    $groups = wf_contract_groups_read(WF_CORE_GROUPS_CLASS, WF_CORE_GROUPS_METHOD);
+    $ruleGateways = [];
     foreach ((new \OPNsense\Firewall\Filter())->rules->rule->iterateItems() as $uuid => $rule) {
-        $gw = $rule->gateway->getValue();
-        if ($gw === '') {
-            $pref[(string)$uuid] = [];
-        } elseif (isset($groups[$gw])) {
-            $pref[(string)$uuid] = wf_contract_groups([$gw => $groups[$gw]]) === [] ? wf_first_tier($groups[$gw]['tiers']) : [];
-        } else {
-            $pref[(string)$uuid] = [$gw];
-        }
+        $ruleGateways[(string)$uuid] = (string)$rule->gateway->getValue();
     }
+    $pref = wf_rule_pref($ruleGateways, $groups['groups']);
     $default = array_search(wf_live_default(), $wanTargets, true);
     return ['flows' => $flows, 'renderings' => wf_parse_rules($rawRules), 'pinned' => $pinned, 'rule_pref' => $pref,
             'default' => $default === false ? null : $default, 'selfcheck' => wf_pf_selfcheck($rawStates, $states),

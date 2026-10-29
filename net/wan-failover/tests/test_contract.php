@@ -21,6 +21,46 @@ const WF_T_TS = "[restart]\ncommand:/usr/local/etc/rc.d/tailscaled restart\ntype
 const WF_T_CRON = "[restart]\ncommand:/usr/local/sbin/pluginctl -s cron restart\nparameters:\ntype:script\nmessage:restarting cron\n";
 const WF_T_RC = "/usr/local/etc/rc.syshook early\n# PHP starts here\n/usr/local/bin/flock -n -o \${BOOTLOCK} /usr/local/etc/rc.bootup || exit 1\n";
 
+/* stand-ins for core's GatewayGroups, as wf_contract_groups_read() is handed it: one returning the rows a case sets,
+ * and three that core could become */
+final class WfTGroups
+{
+    /** @var array<array-key, mixed> */
+    public static array $rows = [];
+
+    /** @return array<array-key, mixed> */
+    public function getGroupsConfig(): array
+    {
+        return self::$rows;
+    }
+}
+
+final class WfTGroupsThrows
+{
+    /** @return array<array-key, mixed> */
+    public function getGroupsConfig(): array
+    {
+        throw new RuntimeException('core moved');
+    }
+}
+
+final class WfTGroupsScalar
+{
+    public function getGroupsConfig(): string
+    {
+        return 'WAN_A';
+    }
+}
+
+final class WfTGroupsRenamed
+{
+    /** @return array<array-key, mixed> */
+    public function getGroups(): array
+    {
+        return [];
+    }
+}
+
 wf_register_suite('contract', function (): int {
     $t = ['fail' => 0, 'total' => 0];
     wf_check($t, 'section extraction', str_contains((string)wf_ini_section(WF_T_FILTER, 'kill.gateway_states'), '-k gateway -k %s'));
@@ -165,18 +205,43 @@ wf_register_suite('contract', function (): int {
     libxml_use_internal_errors($internal);
     wf_check($t, "contract: reading Gateways.xml leaves libxml's error setting as it was and its error list empty", $kept);
 
-    /* GatewayGroups::getGroupsConfig()'s rows as core 26.7.7 returns them, its other keys left out: tiers keyed by
-     * number, an empty tier as [''] */
+    /* GatewayGroups::getGroupsConfig()'s rows, read through the guarded reader from a stand-in that returns them */
+    $read = function (array $rows): array {
+        WfTGroups::$rows = $rows;
+        return wf_contract_groups_read(WfTGroups::class, 'getGroupsConfig');
+    };
     $rules = (string)file_get_contents(__DIR__ . '/fixtures/rules.txt');
     $groupsDrift = 'GatewayGroups::getGroupsConfig() rows no longer carry tiers as lists of gateway names';
     $groups = ['G1' => ['tiers' => [1 => ['WAN_A'], 2 => ['WAN_B'], 3 => ['']]]];
-    wf_check($t, 'failback contract: a clean listing and groups report nothing', wf_contract_failback($rules, $groups) === []);
+    wf_check($t, 'failback contract: a clean listing and groups report nothing', wf_contract_failback($rules, $read($groups)) === []);
     wf_check($t, 'failback contract: tiers that are not lists of names are a drift',
-        wf_contract_failback($rules, ['G1' => ['tiers' => 'WAN_A']]) === [$groupsDrift]
-        && wf_contract_failback($rules, ['G1' => []]) === [$groupsDrift]
-        && wf_contract_failback($rules, ['G1' => ['tiers' => [1 => [7]]]]) === [$groupsDrift]);
+        wf_contract_failback($rules, $read(['G1' => ['tiers' => 'WAN_A']])) === [$groupsDrift]
+        && wf_contract_failback($rules, $read(['G1' => []])) === [$groupsDrift]
+        && wf_contract_failback($rules, $read(['G1' => ['tiers' => [1 => [7]]]])) === [$groupsDrift]);
     wf_check($t, 'failback contract: an unreadable listing is a drift',
-        wf_contract_failback(null, $groups) === [$rulesDrift] && wf_contract_failback('', $groups) === [$rulesDrift]
-        && wf_contract_failback(null, ['G1' => []]) === [$rulesDrift, $groupsDrift]);
+        wf_contract_failback(null, $read($groups)) === [$rulesDrift] && wf_contract_failback('', $read($groups)) === [$rulesDrift]
+        && wf_contract_failback(null, $read(['G1' => []])) === [$rulesDrift, $groupsDrift]);
+    /* core 26.7.7 (GatewayGroups.php getGroupsConfig()) gives every group tiers 1-5, each explode(',') of its item
+     * field, so an empty tier is [''] and a group with no members has five of them */
+    $core = fn (string $name, array $named): array => ['name' => $name, 'trigger' => 'downloss', 'poolopts' => '',
+        'descr' => '', 'tiers' => array_replace([1 => [''], 2 => [''], 3 => [''], 4 => [''], 5 => ['']], $named)];
+    $coreRows = ['G_ONE' => $core('G_ONE', [1 => ['WAN_A']]), 'G_EMPTY' => $core('G_EMPTY', []),
+                 'G_TWO' => $core('G_TWO', [1 => ['WAN_A', 'WAN_B'], 2 => ['WAN_DHCP']]), 'G_LATE' => $core('G_LATE', [3 => ['WAN_B']]),
+                 'G_NONE' => ['name' => 'G_NONE', 'tiers' => []]];
+    wf_check($t, "failback contract: core's own group shapes report nothing",
+        $read($coreRows) === ['groups' => $coreRows, 'drift' => []] && $read([]) === ['groups' => [], 'drift' => []]
+        && wf_contract_failback($rules, $read($coreRows)) === []);
+    $unreadable = fn (string $why): array => ['groups' => null, 'drift' => [$why]];
+    $gone = wf_contract_groups_read('WfTGroupsGone', 'getGroupsConfig');
+    $renamed = wf_contract_groups_read(WfTGroupsRenamed::class, 'getGroupsConfig');
+    $threw = wf_contract_groups_read(WfTGroupsThrows::class, 'getGroupsConfig');
+    $scalar = wf_contract_groups_read(WfTGroupsScalar::class, 'getGroupsConfig');
+    wf_check($t, 'failback contract: groups core can no longer give are a drift naming why, and the read never throws',
+        $gone === $unreadable('WfTGroupsGone no longer exists')
+        && $renamed === $unreadable('WfTGroupsRenamed::getGroupsConfig() no longer exists')
+        && $threw === $unreadable('WfTGroupsThrows::getGroupsConfig() threw RuntimeException')
+        && $scalar === $unreadable('WfTGroupsScalar::getGroupsConfig() no longer returns an array')
+        && wf_contract_failback($rules, $threw) === ['WfTGroupsThrows::getGroupsConfig() threw RuntimeException']
+        && wf_contract_failback(null, $scalar) === [$rulesDrift, 'WfTGroupsScalar::getGroupsConfig() no longer returns an array']);
     return wf_tally_report('contract', $t);
 });

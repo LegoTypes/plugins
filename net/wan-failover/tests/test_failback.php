@@ -73,5 +73,19 @@ wf_register_suite('failback', function (): int {
 
     wf_check($t, 'wf_preferred: local flow to a pinned destination has no preference',
         wf_preferred($flows[4], $pref, 'WAN_A', $pinned) === null);
+
+    /* core 26.7.7's group rows: tiers 1-5, each explode(',') of its item field, an empty tier [''] */
+    $core = fn (array $named): array => ['tiers' => array_replace([1 => [''], 2 => [''], 3 => [''], 4 => [''], 5 => ['']], $named)];
+    $coreGroups = ['G_ONE' => $core([1 => ['WAN_A']]), 'G_EMPTY' => $core([]), 'G_LATE' => $core([2 => ['WAN_B']]),
+                   'G_NONE' => ['tiers' => []]];
+    $ruleGateways = ['r1' => 'G_ONE', 'r2' => 'G_EMPTY', 'r3' => 'G_LATE', 'r4' => 'G_NONE', 'r5' => 'WAN_A', 'r6' => ''];
+    wf_check($t, "rule pref: core's group shapes give the first tier with members, an empty group none",
+        wf_rule_pref($ruleGateways, $coreGroups) === ['r1' => ['WAN_A'], 'r2' => [], 'r3' => ['WAN_B'], 'r4' => [],
+                                                      'r5' => ['WAN_A'], 'r6' => []]);
+    $drifted = $coreGroups + ['G_STR' => ['tiers' => 'WAN_A'], 'G_ROW' => [], 'G_INT' => ['tiers' => [1 => [7]]], 'G_SCALAR' => 'WAN_A'];
+    wf_check($t, 'rule pref: a drifted group, or groups that cannot be read, give no preference and never throw',
+        wf_rule_pref(['r1' => 'G_ONE', 'r7' => 'G_STR', 'r8' => 'G_ROW', 'r9' => 'G_INT', 'r10' => 'G_SCALAR'], $drifted)
+            === ['r1' => ['WAN_A'], 'r7' => [], 'r8' => [], 'r9' => [], 'r10' => []]
+        && wf_rule_pref($ruleGateways, null) === ['r1' => [], 'r2' => [], 'r3' => [], 'r4' => [], 'r5' => [], 'r6' => []]);
     return wf_tally_report('failback', $t);
 });

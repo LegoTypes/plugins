@@ -14,7 +14,8 @@ declare(strict_types=1);
  * nothing, and the removal no longer runs the routing copy. Failback dependencies: the pf rule listing failback reads
  * and the gateway groups' tiers; a drift suspends failback and blocks nothing else. Names dependency: core's
  * gateway-name mask, which WF_GATEWAY_NAME_MASK copies; a drift blocks nothing, since a name the copy refuses only
- * reads as unresolved. Pure: callers pass the file contents and core's returns.
+ * reads as unresolved. Pure: callers pass the file contents and core's returns, except wf_contract_groups_read(),
+ * the one guarded call into core.
  */
 
 require_once __DIR__ . '/constants.php';
@@ -215,11 +216,42 @@ function wf_contract_groups(array $groups): array
 }
 
 /**
+ * Core's gateway groups, read so that no change of core's API can throw past this: the class or the method gone, the
+ * call throwing, or a return that is not an array leaves groups null (unreadable) and is a drift naming it. A return
+ * that is an array is checked for its shape (wf_contract_groups()). Every snapshot reads the groups through this, so
+ * a groups drift reaches failback only.
+ *
+ * @param string $class WF_CORE_GROUPS_CLASS
+ * @param string $method WF_CORE_GROUPS_METHOD
+ * @return array{groups: ?array<array-key, mixed>, drift: list<string>} groups: the method's raw return
+ */
+function wf_contract_groups_read(string $class, string $method): array
+{
+    $short = substr((string)strrchr('\\' . $class, '\\'), 1);
+    $unread = fn (string $why): array => ['groups' => null, 'drift' => [$why]];
+    try {
+        if (!class_exists($class)) {
+            return $unread("{$short} no longer exists");
+        }
+        if (!method_exists($class, $method)) {
+            return $unread("{$short}::{$method}() no longer exists");
+        }
+        $groups = (new $class())->$method();
+    } catch (\Throwable $e) {
+        return $unread("{$short}::{$method}() threw " . get_class($e));
+    }
+    if (!is_array($groups)) {
+        return $unread("{$short}::{$method}() no longer returns an array");
+    }
+    return ['groups' => $groups, 'drift' => wf_contract_groups($groups)];
+}
+
+/**
  * The reads failback rests on: `pfctl -vvsr`'s format (wf_rules_selfcheck()), whose labels and route-to targets tell
- * whether a rule renders its preferred WAN yet, and the groups' tiers (wf_contract_groups()), which give that
+ * whether a rule renders its preferred WAN yet, and the groups (wf_contract_groups_read()), whose tiers give that
  * preference. Null is a listing that could not be read.
  *
- * @param array<array-key, mixed> $groups GatewayGroups::getGroupsConfig()'s raw return, whose shape is what this tests
+ * @param array{groups: ?array<array-key, mixed>, drift: list<string>} $groups wf_contract_groups_read()
  * @return list<string>
  */
 function wf_contract_failback(?string $rawRules, array $groups): array
@@ -228,7 +260,7 @@ function wf_contract_failback(?string $rawRules, array $groups): array
     if ($rawRules === null || !wf_rules_selfcheck($rawRules)) {
         $p[] = 'pfctl -vvsr no longer prints rule labels or route-to targets as the failback parser reads them';
     }
-    return array_merge($p, wf_contract_groups($groups));
+    return array_merge($p, $groups['drift']);
 }
 
 /**

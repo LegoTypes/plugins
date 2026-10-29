@@ -43,6 +43,9 @@ const WF_IF_MASK = '/^[a-z][a-z0-9_.]*\z/';
 const WF_DPINGER_PID = '/var/run/dpinger_%s.pid';   /* dpinger.inc */
 const WF_DPINGER_SOCK = '/var/run/dpinger_%s.sock'; /* dpinger.inc */
 const WF_CORE_GATEWAYS_XML = '/usr/local/opnsense/mvc/app/models/OPNsense/Routing/Gateways.xml';
+/* core 26.7.7's class and method the snapshot reads the gateway groups through (wf_contract_groups_read()) */
+const WF_CORE_GROUPS_CLASS = 'OPNsense\\Routing\\GatewayGroups';
+const WF_CORE_GROUPS_METHOD = 'getGroupsConfig';
 
 const WF_FRESH_SECONDS = 120;        /* an alternative must have read settled-up this recently to back a hold */
 const WF_UNKNOWN_MAX_SECONDS = 180;  /* unreadable this long counts as bad (three dpinger time_periods) */

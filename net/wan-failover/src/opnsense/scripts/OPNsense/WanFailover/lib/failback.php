@@ -15,6 +15,32 @@ declare(strict_types=1);
  */
 
 require_once __DIR__ . '/pfstate.php';
+require_once __DIR__ . '/contract.php';
+
+/**
+ * Each rule's preferred gateways: none without a gateway, a group's first tier that has members (wf_first_tier()),
+ * else the gateway itself. A group whose row drifted (wf_contract_groups()) gives none, and so does every rule while
+ * the groups are unreadable (null), since a group cannot be told from a gateway then: a drift never throws here, and
+ * the failback contract reports it.
+ *
+ * @param array<string, string> $ruleGateways rule UUID => its gateway field
+ * @param array<array-key, mixed>|null $groups wf_contract_groups_read()'s groups
+ * @return array<string, list<string>>
+ */
+function wf_rule_pref(array $ruleGateways, ?array $groups): array
+{
+    $pref = [];
+    foreach ($ruleGateways as $uuid => $gw) {
+        if ($gw === '' || $groups === null) {
+            $pref[$uuid] = [];
+        } elseif (isset($groups[$gw])) {
+            $pref[$uuid] = wf_contract_groups([$gw => $groups[$gw]]) === [] ? wf_first_tier($groups[$gw]['tiers']) : [];
+        } else {
+            $pref[$uuid] = [$gw];
+        }
+    }
+    return $pref;
+}
 
 /**
  * @param array{anchor: array{dst: string}, partner: ?array{rlabel: ?string}, kind: string, current: string} $flow
