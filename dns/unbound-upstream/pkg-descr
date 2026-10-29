@@ -19,6 +19,29 @@ its queries leave through that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.6
+
+* Save now refuses a fail-closed network that is listed twice (the
+  message names both entries), Unbound's Outgoing Network Interfaces
+  while the plugin is enabled, a root-zone forward through DNS over TLS
+  or Query Forwarding to a member's resolver, and, for a fail-closed
+  set, a view: or access-control-view: line in another .conf file of
+  Unbound's include directory. A setting saved before keeps running. It
+  is named at the next Save of the settings and at the next add, edit
+  or delete of a per-member resolver row, and that row change is
+  refused until the setting is fixed
+* A static route written with a leading-zero length (such as /024) is
+  read as core reads it when the plugin guards a resolver's address
+* The probe always asks the root. The Probe name setting is gone, and a
+  value saved before is ignored
+* The notify URL is a URL field, and Save also holds it to the shape
+  the plugin uses when it sends the POST
+* The status names a dpinger or Unbound path that core has moved. It is
+  a note and never a failure
+* The per-member resolver grid is core's grid. The note about Unbound's
+  own page shows only in tunnel mode
+* The hooks queue their work through configd's own calls
+
 1.5
 
 * "Fall back to Unbound's own forwarders" (on by default) and, below it,
