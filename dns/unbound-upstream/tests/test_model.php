@@ -29,6 +29,9 @@ declare(strict_types=1);
  *
  * The settings model: defaults and Save-time validation. Needs the OPNsense model
  * classes, so it runs only on the test VM (vm_selftest.sh) and reports a skip anywhere else.
+ *
+ * The suite does not write config.xml. Some cases change Unbound's settings in the configuration object in memory
+ * and put them back (uu_test_model_with_unbound()), with the file's md5 as the guard.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -438,6 +441,18 @@ uu_register_suite('model', function (): int {
     );
     uu_check(
         $t,
+        'model: a URL both the field and the run\'s shape refuse gets exactly one message, on notify_url',
+        uu_try_case(function () use ($urlMessage): bool {
+            $got = uu_test_model_messages(['notify' => '1', 'notify_url' => 'ha.example.test/x']);
+            $all = array_column($got, 'message');
+            if (uu_test_model_field($got, 'notify_url') !== [$urlMessage] || count($got) !== 1) {
+                printf("  messages: %s\n", json_encode($got));
+            }
+            return uu_test_model_field($got, 'notify_url') === [$urlMessage] && $all === [$urlMessage];
+        })
+    );
+    uu_check(
+        $t,
         'model: a stored URL UrlField refuses still loads and is still used',
         uu_try_case(function () use ($urlMessage): bool {
             $stored = 'http://ha_box.example:8123/x';
@@ -775,6 +790,32 @@ uu_register_suite('model', function (): int {
         );
     }
 
+    uu_check($t, 'model: the foreign-view message goes on the setting that makes the set not empty, a list of '
+        . 'networks alone included',
+        uu_try_case(function (): bool {
+            $field = function (array $values): ?string {
+                $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+                $m->setNodes($values);
+                return (new \ReflectionMethod($m, 'foreignViewField'))->invoke($m);
+            };
+            $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+            $got = [
+                'off' => $field(['fallback' => '0', 'fail_closed_networks' => '192.0.2.0/24']),
+                'interfaces' => $field(['fallback' => '1', 'fail_closed' => 'lan', 'fail_closed_networks' => '192.0.2.0/24']),
+                'networks' => $field(['fallback' => '1', 'fail_closed_networks' => '192.0.2.0/24']),
+                'none' => $field(['fallback' => '1']),
+            ];
+            $ok = $got === [
+                'off' => $m->fallback->__reference,
+                'interfaces' => $m->fail_closed->__reference,
+                'networks' => $m->fail_closed_networks->__reference,
+                'none' => null,
+            ];
+            if (!$ok) {
+                printf("  %s\n", json_encode($got));
+            }
+            return $ok;
+        }));
     /* the other configuration files' view lines: the VM cannot stage one in Unbound's own directory, so the reader
      * runs over a scratch directory and the line test over texts */
     uu_check($t, 'model: foreignViewProblems names each file and line',

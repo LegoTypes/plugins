@@ -224,20 +224,32 @@ class UnboundUpstream extends BaseModel
             $this->checkRootForwards($messages, $unbound, $model);
         }
 
-        /* the set is empty with the fallback on and nothing selected or listed; the message goes on the setting that
-         * makes it not empty */
-        if ($this->fallback->isEqual('0')) {
-            $field = $this->fallback->__reference;
-        } elseif (!$this->fail_closed->isEmpty()) {
-            $field = $this->fail_closed->__reference;
-        } elseif (!$this->fail_closed_networks->isEmpty()) {
-            $field = $this->fail_closed_networks->__reference;
-        } else {
+        $field = $this->foreignViewField();
+        if ($field === null) {
             return;
         }
         foreach (self::foreignViewProblems(self::foreignViewTexts(dirname(UU_VIEW_FILE))) as $problem) {
             $messages->appendMessage(new Message($problem, $field));
         }
+    }
+
+    /**
+     * The reference of the setting a foreign-view message goes on: the one that makes the set not empty (fallback off
+     * refuses every client; with it on, the interfaces, else the networks). Null while the set is empty with the
+     * fallback on and nothing selected or listed.
+     */
+    private function foreignViewField(): ?string
+    {
+        if ($this->fallback->isEqual('0')) {
+            return $this->fallback->__reference;
+        }
+        if (!$this->fail_closed->isEmpty()) {
+            return $this->fail_closed->__reference;
+        }
+        if (!$this->fail_closed_networks->isEmpty()) {
+            return $this->fail_closed_networks->__reference;
+        }
+        return null;
     }
 
     /**
