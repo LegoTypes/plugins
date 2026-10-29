@@ -84,7 +84,8 @@ const UU_STOP_REMOVE = 'remove';          /* Snapshot.stop: the package is being
 const UU_STOP_REMOVING = 'removing';      /* Snapshot.stop: any other evaluation while the removal marker exists */
 const UU_NOTIFY_CONNECT_SECONDS = 3;     /* the switch notification's connect timeout */
 const UU_NOTIFY_TIMEOUT_SECONDS = 5;     /* and its whole POST, under the evaluate lock */
-const UU_PROBE_NAME = '.';               /* the name the direct probe asks the resolver for: the root */
+const UU_PROBE_NAME = '.';               /* the root: the name both probes ask (the resolver directly, and through
+                                           * Unbound after flush_type of its SOA) */
 const UU_SYSLOG_IDENT = 'dnsupstream';   /* the program name every log line carries; syslog-ng's program() is an
                                            * unanchored regex, so it must contain no other log's pattern (core's
                                            * resolver log is program("unbound")); unboundupstream.inc's syslog and

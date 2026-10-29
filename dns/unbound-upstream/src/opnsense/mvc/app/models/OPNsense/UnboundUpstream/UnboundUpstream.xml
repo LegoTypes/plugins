@@ -77,7 +77,7 @@
             <Default>0</Default>
             <Required>Y</Required>
         </notify>
-        <!-- required when notify is on: checked in the model class -->
+        <!-- required when notify is on, and only a URL the run posts to: both checked in the model class -->
         <notify_url type="UrlField">
             <ValidationMessage>Enter an http or https URL.</ValidationMessage>
         </notify_url>

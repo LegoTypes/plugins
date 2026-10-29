@@ -94,8 +94,8 @@ function uu_timers_update(array $timers, array $kinds, array $usable, array $dow
 /**
  * The timers once each member's resolver is known: a timer's resolver_failed_until and probe_failures are about the
  * address in its resolver field, so when the member's effective resolver is another address, those two reset for
- * that member alone and the field takes the new address. A timer with no address yet ('', a new one or one converted
- * from 1.3) takes the member's without a reset. A member absent from $resolvers is left as it is.
+ * that member alone and the field takes the new address. A timer with no address yet ('', a new one or one read from
+ * a version 5 state file) takes the member's without a reset. A member absent from $resolvers is left as it is.
  *
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int,

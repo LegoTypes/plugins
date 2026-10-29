@@ -62,8 +62,9 @@ declare(strict_types=1);
  *     drain, every delete; an address Unbound's restored root still names keeps its route, but for an orphan on its
  *     reject route, which is drained and deleted with the others;
  *   - an address the run had to leave and could not (its reject route, its delete, the flush_requestlist before it or
- *     the restore that had to take Unbound off it failed) has an error line naming it (the one-address lines read as
- *     they always did) and keeps its entry, its route record and its hold, so the next evaluation tries again;
+ *     the restore that had to take Unbound off it failed) has an error line naming it ("the resolver", with its
+ *     address only when the run has more than one) and keeps its entry, its route record and its hold, so the next
+ *     evaluation tries again;
  *   - the state's mode and member change only when the step that makes them true succeeded, and a switch in place on
  *     the same member (its resolver changed) records none;
  *   - Unbound's caches are never flushed: flush_infra <resolver> and flush_type . SOA only; the
@@ -78,7 +79,7 @@ declare(strict_types=1);
  *     restore; the fallback of an emptied set), never by a stop that kept the view (an upgrade, a tick of the
  *     removal) or that could not restore;
  *   - no view command runs unless the set is read as loaded or the read shows the refuse of ".", so an owner with
- *     nothing selected gets 1.4's calls exactly;
+ *     nothing selected gets only the tunnel's calls;
  *   - after apply, the file step (uu_view_file_apply(), uu_view_file_io() binds it) installs a view file only once
  *     unbound-checkconf passes it, deletes it only once the set is no longer refused, never touches the copy in
  *     /var/unbound/etc (core's start empties and refills it), and restarts Unbound through core's restart only when
@@ -125,11 +126,11 @@ function uu_drill_passed(string $out): bool
  * restore.
  * The one test of stop()'s quiet return and of dry run's undo first, so neither repeats a line every minute over such a
  * route.
- * The plan's view adds the view work of a stop: the refuse armed, or the file or its copy on disk, even with nothing
- * left of 1.4's to undo (a disable while in fallback). A plan whose view is kept (an upgrade, a tick of the removal)
- * has only the arm: a loaded set read without the refuse while the file is on disk (the upgrade window's mark; a
- * removal deletes the file), which stop() arms before its restore, also in fallback mode after an arm that failed. An
- * unknown read is no work, and null is 1.4's answer.
+ * The plan's view adds the view work of a stop: the refuse armed, or the file or its copy on disk, even with no route
+ * or forwarder left to undo (a disable while in fallback). A plan whose view is kept (an upgrade, a tick of the
+ * removal) has only the arm: a loaded set read without the refuse while the file is on disk (the upgrade window's
+ * mark; a removal deletes the file), which stop() arms before its restore, also in fallback mode after an arm that
+ * failed. An unknown read is no work, and a null view adds none.
  *
  * @param array{mode: string, member: ?string, addresses: array<string, array{route: ?array{kind: string,
  *     next_hop: string, if: string}, forwarded: bool, released_at: ?int}>} $st
@@ -359,8 +360,7 @@ final class UuApplyRun
     }
 
     /**
-     * "the resolver" in an error line, with the addresses it is about when the run has more than one, so a line about
-     * one address reads as it always did.
+     * "the resolver" in an error line, with the addresses it is about when the run has more than one.
      *
      * @param list<string> $addresses
      */

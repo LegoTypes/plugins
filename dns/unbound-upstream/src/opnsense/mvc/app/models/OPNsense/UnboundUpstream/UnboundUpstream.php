@@ -50,8 +50,9 @@ if (!function_exists('uu_view_iface_nets')) {
 class UnboundUpstream extends BaseModel
 {
     /**
-     * Cross-field checks that need the gateway, route and Unbound models run only while the plugin is enabled; the
-     * notify URL is required whenever notify is on.
+     * The notify URL is required whenever notify is on, and one that is set must be a URL the run posts to
+     * (uu_notify_url_ok()); the fail-closed lists are checked while the fallback is on; cross-field checks that need
+     * the gateway, route and Unbound models run only while the plugin is enabled.
      *
      * @param bool $validateFullModel
      * @return \OPNsense\Base\Messages\MessageCollection|\Phalcon\Messages\Messages

@@ -149,13 +149,14 @@ function uu_status_active(array $s, array $plan): string
 /**
  * The status page's document. The mode, member and timers are the plan's view of now (recovered
  * from the live root and route when the state file was lost); next is what the next evaluation would do and why.
- * With one address every field reads as 1.3_2's did; routes, addresses and each member's resolver are 1.4's. route
- * is the active resolver's route; routes has each address of the state's map, and the active resolver when the map
- * does not hold it, with its route and whether the footprint block is rendered for it, and footprint is the first such
- * address in sorted order. A route's flags are the ones the snapshot's own read printed (route_flags), shown only for a
- * present route, as 1.3_2 showed them: the status runs no command of its own. The setting's addresses decide what
- * is a footprint (uu_setting_addresses(), as the render reads them). The contract is uu_contract()'s verdict as 1.3_2
- * showed it: whether tunnel mode may run, its failures and its notes, which name each member it excludes.
+ * With one address, the document without routes, addresses, fail_closed and each member's resolver is 1.3_2's status
+ * key for key and value for value, so a poller such as Home Assistant reads it as it reads that one. route is the
+ * active resolver's route; routes has each address of the state's map, and the active resolver when the map does not
+ * hold it, with its route and whether the footprint block is rendered for it, and footprint is the first such address
+ * in sorted order. A route's flags are the ones the snapshot's own read printed (route_flags), shown only for a present
+ * route: the status runs no command of its own. The setting's addresses decide what is a footprint
+ * (uu_setting_addresses(), as the render reads them). The contract is uu_contract()'s verdict: whether tunnel mode may
+ * run, its failures and its notes, which name each member it excludes.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,

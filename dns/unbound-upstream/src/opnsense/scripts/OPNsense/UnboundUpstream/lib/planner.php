@@ -365,8 +365,8 @@ function uu_plan_needs_reject(array $route, ?array $entry, ?array $read, string 
  * uu_plan_addresses()), and named by a live root that is exactly the configured zone (uu_plan_live_configured()). The
  * owner's own forwarder then wins over the plugin's hold: Unbound forwards to it, so its reject route would leave every
  * lookup black, and no member will route it again. Such an orphan is released at once: drained behind its reject route
- * and deleted, its entry and block gone, as 1.3_2's stop did for its one address. The one exception to a drain needing
- * forwarded false; never a planner address, so the Default and every member's resolver stay fail-closed.
+ * and deleted, its entry and block gone. The one exception to a drain needing forwarded false; never a planner
+ * address, so the Default and every member's resolver stay fail-closed.
  *
  * @param ?list<string> $live
  * @param array{shape: string, addrs: list<string>, tls: bool, problems: list<string>} $zone
@@ -459,7 +459,7 @@ function uu_plan_view(array $s): array
 }
 
 /**
- * The 1.4 plan: what the tunnel and the resolver need, before the view's sub-plan (uu_plan()) is added.
+ * The tunnel's plan: what the tunnel and the resolver need, before uu_plan() adds the view's sub-plan.
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,
@@ -748,7 +748,7 @@ function uu_plan_steps(array $s, array $st): array
 }
 
 /**
- * One evaluation's plan: the 1.4 plan (uu_plan_steps()) and the fail-closed view's share (uu_plan_view()).
+ * One evaluation's plan: the tunnel's plan (uu_plan_steps()) and the fail-closed view's share (uu_plan_view()).
  *
  * @param array{now: int, wall: int,
  *     settings: array{enabled: bool, dry_run: bool, group: string, default: string,

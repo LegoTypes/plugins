@@ -31,9 +31,10 @@ declare(strict_types=1);
  * IPv6 address with a family, compared in canonical form (inet_ntop of inet_pton, so 2001:DB8:0:0::53 and
  * 2001:db8::53 are one address). Pure and standalone: it requires nothing, so the hook can load it beside state.php.
  * The settings model (UnboundUpstream, through views.php) and the scripts share these ranges and tests: what
- * uu_ip_problem() refuses, the loopback networks, and the network and static-route tests, so Save and the run decide
- * alike. Each member's effective resolver and the group's family are decided here too, from plain arrays, and
- * forwarder lists are compared as sets (uu_apply_same()).
+ * uu_ip_problem() refuses, the loopback networks, the network and static-route tests, the root-forward test
+ * (uu_root_forward_conflicts()) and the notify URL's shape (uu_notify_url_ok()), so Save and the run decide alike.
+ * Each member's effective resolver and the group's family are decided here too, from plain arrays, and forwarder
+ * lists are compared as sets (uu_apply_same()).
  */
 
 /**
@@ -264,8 +265,8 @@ function uu_route_hop(string $hop, string $if): string
 
 /**
  * The `route delete` command that undoes a host route to an address, as the remedy texts print it: the IPv4 form has
- * no family argument (as it always read); an IPv6 address needs -inet6, which route(8) otherwise refuses. A string
- * with no family, a placeholder, gets the IPv4 form.
+ * no family argument; an IPv6 address needs -inet6, which route(8) otherwise refuses. A string with no family, a
+ * placeholder, gets the IPv4 form.
  */
 function uu_route_delete_text(string $addr): string
 {
@@ -420,9 +421,9 @@ function uu_family_mismatch(array $group, array $addresses): array
 
 /**
  * The setting's addresses: the planner's addresses (uu_plan_addresses(): the members' effective resolvers, or the
- * Default when the group has no member) while the plugin is enabled and its group is found, as 1.3_2 rendered its
- * resolver; none otherwise, so a disabled plugin's recorded addresses stay footprints. They decide what is a
- * footprint, what the rules render and what the counting table holds. The one home of this rule.
+ * Default when the group has no member) while the plugin is enabled and its group is found; none otherwise, so a
+ * disabled plugin's recorded addresses stay footprints. They decide what is a footprint, what the rules render and
+ * what the counting table holds. The one home of this rule.
  *
  * @param array{settings: array{enabled: bool, default: string}, contract_input: array{group_found: bool},
  *     members: array<string, array{resolver: string}>} $s the Snapshot (planner.php), or the same fields
@@ -434,9 +435,9 @@ function uu_setting_addresses(array $s): array
 }
 
 /**
- * The planner's addresses: what the plugin must keep fail-closed whatever the setting, as 1.3_2 kept its one resolver
- * whatever the group. They are the members' effective resolvers, or, when the snapshot has no member (the group is
- * not found, or has none), the Default when it is an address. Canonical, each once, sorted. The one home of this set:
+ * The planner's addresses: what the plugin must keep fail-closed whatever the setting and whatever the group. They
+ * are the members' effective resolvers, or, when the snapshot has no member (the group is not found, or has none),
+ * the Default when it is an address. Canonical, each once, sorted. The one home of this set:
  * the snapshot reads the route, the monitors and the static routes of these addresses (and their foreign routes are
  * the contract's), and the planner takes from it the addresses the live root may name, those that keep their reject
  * route outside tunnel mode, and those never drained. An orphan is an address the state holds outside this set, so
