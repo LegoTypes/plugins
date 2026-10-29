@@ -27,9 +27,6 @@ const UU_VIEW_END = '# End of os-unbound-upstream.';
 /** The access-control actions that answer queries from their source. */
 const UU_VIEW_ALLOW_TYPES = ['allow', 'allow_setrd', 'allow_snoop', 'allow_cookie'];
 
-/** The networks Unbound's own loopback nodes cover; a view on a node within them would refuse the firewall's lookups. */
-const UU_VIEW_LOOPBACK = ['127.0.0.0/8', '::1/128', '::ffff:127.0.0.1/128'];
-
 /* the planner's reasons the set cannot be armed (uu_plan_view()); the file step keeps them in the state only while
  * the plan gives them */
 const UU_VIEW_UNSUPPORTED = 'Fail closed not armed: Unbound has no view support';
@@ -75,10 +72,13 @@ function uu_view_net_sort(array $nets): array
     return $nets;
 }
 
-/** Whether a canonical network lies within Unbound's loopback nodes. */
+/**
+ * Whether a canonical network lies within Unbound's loopback nodes (UU_LOOPBACK_NETS); a view on such a node would
+ * refuse the firewall's own lookups.
+ */
 function uu_view_loopback(string $net): bool
 {
-    foreach (UU_VIEW_LOOPBACK as $loopback) {
+    foreach (UU_LOOPBACK_NETS as $loopback) {
         if (uu_net_contains($loopback, $net)) {
             return true;
         }

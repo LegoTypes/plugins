@@ -28,6 +28,11 @@ uu_register_suite('views', function (): int {
     $withBase = fn (array $more, string $v4 = 'allow'): array => [['net' => '0.0.0.0/0', 'action' => $v4],
         ['net' => '::/0', 'action' => 'allow'], ...$more];
 
+    uu_check($t, 'nodes: a core list inside the mapped loopback /104 gets no view line under the 0/0 scope',
+        uu_try_case(fn (): bool => uu_view_nodes(['0.0.0.0/0', '::/0'], $withBase([
+            ['net' => '::ffff:127.0.0.5/128', 'action' => 'allow']]))
+            === ['view' => ['0.0.0.0/0', '::/0'], 'access' => []]));
+
     /* sets */
     uu_check($t, 'set: none with fallback on and nothing chosen',
         uu_try_case(fn (): bool => uu_view_set(true, [], [], []) === ['scope' => 'none', 'nets' => []]));

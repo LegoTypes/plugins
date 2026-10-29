@@ -31,13 +31,20 @@ namespace OPNsense\UnboundUpstream;
 use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Core\Config;
-use OPNsense\Firewall\Util;
 use OPNsense\Interfaces\Settings;
 use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
 use OPNsense\Routes\Route;
 
 require_once 'interfaces.lib.inc';
+
+$lib = dirname(__DIR__, 5) . '/scripts/OPNsense/UnboundUpstream/lib/views.php';
+if (!function_exists('uu_view_iface_nets')) {
+    if (!is_readable($lib)) {
+        throw new \RuntimeException('plugin library missing: ' . $lib);
+    }
+    require_once $lib;
+}
 
 class UnboundUpstream extends BaseModel
 {
@@ -85,27 +92,12 @@ class UnboundUpstream extends BaseModel
         }
         $details = legacy_interfaces_details();
         $devices = self::interfaceDevices();
-        /**
-         * @return list<string> the interface's live networks, link-local addresses left out
-         */
-        $nets = static function (string $id) use ($details, $devices): array {
-            $out = [];
-            foreach ($details[$devices[$id] ?? '']['ipv4'] ?? [] as $addr) {
-                $out[] = $addr['ipaddr'] . '/' . $addr['subnetbits'];
-            }
-            foreach ($details[$devices[$id] ?? '']['ipv6'] ?? [] as $addr) {
-                if (empty($addr['link-local'])) {
-                    $out[] = $addr['ipaddr'] . '/' . $addr['subnetbits'];
-                }
-            }
-            return $out;
-        };
         $gateways = (new Gateways())->gatewaysIndexedByName(true);
         $memberNets = [];
         foreach (array_keys($this->findGroup()['members'] ?? []) as $name) {
             $id = (string)($gateways[$name]['interface'] ?? '');
             if ($id !== '') {
-                $memberNets[$id] = $nets($id);
+                $memberNets[$id] = uu_view_iface_nets($details, [$id], $devices)['nets'];
             }
         }
 
@@ -118,7 +110,7 @@ class UnboundUpstream extends BaseModel
                     sprintf(gettext('%s is a member of the gateway group'), $id),
                     $field
                 ));
-            } elseif ($nets($id) === []) {
+            } elseif (uu_view_iface_nets($details, [$id], $devices)['nets'] === []) {
                 $messages->appendMessage(new Message(sprintf(gettext('%s has no address'), $id), $field));
             }
         }
@@ -152,126 +144,39 @@ class UnboundUpstream extends BaseModel
     }
 
     /**
-     * What is wrong with the networks listed to fail closed, in the order the page shows it. Pure: the callers pass
-     * in the live networks of the gateway group's member interfaces. A string that is no network is the field's own
-     * validation.
-     *
-     * @param list<string> $networks as entered, "address/length"
-     * @param array<string, list<string>> $memberNets interface id => its live networks
-     * @return list<string>
-     */
-    public static function failClosedProblems(array $networks, array $memberNets): array
-    {
-        $problems = [];
-        foreach ($networks as $net) {
-            $host = self::hostBitsProblems([$net]);
-            array_push($problems, ...($host !== [] ? $host : self::networkProblems($net, $memberNets)));
-        }
-        return $problems;
-    }
-
-    /**
-     * The listed networks that have host bits set. Pure; a string that is no network is skipped.
-     *
-     * @param list<string> $networks as entered, "address/length"
-     * @return list<string>
-     */
-    public static function hostBitsProblems(array $networks): array
-    {
-        $problems = [];
-        foreach ($networks as $net) {
-            $parsed = self::parseNetwork($net);
-            if ($parsed !== null && self::hostBitsSet($parsed[0], $parsed[1])) {
-                $problems[] = $net . ': enter the network address';
-            }
-        }
-        return $problems;
-    }
-
-    /**
-     * What is wrong with one listed network besides host bits: a default route, the loopback network, a member
-     * interface's network. Pure.
+     * What is wrong with one listed network besides host bits: a default route, the loopback network
+     * (UU_LOOPBACK_NETS), a member interface's network. Pure, on the scripts' network tests (lib/address.php). A
+     * string that is no "address/length" network is the field's own validation. The length is read as the run reads
+     * it (uu_settings_clean()): one to three digits, so 127.0.0.0/08 is tested as 127.0.0.0/8 and named as entered.
      *
      * @param array<string, list<string>> $memberNets interface id => its live networks
      * @return list<string>
      */
     private static function networkProblems(string $net, array $memberNets): array
     {
-        $parsed = self::parseNetwork($net);
+        $parts = explode('/', $net);
+        if (count($parts) !== 2 || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1) {
+            return [];
+        }
+        $cidr = $parts[0] . '/' . (int)$parts[1];
+        $parsed = uu_net_parse($cidr);
         if ($parsed === null) {
             return [];
         }
-        [$packed, $len] = $parsed;
-        if ($len === 0) {
+        if ($parsed['prefix'] === 0) {
             return [$net . ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead'];
         }
-        if (self::touchesLoopback($packed, $len)) {
+        if (uu_net_touches_loopback($cidr)) {
             return [$net . ' overlaps the loopback network: the firewall\'s own lookups would be refused'];
         }
         foreach ($memberNets as $id => $theirs) {
             foreach ($theirs as $their) {
-                $other = self::parseNetwork($their);
-                if ($other !== null && self::overlaps($packed, $len, $other[0], $other[1])) {
+                if (uu_net_overlaps($cidr, $their)) {
                     return [sprintf('%s overlaps the network of %s, a member of the gateway group', $net, $id)];
                 }
             }
         }
         return [];
-    }
-
-    /**
-     * @return array{string, int}|null the packed address and the prefix length, null when it is no network
-     */
-    private static function parseNetwork(string $net): ?array
-    {
-        $parts = explode('/', $net);
-        if (count($parts) !== 2 || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1) {
-            return null;
-        }
-        $packed = inet_pton($parts[0]);
-        if ($packed === false || (int)$parts[1] > strlen($packed) * 8) {
-            return null;
-        }
-        return [$packed, (int)$parts[1]];
-    }
-
-    private static function hostBitsSet(string $packed, int $len): bool
-    {
-        for ($bit = $len; $bit < strlen($packed) * 8; $bit++) {
-            if ((ord($packed[intdiv($bit, 8)]) >> (7 - $bit % 8) & 1) === 1) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /**
-     * Whether two networks of the same family share an address: their first min(length) bits agree.
-     */
-    private static function overlaps(string $a, int $lenA, string $b, int $lenB): bool
-    {
-        if (strlen($a) !== strlen($b)) {
-            return false;
-        }
-        for ($bit = 0; $bit < min($lenA, $lenB); $bit++) {
-            $mask = 1 << (7 - $bit % 8);
-            if ((ord($a[intdiv($bit, 8)]) & $mask) !== (ord($b[intdiv($bit, 8)]) & $mask)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /**
-     * Whether a network overlaps 127.0.0.0/8, ::1/128 or ::ffff:127.0.0.0/104, the addresses of Unbound's loopback
-     * nodes.
-     */
-    private static function touchesLoopback(string $packed, int $len): bool
-    {
-        $mapped = str_repeat("\0", 10) . "\xff\xff\x7f" . str_repeat("\0", 3);
-        return self::overlaps($packed, $len, "\x7f\0\0\0", 8)
-            || self::overlaps($packed, $len, str_repeat("\0", 15) . "\x01", 128)
-            || self::overlaps($packed, $len, $mapped, 104);
     }
 
     /**
@@ -506,7 +411,8 @@ class UnboundUpstream extends BaseModel
 
     /**
      * What is wrong with a resolver address for a group of the given family, in the order the settings page shows it.
-     * Pure: the callers pass in what the box says. A string that is no address is the field's own validation.
+     * Pure, on the scripts' address tests (lib/address.php): the callers pass in what the box says. A string that is
+     * no address (a name, a scoped address, white space around it) is the field's own validation.
      *
      * @param string $addr the address as entered
      * @param string $groupName the group's name, for the message
@@ -524,15 +430,15 @@ class UnboundUpstream extends BaseModel
         array $monitors,
         array $networks
     ): array {
-        $packed = inet_pton($addr);
-        if ($packed === false) {
+        if (filter_var($addr, FILTER_VALIDATE_IP) === false) {
             return [];
         }
-        $v6 = strlen($packed) === 16;
-        if (self::unusable($packed)) {
+        /* an IPv4-mapped address has no family in the library ('not an address'), and is refused with the rest */
+        $canonical = uu_ip_problem($addr) === null ? uu_ip_canonical($addr) : null;
+        if ($canonical === null) {
             return [gettext('Enter a resolver address that is not link-local, multicast, loopback or unspecified.')];
         }
-        $canonical = (string)inet_ntop($packed);
+        $v6 = uu_ip_family($canonical) === 'inet6';
         $problems = [];
         if ($groupFamily === 'inet6' && !$v6) {
             $problems[] = sprintf(gettext('The group %s is IPv6; its resolvers must be IPv6 addresses.'), $groupName);
@@ -543,33 +449,15 @@ class UnboundUpstream extends BaseModel
             $problems[] = gettext('Unbound does not use IPv6 while IPv6 is not allowed.');
         }
         foreach ($monitors as $name => $monitor) {
-            $theirs = inet_pton($monitor);
-            if ($theirs !== false && inet_ntop($theirs) === $canonical) {
+            if (uu_ip_same($monitor, $canonical)) {
                 $problems[] = sprintf(gettext('Resolver %s is the monitor address of gateway %s.'), $canonical, $name);
             }
         }
         foreach ($networks as $network) {
-            /* a bare network is a host route, completed as the scripts' uu_in_static() completes it */
-            $cidr = str_contains($network, '/') ? $network : $network . (str_contains($network, ':') ? '/128' : '/32');
-            if (Util::isIPInCIDR($canonical, $cidr)) {
+            if (uu_in_static($canonical, $network)) {
                 $problems[] = sprintf(gettext('Resolver %s lies inside the static route %s.'), $canonical, $network);
             }
         }
         return $problems;
-    }
-
-    /**
-     * Link-local, multicast, loopback, unspecified and IPv4-mapped addresses, from an address in packed form.
-     */
-    private static function unusable(string $packed): bool
-    {
-        if (strlen($packed) === 4) {
-            $first = ord($packed[0]);
-            return $first === 127 || ($first >= 224 && $first <= 239) || $packed === "\0\0\0\0"
-                || ($first === 169 && ord($packed[1]) === 254);
-        }
-        return $packed === str_repeat("\0", 16) || $packed === str_repeat("\0", 15) . "\x01"
-            || str_starts_with($packed, str_repeat("\0", 10) . "\xff\xff")
-            || (ord($packed[0]) === 0xfe && (ord($packed[1]) & 0xc0) === 0x80) || ord($packed[0]) === 0xff;
     }
 }

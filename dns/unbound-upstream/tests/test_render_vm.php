@@ -165,7 +165,7 @@ uu_register_suite('render_vm', function (): int {
      * saved, and returns what the render would render */
     $wantedOf = function (string $default, array $rows): ?array {
         $code = 'require "config.inc"; require "/usr/local/opnsense/mvc/script/load_phalcon.php"; '
-            . 'require $argv[1]; $rows = json_decode($argv[3], true); '
+            . 'require $argv[1]; require dirname($argv[1]) . "/views.php"; $rows = json_decode($argv[3], true); '
             . '$recs = (new \\OPNsense\\Routing\\Gateways())->gatewaysIndexedByName(true); $group = ""; '
             . 'foreach ((new \\OPNsense\\Routing\\GatewayGroups())->gateway_group->iterateItems() as $k => $g) { '
             . 'if ($g->name->getValue() === "proton_test_grp") { $group = (string)$k; } } '

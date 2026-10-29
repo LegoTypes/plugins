@@ -334,6 +334,19 @@ uu_register_suite('snapshot', function (): int {
         $r = $clean($over);
         return $r['settings'][$key] === $want && count($r['problems']) === 1;
     };
+    uu_check($t, 'settings: uu_in_static completes a bare network from its parsed family',
+        uu_try_case(fn (): bool => uu_in_static('2001:db8::50', '2001:DB8::0050')
+            && uu_in_static('2001:db8::50', '2001:DB8::/64') && uu_in_static('192.0.2.1', '192.0.2.1')
+            && uu_in_static('192.0.2.1', '192.0.2.0/24') && !uu_in_static('192.0.2.1', '2001:db8::/32')
+            && !uu_in_static('2001:db8::50', '192.0.2.0/24') && !uu_in_static('192.0.2.1', '::ffff:192.0.2.1')
+            && !uu_in_static('192.0.2.1', 'bogus') && !uu_in_static('192.0.2.1', '192.0.2.0/33')));
+    uu_check($t, 'settings: a network\'s prefix bound comes from its parsed family',
+        uu_try_case(function () use ($clean): bool {
+            $r = $clean(['fail_closed_networks' => '2001:DB8::0050/128,192.0.2.0/24,192.0.2.0/33,2001:db8::/129']);
+            return $r['settings']['fail_closed_networks'] === ['192.0.2.0/24', '2001:db8::50/128']
+                && $r['problems'] === ['settings: fail-closed network 192.0.2.0/33 is not a network; ignored',
+                                       'settings: fail-closed network 2001:db8::/129 is not a network; ignored'];
+        }));
     uu_check($t, 'settings: fail-closed lists cleaned',
         uu_try_case(fn (): bool => $clean(['fail_closed' => 'opt3,opt1,opt3'])['settings']['fail_closed']
                 === ['opt1', 'opt3']

@@ -13,6 +13,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/constants.php';
+require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/address.php';
 require_once __DIR__ . '/scratch.php';
 
 /**
@@ -111,28 +112,61 @@ uu_register_suite('model', function (): int {
     uu_check($t, 'model: fallback defaults to 1', $m->fallback->isEqual('1'));
     uu_check($t, 'model: fail_closed and fail_closed_networks default empty',
         $m->fail_closed->isEmpty() && $m->fail_closed_networks->isEmpty());
-    $problems = fn (string $net, array $members = []): array
-        => \OPNsense\UnboundUpstream\UnboundUpstream::failClosedProblems([$net], $members);
     $loopback = ' overlaps the loopback network: the firewall\'s own lookups would be refused';
     $listed = ': cannot be listed; turn off "Fall back to Unbound\'s own forwarders" instead';
-    uu_check($t, 'failClosedProblems: host bits set ask for the network address',
-        $problems('192.0.2.1/24') === ['192.0.2.1/24: enter the network address']);
-    uu_check($t, 'hostBitsProblems: only a network with host bits set is named',
-        \OPNsense\UnboundUpstream\UnboundUpstream::hostBitsProblems(['192.0.2.1/24', '192.0.2.0/24', 'bogus'])
-            === ['192.0.2.1/24: enter the network address']);
-    uu_check($t, 'failClosedProblems: the default routes cannot be listed',
-        $problems('0.0.0.0/0') === ['0.0.0.0/0' . $listed] && $problems('::/0') === ['::/0' . $listed]);
-    uu_check($t, 'failClosedProblems: a network overlapping the loopback network is refused',
-        $problems('127.0.0.0/16') === ['127.0.0.0/16' . $loopback]
-        && $problems('::1/128') === ['::1/128' . $loopback]
-        && $problems('::ffff:127.0.0.0/104') === ['::ffff:127.0.0.0/104' . $loopback]
-        && $problems('0.0.0.0/1') === ['0.0.0.0/1' . $loopback]);
-    uu_check($t, 'failClosedProblems: a network overlapping a member interface network is refused',
-        $problems('198.51.100.0/24', ['opt2' => ['198.51.100.0/25']])
-            === ['198.51.100.0/24 overlaps the network of opt2, a member of the gateway group']
-        && $problems('203.0.113.0/24', ['opt2' => ['198.51.100.0/25']]) === []);
-    uu_check($t, 'failClosedProblems: the tailnet ranges are fine',
-        $problems('100.64.0.0/10') === [] && $problems('fd7a:115c:a1e0::/48') === []);
+    /* the field's own messages on a listed network, after a Save with the fallback on */
+    $netField = fn (array $values): array => uu_test_model_field(uu_test_model_messages(['fallback' => '1'] + $values),
+        'fail_closed_networks');
+    uu_check($t, 'model: Save names a listed network overlapping loopback or a default route, through performValidation',
+        uu_try_case(function () use ($netField, $loopback, $listed): bool {
+            $ok = true;
+            foreach (['127.0.0.0/16' => $loopback, '::1/128' => $loopback, '::ffff:127.0.0.0/104' => $loopback,
+                      '0.0.0.0/1' => $loopback, '0.0.0.0/0' => $listed, '::/0' => $listed] as $net => $message) {
+                $got = $netField(['fail_closed_networks' => $net]);
+                if (!in_array($net . $message, $got, true)) {
+                    printf("  %s: %s\n", $net, implode('; ', $got));
+                    $ok = false;
+                }
+            }
+            return $ok;
+        }));
+    uu_check($t, 'model: Save reads a listed network\'s prefix length as the run does, leading zeros included',
+        uu_try_case(function () use ($netField, $loopback, $listed): bool {
+            $loop = $netField(['fail_closed_networks' => '127.0.0.0/08']);
+            $all = $netField(['fail_closed_networks' => '0.0.0.0/00']);
+            $ok = in_array('127.0.0.0/08' . $loopback, $loop, true) && in_array('0.0.0.0/00' . $listed, $all, true);
+            if (!$ok) {
+                printf("  127.0.0.0/08: %s; 0.0.0.0/00: %s\n", implode('; ', $loop), implode('; ', $all));
+            }
+            return $ok;
+        }));
+    uu_check($t, 'model: Save names a listed network overlapping a member\'s live net',
+        uu_try_case(function () use ($netField): bool {
+            $group = uu_test_model_group_uuid('proton_test_grp');
+            $gateways = (new \OPNsense\Routing\Gateways())->gatewaysIndexedByName(true);
+            $id = (string)($gateways['wg-test-429']['interface'] ?? '');
+            $device = \OPNsense\UnboundUpstream\UnboundUpstream::interfaceDevices()[$id] ?? '';
+            $addr = (string)(legacy_interfaces_details()[$device]['ipv4'][0]['ipaddr'] ?? '');
+            $net = uu_net_canonical($addr . '/16');
+            if ($group === '' || $net === null) {
+                printf("  no live IPv4 net for wg-test-429 (group %s, interface %s, device %s, address %s)\n",
+                    $group, $id, $device, $addr);
+                return false;
+            }
+            $set = ['gateway_group' => $group];
+            $member = $netField($set + ['fail_closed_networks' => $net]);
+            $tailnet = array_merge($netField($set + ['fail_closed_networks' => '100.64.0.0/10']),
+                $netField($set + ['fail_closed_networks' => 'fd7a:115c:a1e0::/48']));
+            $want = [sprintf('%s overlaps the network of %s, a member of the gateway group', $net, $id)];
+            if ($member !== $want || $tailnet !== []) {
+                printf("  %s: %s; the tailnet ranges: %s\n", $net, implode('; ', $member), implode('; ', $tailnet));
+            }
+            return $member === $want && $tailnet === [];
+        }));
+    uu_check($t, 'model: the static-route refusal completes a bare IPv6 route written two ways',
+        uu_try_case(fn (): bool => \OPNsense\UnboundUpstream\UnboundUpstream::resolverProblems('2001:db8::50',
+            'uu_far6_grp', 'inet6', true, [], ['2001:DB8::0050'])
+            === ['Resolver 2001:db8::50 lies inside the static route 2001:DB8::0050.']));
     uu_check($t, 'model: the networks field refuses host bits and a default route while fallback is on',
         in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '192.0.2.1/24']), true)
         && in_array('fail_closed_networks', uu_test_model_refused(['fail_closed_networks' => '0.0.0.0/0']), true)

@@ -198,22 +198,6 @@ function uu_resolver_monitors(array $records, string $resolver): array
 }
 
 /**
- * Whether an address lies in a static route's network ("addr/n", or a bare address as a host), in the address's own
- * family; never for another family or a malformed network. Core's own containment test, on the canonical address.
- */
-function uu_in_static(string $addr, string $network): bool
-{
-    $canonical = uu_ip_canonical($addr);
-    if ($canonical === null) {
-        return false;
-    }
-    /* a bare network is a host route; the model's resolverProblems() completes it the same way (it cannot load
-     * this library) */
-    $cidr = str_contains($network, '/') ? $network : $network . (str_contains($network, ':') ? '/128' : '/32');
-    return \OPNsense\Firewall\Util::isIPInCIDR($canonical, $cidr);
-}
-
-/**
  * Whether plugins_scan() visits unbound.inc before unboundupstream.inc. Either missing is a fault: on an
  * installed box unboundupstream.inc is always scanned.
  *
@@ -527,7 +511,7 @@ function uu_settings_clean(array $raw): array
         $parts = explode('/', $entry);
         $addr = count($parts) === 2 ? uu_ip_canonical($parts[0]) : null;
         if ($addr === null || preg_match('/^\d{1,3}$/D', $parts[1]) !== 1
-            || (int)$parts[1] > (str_contains($addr, ':') ? 128 : 32)) {
+            || (int)$parts[1] > (uu_ip_family($addr) === 'inet6' ? 128 : 32)) {
             $problems[] = 'settings: fail-closed network ' . $entry . ' is not a network; ignored';
             continue;
         }

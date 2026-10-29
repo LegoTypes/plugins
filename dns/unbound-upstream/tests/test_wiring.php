@@ -343,6 +343,49 @@ VOLT;
     require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
     require_once $inc;
 
+    /* the settings model tests addresses with the scripts' library, and a copy of it with no library beside it throws
+     * an exception (which the hooks catch) rather than dying on a require */
+    uu_check($t, 'model: the class has no address code of its own',
+        uu_scratch_case(function (string $dir): bool {
+            $model = '/usr/local/opnsense/mvc/app/models/OPNsense/UnboundUpstream/UnboundUpstream.php';
+            $snapshot = '/usr/local/opnsense/scripts/OPNsense/UnboundUpstream/lib/snapshot.php';
+            $modelText = is_readable($model) ? (string)file_get_contents($model) : '';
+            $snapshotText = is_readable($snapshot) ? (string)file_get_contents($snapshot) : '';
+            $class = \OPNsense\UnboundUpstream\UnboundUpstream::class;
+            $copy = $dir . '/mvc/app/models/OPNsense/UnboundUpstream';
+            if (!mkdir($copy, 0700, true) || !copy($model, $copy . '/UnboundUpstream.php')
+                || !copy(dirname($model) . '/UnboundUpstream.xml', $copy . '/UnboundUpstream.xml')) {
+                throw new RuntimeException("cannot copy the model to $copy");
+            }
+            $code = 'require_once "/usr/local/opnsense/mvc/script/load_phalcon.php"; '
+                . 'try { require ' . var_export($copy . '/UnboundUpstream.php', true) . '; echo "loaded", PHP_EOL; } '
+                . 'catch (\Throwable $e) { echo "caught ", get_class($e), ": ", $e->getMessage(), PHP_EOL; }';
+            $out = [];
+            $rc = 1;
+            exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg($code) . ' 2>&1', $out, $rc);
+            $checks = [
+                'the installed model is read' => $modelText !== '' && $snapshotText !== '',
+                'no inet_pton( in the model' => !str_contains($modelText, 'inet_pton('),
+                'no colon test in the model' => !str_contains($modelText, "str_contains(\$network, ':')"),
+                'no isIPInCIDR in the model' => !str_contains($modelText, 'isIPInCIDR'),
+                'the class loads' => class_exists($class),
+                'no failClosedProblems' => !method_exists($class, 'failClosedProblems'),
+                'no hostBitsProblems' => !method_exists($class, 'hostBitsProblems'),
+                'no hostBitsSet' => !method_exists($class, 'hostBitsSet'),
+                'no colon test in snapshot.php' => !str_contains($snapshotText, "str_contains(\$network, ':')")
+                    && !str_contains($snapshotText, "str_contains(\$addr, ':')"),
+                'a copy without the library throws' => $rc === 0 && $out === ['caught RuntimeException: plugin library '
+                    . 'missing: ' . $dir . '/scripts/OPNsense/UnboundUpstream/lib/views.php'],
+            ];
+            foreach (array_keys(array_filter($checks, fn (bool $ok): bool => !$ok)) as $failed) {
+                printf("  failed: %s\n", $failed);
+            }
+            if (!$checks['a copy without the library throws']) {
+                printf("  the copy's php exited %d: %s\n", $rc, implode(' | ', $out));
+            }
+            return !in_array(false, $checks, true);
+        }));
+
     $hooks = unboundupstream_configure();
     ksort($hooks);
     uu_check($t, 'configure registers the hooks Unbound uses and the monitor hook with two arguments',

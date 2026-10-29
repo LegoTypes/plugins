@@ -185,6 +185,17 @@ uu_register_suite('address', function (): int {
             && !uu_net_contains('0.0.0.0/0', '::/0') && !uu_net_contains('::/0', '0.0.0.0/0')
             && !uu_net_contains('192.0.2.0/24', 'nonsense') && !uu_net_contains('nonsense', '192.0.2.0/24')
             && uu_net_contains('::/0', '::ffff:127.0.0.1/128')));
+    uu_check($t, 'address: uu_net_overlaps is true for nets sharing an address, either order, both families, never '
+        . 'across families or for a non-network',
+        uu_try_case(fn (): bool => uu_net_overlaps('192.0.2.0/24', '192.0.2.128/25')
+            && uu_net_overlaps('192.0.2.128/25', '192.0.2.0/24') && !uu_net_overlaps('192.0.2.0/25', '192.0.2.128/25')
+            && uu_net_overlaps('2001:DB8::0050/128', '2001:db8::50/128')
+            && !uu_net_overlaps('2001:db8::/32', '192.0.2.0/24') && !uu_net_overlaps('bogus', '192.0.2.0/24')));
+    uu_check($t, 'address: uu_net_touches_loopback',
+        uu_try_case(fn (): bool => uu_net_touches_loopback('0.0.0.0/1') && uu_net_touches_loopback('127.0.0.0/16')
+            && uu_net_touches_loopback('::1/128') && uu_net_touches_loopback('::ffff:127.0.0.0/104')
+            && uu_net_touches_loopback('::ffff:127.0.0.5/128') && !uu_net_touches_loopback('100.64.0.0/10')
+            && !uu_net_touches_loopback('fd7a:115c:a1e0::/48') && !uu_net_touches_loopback('2001:db8::/32')));
 
     return uu_tally_report('address', $t);
 });

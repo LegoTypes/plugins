@@ -10,9 +10,10 @@ declare(strict_types=1);
  * The one address type: the resolver, a member's next hop and every address the scripts compare are an IPv4 or an
  * IPv6 address with a family, compared in canonical form (inet_ntop of inet_pton, so 2001:DB8:0:0::53 and
  * 2001:db8::53 are one address). Pure and standalone: it requires nothing, so the hook can load it beside state.php.
- * The ranges uu_ip_problem() refuses are the model's (UnboundUpstream::resolverProblems()), case for case. Each
- * member's effective resolver and the group's family are decided here too, from plain arrays, and forwarder lists
- * are compared as sets (uu_apply_same()).
+ * The settings model (UnboundUpstream, through views.php) and the scripts share these ranges and tests: what
+ * uu_ip_problem() refuses, the loopback networks, and the network and static-route tests, so Save and the run decide
+ * alike. Each member's effective resolver and the group's family are decided here too, from plain arrays, and
+ * forwarder lists are compared as sets (uu_apply_same()).
  */
 
 /**
@@ -108,9 +109,46 @@ function uu_net_contains(string $outer, string $inner): bool
 }
 
 /**
+ * The networks Unbound's own loopback nodes cover. Save refuses a listed network that overlaps one (the firewall's
+ * own lookups would be refused); the view puts no node within one.
+ */
+const UU_LOOPBACK_NETS = ['127.0.0.0/8', '::1/128', '::ffff:127.0.0.0/104'];
+
+/**
+ * Whether two networks share an address: both parse (uu_net_parse()), are of one family, and one holds the other;
+ * never across families, never for a string that is no network.
+ */
+function uu_net_overlaps(string $a, string $b): bool
+{
+    return uu_net_contains($a, $b) || uu_net_contains($b, $a);
+}
+
+/** Whether a network overlaps any of UU_LOOPBACK_NETS. */
+function uu_net_touches_loopback(string $net): bool
+{
+    foreach (UU_LOOPBACK_NETS as $loopback) {
+        if (uu_net_overlaps($loopback, $net)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Whether an address lies in a static route's network ("addr/n", or a bare network, which is a host of its parsed
+ * family: /32 or /128), in the address's own family; never for another family, a string with no family (see
+ * uu_ip_family()) or a malformed network.
+ */
+function uu_in_static(string $addr, string $network): bool
+{
+    return uu_ip_family($addr) !== null && uu_net_contains($network, $addr);
+}
+
+/**
  * Why an address cannot be a resolver: 'not an address' (no family, see uu_ip_family()), 'link-local' (169.254.0.0/16,
  * fe80::/10), 'multicast' (exactly 224.0.0.0/4 and ff00::/8), 'unspecified' (0.0.0.0, ::), 'loopback' (127.0.0.0/8,
- * ::1), or null. 240.0.0.0/4 and 255.255.255.255 are not refused, as in the model.
+ * ::1), or null. 240.0.0.0/4 and 255.255.255.255 are not refused; the settings model and the scripts share these
+ * ranges.
  */
 function uu_ip_problem(string $addr): ?string
 {
