@@ -5,7 +5,7 @@ Plugins for [OPNsense](https://opnsense.org/), each in its upstream category dir
 - `net/wg-client-tunnels`: WireGuard upstream tunnels ([page](https://legotypes.github.io/wg-upstream-tunnels/))
 - `net/mac-alias-cache`: rebuild MAC firewall aliases from current host discovery
   ([page](https://legotypes.github.io/mac-alias-cache/))
-- `net/wan-failover`: hold a lossy IPv4 WAN down until it is clean (IPv4 only)
+- `net/wan-failover`: hold a lossy WAN down until it is clean (IPv4 only)
 - `dns/unbound-upstream`: forward Unbound's root zone through a gateway group's best member
 
 Each plugin builds inside the [opnsense/plugins](https://github.com/opnsense/plugins) tree (its `Makefile` includes
