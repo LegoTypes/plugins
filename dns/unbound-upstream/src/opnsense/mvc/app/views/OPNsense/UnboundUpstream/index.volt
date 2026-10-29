@@ -92,7 +92,7 @@
                     $('#unboundupstream-tunnel-note').hide();
                     return;
                 }
-                $('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel');
+                $('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel' && !data.dry_run);
                 var route = data.route || {};
                 var contract = data.contract || {};
                 body.append(row("{{ lang._('Mode') }}", plain(data.mode) + (data.dry_run ? " ({{ lang._('dry run') }})" : '')));

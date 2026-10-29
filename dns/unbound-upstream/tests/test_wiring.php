@@ -293,13 +293,13 @@ uu_register_suite('wiring', function (): int {
             . "            del: '/api/unboundupstream/settings/del_resolver/',\n")
         && str_contains($view, "{{ partial('layout_partials/base_dialog', ['fields': resolverForm, 'id': "
             . "formGridResolver['edit_dialog_id'],\n    'label': lang._('Edit per-member resolver')]) }}"));
-    uu_check($t, 'page: the note about Unbound\'s own page shows only in tunnel mode',
+    uu_check($t, 'page: the note about Unbound\'s own page shows only in tunnel mode, and not in a dry run',
         str_contains($view, "<p id=\"unboundupstream-tunnel-note\" style=\"display: none;\">{{ lang._(\"Unbound's "
             . "own settings page keeps showing its configured forwarders while the tunnel is in use\") }}</p>")
         && str_contains($view, "body.append(\$('<tr/>').append(\$('<td colspan=\"2\"/>').text(\"{{ lang._('Status "
             . "unavailable.') }}\")));\n                    \$('#unboundupstream-tunnel-note').hide();\n"
             . "                    return;\n                }\n"
-            . "                \$('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel');\n")
+            . "                \$('#unboundupstream-tunnel-note').toggle(data.mode === 'tunnel' && !data.dry_run);\n")
         && substr_count($view, 'unboundupstream-tunnel-note') === 3);
     uu_check($t, '(l5) the member table has the Resolver column after Tier, each member\'s resolver set as text, and '
         . 'the view still builds no markup with .html(',
