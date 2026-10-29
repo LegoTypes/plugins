@@ -58,6 +58,65 @@ function uu_test_model_messages(array $values, array $rows = []): array
 }
 
 /**
+ * Every validation message with its field's full reference, after applying $values to a fresh model and adding $rows
+ * as uu_test_model_messages() does, and each added row's address reference, in the order given.
+ *
+ * @param array<string, string> $values
+ * @param list<array{gateway: string, address: string}> $rows gateway UUID and address of each row
+ * @return array{messages: list<array{field: string, message: string}>, rows: list<string>}
+ */
+function uu_test_model_refs(array $values, array $rows = []): array
+{
+    $m = new \OPNsense\UnboundUpstream\UnboundUpstream();
+    $m->setNodes($values);
+    $refs = [];
+    foreach ($rows as $row) {
+        $node = $m->resolvers->resolver->add();
+        $node->setNodes($row);
+        $refs[] = $node->address->__reference;
+    }
+    $out = [];
+    foreach ($m->performValidation() as $msg) {
+        $out[] = ['field' => (string)$msg->getField(), 'message' => (string)$msg->getMessage()];
+    }
+    return ['messages' => $out, 'rows' => $refs];
+}
+
+/**
+ * $body's verdict with core's Unbound settings changed by $change, in the configuration object only (serialized,
+ * never saved), and put back by the undo $change returns, on a fresh model, whatever happens. config.xml's md5 across
+ * the whole is the guard: should anything have written the file, the case fails with a line saying so.
+ *
+ * @param callable(\OPNsense\Unbound\Unbound): (callable(\OPNsense\Unbound\Unbound): void) $change
+ * @param callable(): bool $body
+ */
+function uu_test_model_with_unbound(callable $change, callable $body): bool
+{
+    $config = '/conf/config.xml';
+    $before = md5_file($config);
+    $undo = null;
+    $ok = false;
+    try {
+        $unbound = new \OPNsense\Unbound\Unbound();
+        $undo = $change($unbound);
+        $unbound->serializeToConfig(false, true);
+        $ok = (bool)$body();
+    } finally {
+        if ($undo !== null) {
+            $unbound = new \OPNsense\Unbound\Unbound();
+            $undo($unbound);
+            $unbound->serializeToConfig(false, true);
+        }
+        $written = md5_file($config) !== $before;
+        if ($written) {
+            printf("  config.xml was written while Unbound's settings were changed in memory: restore the VM to the "
+                . "'unbound-upstream base' checkpoint before anything else runs\n");
+        }
+    }
+    return $ok && !$written;
+}
+
+/**
  * The messages of one field.
  *
  * @param list<array{field: string, message: string}> $messages
@@ -208,6 +267,107 @@ uu_register_suite('model', function (): int {
             }
             return $refused === []
                 && (\OPNsense\UnboundUpstream\UnboundUpstream::interfaceDevices()['lan'] ?? '') !== '';
+        }));
+    uu_check($t, 'model: a repeated network is refused after normalising, naming both entries',
+        uu_try_case(function () use ($netField): bool {
+            $same = fn (string $nets): array => array_values(array_filter($netField(['fail_closed_networks' => $nets]),
+                fn (string $m): bool => str_contains($m, ' is the same network as ')));
+            $got = [$same('fd7a::/48,FD7A:0::/48'), $same('2001:DB8::/48,2001:db8:0::/48'),
+                $same('192.0.2.0/24,198.51.100.0/24')];
+            /* named as the field holds each entry: core's network field stores it in lower case */
+            $ok = $got === [['fd7a:0::/48 is the same network as fd7a::/48'],
+                ['2001:db8:0::/48 is the same network as 2001:db8::/48'], []];
+            if (!$ok) {
+                printf("  %s\n", json_encode($got));
+            }
+            return $ok;
+        }));
+    $outgoing = "Unbound's Outgoing Network Interfaces is set: the resolver's queries would not leave from the tunnel's "
+        . 'own address.';
+    uu_check($t, 'model: Save refuses Unbound\'s Outgoing Network Interfaces while enabled, not while disabled',
+        uu_try_case(function () use ($outgoing): bool {
+            $set = ['gateway_group' => uu_test_model_group_uuid('proton_test_grp'), 'resolver' => '10.2.0.1'];
+            $on = [];
+            $off = [];
+            $ok = uu_test_model_with_unbound(function (\OPNsense\Unbound\Unbound $u): callable {
+                $stored = $u->general->outgoing_interface->getValue();
+                $u->general->outgoing_interface->setValue('lan');
+                return function (\OPNsense\Unbound\Unbound $u) use ($stored): void {
+                    $u->general->outgoing_interface->setValue($stored);
+                };
+            }, function () use ($set, &$on, &$off): bool {
+                $on = uu_test_model_messages(['enabled' => '1'] + $set);
+                $off = uu_test_model_messages(['enabled' => '0'] + $set);
+                return true;
+            });
+            $refused = uu_test_model_field($on, 'enabled') === [$outgoing]
+                && !in_array($outgoing, array_column($off, 'message'), true);
+            if (!$refused) {
+                printf("  enabled: %s; disabled: %s\n", json_encode($on), json_encode($off));
+            }
+            return $ok && $set['gateway_group'] !== '' && $refused;
+        }));
+    uu_check($t, 'model: the foreign-view check runs only while enabled',
+        uu_try_case(function () use ($class): bool {
+            $src = (string)file_get_contents($class);
+            $body = fn (string $name): string => preg_match('/ function ' . $name . '\(.*?\n    \}\n/s', $src, $m) === 1
+                ? $m[0] : '';
+            $validate = $body('performValidation');
+            $gate = strpos($validate, "if (!\$this->enabled->isEqual('1')) {\n            return \$messages;\n        }");
+            $call = strpos($validate, '$this->checkUnbound(');
+            $unbound = $body('checkUnbound');
+            /* and nothing else calls either */
+            return $gate !== false && $call !== false && $call > $gate
+                && str_contains($unbound, 'self::foreignViewProblems(self::foreignViewTexts(dirname(UU_VIEW_FILE)))')
+                && preg_match_all('/(?:self::|\$this->)foreignViewProblems\(/', $src) === 1
+                && preg_match_all('/(?:self::|\$this->)checkUnbound\(/', $src) === 1;
+        }));
+    uu_check($t, 'model: Save refuses a root forward to a member\'s resolver on the field the address came from, both '
+        . 'families',
+        uu_try_case(function (): bool {
+            $v4 = uu_test_model_group_uuid('proton_test_grp');
+            $v6 = uu_test_model_group_uuid('uu_far6_grp');
+            $gwA = uu_test_model_gateway_uuid('wg-far-a-ipv6');
+            $gwB = uu_test_model_gateway_uuid('wg-far-b-ipv6');
+            $text = fn (string $address, string $members): string => sprintf("Unbound's own forwarding of the root "
+                . 'zone goes to %s, the resolver of %s: the plugin cannot tell that forwarding from its own.',
+                $address, $members);
+            /* a Query Forwarding item for the whole zone, added in memory; its undo deletes it */
+            $forward = fn (string $server, string $enabled): callable => function (\OPNsense\Unbound\Unbound $u)
+                use ($server, $enabled): callable {
+                $node = $u->dots->dot->add();
+                $node->setNodes(['enabled' => $enabled, 'type' => 'forward', 'domain' => '', 'server' => $server]);
+                $uuid = (string)($node->getAttributes()['uuid'] ?? '');
+                return function (\OPNsense\Unbound\Unbound $u) use ($uuid): void {
+                    $u->dots->dot->del($uuid);
+                };
+            };
+            $fields = fn (array $refs, string $message): array => array_column(array_values(array_filter(
+                $refs['messages'], fn (array $m): bool => $m['message'] === $message)), 'field');
+            $got = ['v4' => null, 'v6' => null, 'off' => null];
+            $onV4 = ['enabled' => '1', 'gateway_group' => $v4, 'resolver' => '10.2.0.1'];
+            $rows = [['gateway' => $gwA, 'address' => '2001:DB8:A:0::53'],
+                ['gateway' => $gwB, 'address' => '2001:db8:b::53']];
+            $ok = uu_test_model_with_unbound($forward('10.2.0.1', '1'), function () use ($onV4, &$got): bool {
+                $got['v4'] = uu_test_model_refs($onV4);
+                return true;
+            }) && uu_test_model_with_unbound($forward('2001:db8:a::53', '1'), function () use ($v6, $rows, &$got): bool {
+                $got['v6'] = uu_test_model_refs(['enabled' => '1', 'gateway_group' => $v6], $rows);
+                return true;
+            }) && uu_test_model_with_unbound($forward('10.2.0.1', '0'), function () use ($onV4, &$got): bool {
+                $got['off'] = uu_test_model_refs($onV4);
+                return true;
+            });
+            $resolver = (new \OPNsense\UnboundUpstream\UnboundUpstream())->resolver->__reference;
+            $named = $ok && $v4 !== '' && $v6 !== '' && $gwA !== '' && $gwB !== ''
+                && $fields($got['v4'], $text('10.2.0.1', 'wg-test-429, wg-test-529')) === [$resolver]
+                && $fields($got['v6'], $text('2001:db8:a::53', 'wg-far-a-ipv6')) === [$got['v6']['rows'][0]]
+                && array_filter(array_column($got['off']['messages'], 'message'),
+                    fn (string $m): bool => str_contains($m, 'forwarding of the root zone')) === [];
+            if (!$named) {
+                printf("  %s\n", json_encode($got));
+            }
+            return $named;
         }));
     uu_check(
         $t,
@@ -548,5 +708,33 @@ uu_register_suite('model', function (): int {
             in_array('resolver', uu_test_model_refused(['enabled' => '1', 'resolver' => $monitor]), true)
         );
     }
+
+    /* the other configuration files' view lines: the VM cannot stage one in Unbound's own directory, so the reader
+     * runs over a scratch directory and the line test over texts */
+    uu_check($t, 'model: foreignViewProblems names each file and line',
+        uu_try_case(fn (): bool => \OPNsense\UnboundUpstream\UnboundUpstream::foreignViewProblems([
+                'custom.conf' => "server:\nview: # x\n  name: v\n",
+                'other.conf' => "access-control: 192.0.2.0/24 allow\n"])
+            === ['custom.conf holds "view:", a view the plugin does not own: fail closed cannot share Unbound with '
+                . 'it.']));
+    uu_check($t, 'model: foreignViewTexts reads the regular *.conf files but the plugin\'s own, each to the size limit',
+        uu_scratch_case(function (string $dir): bool {
+            $big = str_pad("view: x\n", UU_SCRATCH_MIB + 1, ' ');
+            $own = basename(UU_VIEW_FILE);
+            $placed = file_put_contents($dir . '/a.conf', "server:\nview:\n") !== false
+                && file_put_contents($dir . '/big.conf', $big) !== false
+                && file_put_contents($dir . '/x.txt', "view:\n") !== false
+                && file_put_contents($dir . '/' . $own, "view:\n") !== false;
+            uu_scratch_place('link', $dir . '/l.conf', "view:\n");
+            uu_scratch_place('dir', $dir . '/d.conf', '');
+            uu_scratch_place('fifo', $dir . '/f.conf', '');
+            $texts = \OPNsense\UnboundUpstream\UnboundUpstream::foreignViewTexts($dir);
+            $ok = $placed && $own === 'unboundupstream.conf'
+                && $texts === ['a.conf' => "server:\nview:\n", 'big.conf' => substr($big, 0, UU_FILE_MAX_BYTES)];
+            if (!$ok) {
+                printf("  read %s\n", json_encode(array_map('strlen', $texts)));
+            }
+            return $ok;
+        }));
     return uu_tally_report('model', $t);
 });

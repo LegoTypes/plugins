@@ -206,6 +206,12 @@ uu_register_suite('address', function (): int {
             && uu_net_entry('192.0.2.0', null) === null && uu_net_entry('192.0.2.0/', null) === null
             && uu_net_entry('192.0.2.0/24/1', null) === null && uu_net_entry('192.0.2.0/+24', null) === null
             && uu_net_entry('192.0.2.0/24 ', null) === null && uu_net_entry('192.0.2.0/ 24', null) === null));
+    uu_check($t, 'address: uu_root_forward_conflicts names each root forwarder that is a member\'s resolver, '
+        . 'canonical, port and name dropped',
+        uu_try_case(fn (): bool => uu_root_forward_conflicts(['2001:DB8:A::0053@53#x', '192.0.2.53'],
+                ['wg-a' => '2001:db8:a::53', 'wg-b' => '', 'wg-c' => '2001:db8:a::53'])
+                === ['2001:db8:a::53' => ['wg-a', 'wg-c']]
+            && uu_root_forward_conflicts(['192.0.2.53', ''], ['wg-a' => '2001:db8:a::53', 'wg-b' => '']) === []));
 
     return uu_tally_report('address', $t);
 });

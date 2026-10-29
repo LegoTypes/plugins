@@ -491,6 +491,34 @@ function uu_apply_bare(array $addrs): array
 }
 
 /**
+ * The root forwarders that are a member's effective resolver, each with the names of the members whose resolver it
+ * is, in member order: the owner's forwarding of the root zone, which the plugin cannot tell from its own. Both sides
+ * are compared bare and canonical (uu_apply_bare()), as the planner compares a live root with the resolvers, and keyed
+ * in uu_apply_bare()'s order. A member with no resolver ('') is no address a forwarder can name. The one test the
+ * contract and the settings check share.
+ *
+ * @param list<string> $rootAddrs the root zone's forwarders, "@port" and "#name" allowed
+ * @param array<string, string> $memberResolvers member name => effective resolver, '' for none (uu_member_resolvers())
+ * @return array<string, list<string>> forwarder, bare and canonical => the members whose resolver it is
+ */
+function uu_root_forward_conflicts(array $rootAddrs, array $memberResolvers): array
+{
+    $effective = [];
+    foreach ($memberResolvers as $name => $address) {
+        if ($address !== '') {
+            $effective[uu_apply_bare([$address])[0]][] = (string)$name;
+        }
+    }
+    $conflicts = [];
+    foreach (uu_apply_bare($rootAddrs) as $address) {
+        if (isset($effective[$address])) {
+            $conflicts[$address] = $effective[$address];
+        }
+    }
+    return $conflicts;
+}
+
+/**
  * Whether the live root forwarders are the wanted ones; an unknown live root never is.
  *
  * @param ?list<string> $live

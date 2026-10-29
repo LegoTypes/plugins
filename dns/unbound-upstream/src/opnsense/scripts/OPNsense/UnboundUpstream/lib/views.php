@@ -173,20 +173,16 @@ function uu_view_unquote(string $token): string
 }
 
 /**
- * Unbound's ACL nodes and the view lines outside the plugin's block, from the configuration as
- * uu_conf_expanded_text() splices it. Each netblock is masked as Unbound masks it, and one listed twice takes its
- * last line's action; a value in one pair of quotes is read as Unbound reads it. Null when the text lacks a node for
- * 0.0.0.0/0 or ::/0, which core always renders (a read taken while Unbound starts, or a cut file), when an
- * access-control line does not parse, and when the plugin's block never ends.
+ * The lines of a configuration text outside the plugin's block (UU_VIEW_BEGIN to UU_VIEW_END, both markers
+ * included), each trimmed; null when the block never ends.
  *
- * @return ?array{nodes: list<Net>, foreign: list<string>}
+ * @return ?list<string>
  */
-function uu_view_acl_parse(string $expanded): ?array
+function uu_view_outside_lines(string $text): ?array
 {
-    $nodes = [];
-    $foreign = [];
+    $lines = [];
     $inside = false;
-    foreach (explode("\n", $expanded) as $line) {
+    foreach (explode("\n", $text) as $line) {
         $line = trim($line);
         if ($line === UU_VIEW_BEGIN) {
             $inside = true;
@@ -196,10 +192,49 @@ function uu_view_acl_parse(string $expanded): ?array
             $inside = $line !== UU_VIEW_END;
             continue;
         }
+        $lines[] = $line;
+    }
+    return $inside ? null : $lines;
+}
+
+/**
+ * The views the plugin does not own: the "view:" and "access-control-view:" lines outside its block
+ * (uu_view_outside_lines()), comment-stripped and trimmed. None when the block never ends, a text
+ * uu_view_acl_parse() refuses whole. The one line test the run and the settings check share.
+ *
+ * @return list<string>
+ */
+function uu_view_foreign(string $text): array
+{
+    $foreign = [];
+    foreach (uu_view_outside_lines($text) ?? [] as $line) {
         $bare = trim((string)preg_replace('/#.*$/', '', $line));
         if (preg_match('/^(?:view|access-control-view)\s*:/', $bare) === 1) {
             $foreign[] = $bare;
-        } elseif (preg_match('/^access-control\s*:/', $bare) === 1) {
+        }
+    }
+    return $foreign;
+}
+
+/**
+ * Unbound's ACL nodes and the view lines outside the plugin's block (uu_view_foreign()), from the configuration as
+ * uu_conf_expanded_text() splices it. Each netblock is masked as Unbound masks it, and one listed twice takes its
+ * last line's action; a value in one pair of quotes is read as Unbound reads it. Null when the text lacks a node for
+ * 0.0.0.0/0 or ::/0, which core always renders (a read taken while Unbound starts, or a cut file), when an
+ * access-control line does not parse, and when the plugin's block never ends.
+ *
+ * @return ?array{nodes: list<Net>, foreign: list<string>}
+ */
+function uu_view_acl_parse(string $expanded): ?array
+{
+    $outside = uu_view_outside_lines($expanded);
+    if ($outside === null) {
+        return null;
+    }
+    $nodes = [];
+    foreach ($outside as $line) {
+        $bare = trim((string)preg_replace('/#.*$/', '', $line));
+        if (preg_match('/^access-control\s*:/', $bare) === 1) {
             $token = '("[^"]*"|\'[^\']*\'|\S+)';
             if (preg_match('/^access-control\s*:\s*' . $token . '\s+' . $token . '$/D', $bare, $m) !== 1) {
                 return null;
@@ -211,9 +246,6 @@ function uu_view_acl_parse(string $expanded): ?array
             $nodes[$net] = uu_view_unquote($m[2]);
         }
     }
-    if ($inside) {
-        return null;
-    }
     if (!isset($nodes['0.0.0.0/0'], $nodes['::/0'])) {
         return null;
     }
@@ -221,7 +253,7 @@ function uu_view_acl_parse(string $expanded): ?array
     foreach ($nodes as $net => $action) {
         $list[] = ['net' => (string)$net, 'action' => $action];
     }
-    return ['nodes' => $list, 'foreign' => $foreign];
+    return ['nodes' => $list, 'foreign' => uu_view_foreign($expanded)];
 }
 
 /**

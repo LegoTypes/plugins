@@ -9,7 +9,8 @@ declare(strict_types=1);
  *
  * The live snapshot against the test VM's gateways. Runs only where core and the VM's
  * proton_test_grp exist; elsewhere it registers a suite that skips. Read-only, except that a snapshot makes the
- * plugin's run directory 0700 if it is missing or another mode.
+ * plugin's run directory 0700 if it is missing or another mode, and that one case stores the plugin's fail-closed
+ * settings in the configuration object only (never saved) and puts them back.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -27,6 +28,33 @@ uu_register_suite('snapshot_vm', function (): int {
         printf("[SKIP] snapshot_vm: the test VM's proton_test_grp is not configured\n");
         return uu_tally_report('snapshot_vm', $t);
     }
+    /* a repeat the settings form now refuses, saved before it did, still runs: the scripts read the set once */
+    uu_check($t, 'settings_vm: a saved repeated network loads and the set holds it once',
+        uu_try_case(function (): bool {
+            $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
+            $stored = ['fallback' => $mdl->fallback->getValue(), 'fail_closed' => $mdl->fail_closed->getValue(),
+                       'fail_closed_networks' => $mdl->fail_closed_networks->getValue()];
+            try {
+                $mdl->setNodes(['fallback' => '1', 'fail_closed' => '',
+                    'fail_closed_networks' => 'fd7a::/48,FD7A:0::/48']);
+                $mdl->serializeToConfig(false, true);
+                $settings = uu_settings();
+            } finally {
+                $mdl = new \OPNsense\UnboundUpstream\UnboundUpstream();
+                $mdl->setNodes($stored);
+                $mdl->serializeToConfig(false, true);
+            }
+            $view = uu_view_snapshot($settings, false, fn (array $args): ?string => null,
+                fn (): array => ['details' => [], 'devices' => []], null,
+                fn (string $path): array => ['text' => null, 'problem' => null]);
+            $ok = $settings['fail_closed_networks'] === ['fd7a::/48'] && $view['scope'] === 'selected'
+                && $view['nets'] === ['fd7a::/48'];
+            if (!$ok) {
+                printf("  settings %s; view %s %s\n", json_encode($settings['fail_closed_networks']), $view['scope'],
+                    json_encode($view['nets']));
+            }
+            return $ok;
+        }));
     $settings = ['enabled' => true, 'dry_run' => true, 'group' => 'proton_test_grp',
                  'default' => '10.2.0.1', 'rows' => [], 'failback_delay' => 120, 'probe_name' => '.',
                  'fallback' => true, 'fail_closed' => [], 'fail_closed_networks' => []];

@@ -74,6 +74,21 @@ function uu_test_script_commands(string $text): array
 uu_register_suite('contract', function (): int {
     $t = ['fail' => 0, 'total' => 0];
 
+    uu_check($t, 'contract: the root-forward failure reads as in 1.5 through the shared function',
+        uu_try_case(function (): bool {
+            $zone = fn (array $addrs): array => ['zone' => ['shape' => 'one', 'addrs' => $addrs, 'tls' => false,
+                'problems' => []]];
+            $ported = uu_contract($zone(['192.0.2.53@853#dns.example', '10.2.0.1@5353']) + uu_test_contract_input());
+            $two = uu_contract($zone(['2001:DB8:B:0::0053@853', '192.0.2.54'])
+                + ['member_resolvers' => ['wg-a' => '2001:db8:b::53', 'wg-b' => '192.0.2.54']]
+                + uu_test_contract_input());
+            return $ported['failures'] === ["Unbound's root zone forwards to 10.2.0.1, the resolver of wg-a, wg-b: the "
+                    . 'plugin cannot tell that forwarding from its own']
+                && $two['failures'] === ["Unbound's root zone forwards to 192.0.2.54, the resolver of wg-b: the plugin "
+                    . 'cannot tell that forwarding from its own', "Unbound's root zone forwards to 2001:db8:b::53, the "
+                    . 'resolver of wg-a: the plugin cannot tell that forwarding from its own'];
+        }));
+
     $c = uu_contract(uu_test_contract_input());
     uu_check($t, 'a clean input is ok with no failures and no notes',
         $c['ok'] && $c['failures'] === [] && $c['notes'] === []);

@@ -19,7 +19,8 @@ declare(strict_types=1);
  * cron's running state back. It also records two snapshots and replays each, and installs (through unbound-checkconf)
  * and deletes view files, in scratch directories it removes, never in Unbound's own, and
  * runs the settings controller's resolver actions over a row it adds to the controller's model in memory only (no
- * action it runs saves).
+ * action it runs saves), two of them with Unbound's Outgoing Network Interfaces set in the configuration object only
+ * and put back.
  */
 
 require_once __DIR__ . '/../src/opnsense/scripts/OPNsense/UnboundUpstream/lib/selftest.php';
@@ -656,6 +657,57 @@ VOLT;
     uu_check($t, '(l5) enabled: a row changed to another row\'s gateway is refused (the message is the other row\'s, '
         . 'shown on this one\'s gateway), and a delete that leaves a member with no resolver is refused; neither is '
         . 'saved, while a delete that leaves the model valid is; config.xml is unchanged', $wholeModel);
+
+    /* a setting another model holds refuses a row change as it refuses a Save: Unbound's Outgoing Network Interfaces,
+     * set in the configuration object only and put back, blocks a member's row add (named on its gateway, by the
+     * settings form's label of the field it lands on) and a delete; neither saves, and config.xml's md5 is the guard.
+     * The config lock is taken before the change, since an action's own lock() would reload config.xml over it */
+    $outgoing = "Unbound's Outgoing Network Interfaces is set: the resolver's queries would not leave from the tunnel's "
+        . 'own address.';
+    $outgoingSet = function (callable $call): array {
+        \OPNsense\Core\Config::getInstance()->lock();
+        $unbound = new \OPNsense\Unbound\Unbound();
+        $stored = $unbound->general->outgoing_interface->getValue();
+        try {
+            $unbound->general->outgoing_interface->setValue('lan');
+            $unbound->serializeToConfig(false, true);
+            return $call();
+        } finally {
+            $unbound = new \OPNsense\Unbound\Unbound();
+            $unbound->general->outgoing_interface->setValue($stored);
+            $unbound->serializeToConfig(false, true);
+            \OPNsense\Core\Config::getInstance()->unlock();
+        }
+    };
+    $other = null;
+    $otherBefore = md5_file($config);
+    try {
+        $o1 = $enabled('10.2.0.1');
+        $add = $outgoingSet(fn (): array => $post(['resolver' => ['gateway' => $a, 'address' => '10.2.0.1']],
+            fn (): array => $o1->addResolverAction()));
+        $o2 = $enabled('10.2.0.1');
+        $r = $addRow($o2, $a);
+        $del = $outgoingSet(fn (): array => $post([], fn (): array => $o2->delResolverAction($r)));
+        $other = ['add' => $add, 'del' => $del, 'saves' => $o1->saves + $o2->saves];
+    } catch (\Throwable $e) {
+        printf("  threw %s: %s\n", get_class($e), $e->getMessage());
+    } finally {
+        $otherChanged = md5_file($config) !== $otherBefore;
+        if ($otherChanged) {
+            $plugin = @simplexml_load_file($config);
+            $backups = \OPNsense\Core\Config::getInstance()->getBackups();
+            printf("  %s\n", uu_test_config_written_line(
+                (string)($plugin === false ? 'unreadable' : $plugin->OPNsense->UnboundUpstream->asXML()),
+                (string)($backups[0] ?? 'none listed')));
+        }
+    }
+    $blocked = $other !== null && !$otherChanged
+        && $other['add'] === ['result' => 'failed', 'validations' => ['resolver.gateway' => 'Enable: ' . $outgoing]]
+        && str_contains((string)($other['del']['refused'] ?? ''), $outgoing) && $other['saves'] === 0;
+    if ($other !== null && !$blocked) {
+        printf("  %s\n", json_encode($other));
+    }
+    uu_check($t, 'controller: a refusal of another setting blocks a row\'s add and delete, labelled', $blocked);
 
     /* a setting's message that refuses a row names the setting, by the settings form's own label */
     $labels = (string)shell_exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg(

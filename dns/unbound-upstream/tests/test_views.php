@@ -828,5 +828,11 @@ uu_register_suite('views', function (): int {
                 && $st === $fsSt($fsRecord());
         }));
 
+    uu_check($t, 'foreign: view and access-control-view lines outside the plugin\'s block, comments dropped',
+        uu_try_case(fn (): bool => uu_view_foreign("server:\nview: # the owner's own\n    name: \"x\"\n"
+                . "  access-control-view: 198.51.100.0/24 x\n" . $begin . "view:\n    name: \"unboundupstream\"\n"
+                . "access-control-view: 192.0.2.0/24 unboundupstream\n" . $end . "    access-control: 0.0.0.0/0 allow\n")
+            === ['view:', 'access-control-view: 198.51.100.0/24 x']));
+
     return uu_tally_report('views', $t);
 });

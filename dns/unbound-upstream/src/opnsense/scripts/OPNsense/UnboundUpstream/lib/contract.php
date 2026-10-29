@@ -152,16 +152,10 @@ function uu_contract(array $c): array
 
     /* Unbound's own root zone is the owner's forwarding, which the plugin cannot tell from its own. The addresses are
      * the members' effective resolvers (uu_plan_addresses()'s set whenever the group has members, canonical already;
-     * a group with none is refused anyway) */
-    $effective = [];
-    foreach ($resolvers as $name => $address) {
-        $effective[uu_apply_bare([$address])[0]][] = (string)$name;
-    }
-    foreach (uu_apply_bare($zone['addrs']) as $address) {
-        if (isset($effective[$address])) {
-            $failures[] = "Unbound's root zone forwards to $address, the resolver of "
-                . implode(', ', $effective[$address]) . ': the plugin cannot tell that forwarding from its own';
-        }
+     * a group with none is refused anyway); Save names the same conflicts of Unbound's settings through the same test */
+    foreach (uu_root_forward_conflicts($zone['addrs'], $c['member_resolvers']) as $address => $members) {
+        $failures[] = "Unbound's root zone forwards to $address, the resolver of " . implode(', ', $members)
+            . ': the plugin cannot tell that forwarding from its own';
     }
 
     /* the generated configuration, read once: what it would not send, and a read that failed */

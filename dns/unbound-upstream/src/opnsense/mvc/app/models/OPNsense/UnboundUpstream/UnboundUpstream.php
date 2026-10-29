@@ -35,6 +35,7 @@ use OPNsense\Interfaces\Settings;
 use OPNsense\Routing\GatewayGroups;
 use OPNsense\Routing\Gateways;
 use OPNsense\Routes\Route;
+use OPNsense\Unbound\Unbound;
 
 require_once 'interfaces.lib.inc';
 
@@ -49,8 +50,8 @@ if (!function_exists('uu_view_iface_nets')) {
 class UnboundUpstream extends BaseModel
 {
     /**
-     * Cross-field checks that need the gateway and route models run only while the plugin is enabled; the notify
-     * URL is required whenever notify is on.
+     * Cross-field checks that need the gateway, route and Unbound models run only while the plugin is enabled; the
+     * notify URL is required whenever notify is on.
      *
      * @param bool $validateFullModel
      * @return \OPNsense\Base\Messages\MessageCollection|\Phalcon\Messages\Messages
@@ -75,6 +76,7 @@ class UnboundUpstream extends BaseModel
             $this->checkGroup($messages, $gateways);
         }
         $this->checkResolvers($messages, $gateways);
+        $this->checkUnbound($messages, $gateways);
         return $messages;
     }
 
@@ -115,8 +117,20 @@ class UnboundUpstream extends BaseModel
             }
         }
 
-        /* host bits are the field's own Strict refusal */
+        /* host bits are the field's own Strict refusal; a repeat is named against the first entry of its network, as
+         * the run reads both (it keeps the network once) */
+        $first = [];
         foreach ($listed as $net) {
+            $entry = uu_net_entry($net, UU_NET_LENGTH_DIGITS);
+            $canonical = $entry === null ? null : uu_net_canonical($entry['addr'] . '/' . $entry['len']);
+            if ($canonical !== null && isset($first[$canonical])) {
+                $messages->appendMessage(new Message(
+                    sprintf(gettext('%s is the same network as %s'), $net, $first[$canonical]),
+                    $this->fail_closed_networks->__reference
+                ));
+            } elseif ($canonical !== null) {
+                $first[$canonical] = $net;
+            }
             foreach (self::networkProblems($net, $memberNets) as $problem) {
                 $messages->appendMessage(new Message($problem, $this->fail_closed_networks->__reference));
             }
@@ -175,6 +189,137 @@ class UnboundUpstream extends BaseModel
             }
         }
         return [];
+    }
+
+    /**
+     * What in Unbound's own settings the run would refuse, named at Save as an early warning (the run's contract
+     * stays the authority, for a later change on Unbound's pages): its Outgoing Network Interfaces, a forward of the
+     * root zone to a member's effective resolver while a group is selected, and, while the set is not empty, a view
+     * line in another of Unbound's configuration files. Run only while the plugin is enabled.
+     */
+    private function checkUnbound(object $messages, Gateways $model): void
+    {
+        $unbound = new Unbound();
+        if (!$unbound->general->outgoing_interface->isEmpty()) {
+            $messages->appendMessage(new Message(
+                gettext("Unbound's Outgoing Network Interfaces is set: the resolver's queries would not leave from the tunnel's own address."),
+                $this->enabled->__reference
+            ));
+        }
+        if (!$this->gateway_group->isEmpty()) {
+            $this->checkRootForwards($messages, $unbound, $model);
+        }
+
+        /* the set is empty with the fallback on and nothing selected or listed; the message goes on the setting that
+         * makes it not empty */
+        if ($this->fallback->isEqual('0')) {
+            $field = $this->fallback->__reference;
+        } elseif (!$this->fail_closed->isEmpty()) {
+            $field = $this->fail_closed->__reference;
+        } elseif (!$this->fail_closed_networks->isEmpty()) {
+            $field = $this->fail_closed_networks->__reference;
+        } else {
+            return;
+        }
+        foreach (self::foreignViewProblems(self::foreignViewTexts(dirname(UU_VIEW_FILE))) as $problem) {
+            $messages->appendMessage(new Message($problem, $field));
+        }
+    }
+
+    /**
+     * Unbound's own forwarding of the root zone (a Query Forwarding or DNS over TLS item, enabled, for "" or ".") to
+     * a member's effective resolver, as the run reads both (uu_root_forward_conflicts()). The resolvers are the run's:
+     * each member's row, else the Default, each kept as the scripts keep it (uu_rows_clean(), a refused Default is
+     * none). The message goes on the field each member's resolver came from: the Default for a member with no row of
+     * its own, else that member's row.
+     */
+    private function checkRootForwards(object $messages, Unbound $unbound, Gateways $model): void
+    {
+        $roots = [];
+        foreach ($unbound->dots->dot->iterateItems() as $dot) {
+            if ($dot->enabled->isEqual('1') && in_array($dot->domain->getValue(), ['', '.'], true)) {
+                $roots[] = $dot->server->getValue();
+            }
+        }
+        if ($roots === []) {
+            return;
+        }
+        $raw = [];
+        foreach ($this->resolvers->resolver->iterateItems() as $row) {
+            $raw[] = ['gateway' => $row->gateway->getValue(), 'address' => $row->address->getValue()];
+        }
+        $rows = uu_rows_clean($raw)['rows'];
+        $names = uu_gateway_names($model->gatewaysIndexedByName(true));
+        $members = array_map('strval', array_keys($this->findGroup()['members'] ?? []));
+        $own = [];
+        foreach (array_keys($rows) as $uuid) {
+            $own[$names[$uuid] ?? ''] = true;
+        }
+        $default = $this->resolver->getValue();
+        $default = uu_resolver_refusal($default) === null ? (uu_ip_canonical($default) ?? '') : '';
+        $resolvers = uu_member_resolvers($members, $rows, $names, $default)['resolvers'];
+
+        foreach (uu_root_forward_conflicts($roots, $resolvers) as $address => $users) {
+            $address = (string)$address;
+            $text = sprintf(
+                gettext("Unbound's own forwarding of the root zone goes to %s, the resolver of %s: the plugin cannot tell that forwarding from its own."),
+                $address,
+                implode(', ', $users)
+            );
+            if (array_filter($users, fn (string $name): bool => !isset($own[$name])) !== []) {
+                $messages->appendMessage(new Message($text, $this->resolver->__reference));
+            }
+            foreach ($this->resolvers->resolver->iterateItems() as $row) {
+                $name = $names[$row->gateway->getValue()] ?? '';
+                if (in_array($name, $users, true) && uu_ip_canonical($row->address->getValue()) === $address) {
+                    $messages->appendMessage(new Message($text, $row->address->__reference));
+                }
+            }
+        }
+    }
+
+    /**
+     * The view lines of other configuration texts, one message each: what uu_view_foreign() finds in each. Pure.
+     *
+     * @param array<string, string> $texts file basename => its text
+     * @return list<string>
+     */
+    public static function foreignViewProblems(array $texts): array
+    {
+        $problems = [];
+        foreach ($texts as $file => $text) {
+            foreach (uu_view_foreign($text) as $line) {
+                $problems[] = sprintf(
+                    gettext('%s holds "%s", a view the plugin does not own: fail closed cannot share Unbound with it.'),
+                    $file,
+                    $line
+                );
+            }
+        }
+        return $problems;
+    }
+
+    /**
+     * The *.conf files of a directory, as Unbound's include of it lists them, but the plugin's own
+     * (basename(UU_VIEW_FILE)): regular files only, never through a link, each read to at most UU_FILE_MAX_BYTES. A
+     * file that cannot be read is left out; the run's contract still reads Unbound's whole configuration.
+     *
+     * @return array<string, string> file basename => its text
+     */
+    public static function foreignViewTexts(string $dir): array
+    {
+        $texts = [];
+        foreach (glob($dir . '/*.conf') ?: [] as $path) {
+            $file = basename($path);
+            if ($file === basename(UU_VIEW_FILE) || is_link($path) || !is_file($path)) {
+                continue;
+            }
+            $text = @file_get_contents($path, false, null, 0, UU_FILE_MAX_BYTES);
+            if ($text !== false) {
+                $texts[$file] = $text;
+            }
+        }
+        return $texts;
     }
 
     /**
