@@ -124,7 +124,7 @@ function wf_plan(array $snap, array $state): array
         if ($why !== null) {
             $unjudgeable[] = "{$n} can never be judged ("
                 . ($why === 'disabled' ? 'the gateway is disabled' : 'gateway monitoring is disabled')
-                . '): it is never held and never lets another WAN be held';
+                . '): it never lets another WAN be held';
         }
     }
     $line = wf_once($state['said'], 'unjudgeable', $unjudgeable === [] ? null : implode('; ', $unjudgeable));

@@ -575,8 +575,8 @@ wf_register_suite('planner', function (): int {
     $r1 = wf_plan(wf_t_snap(30000, [], $off + $flag), wf_state_new('b1'));
     $r2 = wf_plan(wf_t_snap(30200, [], $off + $flag), $r1['state']);
     wf_check($t, 'planner: an unjudgeable WAN is logged once',
-        in_array('WAN_B can never be judged (gateway monitoring is disabled): it is never held and never lets another WAN be '
-            . 'held', $r1['plan']['log'], true)
+        in_array('WAN_B can never be judged (gateway monitoring is disabled): it never lets another WAN be held',
+            $r1['plan']['log'], true)
         && $lines($r2['plan'], 'can never be judged') === 0);
     $p1 = wf_plan(wf_t_snap(30000, [], $off), wf_state_new('b1'));
     $p2 = wf_plan(wf_t_snap(30200, [], $off), $p1['state']);
