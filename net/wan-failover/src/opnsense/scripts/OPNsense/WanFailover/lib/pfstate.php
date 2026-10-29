@@ -163,9 +163,15 @@ function wf_addr_host(string $addr): string
 /**
  * A WAN's identity in pf and the routing table: "<gateway>@<interface>", as pf prints a route target.
  * The gateway address alone is ambiguous when two WANs share one (two modems both at 192.168.1.1).
+ * An IP address is written in canonical form, so config, pf and "route get" compare equal whichever way each wrote
+ * it ("2001:DB8::0050" and "2001:db8::50"); anything else (a zoned address, "dynamic", a link name) stays as written.
  */
 function wf_route_target(string $gateway, string $interface): string
 {
+    if (filter_var($gateway, FILTER_VALIDATE_IP) !== false) {
+        $packed = inet_pton($gateway);
+        $gateway = $packed === false ? $gateway : (string)inet_ntop($packed);
+    }
     return $gateway . '@' . $interface;
 }
 

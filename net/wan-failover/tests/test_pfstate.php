@@ -73,6 +73,18 @@ wf_register_suite('pfstate', function (): int {
         && $shared[0]['current'] === 'WAN_B' && $shared[1]['current'] === 'WAN_A');
     wf_check($t, 'wf_route_target joins gateway and interface as pf prints it', wf_route_target('198.51.100.254', 'vtnet2') === '198.51.100.254@vtnet2');
 
+    wf_check($t, 'route target: an IPv4 gateway is unchanged', wf_route_target('192.0.2.1', 'vtnet1') === '192.0.2.1@vtnet1');
+    wf_check($t, 'route target: one IPv6 gateway written two ways is one target',
+        wf_route_target('2001:DB8::0050', 'vtnet1') === '2001:db8::50@vtnet1'
+        && wf_route_target('2001:db8::50', 'vtnet1') === '2001:db8::50@vtnet1');
+    wf_check($t, 'route target: a zoned address, dynamic and a link name stay as written',
+        wf_route_target('fe80::1%vtnet1', 'vtnet1') === 'fe80::1%vtnet1@vtnet1'
+        && wf_route_target('dynamic', 'vtnet1') === 'dynamic@vtnet1' && wf_route_target('link#5', 'vtnet1') === 'link#5@vtnet1');
+    $v6State = wf_parse_states("all tcp 192.0.2.10:30090 -> 198.51.100.128:443       ESTABLISHED:ESTABLISHED\n"
+        . "   id: d0000000000000da creatorid: 4a28027f route-to: 2001:db8::50@vtnet1\n");
+    wf_check($t, "pf states: a state's target equals the config's target written another way",
+        count($v6State) === 1 && $v6State[0]['rt_target'] === wf_route_target('2001:DB8::0050', 'vtnet1'));
+
     $rules = wf_parse_rules((string)file_get_contents(__DIR__ . '/fixtures/rules.txt'));
     wf_check($t, 'automatic WAN_B out rule renders route-to vtnet2', $rules['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'] === [['gw' => '198.51.100.254', 'if' => 'vtnet2', 'balanced' => false]]);
     wf_check($t, 'one label, two renderings', count($rules['22222222-2222-4222-8222-222222222222']) === 2);

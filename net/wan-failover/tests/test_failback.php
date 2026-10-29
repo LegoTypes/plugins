@@ -67,6 +67,14 @@ wf_register_suite('failback', function (): int {
     wf_check($t, 'WAN_B recovery with the group rendered as a weighted pool of WAN_B alone: ready, WAN_B-first pair killed',
         $g['ready'] && $ids($g) === ['c0000000000000c2', 'c0000000000000c1']);
 
+    $v6Targets = ['WAN_A' => $gwIp['WAN_A'], 'WAN_B' => wf_route_target('2001:DB8::0050', 'vtnet2')];
+    $v6Rules = $rules;
+    $v6Rules['22222222-2222-4222-8222-222222222222'] = [['gw' => '2001:db8::50', 'if' => 'vtnet2', 'balanced' => false],
+                                                         ['gw' => '2001:db8::50', 'if' => 'vtnet2', 'balanced' => false]];
+    $g = wf_failback_gate('WAN_B', $flows, $pref, $v6Rules, $v6Targets, 'WAN_A', false, $pinned);
+    wf_check($t, 'failback: a rule rendering written another way still counts as on the recovering WAN',
+        $g['ready'] && $g['stale_labels'] === [] && $ids($g) === ['c0000000000000c2', 'c0000000000000c1']);
+
     $amb = [['anchor' => $states[1], 'partner' => null, 'kind' => 'ambiguous', 'current' => 'WAN_B']];
     $g = wf_failback_gate('WAN_A', $amb, $pref, $rules, $gwIp, 'WAN_A', true, $pinned);
     wf_check($t, 'ambiguous flows are spared', $g['kills'] === [] && $g['spared'] === 1);
