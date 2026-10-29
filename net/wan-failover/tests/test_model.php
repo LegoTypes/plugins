@@ -114,8 +114,8 @@ function wf_t_model_saved(string $wans, array $monitorOff, callable $body): bool
         }
         $written = md5_file($config) !== $before;
         if ($written) {
-            printf("  config.xml was written while the settings were changed in memory: restore the VM to the "
-                . "'wan-failover base' checkpoint before anything else runs\n");
+            echo "  config.xml was written while the settings were changed in memory: restore the VM to the "
+                . "'wan-failover base' checkpoint before anything else runs\n";
         }
     }
     return $ok && !$written;

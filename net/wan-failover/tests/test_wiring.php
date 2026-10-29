@@ -204,5 +204,39 @@ wf_register_suite('wiring', function (): int {
     $boot = (string)@file_get_contents(dirname($evaluate) . '/boot.php');
     wf_check($t, '(d7) boot.php checks the removal marker before it reads or writes anything',
         str_contains($boot, "\ntry {\n    if (wf_removing()) {\n        exit(0);\n    }\n    \$bootId = wf_boot_id();\n"));
+    /* the tree's snapshot, as an evaluation takes it, of WAN_DHCP and WAN_B selected with WAN_B's monitoring off: both
+     * changed in the child's configuration object only (serialized, never saved), with config.xml's md5 as the guard */
+    $config = '/conf/config.xml';
+    $before = md5_file($config);
+    $r = wf_t_run(['/usr/local/bin/php', '-d', 'log_errors=0', '-r', 'require_once "script/load_phalcon.php"; require_once '
+        . var_export(dirname($evaluate) . '/lib/snapshot.php', true) . ';
+        $ids = [];
+        $gateways = new \OPNsense\Routing\Gateways();
+        foreach ($gateways->gateway_item->iterateItems() as $uuid => $gw) {
+            $ids[$gw->name->getValue()] = (string)$uuid;
+            if ($gw->name->getValue() === "WAN_B") {
+                $gw->monitor_disable->setValue("1");
+            }
+        }
+        $gateways->serializeToConfig(false, true);
+        $m = new \OPNsense\WanFailover\WanFailover();
+        $m->wans->setValue(($ids["WAN_DHCP"] ?? "") . "," . ($ids["WAN_B"] ?? ""));
+        $m->serializeToConfig(false, true);
+        $s = wf_snapshot();
+        $wans = [];
+        foreach ($s["wans"] as $n => $w) {
+            $wans[$n] = [$w["disabled"], $w["monitor_disable"], wf_unjudgeable($w)];
+        }
+        echo json_encode(["wans" => $wans, "judging" => $s["contract"]["judging"]]);']);
+    $written = md5_file($config) !== $before;
+    $got = json_decode(trim($r['out']), true);
+    $ok = $r['rc'] === 0 && !$written && $got === ['wans' => ['WAN_DHCP' => [false, false, null],
+        'WAN_B' => [false, true, 'monitor_disable']], 'judging' => []];
+    wf_check($t, "the tree's snapshot of WAN_DHCP and WAN_B with WAN_B's monitoring off carries each WAN's disabled and "
+        . 'monitor_disable, and reads no judging drift', $ok);
+    if (!$ok) {
+        printf("    exit %d, config.xml %s, output: %s\n", $r['rc'], $written ? 'WRITTEN: restore the VM to the '
+            . "'wan-failover base' checkpoint" : 'unchanged', trim($r['out']) === '' ? '(none)' : trim($r['out']));
+    }
     return wf_tally_report('wiring', $t);
 });

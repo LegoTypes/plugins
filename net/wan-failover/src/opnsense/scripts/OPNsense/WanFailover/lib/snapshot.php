@@ -15,6 +15,7 @@ require_once 'config.inc';
 require_once 'util.inc';
 require_once 'interfaces.inc';
 require_once 'plugins.inc.d/dpinger.inc';
+require_once __DIR__ . '/judge.php';
 require_once __DIR__ . '/parsers.php';
 require_once __DIR__ . '/pfstate.php';
 require_once __DIR__ . '/contract.php';
@@ -137,9 +138,10 @@ function wf_snapshot(): array
         $sock = "/var/run/dpinger_{$name}.sock";
         $sockFound = file_exists($sock);
         $link = wf_parse_ifconfig((string)shell_exec('/sbin/ifconfig ' . escapeshellarg((string)($g['if'] ?? '')) . ' 2>/dev/null'));
-        $monitored = empty($g['monitor_disable']) && empty($g['disabled']);
+        /* core runs a dpinger only for a gateway the engine can judge */
+        $flags = ['disabled' => !empty($g['disabled']), 'monitor_disable' => !empty($g['monitor_disable'])];
         $judging = array_merge($judging, wf_contract_judging($instances[$name] ?? null, $st, $loopbackOut, $sockFound,
-            wf_dpinger_expected($monitored, $link)));
+            wf_dpinger_expected(wf_unjudgeable($flags) === null, $link)));
         $age = isset($pids[$name]) ? ($ages[$pids[$name]] ?? null) : null;
         $wans[$name] = [
             'uuid' => (string)($g['uuid'] ?? ''),
@@ -147,8 +149,8 @@ function wf_snapshot(): array
             'if' => (string)($g['if'] ?? ''),
             'route_target' => wf_route_target((string)($g['gateway'] ?? ''), (string)($g['if'] ?? '')),
             'rank' => 0,
-            'disabled' => !empty($g['disabled']),
-            'monitor_disable' => !empty($g['monitor_disable']),
+            'disabled' => $flags['disabled'],
+            'monitor_disable' => $flags['monitor_disable'],
             'force_down' => !empty($g['force_down']),
             'status' => (string)($st['status'] ?? 'none'),
             'present' => $st !== null,

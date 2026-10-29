@@ -117,7 +117,9 @@ function wf_plan(array $snap, array $state): array
     if ($line !== null) {
         $log[] = $line;
     }
-    /* a selection saved before the settings model refused such a gateway keeps running: say so once per change */
+    /* a selected gateway that is, or has since become, unjudgeable keeps running: most often one whose monitoring (or
+     * the gateway itself) is turned off later on core's own page, which never consults the settings model; or one
+     * saved before the model refused it. Say so once per change */
     $unjudgeable = [];
     foreach ($snap['wans'] as $n => $w) {
         $why = wf_unjudgeable($w);
