@@ -73,6 +73,14 @@ Features:
 Plugin Changelog
 ================
 
+3.11
+
+* The core contract checks the gateway code the no-default sentinels rely
+  on: core 26.7.8 (opnsense/core#10978) makes the gateway of a "Dynamic
+  gateway policy" interface family-less, so neither NO_DEFAULT4 nor
+  NO_DEFAULT6 is elected any more and only the default-route guard keeps
+  tunnels out of the default route. The tunnel list now names that drift.
+
 3.10
 
 * The IPv6 monitor repair is retired: core carries the fix for

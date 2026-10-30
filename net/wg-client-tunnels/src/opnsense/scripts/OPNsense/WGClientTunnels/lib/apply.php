@@ -92,6 +92,19 @@ const WGCT_CORE_COPIES = [
         'path' => '/usr/local/opnsense/mvc/app/library/OPNsense/Mvc/Response.php',
         'texts' => ['htmlspecialchars($result, ENT_NOQUOTES)'],
     ],
+    /*
+     * the no-default sentinels (wgct_plan_sentinel()) are one address-less gateway per family on a "Dynamic gateway
+     * policy" loopback: getGateways() keeps each configured item's family there, and getDefaultGW() elects by exact
+     * family. Core 26.7.8 (5b6ccdb592, core#10978) made that gateway family-less and the other family's defunct,
+     * which neither sentinel survives
+     */
+    'sentinel_family' => [
+        'path' => '/usr/local/opnsense/mvc/app/models/OPNsense/Routing/Gateways.php',
+        'texts' => [
+            "\$thisconf['gateway_interface'] = true;\n                        \$this->cached_gateways[\$gwkey] = \$thisconf;",
+            "if (\$gateway['ipprotocol'] == \$ipproto) {",
+        ],
+    ],
     /* wgct_core_read_routes() reads the static routes raw, keeping the Routes model's view of them: enabled by default */
     'route_model' => [
         'path' => '/usr/local/opnsense/mvc/app/models/OPNsense/Routes/Route.xml',
@@ -1374,6 +1387,17 @@ function wgct_apply_selftest(): int {
         wgct_check($t, "contract: {$item} drift is named when core changes the line the plugin relies on, though similar text stays",
             $changed !== null && count($changed) === 1 && str_ends_with($changed[0], " no longer holds \"{$from}\""));
     }
+    /* core 26.7.8: the family cleared between the two lines the sentinel relies on, each line still in the file */
+    $sentinel = WGCT_CORE_COPIES['sentinel_family'];
+    $kept = $sentinel['texts'][0];
+    $familyLess = $copy($sentinel['path'], $kept,
+        str_replace("\n", "\n                        \$thisconf['ipprotocol'] = '';\n", $kept));
+    $familyDrift = $drift(['sentinel_family' => ['path' => $familyLess] + $sentinel]);
+    $familyText = (string)file_get_contents($familyLess);
+    wgct_check($t, 'contract: sentinel_family drift is named when core makes the dynamic gateway family-less',
+        str_contains($familyText, "\$thisconf['gateway_interface'] = true;") && str_contains($familyText, "\$this->cached_gateways[\$gwkey] = \$thisconf;")
+        && $familyDrift !== null && count($familyDrift) === 1
+        && str_ends_with($familyDrift[0], ' no longer holds "' . preg_replace('/\s+/', ' ', $kept) . '"'));
     $routeModel = WGCT_CORE_COPIES['route_model'];
     /* enabled's default turned 0 while another field gains a Default 1 */
     $otherDefault = $copy($routeModel['path'], '<Default>1</Default>', '<Default>0</Default>');
