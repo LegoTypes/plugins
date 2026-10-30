@@ -229,19 +229,19 @@ wf_register_suite('wiring', function (): int {
         && substr_count($snapshotSrc, "wf_pf_listing('wf_pfctl_run', ['-vvss'])") === 1
         && preg_match('/shell_exec\([^)]*pfctl/', $snapshotSrc) === 0);
     /* an evaluation and the page keep the last failback reading for a rule listing that could not be read */
-    $kept = strpos($src, "\$kept = wf_contract_kept(\$snap['contract'], \$state['contract_last'], \$state['said']);");
+    $kept = strpos($src, "\$kept = wf_contract_kept(\$snap['contract'], \$state['contract_last'], \$state['said'], \$snap['now']);");
     $logged = strpos($src, "\$cl = wf_contract_log(\$snap['contract'], \$state['contract_last']);");
     wf_check($t, 'evaluate.php keeps the last failback reading for an unread rule listing before it logs the contract, says so '
         . 'once, and the page shows the same contract',
         $kept !== false && $logged !== false && $kept < $logged
         && str_contains($src, "\$snap['contract'] = \$kept['contract'];")
         && str_contains($src, "wf_once(\$state['said'], 'rules_unread', \$kept['line'])")
-        && str_contains($src, "'contract' => wf_contract_kept(\$snap['contract'], \$s['contract_last'], \$s['said'])['contract']"));
+        && str_contains($src, "'contract' => wf_contract_kept(\$snap['contract'], \$s['contract_last'], \$s['said'], \$snap['now'])['contract']"));
     wf_check($t, 'evaluate.php keeps the count of evaluations in a row that could not read the rule listing in its state, and '
         . '--dry shows the contract an evaluation would act on',
         str_contains($src, "\$state['said'] = \$kept['said'];")
         && str_contains($src, "\$snap['contract'] = wf_contract_kept(\$snap['contract'], \$state['contract_last'], "
-            . "\$state['said'])['contract'];"));
+            . "\$state['said'], \$snap['now'])['contract'];"));
     /* the runner itself, on the box's own pf, read-only: a listing whole, and a failing run's stderr kept apart */
     $r = wf_t_run(['/usr/local/bin/php', '-d', 'log_errors=0', '-r', 'require_once "script/load_phalcon.php"; require_once '
         . var_export(dirname($evaluate) . '/lib/snapshot.php', true) . ';

@@ -127,7 +127,7 @@ function wf_main(string $mode, array $args): int
         }
         echo json_encode(['enabled' => $snap['enabled'], 'dry' => $snap['dry'], 'wans' => $rows,
                           'unresolved' => $snap['unresolved'],
-                          'contract' => wf_contract_kept($snap['contract'], $s['contract_last'], $s['said'])['contract'],
+                          'contract' => wf_contract_kept($snap['contract'], $s['contract_last'], $s['said'], $snap['now'])['contract'],
                           'tailscale' => ['default_gw' => $s['ts']['default_gw'], 'restarted_at' => $s['ts']['restarted_at']],
                           'state_corrupt' => $loaded['corrupt'], 'foreign' => count($s['foreign_pruned'])]), "\n";
         return 0;
@@ -161,7 +161,7 @@ function wf_main(string $mode, array $args): int
     if ($mode === '--dry') {
         $snap = wf_snapshot();
         $state = wf_state_load(WF_STATE, $snap['boot_id'])['state'];
-        $snap['contract'] = wf_contract_kept($snap['contract'], $state['contract_last'], $state['said'])['contract'];
+        $snap['contract'] = wf_contract_kept($snap['contract'], $state['contract_last'], $state['said'], $snap['now'])['contract'];
         echo json_encode(['snapshot' => $snap, 'plan' => wf_plan($snap, $state)['plan']], JSON_PRETTY_PRINT), "\n";
         return 0;
     }
@@ -204,8 +204,8 @@ function wf_main(string $mode, array $args): int
     }
     $state = $loaded['state'];
     /* a rule listing that could not be read keeps the failback drift as the last evaluation read it, said once, until
-     * enough evaluations in a row could not read it (counted in said) */
-    $kept = wf_contract_kept($snap['contract'], $state['contract_last'], $state['said']);
+     * enough evaluations in a row over enough time could not read it (counted in said) */
+    $kept = wf_contract_kept($snap['contract'], $state['contract_last'], $state['said'], $snap['now']);
     $snap['contract'] = $kept['contract'];
     $state['said'] = $kept['said'];
     $unread = wf_once($state['said'], 'rules_unread', $kept['line']);
