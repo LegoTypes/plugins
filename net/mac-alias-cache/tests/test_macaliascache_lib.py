@@ -399,8 +399,8 @@ def test_core_contract_with_nothing_read_blocks_on_every_file():
 def test_core_fixes_is_the_table_of_cores_fixes():
     assert lib.CORE_FIXES == (
         ("cache_expiry", CORE_ROOT + "scripts/filter/lib/alias/arpcache.py",
-         ("_address_ttl = 43200", "cls._data.update(cls.current_cache())"), EXPIRY_NOTE),
-        ("emptied_table", CORE_ROOT + "scripts/filter/update_tables.py", ("else cnt_alias_content",), EMPTIED_NOTE),
+         ("_address_ttl = 43200", "cls._data.update(cls.current_cache())"), EXPIRY_NOTE, True),
+        ("emptied_table", CORE_ROOT + "scripts/filter/update_tables.py", ("else cnt_alias_content",), EMPTIED_NOTE, False),
     )
 
 
@@ -408,15 +408,16 @@ def test_core_fixes_stock_core_gives_no_note():
     assert lib.core_fixes(fixture_texts()) == []
 
 
-@pytest.mark.parametrize("item, text, note", [
-    ("cache_expiry", "_address_ttl = 43200", EXPIRY_NOTE),
-    ("cache_expiry", "cls._data.update(cls.current_cache())", EXPIRY_NOTE),
-    ("emptied_table", "else cnt_alias_content", EMPTIED_NOTE),
+@pytest.mark.parametrize("item, text, note, shown", [
+    ("cache_expiry", "_address_ttl = 43200", EXPIRY_NOTE, True),
+    ("cache_expiry", "cls._data.update(cls.current_cache())", EXPIRY_NOTE, True),
+    ("emptied_table", "else cnt_alias_content", EMPTIED_NOTE, False),
 ])
-def test_core_fixes_each_fix_is_a_note(item, text, note):
-    # the text leaves every item read from that file, so it is no contract text
+def test_core_fixes_each_fix_is_a_note(item, text, note, shown):
+    # the text leaves every item read from that file, so it is no contract text; only a note that
+    # changes what the user may do is shown on the page
     texts = without(fixture_texts(), core_paths()[item], text)
-    assert lib.core_fixes(texts) == [{"item": item, "note": note}]
+    assert lib.core_fixes(texts) == [{"item": item, "note": note, "shown": shown}]
     assert lib.core_contract(texts) == []
 
 
@@ -426,8 +427,8 @@ def test_core_fixes_both_notes_never_block():
     texts = without(texts, paths["cache_expiry"], "_address_ttl = 43200")
     texts = without(texts, paths["cache_expiry"], "cls._data.update(cls.current_cache())")
     texts = without(texts, paths["emptied_table"], "else cnt_alias_content")
-    assert lib.core_fixes(texts) == [{"item": "cache_expiry", "note": EXPIRY_NOTE},
-                                     {"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert lib.core_fixes(texts) == [{"item": "cache_expiry", "note": EXPIRY_NOTE, "shown": True},
+                                     {"item": "emptied_table", "note": EMPTIED_NOTE, "shown": False}]
     assert lib.core_contract(texts) == []
 
 

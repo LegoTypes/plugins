@@ -25,7 +25,7 @@ def test_the_host_list_source_is_never_a_banner():
 def test_notes_render_as_information():
     text = page()
     assert "data.notes" in text
-    assert "banner('info', n.note)" in text
+    assert "if (n.shown) {\n                        banners.push(banner('info', n.note));" in text
 
 
 def test_the_null_source_warning_stays_and_the_source_line_is_emptied_on_error():

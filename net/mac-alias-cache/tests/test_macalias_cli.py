@@ -1518,12 +1518,12 @@ def test_status_lists_core_fixes_as_notes(env):
     _fix_core(cfg, "emptied_table", "else cnt_alias_content")
     out = macalias.cmd_status(cfg, now=0.0)
     assert out["problems"] == []
-    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE, "shown": False}]
     _fix_core(cfg, "cache_expiry", "_address_ttl = 43200")
     out = macalias.cmd_status(cfg, now=0.0)
     assert out["problems"] == []
-    assert out["notes"] == [{"item": "cache_expiry", "note": EXPIRY_NOTE},
-                            {"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert out["notes"] == [{"item": "cache_expiry", "note": EXPIRY_NOTE, "shown": True},
+                            {"item": "emptied_table", "note": EMPTIED_NOTE, "shown": False}]
     out = _flush(cfg)
     assert "error" not in out and "notes" not in out
     assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
@@ -1540,7 +1540,7 @@ def test_refusal_never_carries_a_note(env):
     assert [p["item"] for p in out["problems"]] == ["arpcache"]
     assert "notes" not in out
     _unchanged(tmp, cfg, before)
-    assert macalias.cmd_status(cfg, now=0.0)["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert macalias.cmd_status(cfg, now=0.0)["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE, "shown": False}]
 
 
 BAD_NAME_TABLES = """<?xml version="1.0"?>
@@ -1642,7 +1642,7 @@ def test_status_lists_problems(env):
         ("state_dir", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True)]
     assert _items(out, "cache_file")[0]["problem"] == CACHE_FORGED % cfg["cache_file"]
     assert _items(out, "alias_name")[0]["problem"] == ALIAS_NAME % "'Dev Macs'"
-    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE, "shown": False}]
 
     # with the state directory usable, what is inside it is listed too
     pathlib.Path(cfg["state_dir"]).unlink()

@@ -66,13 +66,14 @@ CORE_CONTRACT = (
     ("list_hosts", LIST_HOSTS, None),
 )
 # Core's bugs the plugin works around: the item, core's file, the texts it holds while the bug
-# stands and the note shown once any of them is gone. A note is information and never blocks
+# stands, the note once any of them is gone, and whether the page shows it. Status lists every
+# note; the page shows only a note that changes what the user may do. A note never blocks
 CORE_FIXES = (
     ("cache_expiry", ARPCACHE_PY, ("_address_ttl = 43200", "cls._data.update(cls.current_cache())"),
      "core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
-     "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary"),
+     "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary", True),
     ("emptied_table", UPDATE_TABLES_PY, ("else cnt_alias_content",),
-     "core may now flush emptied tables itself (core #10950); the plugin's own flush is redundant but harmless"),
+     "core may now flush emptied tables itself (core #10950); the plugin's own flush is redundant but harmless", False),
 )
 
 
@@ -215,14 +216,14 @@ def core_contract(texts):
 
 def core_fixes(texts):
     """ notes for core's fixes that have landed, from the texts core_contract reads: a fix whose
-    file no longer holds one of its texts gives its note. A missing file gives none, since it is
-    a contract file whose absence already blocks
+    file no longer holds one of its texts gives its note, with whether the page shows it. A missing
+    file gives none, since it is a contract file whose absence already blocks
     """
     found = []
-    for item, _path, expected, note in CORE_FIXES:
+    for item, _path, expected, note, shown in CORE_FIXES:
         text = texts.get(item)
         if text is not None and any(part not in text for part in expected):
-            found.append({"item": item, "note": note})
+            found.append({"item": item, "note": note, "shown": shown})
     return found
 
 

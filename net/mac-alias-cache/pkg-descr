@@ -15,9 +15,9 @@ Plugin Changelog
 * The core-contract check also covers the host list's columns and flag
   that core's cache reads, and the expiry a flush relies on; a flush
   refuses when core changed any of them
-* Core's fix for core #10950 shows as an information note instead of a
-  warning, and the plugin now also notes core's fix for core #10114;
-  neither blocks a flush
+* Core's fix for core #10114 shows as an information note, since it may
+  make the plugin unnecessary; core's fix for core #10950 no longer shows
+  a warning and is listed in status only; neither blocks a flush
 * The host list's source shows as a line on the page; host discovery
   being off is no longer a warning
 * The page compares cached and current addresses in canonical form

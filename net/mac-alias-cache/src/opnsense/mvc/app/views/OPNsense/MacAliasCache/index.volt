@@ -108,7 +108,9 @@
                     banners.push(banner(p.blocks_flush ? 'danger' : 'warning', p.problem || p.item));
                 });
                 $.each(data.notes || [], function (i, n) {
-                    banners.push(banner('info', n.note));
+                    if (n.shown) {
+                        banners.push(banner('info', n.note));
+                    }
                 });
                 if (!data.aliases.length) {
                     tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
