@@ -113,3 +113,7 @@ def test_a_cut_header_is_reported():
         spaced = list(whole)
         spaced[start + 2] += " "
         assert header_problems(spaced, prefix), (path, "blank line with trailing space")
+        inserted = whole[: start + 9] + [prefix.rstrip()] + whole[start + 9 :]
+        assert header_problems(inserted, prefix), (path, "line inserted inside the text")
+        shifted = whole[: start + 1] + [prefix.rstrip()] + whole[start + 1 :]
+        assert header_problems(shifted, prefix), (path, "text shifted down by one")
