@@ -52,7 +52,7 @@ DEFAULTS = {
     "lock_file": lib.UPDATE_LOCK,
     "state_dir": "/var/run/macaliascache",
     "aliastables_dir": lib.ALIASTABLES_DIR,
-    "list_hosts": [_CORE_FILES["list_hosts"], "-n"],
+    "list_hosts": list(lib.LIST_HOSTS_ARGV),
     "update_tables": _CORE_FILES["targeted_mode"],
     "core_files": _CORE_FILES,
     "pfctl": "/sbin/pfctl",

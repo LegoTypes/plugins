@@ -273,6 +273,7 @@ def test_alias_view_ignores_rejected_rows_without_raising():
 
 
 CORE_ROOT = "/usr/local/opnsense/"
+ARGV_TEXT = "['/usr/local/opnsense/scripts/interfaces/list_hosts.py', '-n']"
 EMPTIED_NOTE = ("core may now flush emptied tables itself (core #10950); "
                 "the plugin's own flush is redundant but harmless")
 EXPIRY_NOTE = ("core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
@@ -313,9 +314,13 @@ def without(texts, path, text):
 def test_core_contract_is_the_table_of_cores_files():
     assert lib.CORE_CONTRACT == (
         ("arpcache", CORE_ROOT + "scripts/filter/lib/alias/arpcache.py",
-         ("/tmp/alias_filter_arp.cache", "items", "last_seen")),
+         ("/tmp/alias_filter_arp.cache", "last_seen", ARGV_TEXT, "hosts.get('rows', [])",
+          "current_macs[item[1]]['items'].append(item[2])")),
         ("update_lock", CORE_ROOT + "service/conf/actions.d/actions_filter.conf", ("/tmp/filter_update_tables.lock",)),
-        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py", ("/var/db/aliastables/%s.md5.txt",)),
+        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py",
+         ("/var/db/aliastables/%s.md5.txt", "if self._ttl > 0 and os.path.isfile(self._filename_alias_hash):",
+          "fstat = os.stat(self._filename_alias_hash)",
+          "self._has_expired = fstat.st_mtime > now or now - fstat.st_mtime > self._ttl")),
         ("targeted_mode", CORE_ROOT + "scripts/filter/update_tables.py", ("--aliases",)),
         ("list_hosts", CORE_ROOT + "scripts/interfaces/list_hosts.py", None),
     )
@@ -330,13 +335,19 @@ def test_core_contract_matches_fixture_copies():
 
 @pytest.mark.parametrize("item, text", [
     ("arpcache", "/tmp/alias_filter_arp.cache"),
-    ("arpcache", "items"),
     ("arpcache", "last_seen"),
+    ("arpcache", ARGV_TEXT),
+    ("arpcache", "hosts.get('rows', [])"),
+    ("arpcache", "current_macs[item[1]]['items'].append(item[2])"),
     ("update_lock", "/tmp/filter_update_tables.lock"),
     ("md5_marker", "/var/db/aliastables/%s.md5.txt"),
+    ("md5_marker", "if self._ttl > 0 and os.path.isfile(self._filename_alias_hash):"),
+    ("md5_marker", "fstat = os.stat(self._filename_alias_hash)"),
+    ("md5_marker", "self._has_expired = fstat.st_mtime > now or now - fstat.st_mtime > self._ttl"),
     ("targeted_mode", "--aliases"),
     ("list_hosts", None),
-])
+], ids=["cache-file", "last-seen", "argv", "rows-key", "column-line", "lock-file", "md5-file", "md5-guard",
+        "md5-stat", "md5-expiry", "aliases-flag", "list-hosts-missing"])
 def test_core_contract_each_drift_blocks(item, text):
     texts = fixture_texts()
     texts[item] = None if text is None else texts[item].replace(text, "")
@@ -354,7 +365,8 @@ def test_core_contract_names_every_missing_text():
     texts = fixture_texts()
     texts["arpcache"] = "_cache_filename = None"
     assert lib.core_contract(texts)[0]["problem"].endswith(
-        "no longer contains '/tmp/alias_filter_arp.cache', 'items', 'last_seen'; the flush imitates it, so it refuses")
+        "no longer contains '/tmp/alias_filter_arp.cache', 'last_seen', \"%s\", \"hosts.get('rows', [])\", "
+        "\"current_macs[item[1]]['items'].append(item[2])\"; the flush imitates it, so it refuses" % ARGV_TEXT)
 
 
 def test_core_contract_blocks_when_the_md5_marker_moves_directory():

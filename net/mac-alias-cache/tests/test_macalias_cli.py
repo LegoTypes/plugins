@@ -1425,6 +1425,7 @@ def test_core_files_are_the_files_the_flush_imitates_and_runs():
     assert macalias.DEFAULTS["lock_file"] == "/tmp/filter_update_tables.lock"
     assert macalias.DEFAULTS["aliastables_dir"] == "/var/db/aliastables"
     expected = {row[0]: row[2] for row in lib.CORE_CONTRACT}
+    assert repr(macalias.DEFAULTS["list_hosts"]) in expected["arpcache"]
     assert macalias.DEFAULTS["cache_file"] in expected["arpcache"]
     assert macalias.DEFAULTS["lock_file"] in expected["update_lock"]
     assert os.path.join(macalias.DEFAULTS["aliastables_dir"], "%s.md5.txt") in expected["md5_marker"]
@@ -1477,6 +1478,17 @@ def test_flush_refuses_on_blocking_contract_problem(env, change):
     assert [p["item"] for p in out["problems"]] == [item]
     assert out["problems"][0]["blocks_flush"] is True
     assert out["detail"] == out["problems"][0]["problem"]
+    _unchanged(tmp, cfg, before)
+
+
+def test_flush_refuses_when_cores_host_row_line_changes(env):
+    cfg, tmp = env
+    path = _core(cfg, "arpcache")
+    path.write_text(path.read_text().replace("item[2])", "item[0])"))
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    assert [p["item"] for p in out["problems"]] == ["arpcache"]
     _unchanged(tmp, cfg, before)
 
 

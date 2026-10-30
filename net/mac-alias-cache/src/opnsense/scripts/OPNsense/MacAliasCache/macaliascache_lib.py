@@ -52,14 +52,20 @@ ALIASTABLES_DIR = "/var/db/aliastables"
 _CORE = "/usr/local/opnsense/"
 ARPCACHE_PY = _CORE + "scripts/filter/lib/alias/arpcache.py"
 UPDATE_TABLES_PY = _CORE + "scripts/filter/update_tables.py"
+LIST_HOSTS = _CORE + "scripts/interfaces/list_hosts.py"
+LIST_HOSTS_ARGV = (LIST_HOSTS, "-n")
 # What the flush imitates in core: the item, core's file and the texts that file must still hold
 # (None: it only has to be an executable file). Any drift blocks a flush
 CORE_CONTRACT = (
-    ("arpcache", ARPCACHE_PY, (CACHE_FILE, "items", "last_seen")),
+    ("arpcache", ARPCACHE_PY, (CACHE_FILE, "last_seen", repr(list(LIST_HOSTS_ARGV)), "hosts.get('rows', [])",
+                               "current_macs[item[1]]['items'].append(item[2])")),
     ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", (UPDATE_LOCK,)),
-    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (ALIASTABLES_DIR + "/%s.md5.txt",)),
+    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py",
+     (ALIASTABLES_DIR + "/%s.md5.txt", "if self._ttl > 0 and os.path.isfile(self._filename_alias_hash):",
+      "fstat = os.stat(self._filename_alias_hash)",
+      "self._has_expired = fstat.st_mtime > now or now - fstat.st_mtime > self._ttl")),
     ("targeted_mode", UPDATE_TABLES_PY, ("--aliases",)),
-    ("list_hosts", _CORE + "scripts/interfaces/list_hosts.py", None),
+    ("list_hosts", LIST_HOSTS, None),
 )
 # Core's bugs the plugin works around: the item, core's file, the texts it holds while the bug
 # stands and the note shown once any of them is gone. A note is information and never blocks
