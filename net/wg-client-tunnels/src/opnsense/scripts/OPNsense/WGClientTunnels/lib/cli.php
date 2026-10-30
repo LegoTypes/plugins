@@ -425,7 +425,7 @@ function wgct_cli_release_holds(bool $json): int {
 
 /**
  * The list line's state note: what a tunnel that is not enforced still has. A blocked tunnel is skipped by the
- * health mirror and the monitor repair, and keeps its pins while pf holds any for it (`pinned`, wgct_pins_in_pf():
+ * health mirror and the IPv6 prime, and keeps its pins while pf holds any for it (`pinned`, wgct_pins_in_pf():
  * the render's, the footprint's while the hook enforces it, none while render-failed shows). Pure.
  *
  * @param array $t a wgct_tunnel_view() tunnel
@@ -438,7 +438,7 @@ function wgct_cli_state_note(array $t): string {
     if (!wgct_blocked($t)) {
         return ' (not enforced)';
     }
-    return ' (blocked: mirror and repair skip it' . ($t['pinned'] ? '; pins in place)' : ')');
+    return ' (blocked: mirror and prime skip it' . ($t['pinned'] ? '; pins in place)' : ')');
 }
 
 /**
@@ -540,9 +540,9 @@ function wgct_cli_own_selftest(): int {
     wgct_check($t, 'cli: list notes nothing for an enforced tunnel and "(not enforced)" for an unblocked one that is not',
         wgct_cli_state_note($row(true, true, [])) === ''
         && wgct_cli_state_note($row(false, false, [wgct_finding('unbound', 'x')])) === ' (not enforced)');
-    wgct_check($t, 'cli: list says a blocked tunnel is skipped by the mirror and the repair, and that its pins stay only when it is pinned',
-        wgct_cli_state_note($row(false, true, $blocking)) === ' (blocked: mirror and repair skip it; pins in place)'
-        && wgct_cli_state_note($row(false, false, $blocking)) === ' (blocked: mirror and repair skip it)');
+    wgct_check($t, 'cli: list says a blocked tunnel is skipped by the mirror and the prime, and that its pins stay only when it is pinned',
+        wgct_cli_state_note($row(false, true, $blocking)) === ' (blocked: mirror and prime skip it; pins in place)'
+        && wgct_cli_state_note($row(false, false, $blocking)) === ' (blocked: mirror and prime skip it)');
     wgct_check($t, 'cli: release-holds logs the gateways it released, by name',
         wgct_release_log_line(['rehearse', 'tun_b'], [], []) === 'deinstall: released rehearse, tun_b');
     wgct_check($t, 'cli: release-holds with no hold record logs "nothing held"',
@@ -566,12 +566,11 @@ function wgct_cli_own_selftest(): int {
 function wgct_cli_selftest(): int {
     require_once __DIR__ . '/render.php';
     require_once __DIR__ . '/edit.php';
-    require_once __DIR__ . '/repair.php';
     require_once __DIR__ . '/prime.php';
     $codes = [
         wgct_addr_selftest(), wgct_cli_own_selftest(), wgct_tunnels_selftest(), wgct_render_selftest(), wgct_wgconf_selftest(),
         wgct_refs_selftest(), wgct_actions_selftest(), wgct_mtu_selftest(), wgct_apply_selftest(),
-        wgct_view_selftest(), wgct_edit_selftest(), wgct_repair_selftest(), wgct_prime_selftest(), wgct_engine_selftest(),
+        wgct_view_selftest(), wgct_edit_selftest(), wgct_prime_selftest(), wgct_engine_selftest(),
     ];
     return max($codes) === 0 ? 0 : 1;
 }

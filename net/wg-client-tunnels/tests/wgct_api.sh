@@ -59,10 +59,10 @@
 #         enabled=0, so it has no device; the observables are configd's log (an apply would log its
 #         `wireguard restart UUID`) and `wg show all latest-handshakes`. It is removed at exit.
 #
-# Case 6: the tunnel list's banners. This core carries the fix for opnsense/core#10951, so the core contract gives
-#         only the no_dad note: tunnels/lists's global findings hold it as a core-fixed finding at level info and no
-#         core-contract finding. The installed page takes each banner's class from its finding's level, so a note is
-#         never shown as a warning.
+# Case 6: the tunnel list's banners. This core matches what the plugin copies and a core fix is only logged, so
+#         tunnels/lists's global findings hold no finding from the core contract. The installed page shows a banner
+#         as the finding's detail and fix, without its code, and a grid cell's core object as its name in text with
+#         a small link to its page, as core's rule grid shows an alias.
 #
 # Case 7: the service's Apply (service/reconfigure) runs core's reconfigure flow, with the soft reload. The base has
 #         IPv6 routes off and no IPv6 on rehearse, so nothing would be watched: the cases turn IPv6 routes on in the
@@ -543,13 +543,13 @@ check "api: search_unmanaged searches only the text columns: the instance's uuid
 
 # the banners: what tunnels/lists gives the page, and how the installed page renders it
 check "control user: tunnels/lists answers 200" "$(call "$CTL_CRED" tunnels/lists)" 200
-check "tunnels/lists: the core contract's findings on this core are one core-fixed note at level info" \
+check "tunnels/lists: the core contract gives no finding on this core" \
     "$($PHP -r '$j = json_decode(file_get_contents($argv[1]), true); $o = [];
-        foreach ($j["global"] ?? [] as $f) { if (str_starts_with($f["code"], "core-")) { $o[] = $f["code"] . "=" . ($f["level"] ?? "none"); } }
-        echo implode(" ", $o);' "$T/body")" "core-fixed=info"
+        foreach ($j["global"] ?? [] as $f) { if (str_starts_with($f["code"], "core-")) { $o[] = $f["code"]; } }
+        echo "[", implode(" ", $o), "]";' "$T/body")" "[]"
 PAGE=/usr/local/opnsense/mvc/app/views/OPNsense/WGClientTunnels/index.volt
-check "page: a global finding's banner takes its class from the finding's level, never a fixed warning" \
-    "$(grep -c -F "banners.push(\$('<div class=\"alert\"/>').addClass(f.level === 'info' ? 'alert-info' : 'alert-warning')" "$PAGE") $(grep -c -F "banners.push(\$('<div class=\"alert alert-warning\"/>')" "$PAGE")" "1 0"
+check "page: a global finding's banner is its detail and fix, without its code; a grid cell links by a small icon" \
+    "$(grep -c -F "banners.push(\$('<div class=\"alert alert-warning\"/>').text(plain(f.detail) + ' — ' + plain(f.fix)));" "$PAGE") $(grep -c -F "plain(f.code) + ': '" "$PAGE") $(grep -c -F "\$('<i class=\"fa fa-fw fa-arrow-right\"/>')" "$PAGE")" "1 0 1"
 
 echo "api: $PASS/$((PASS + FAIL)) passed"
 [ "$FAIL" -eq 0 ]

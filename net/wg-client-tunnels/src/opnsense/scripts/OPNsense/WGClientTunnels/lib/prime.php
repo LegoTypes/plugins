@@ -33,7 +33,7 @@
  */
 
 require_once __DIR__ . '/tunnels.php';
-require_once __DIR__ . '/repair.php';
+require_once __DIR__ . '/actions.php';
 require_once __DIR__ . '/selftest.php';
 
 /* a healthy path answers within a few probes: an IPv6 dpinger this old that still reads down is really down */
@@ -51,9 +51,63 @@ const WGCT_PRIME_DOWN = ['down', 'loss', 'delay+loss'];
 const WGCT_PRIME_UP = ['none', 'delay'];
 
 /**
+ * The tunnels the prime watches: managed, enabled, unblocked, with an enabled,
+ * monitored IPv6 gateway and an IPv6 tunnel address. Pure.
+ *
+ * @param array $derived wgct_derive()
+ * @param array $core    wgct_core_snapshot()
+ * @return list<array{gw6: string, device: string, interface: string, address: string, monitor: string}>
+ */
+function wgct_prime_watch(array $derived, array $core): array {
+    $out = [];
+    foreach ($derived['tunnels'] as $t) {
+        if (!$t['enabled'] || wgct_blocked($t) || $t['monitor6_mode'] !== 'monitored' || $t['interface'] === null
+            || $t['ipv6_address'] === null || !empty($core['gateways'][$t['gw6']]['disabled'])) {
+            continue;
+        }
+        $out[] = ['gw6' => $t['gw6'], 'device' => $t['device'], 'interface' => $t['interface'],
+                  'address' => explode('/', $t['ipv6_address'])[0], 'monitor' => $t['monitor6']];
+    }
+    return $out;
+}
+
+/**
+ * @param list<string> $lines   `ifconfig wgN inet6` output
+ * @param string       $address the tunnel's inner IPv6 address
+ * @return bool whether that address is marked duplicated (core's parser does not record the flag). Pure.
+ */
+function wgct_prime_is_duplicated(array $lines, string $address): bool {
+    foreach ($lines as $line) {
+        if (preg_match('/^\s*inet6\s+(\S+)\s.*\bduplicated\b/', $line, $m) === 1
+            && wgct_ip_equal(explode('%', $m[1])[0], $address)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * @param list<string> $lines `route -n get -inet6 <ip>` output
+ * @param string       $ip    the monitor
+ * @return string|null the device a host route to exactly $ip leaves by; null for a network or default route. Pure.
+ */
+function wgct_prime_route_dev(array $lines, string $ip): ?string {
+    $dst = null;
+    $dev = null;
+    foreach ($lines as $line) {
+        if (preg_match('/^\s*destination:\s*(\S+)/', $line, $m) === 1) {
+            $dst = $m[1];
+        } elseif (preg_match('/^\s*interface:\s*(\S+)/', $line, $m) === 1) {
+            $dev = $m[1];
+        }
+    }
+    return $dst !== null && wgct_canon_ip($dst) !== null && wgct_ip_equal($dst, $ip) ? $dev : null;
+}
+
+/**
  * Whether a watched tunnel needs a prime now. Pure.
  *
- * @param array $w       a wgct_repair_watch() row
+ * @param array $w       a wgct_prime_watch() row
  * @param array $probe   status6: the IPv6 gateway's status as core reports it, null when absent; handshake_age:
  *                       wgct_prime_handshake_age(); age6: seconds since the IPv6 dpinger socket was created, null
  *                       without one; routed: interfaces_routed_address6() (not tentative, deprecated or detached),
@@ -144,7 +198,7 @@ function wgct_prime_record(array $state, string $gw6, int $now): array {
  * prime must not wait out the last outage's back-off). Without gateway status nothing changes. Pure.
  *
  * @param array      $state  wgct_prime_state()
- * @param array      $watch  wgct_repair_watch()
+ * @param array      $watch  wgct_prime_watch()
  * @param array|null $status gateway name => status, null when unavailable
  * @param array      $resets wgct_prime_resets()
  * @return array{state: array, lines: list<string>}
@@ -207,7 +261,7 @@ function wgct_prime_outcome(bool $connected, int $errno, string $errstr): string
 }
 
 /**
- * @param array  $w            a wgct_repair_watch() row
+ * @param array  $w            a wgct_prime_watch() row
  * @param int    $handshakeAge seconds since the tunnel's latest handshake
  * @param string $outcome      wgct_prime_outcome()
  * @param int    $n            which prime of this outage this was
@@ -254,7 +308,7 @@ function wgct_prime_resets(array $probes): array {
 }
 
 /**
- * @param array  $w     a wgct_repair_watch() row
+ * @param array  $w     a wgct_prime_watch() row
  * @param string $error socket_strerror() of the failed bind
  * @return string the log line for a prime not sent because its source would not bind. Pure.
  */
@@ -268,7 +322,7 @@ function wgct_prime_bind_line(array $w, string $error): string {
 function wgct_prime_selftest(): int {
     $t = ['fail' => 0, 'total' => 0];
     $core = wgct_actions_fixture()['core'];
-    $row = wgct_repair_watch(wgct_derive($core, ['i-a', 'i-b', 'i-d']), $core)[0];
+    $row = wgct_prime_watch(wgct_derive($core, ['i-a', 'i-b', 'i-d']), $core)[0];
 
     $hs = ['Az021MwJA2cczjrXE+NtxVsQaVq2apEkmccB6iE7RzU=' . "\t1000", 'Bq0d+kX1iLqvH5wB1oC8yQ2bC9eYx4mWq7hJr2sTzQk=' . "\t1150", ''];
     wgct_check($t, 'prime: (a) handshake age is the newest peer handshake; none or never (0) is null',
@@ -373,6 +427,27 @@ function wgct_prime_selftest(): int {
     wgct_check($t, 'prime: (cc) a failed bind sends nothing and says so',
         wgct_prime_bind_line($row, "Can't assign requested address\n")
             === "tun_a-ipv6: cannot bind fd00::1:1 (Can't assign requested address); no prime sent");
+
+    $managed = ['i-a', 'i-b', 'i-d'];
+    $w = wgct_prime_watch(wgct_derive($core, $managed), $core);
+    wgct_check($t, 'prime: (dd) watch lists each enabled, unblocked tunnel with an enabled, monitored IPv6 gateway',
+        $w === [['gw6' => 'tun_a-ipv6', 'device' => 'wg1', 'interface' => 'opt11', 'address' => 'fd00::1:1', 'monitor' => '2001:db8:ffff::9']]);
+    $c1 = $core;
+    $c1['gateways']['tun_a-ipv6']['disabled'] = true;
+    $c2 = $core;
+    $c2['gateways']['tun_a-ipv6']['monitor_disable'] = true;
+    $c3 = $core;
+    $c3['interfaces']['opt11']['enable'] = false;
+    wgct_check($t, 'prime: (ee) a disabled or unmonitored IPv6 gateway, or a blocked tunnel, is not watched',
+        wgct_prime_watch(wgct_derive($c1, $managed), $c1) === [] && wgct_prime_watch(wgct_derive($c2, $managed), $c2) === []
+        && wgct_prime_watch(wgct_derive($c3, $managed), $c3) === []);
+    wgct_check($t, 'prime: (ff) ifconfig marks the tunnel address duplicated, and only that address',
+        wgct_prime_is_duplicated(["\tinet6 fd00::1:1 prefixlen 128 duplicated", "\tinet6 fd00::1:5 prefixlen 128"], 'fd00::1:1')
+        && !wgct_prime_is_duplicated(["\tinet6 fd00::1:1 prefixlen 128 tentative"], 'fd00::1:1')
+        && !wgct_prime_is_duplicated(["\tinet6 fd00::1:10 prefixlen 128 duplicated"], 'fd00::1:1'));
+    wgct_check($t, 'prime: (gg) route get names the device only for a host route to exactly that address',
+        wgct_prime_route_dev(['   route to: 2001:db8:ffff::9', 'destination: 2001:db8:ffff::9', '  interface: wg1'], '2001:db8:ffff::9') === 'wg1'
+        && wgct_prime_route_dev(['destination: default', '  interface: igc1'], '2001:db8:ffff::9') === null);
 
     return wgct_tally_report('prime', $t);
 }

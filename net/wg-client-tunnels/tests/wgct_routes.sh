@@ -398,12 +398,12 @@ say 'state|on' "$(line lo91 91 $M1)"; "$W2" start
 : > "$T/log"; : > "$T/php.log"; : > "$T/runs"
 "$T/wgct_rec.sh" stop
 "$T/wgct_rec.sh" hook; drained
-"$T/wgct_rec.sh" reconcile; "$T/wgct_rec.sh" reconcile --repair
+"$T/wgct_rec.sh" reconcile; "$T/wgct_rec.sh" reconcile --cron
 check "service: after a stop, a hook and a reconcile add nothing back, the plugin stays stopped, and that is logged once" \
     '[ -z "$(dev_of $M1)" ] && ! inet6_on lo91 fd00::91:1 && [ ! -f "$REC" ] && [ "$("$W2" status)" = "wgclienttunnels is not running" ] && [ "$(grep -c "route set skipped: the service is stopped" "$T/log")" = 1 ]' \
     || echo "      | monitor route via '$(dev_of $M1)'; record: $(cat "$REC" 2>&1); status '$("$W2" status)'; log: $(tr '\n' ';' < "$T/log")"
 check "service: while stopped, the hook still queues the reconcile, and the reconcile's guard, freshness and contract run" \
-    '[ "$(grep -c . "$T/runs")" = 1 ] && [ "$(php_runs)" = "default_guard.php freshness.php core_contract.php default_guard.php freshness.php core_contract.php monitor_repair.php " ]' \
+    '[ "$(grep -c . "$T/runs")" = 1 ] && [ "$(php_runs)" = "default_guard.php freshness.php core_contract.php default_guard.php freshness.php core_contract.php " ]' \
     || echo "      | queued runs: $(grep -c . "$T/runs"); php.log: $(tr '\n' ';' < "$T/php.log")"
 "$T/wgct_rec.sh" start
 check "service: start clears the stop: the route set runs and the plugin is running" \

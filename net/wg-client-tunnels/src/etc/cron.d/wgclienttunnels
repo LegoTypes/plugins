@@ -18,11 +18,7 @@
 # instead of sitting broken until someone notices the gateway is down. It also
 # runs default_guard.php, which removes any default route through a tunnel,
 # freshness.php, which keeps the rendered firewall rules current,
-# core_contract.php, which reports a core update that changed what the plugin
-# copies, and (this cron line only) monitor_repair.php, which restarts a
-# missing IPv6 tunnel monitor.
-# This line stays while the plugin works around either core defect:
-# opnsense/core#10951 (dpinger skips a tentative WireGuard address;
-# monitor_repair.php is its backstop) and opnsense/core#10578 (no IPv6
-# far-gateway host routes; the route set adds them).
-* * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh reconcile --repair
+# and core_contract.php, which reports a core update that changed what the
+# plugin copies. The route set's IPv6 far-gateway host routes work around
+# opnsense/core#10578.
+* * * * *	root	/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh reconcile --cron

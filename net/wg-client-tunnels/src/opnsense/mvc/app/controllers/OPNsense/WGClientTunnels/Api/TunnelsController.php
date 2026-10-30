@@ -49,9 +49,8 @@ class TunnelsController extends ApiControllerBase
     private const NAT_ALIAS_TYPES = ['host', 'network', 'networkgroup', 'dynipv6host'];
 
     /**
-     * The whole view: the managed tunnels, the global findings with their banner
-     * level (wgct_global_banners()) and the unmanaged instances. GET or POST; the
-     * tunnel list posts it for its banners.
+     * The whole view: the managed tunnels, the global findings and the unmanaged
+     * instances. GET or POST; the tunnel list posts it for its banners.
      */
     public function listsAction(): array
     {
@@ -59,7 +58,7 @@ class TunnelsController extends ApiControllerBase
         $view = wgct_tunnel_view();
         return [
             'status' => 'ok', 'tunnels' => wgct_tunnel_rows($view, $this->gatewayStatus()),
-            'global' => wgct_global_banners($view['global']), 'unmanaged' => $view['unmanaged'],
+            'global' => $view['global'], 'unmanaged' => $view['unmanaged'],
         ];
     }
 

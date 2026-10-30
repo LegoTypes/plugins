@@ -68,6 +68,14 @@
             return $('<a/>').attr('href', href).text(plain(text));
         }
 
+        /* a grid cell's name of a core object, as core's rule grid shows an alias: the name as text, then a small
+         * link to the core page that owns it */
+        function cellLink(text, href) {
+            return $('<span/>').append($('<span/>').text(plain(text)), ' ',
+                $('<a class="bootgrid-tooltip"/>').attr('href', href).attr('title', "{{ lang._('Open its page') }}")
+                    .append($('<i class="fa fa-fw fa-arrow-right"/>')));
+        }
+
         function dash() {
             return $('<span/>').text('—');
         }
@@ -75,13 +83,13 @@
         /* the grid's cells (core UIBootgrid formatters, (column, row) signature). Each returns a DOM node
          * built with .text()/.attr(), never an HTML string, so no config-derived value (a tunnel, interface
          * or gateway name, a finding text) is ever parsed as markup. Row values arrive entity-encoded like
-         * every API reply and pass through plain() exactly once: inside link(), or right before .text() or
+         * every API reply and pass through plain() exactly once: inside link() or cellLink(), or right before .text() or
          * .attr(). */
         function gwNode(name, uuid, held) {
             if (!name) {
                 return dash()[0];
             }
-            var cell = $('<div/>').append(link(name, gatewayHref(uuid)));
+            var cell = $('<div/>').append(cellLink(name, gatewayHref(uuid)));
             if (held) {
                 cell.append(' ', $('<span class="label label-info"/>').text("{{ lang._('held by mirror') }}"));
             }
@@ -100,17 +108,17 @@
         }
 
         function linkOrDash(text, href) {
-            return (text ? link(text, href) : dash())[0];
+            return (text ? cellLink(text, href) : dash())[0];
         }
 
         var gridFormatters = {
             tunnel: function (column, t) {
-                var cell = $('<div/>').append(link(t.name, links.instance));
+                var cell = $('<div/>').append(cellLink(t.name, links.instance));
                 if (t.device) {
                     var ifaceLabel = t.interface_descr || t.interface;
                     cell.append($('<br/>'), $('<small class="text-muted"/>').append(t.interface
-                        ? link(t.device + (ifaceLabel ? ' / ' + ifaceLabel : ''), links.iface + encodeURIComponent(plain(t.interface)))
-                        : link(t.device + ' — ' + "{{ lang._('not assigned') }}", links.assignments)));
+                        ? cellLink(t.device + (ifaceLabel ? ' / ' + ifaceLabel : ''), links.iface + encodeURIComponent(plain(t.interface)))
+                        : cellLink(t.device + ' — ' + "{{ lang._('not assigned') }}", links.assignments)));
                 }
                 if (t.enabled !== '1') {
                     cell.append(' ', $('<span class="label label-default"/>').text("{{ lang._('disabled') }}"));
@@ -151,7 +159,7 @@
 
         /* the unmanaged instances grid's cells, built the same way */
         var unmanagedFormatters = {
-            instance: function (column, u) { return link(u.name, links.instance)[0]; },
+            instance: function (column, u) { return cellLink(u.name, links.instance)[0]; },
             device: function (column, u) { return $('<span/>').text(plain(u.device))[0]; },
             endpoint: function (column, u) { return linkOrDash(u.endpoint, links.peers); },
             enabled: function (column, u) {
@@ -864,9 +872,8 @@
             if (!data || data.status !== 'ok') {
                 banners.push($('<div class="alert alert-danger"/>').text(data && data.errorMessage ? plain(data.errorMessage) : failedText));
             } else {
-                /* a finding that is information (level info) is never shown as a warning */
                 $.each(data.global, function (i, f) {
-                    banners.push($('<div class="alert"/>').addClass(f.level === 'info' ? 'alert-info' : 'alert-warning').text(plain(f.code) + ': ' + plain(f.detail) + ' — ' + plain(f.fix)));
+                    banners.push($('<div class="alert alert-warning"/>').text(plain(f.detail) + ' — ' + plain(f.fix)));
                 });
             }
             $('#tunnel-banners').empty().append(banners);

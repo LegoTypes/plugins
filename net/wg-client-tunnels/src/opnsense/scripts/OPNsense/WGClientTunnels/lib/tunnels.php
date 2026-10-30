@@ -93,11 +93,7 @@ const WGCT_FINDINGS = [
     'apply-pending' => [false, 'Apply in the tunnel list (tunnel.php apply UUID) runs the apply the saved change still needs: Create or Edit saved this tunnel but its apply did not complete'],
     'core-value-invalid' => [false, 'The named settings hold a value core would not accept (a restored or hand-edited configuration): correct or delete the entry under System > Gateways, Interfaces > Assignments, Firewall > Aliases or VPN > WireGuard > Instances; the plugin ignores the value until then'],
     'core-contract' => [false, WGCT_LOG_PAGE . ': a core update changed an internal the plugin copies, so the part of the plugin that copies it may not match core; install a plugin update that matches this core'],
-    'core-fixed' => [false, "nothing to do: the plugin's workaround stays harmless until a plugin update retires it"],
 ];
-
-/* the findings that are information, not a problem: the tunnel list shows them as such, never as a warning */
-const WGCT_INFO_FINDINGS = ['core-fixed'];
 
 /*
  * The priority of the WAN pin and inner-source block rules: the top of core's early automatic band
@@ -126,8 +122,8 @@ function wgct_finding($code, $detail, ?string $fix = null) {
 const WGCT_PINS_KEPT_HINT = '; its firewall pins stay in place while this stands';
 
 /**
- * A tunnel with a blocking finding is shown but skipped by the health mirror, the route set and the monitor
- * repair. Its WAN pins, inner-source block and MSS clamp stay.
+ * A tunnel with a blocking finding is shown but skipped by the health mirror, the route set and the IPv6
+ * prime. Its WAN pins, inner-source block and MSS clamp stay.
  *
  * @param array $tunnel derived record
  * @return bool

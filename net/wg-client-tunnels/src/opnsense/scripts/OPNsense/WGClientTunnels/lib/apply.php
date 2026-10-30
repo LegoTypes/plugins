@@ -74,7 +74,7 @@ const WGCT_CORE_COPIES = [
     ],
     /* the filter hook tells a filter reload from a rules listing by this frame (wgclienttunnels_in_filter_reload()) */
     'filter_frame' => ['path' => '/usr/local/etc/inc/filter.inc', 'texts' => ['function filter_configure_sync(']],
-    /* the prime and wgct.sh read dpinger's socket, and the monitor repair and wgct.sh its pid file, by path */
+    /* the prime and wgct.sh read dpinger's socket, and wgct.sh its pid file, by path */
     'dpinger_socket' => [
         'path' => '/usr/local/etc/inc/plugins.inc.d/dpinger.inc',
         'texts' => ['"/var/run/dpinger_{$name}.sock"', '"/var/run/dpinger_{$name}.pid"'],
@@ -106,12 +106,6 @@ const WGCT_CORE_COPIES = [
  * readable file that holds none of them may carry the fix: the note says the workaround is a backstop from then on.
  */
 const WGCT_CORE_FIXES = [
-    /* the unfixed line, from the fix's own diff (opnsense/core 2db64b96c9, interfaces.inc), since 26.7.6 */
-    'no_dad' => [
-        'path' => '/usr/local/etc/inc/interfaces.inc',
-        'unfixed' => ['inet6 -accept_rtadv -no_dad description %s up'],
-        'note' => 'core may now carry the fix for opnsense/core#10951: the IPv6 monitor repair is a backstop',
-    ],
     /*
      * The two 26.7.7 lines that skip inet6 far gateways: the far gateway host route skipped for inet6, and
      * system_interface_route()'s IPv4-only check, at its line start since the proposed fix (opnsense/core 060af78d31,
@@ -1117,12 +1111,15 @@ function wgct_core_file_text(string $path): ?string {
 /**
  * Log a contract result once per change: the drift when it first appears or changes, and the return to a match, at
  * warning and notice; each note once, at notice, when it appears and when it clears (a core downgrade that removes a
- * fix). The last result is kept in $file as JSON; an older release kept its drift lines there, one per line.
+ * fix). A note an older release kept for an item this release no longer checks (its workaround retired) is dropped
+ * without a line. The last result is kept in $file as JSON; an older release kept its drift lines there, one per line.
  *
  * @param array{drift: list<string>, fixed: list<string>} $result wgct_core_contract()
  * @param callable(int, string): mixed                    $log    syslog-shaped
+ * @param ?list<string>                                   $items  the items checked for a fix; null: WGCT_CORE_FIXES's
  */
-function wgct_core_contract_log(array $result, string $file, callable $log): void {
+function wgct_core_contract_log(array $result, string $file, callable $log, ?array $items = null): void {
+    $items ??= array_keys(WGCT_CORE_FIXES);
     $now = (string)json_encode($result);
     $last = (string)wgct_read_state_file($file, WGCT_STATE_MAX_BYTES);
     if ($now === $last) {
@@ -1143,7 +1140,8 @@ function wgct_core_contract_log(array $result, string $file, callable $log): voi
     if ($added !== []) {
         $log(LOG_NOTICE, '[wgct-contract] ' . implode('; ', $added));
     }
-    $cleared = array_values(array_diff($before['fixed'], $result['fixed']));
+    $cleared = array_values(array_filter(array_diff($before['fixed'], $result['fixed']),
+        fn (mixed $line): bool => is_string($line) && in_array(explode(': ', $line, 2)[0], $items, true)));
     if ($cleared !== []) {
         $log(LOG_NOTICE, '[wgct-contract] no longer noted (core holds the unfixed text again, or its file cannot be read): '
             . implode('; ', $cleared));
@@ -1402,14 +1400,9 @@ function wgct_apply_selftest(): int {
         && $relation($half) === ["relation_cache: {$half} no longer has the statics internalCacheOptionList"]
         && $relation('OPNsense\\Base\\FieldTypes\\NoSuchRelationField') === ['relation_cache: OPNsense\\Base\\FieldTypes\\NoSuchRelationField is missing']);
     $notes = fn (array $fixes): ?array => wgct_core_contract([], $fixes)['fixed'] ?? null;
-    $noDad = WGCT_CORE_FIXES['no_dad'];
-    wgct_check($t, 'contract: the no_dad note shows on a core with the fix', $notes(['no_dad' => $noDad]) === ['no_dad: ' . $noDad['note']]);
-    $unfixed = $copy($noDad['path'], 'inet6 -accept_rtadv description %s up', $noDad['unfixed'][0]);
-    wgct_check($t, 'contract: no note on a core without the fix',
-        str_contains((string)file_get_contents($unfixed), $noDad['unfixed'][0]) && $notes(['no_dad' => ['path' => $unfixed] + $noDad]) === []
-        && $notes(['no_dad' => ['path' => "{$dir}/absent"] + $noDad]) === []);
     $farGw6 = WGCT_CORE_FIXES['far_gw6'];
-    wgct_check($t, 'contract: far_gw6 has no note on 26.7.7', $notes(['far_gw6' => $farGw6]) === []);
+    wgct_check($t, 'contract: far_gw6 has no note on 26.7.7, nor when its file is absent',
+        $notes(['far_gw6' => $farGw6]) === [] && $notes(['far_gw6' => ['path' => "{$dir}/absent"] + $farGw6]) === []);
     /* the two edits of the proposed fix's diff (opnsense/core 060af78d31) */
     $fixedV6 = $copy($farGw6['path'], "\n    if (!is_ipaddrv4(\$gateway)) {",
         "\n    if (is_ipaddrv6(\$gateway)) {\n        \$family = 'inet6';\n    } elseif (!is_ipaddrv4(\$gateway)) {");
@@ -1422,37 +1415,46 @@ function wgct_apply_selftest(): int {
         $logged[] = [$prio, $msg];
     };
     $state = "$dir/logged";
-    $both = ['drift' => ['route_todo: x changed'], 'fixed' => ['no_dad: y fixed']];
-    wgct_core_contract_log($both, $state, $log);
-    wgct_core_contract_log($both, $state, $log);
+    $items = ['fix_a', 'fix_b'];
+    $both = ['drift' => ['route_todo: x changed'], 'fixed' => ['fix_a: y fixed']];
+    wgct_core_contract_log($both, $state, $log, $items);
+    wgct_core_contract_log($both, $state, $log, $items);
     wgct_check($t, 'contract: drift and notes are logged once each', $logged === [
         [LOG_WARNING, '[wgct-contract] core changed what the plugin copies: route_todo: x changed'],
-        [LOG_NOTICE, '[wgct-contract] no_dad: y fixed'],
+        [LOG_NOTICE, '[wgct-contract] fix_a: y fixed'],
     ]);
-    $noted = ['drift' => [], 'fixed' => ['no_dad: y fixed']];
-    wgct_core_contract_log($noted, $state, $log);
-    wgct_core_contract_log($noted, $state, $log);
+    $noted = ['drift' => [], 'fixed' => ['fix_a: y fixed']];
+    wgct_core_contract_log($noted, $state, $log, $items);
+    wgct_core_contract_log($noted, $state, $log, $items);
     wgct_check($t, 'contract: the return to a match is logged once, and a note already logged is not logged again',
         count($logged) === 3 && $logged[2] === [LOG_NOTICE, '[wgct-contract] core matches again']);
-    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/fresh", $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/fresh", $log, $items);
     wgct_check($t, 'contract: a match on a fresh state logs nothing', count($logged) === 3);
     /* an older release kept its drift lines, one per line */
     file_put_contents("$dir/older", '[routes.alarm] no longer takes ' . WGCT_GATEWAY_LOCK_FILE);
-    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log);
-    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log, $items);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], "$dir/older", $log, $items);
     wgct_check($t, 'contract: a drift an older release recorded returns to a match once',
         count($logged) === 4 && $logged[3] === [LOG_NOTICE, '[wgct-contract] core matches again']);
     /* the notes: a second note logs only itself; a note that clears is logged once */
     $notesState = "$dir/notes";
-    wgct_core_contract_log(['drift' => [], 'fixed' => ['no_dad: y fixed']], $notesState, $log);
-    wgct_core_contract_log(['drift' => [], 'fixed' => ['no_dad: y fixed', 'far_gw6: z fixed']], $notesState, $log);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_a: y fixed']], $notesState, $log, $items);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_a: y fixed', 'fix_b: z fixed']], $notesState, $log, $items);
     wgct_check($t, 'contract: a second note logs only itself, not the note already logged',
-        count($logged) === 6 && $logged[5] === [LOG_NOTICE, '[wgct-contract] far_gw6: z fixed']);
-    wgct_core_contract_log(['drift' => [], 'fixed' => ['far_gw6: z fixed']], $notesState, $log);
-    wgct_core_contract_log(['drift' => [], 'fixed' => ['far_gw6: z fixed']], $notesState, $log);
+        count($logged) === 6 && $logged[5] === [LOG_NOTICE, '[wgct-contract] fix_b: z fixed']);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_b: z fixed']], $notesState, $log, $items);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_b: z fixed']], $notesState, $log, $items);
     wgct_check($t, 'contract: a note that clears is logged once, at notice, naming it',
         count($logged) === 7 && $logged[6][0] === LOG_NOTICE && str_starts_with($logged[6][1], '[wgct-contract] no longer noted')
-        && str_ends_with($logged[6][1], ': no_dad: y fixed'));
+        && str_ends_with($logged[6][1], ': fix_a: y fixed'));
+    /* a note kept for an item no longer checked (a retired workaround) goes without a line; the rest is logged as ever */
+    $retired = "$dir/retired";
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_a: y fixed', 'fix_b: z fixed']], $retired, $log, $items);
+    $count = count($logged);
+    wgct_core_contract_log(['drift' => [], 'fixed' => ['fix_b: z fixed']], $retired, $log, ['fix_b']);
+    wgct_core_contract_log(['drift' => [], 'fixed' => []], $retired, $log, ['fix_b']);
+    wgct_check($t, 'contract: a retired item\'s note is dropped without a line; a checked item\'s note still clears once',
+        count($logged) === $count + 1 && str_ends_with($logged[$count][1], ': fix_b: z fixed'));
     array_map('unlink', glob("$dir/*"));
     rmdir($dir);
 

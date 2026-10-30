@@ -36,11 +36,10 @@
 #       mirror's exit; exits with the prime's status
 #   tunnel <arguments>
 #       configd's tunnel actions: tunnel.php with the arguments that follow
-#   reconcile [--repair]
+#   reconcile [--cron]
 #       the same as start, silent unless it repairs something; then
-#       default_guard.php, freshness.php and core_contract.php; with --repair
-#       (the minute cron only) monitor_repair.php, which restarts a missing
-#       IPv6 monitor
+#       default_guard.php, freshness.php and core_contract.php; --cron (the
+#       minute cron only) says each minute when a removal marker stops it
 #   hook
 #       core's monitor, newwanip and bootup hooks: the route set (as reconcile runs it), then queue a reconcile
 #       for the rest and return
@@ -406,7 +405,7 @@ EOF
 case "$1" in
     start|restart|configure_routes|reconcile|hook|request_reconcile|_reconcile_wait|_reconcile_queued|_routes)
         if [ -f "${STATE_DIR}/removing" ]; then
-            if [ "$1" = "reconcile" ] && [ "$2" = "--repair" ]; then
+            if [ "$1" = "reconcile" ] && [ "$2" = "--cron" ]; then
                 log_msg "the package is being removed (${STATE_DIR}/removing exists): the plugin does nothing; delete it if the package is still installed"
             fi
             exit 0
@@ -423,7 +422,7 @@ case "$1" in
         # A clean stop also ends the footprint a failed render would enforce, and the hook's note about it. Its mark,
         # written before the removal, keeps the hooks' and the reconcile's route set from adding back what it removes;
         # the WAN pins, the default-route guard, freshness and the health mirror are policy for the tunnels that still
-        # exist and run on, and the monitor repair and the prime find no address to use.
+        # exist and run on, and the prime finds no address to use.
         rm -f "${DB_DIR}/footprint.json" "${STATE_DIR}/fallback.json" "${STATE_DIR}/fallback.logged"
         ensure_state_dir "${STATE_DIR}" && : > "${STATE_DIR}/stopped"
         rm -f "${STATE_DIR}/stopped.logged"
@@ -445,11 +444,6 @@ case "$1" in
         "${PHP}" "${GUARD}"
         "${PHP}" "${FRESHNESS}"
         "${PHP}" "${SCRIPTS}/core_contract.php"
-        # Only the minute cron restarts a missing IPv6 monitor: in the hooks the address is still tentative or the
-        # gateway lock held.
-        if [ "$2" = "--repair" ]; then
-            "${PHP}" "${SCRIPTS}/monitor_repair.php"
-        fi
         ;;
     hook)
         # core's monitor, newwanip and bootup hooks (wgclienttunnels_configure_do()). Only the route set runs before

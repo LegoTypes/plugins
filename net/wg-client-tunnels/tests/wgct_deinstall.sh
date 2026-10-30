@@ -485,7 +485,7 @@ mark=$(lmark wireguard)
 rm -f "$RUN/reconcile.pending"
 "$S/wgct.sh" request_reconcile
 "$S/wgct.sh" configure_routes
-"$S/wgct.sh" reconcile --repair
+"$S/wgct.sh" reconcile --cron
 /usr/local/sbin/configctl filter reload > /dev/null
 settled $LINENO
 check "c: with the marker, request_reconcile queues nothing, and reconcile and a filter reload render no anchor or footprint" \

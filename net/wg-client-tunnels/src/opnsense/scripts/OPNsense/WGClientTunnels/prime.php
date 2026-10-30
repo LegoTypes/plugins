@@ -133,7 +133,7 @@ try {
     }
     exit(0);
 }
-$watch = wgct_repair_watch(wgct_derive($core, $managed), $core);
+$watch = wgct_prime_watch(wgct_derive($core, $managed), $core);
 $status = wgct_gateway_status();
 if ($status === null) {
     if ($dry) {
@@ -159,8 +159,8 @@ foreach ($watch as $w) {
             $p += [
                 'age6' => wgct_socket_age("/var/run/dpinger_{$w['gw6']}.sock"),
                 'routed' => is_string($routed) && $routed !== '' ? $routed : null,
-                'duplicated' => wgct_repair_is_duplicated($ifconfig, $w['address']),
-                'route_dev' => wgct_repair_route_dev($route, $w['monitor']),
+                'duplicated' => wgct_prime_is_duplicated($ifconfig, $w['address']),
+                'route_dev' => wgct_prime_route_dev($route, $w['monitor']),
             ];
         }
     }

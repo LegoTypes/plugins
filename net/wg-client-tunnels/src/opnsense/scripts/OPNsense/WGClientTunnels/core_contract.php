@@ -28,7 +28,7 @@
  *
  * Log once when core stops matching the internals the plugin copies, and once when core may carry a
  * fix a workaround of the plugin waits for (wgct_core_contract()). Run by wgct.sh reconcile. Changes
- * nothing; the tunnel list shows the core-contract and core-fixed findings. Silent while the plugin is
+ * nothing; the tunnel list shows the core-contract findings, and only the log the notes. Silent while the plugin is
  * disabled, as the findings are; one run at a time (the minute cron and a queued reconcile can
  * overlap), so a drift or a note is logged once.
  */

@@ -73,6 +73,15 @@ Features:
 Plugin Changelog
 ================
 
+3.10
+
+* The IPv6 monitor repair is retired: core carries the fix for
+  opnsense/core#10951 since 26.7.6, so dpinger no longer skips a tentative
+  WireGuard address, and the minute cron no longer starts it.
+* A note that core may carry a fix is logged only; the tunnel list no
+  longer shows it, and a banner no longer starts with its finding's code.
+* The tunnel list's links to core pages take the cell's colour.
+
 3.9
 
 * The route set compares exact addresses and devices: fd00::1:1 is no

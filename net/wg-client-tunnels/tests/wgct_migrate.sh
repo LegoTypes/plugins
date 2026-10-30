@@ -53,8 +53,7 @@
 # kern.boot_id and taken during the run: rehearse's gateway on WAN_B, and (A to C) rehearse-ipv6 following rehearse;
 # in D one line names rehearse-ipv6 as left forced down as manual; force_down is as it was; one "not held by this
 # plugin" line names WAN_B's gateway in core's WireGuard log; the installed tunnel.php lists the same tunnels,
-# findings and unmanaged instances as 3.7_1 did (beside the pins fields 3.8 adds and the global core-fixed notes 3.9
-# adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped); boot.json, removed before the run,
+# findings and unmanaged instances as 3.7_1 did (beside the pins fields 3.8 adds), and its `held` keeps rehearse's gateways with a row (WAN_B's was dropped); boot.json, removed before the run,
 # names the live boot (a reboot before the mirror's first tick still finds the carried rows its own). A second run
 # changes nothing (A). boot.json is backed up first and put back at exit.
 #
@@ -62,7 +61,7 @@
 # from then on (started again at exit) and the runs it already started waited out, so none of them logs a refusal before
 # the checks look: the 3.8 list shows the tunnels and findings 3.7_1 lists, and the listing writes nothing (config.xml
 # as it was, no marker, no log line); a mirror tick, apply, an action (adopt, and a dry remove), release-holds, the
-# route set, the monitor repair and the settings API's set each refuse, change nothing, and log the refusal once (each
+# route set and the settings API's set each refuse, change nothing, and log the refusal once (each
 # run twice where it repeats; --dry only says so). After the migration the first action logs that it runs again. The set
 # runs as a temporary API user with the plugin's page privilege (tests/wgct_user.php), deleted again.
 #
@@ -264,9 +263,8 @@ switch ($argv[1]) {
 }
 PHPEOF
 
-# lists.php BEFORE AFTER: "same" when both lists match once `held`, the per-tunnel fields 3.8 adds (`pins`,
-# `pinned`) and the global findings with code core-fixed 3.9 adds (they follow core's version, not the migration;
-# every other global finding is compared) are set aside, then each `held`
+# lists.php BEFORE AFTER: "same" when both lists match once `held` and the per-tunnel fields 3.8 adds (`pins`,
+# `pinned`) are set aside, then each `held`
 cat > "$T/lists.php" <<'PHPEOF'
 <?php
 $a = json_decode((string)file_get_contents($argv[1]), true);
@@ -282,8 +280,6 @@ $strip = function (array $list): array {
     foreach (array_keys($list['tunnels'] ?? []) as $i) {
         unset($list['tunnels'][$i]['pins'], $list['tunnels'][$i]['pinned']);
     }
-    $list['global'] = array_values(array_filter($list['global'] ?? [],
-        fn (array $f): bool => ($f['code'] ?? '') !== 'core-fixed'));
     return $list;
 };
 $a = $strip($a);
@@ -406,17 +402,14 @@ pending() {
         "$(cmp -s "$RECORD" "$T/record.planted" && echo kept || echo changed) $(ifconfig lo93 | grep -c 'fd00::93:1 ') $(netstat -rn -f inet6 | grep -c '^fd00::93:2 .*lo93') $(lcount wireguard "$mark" -e 'wgct-routes. removed ')" \
         "kept 1 1 0"
     remove_lo93
-    mark=$(lmark wireguard)
     "$S/wgct.sh" configure_routes; "$S/wgct.sh" configure_routes
-    $PHP "$S/monitor_repair.php"; $PHP "$S/monitor_repair.php"
     rm1=$(lcount wireguard "$open" -e "wgct-routes. route set refused: $REFUSED")
-    rm2=$(lcount wireguard "$mark" -e "wgct-monitor. monitor-repair refused: $REFUSED")
-    rm3=$([ -f "$RUN/routes.awaiting-migration" ] && echo marker || echo none)
-    check "pending: the route set and the monitor repair refuse, each logged once" "$rm1 $rm2 $rm3" "1 1 marker"
+    rm2=$([ -f "$RUN/routes.awaiting-migration" ] && echo marker || echo none)
+    check "pending: the route set refuses, logged once" "$rm1 $rm2" "1 marker"
     # the window holds exactly one route-set line, the refusal: no other route-set line passes unseen
     routes_all=$(lcount wireguard "$open" -e '\[wgct-routes\]')
     check "pending: the window's only route-set line is that refusal" "$routes_all $rm1" "1 1"
-    if [ "$rm1 $rm2 $rm3 $routes_all" != "1 1 marker 1" ]; then
+    if [ "$rm1 $rm2 $routes_all" != "1 marker 1" ]; then
         echo "      | $RUN: $(ls "$RUN" | tr '\n' ' ')"
         lwindow wireguard "$open" | sed 's/^/      | /'
     fi
@@ -432,7 +425,7 @@ pending() {
     # each run that refused keeps its own marker, named after it, and none is named like wgct.sh's queued-reconcile
     # mark
     markers=""
-    for r in tick apply action release-holds settings monitor-repair routes; do
+    for r in tick apply action release-holds settings routes; do
         [ -f "$RUN/$r.awaiting-migration" ] || markers="$markers no-$r"
     done
     check "pending: every refusing run left its own marker <run>.awaiting-migration, and no *.pending but reconcile.pending" \

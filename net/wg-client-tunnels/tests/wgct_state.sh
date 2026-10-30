@@ -271,7 +271,7 @@ entry_runs() {
     elines=$(lcount wireguard "$emark" -- "\[wgct-[a-z]*\] $script cannot load the plugin library")
 }
 before=$(phplog_size)
-for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
+for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php freshness.php; do
     entry_runs "${script%.php}" "$script"
     check "$script without lib/: two runs exit 0" "$erc1$erc2" 00
     check "$script without lib/: nothing on stdout or stderr" "$(cat "$E/${script%.php}".*.out "$E/${script%.php}".*.err)" ""
@@ -303,7 +303,7 @@ rm -rf "$E/scripts/lib"
 rm -f "$E/run"/*
 : > "$E/run/removing"
 before=$(phplog_size)
-for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php monitor_repair.php freshness.php; do
+for script in health_mirror.php prime.php gateway_config.php default_guard.php core_contract.php freshness.php; do
     entry_runs "rm-${script%.php}" "$script"
     check "$script with the removal marker: two runs exit 0, nothing on stdout or stderr, nothing logged" \
         "$erc1$erc2$(cat "$E/rm-${script%.php}".*.out "$E/rm-${script%.php}".*.err)$elines$(lcount wireguard "$emark" -- "$script")" 0000

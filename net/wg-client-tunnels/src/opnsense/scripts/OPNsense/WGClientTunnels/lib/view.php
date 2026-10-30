@@ -28,7 +28,7 @@
  * The Tunnels view, shared by `tunnel.php list|status` and the API:
  * managed tunnels derived from core with their clamps and findings (the
  * render-failed and render-fallback findings included, and while the plugin is enabled the
- * core contract's core-contract and core-fixed findings), and the WireGuard instances the
+ * core contract's core-contract findings), and the WireGuard instances the
  * plugin does not manage, for Adopt. `pinned` on each tunnel says whether pf holds a plugin
  * pin for it, by the render state (wgct_pins_in_pf()): what the render emits, the footprint's
  * pins while the hook enforces them, none while render-failed shows; a blocking finding's hint
@@ -105,29 +105,15 @@ function wgct_tunnel_view(): array {
 }
 
 /**
- * The tunnel list's global findings for a contract result: core-contract for each drift line, core-fixed for each
- * note, neither blocking. Pure.
+ * The tunnel list's global findings for a contract result: core-contract for each drift line, not blocking. A note
+ * that core may carry a fix is the maintainer's, not the operator's: core_contract.php logs it and the list leaves
+ * it out. Pure.
  *
  * @param array{drift: list<string>, fixed: list<string>} $result wgct_core_contract()
  * @return list<array{code: string, blocking: bool, detail: string, fix: string}>
  */
 function wgct_core_contract_findings(array $result): array {
-    return array_merge(
-        array_map(fn (string $line): array => wgct_finding('core-contract', $line), $result['drift']),
-        array_map(fn (string $line): array => wgct_finding('core-fixed', $line), $result['fixed']),
-    );
-}
-
-/**
- * The tunnel list's banners for the global findings: each finding with its banner level, info for
- * WGCT_INFO_FINDINGS and warning for every other. Pure.
- *
- * @param list<array{code: string, blocking: bool, detail: string, fix: string}> $global wgct_tunnel_view()['global']
- * @return list<array{code: string, blocking: bool, detail: string, fix: string, level: string}>
- */
-function wgct_global_banners(array $global): array {
-    return array_map(fn (array $f): array => $f + ['level' => in_array($f['code'], WGCT_INFO_FINDINGS, true) ? 'info' : 'warning'],
-        $global);
+    return array_map(fn (string $line): array => wgct_finding('core-contract', $line), $result['drift']);
 }
 
 /**
@@ -392,22 +378,12 @@ function wgct_view_selftest(): int {
         array_filter($hints, fn (string $h): bool => stripos($h, 'system log') !== false || str_contains($h, 'Log Files > General')) === []);
     wgct_check($t, 'view: the render-failed and core-contract hints name the plugin log page',
         str_contains(WGCT_FINDINGS['render-failed'][1], WGCT_LOG_PAGE) && str_contains(WGCT_FINDINGS['core-contract'][1], WGCT_LOG_PAGE));
-    $fixedOnly = wgct_global_banners(wgct_core_contract_findings(['drift' => [], 'fixed' => ['no_dad: y fixed', 'far_gw6: z fixed']]));
-    $mixed = wgct_global_banners(array_merge([wgct_finding('render-failed', 'r')],
-        wgct_core_contract_findings(['drift' => ['route_todo: x changed'], 'fixed' => ['no_dad: y fixed']])));
-    wgct_check($t, 'view: a fixed-only finding set gives information banners and no warning; drift and other findings stay warnings',
-        array_column($fixedOnly, 'level') === ['info', 'info']
-        && array_map(fn (array $f): string => $f['code'] . '=' . ($f['level'] ?? ''), $mixed)
-            === ['render-failed=warning', 'core-contract=warning', 'core-fixed=info']
-        && array_map(fn (array $f): array => array_diff_key($f, ['level' => true]), $mixed)
-            === array_merge([wgct_finding('render-failed', 'r')], wgct_core_contract_findings(['drift' => ['route_todo: x changed'], 'fixed' => ['no_dad: y fixed']])));
-    $contract = wgct_core_contract_findings(['drift' => ['route_todo: x changed', 'filter_frame: z changed'], 'fixed' => ['no_dad: y fixed']]);
-    wgct_check($t, 'view: a core fix is a core-fixed finding, never blocking',
+    $contract = wgct_core_contract_findings(['drift' => ['route_todo: x changed', 'filter_frame: z changed'], 'fixed' => ['far_gw6: y fixed']]);
+    wgct_check($t, 'view: each drift line is a core-contract finding, never blocking, and a core fix is no finding',
         array_map(fn (array $f): array => [$f['code'], $f['blocking'], $f['detail']], $contract) === [
             ['core-contract', false, 'route_todo: x changed'], ['core-contract', false, 'filter_frame: z changed'],
-            ['core-fixed', false, 'no_dad: y fixed'],
         ]
-        && ($contract[2]['fix'] ?? null) === "nothing to do: the plugin's workaround stays harmless until a plugin update retires it"
+        && wgct_core_contract_findings(['drift' => [], 'fixed' => ['far_gw6: y fixed']]) === []
         && str_contains($contract[0]['fix'], WGCT_LOG_PAGE) && str_contains($contract[0]['fix'], 'install a plugin update that matches this core'));
     return wgct_tally_report('view', $t);
 }
