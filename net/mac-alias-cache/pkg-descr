@@ -10,6 +10,18 @@ or "configctl macaliascache flush").
 Plugin Changelog
 ================
 
+1.2
+
+* The core-contract check also covers the host list's columns and flag
+  that core's cache reads, and the expiry a flush relies on; a flush
+  refuses when core changed any of them
+* Core's fix for core #10950 shows as an information note instead of a
+  warning, and the plugin now also notes core's fix for core #10114;
+  neither blocks a flush
+* The host list's source shows as a line on the page; host discovery
+  being off is no longer a warning
+* The page compares cached and current addresses in canonical form
+
 1.1_2
 
 * The source moved to github.com/LegoTypes/plugins; no change to
