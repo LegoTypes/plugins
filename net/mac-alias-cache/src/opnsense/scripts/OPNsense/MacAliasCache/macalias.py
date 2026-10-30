@@ -92,8 +92,7 @@ def _problem(item, text, blocks_flush):
 def ensure_state_dir(cfg):
     """ create the state directory 0700 when missing and narrow a wider mode back to 0700;
     a blocking state_dir problem when it is not a directory owned by root, else None.
-    The checks and the mode fix go through one descriptor opened without following a link.
-    /var/run is root's alone, so this catches an operator's mistake more than an attacker
+    The checks and the mode fix go through one descriptor opened without following a link
     """
     path = cfg["state_dir"]
     try:
@@ -127,9 +126,8 @@ def _single_regular(st):
 
 
 def _last_file_problem(cfg):
-    """ the flush writes its record over last.json with os.replace, which cannot replace a
-    directory, so one there blocks the flush before it writes anything. Anything else that is
-    not a regular file of ours is ignored on read, and the flush's own write replaces it.
+    """ a directory at last.json blocks, as os.replace cannot replace it; anything else that is
+    not a regular file of ours is ignored on read and replaced by the flush's own write
     """
     path = state_paths(cfg)["last_file"]
     try:
@@ -183,9 +181,9 @@ def _lock_file_problem(cfg):
 
 
 def _cache_file_problem(cfg):
-    """ core loads its MAC alias cache without checking it, so say when it is not a regular
-    file owned by root with one link. A flush replaces it atomically and is the remedy, so
-    only a directory, which os.replace cannot replace, blocks one. Absent is normal after a boot.
+    """ core loads its MAC alias cache unchecked, so a file that is not a regular file owned by
+    root with one link is reported; only a directory, which os.replace cannot replace, blocks.
+    Absent is normal after a boot
     """
     path = cfg["cache_file"]
     try:
@@ -203,10 +201,9 @@ def _cache_file_problem(cfg):
 
 
 def _alias_name_problem(tables):
-    """ every name the flush refreshes becomes a path under the alias tables directory and a
-    pfctl -t argument, so each must pass core's own alias name pattern. Names come only from
-    core's filter_tables.conf, so this catches a restored config that bypassed the model.
-    Core's internal tables (__lan_network ...) fail the pattern and are never refreshed
+    """ every name the flush refreshes must pass core's alias name pattern, as it becomes a path
+    under the alias tables directory and a pfctl -t argument. Core's internal tables
+    (__lan_network ...) fail the pattern and are never refreshed
     """
     bad = [name for name in lib.refresh_set(tables) if not lib.valid_alias_name(name)]
     if not bad:
@@ -258,10 +255,8 @@ def _fdopen(fd, *args, **kwargs):
 
 def _open_regular(path, errors="strict"):
     """ path opened to read as UTF-8 text (errors as open() takes them) when it is a regular
-    file with one link, owned by the running user, else None. O_NOFOLLOW refuses a symlink and
-    O_NONBLOCK keeps a FIFO from waiting for a writer; the link count refuses a hard link
-    planted in /tmp to another root-owned file. Any OSError means absent: FreeBSD answers a
-    symlink with EMLINK, not ELOOP.
+    file with one link, owned by the running user, else None. Any OSError means absent:
+    FreeBSD answers O_NOFOLLOW on a symlink with EMLINK, not ELOOP
     """
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -353,11 +348,9 @@ def _write_json_atomic(path, obj, mode=lib.CORE_FILE_MODE):
 
 
 def _sweep_stale_temps(path, now, max_age=60):
-    """ delete our own atomic-write temp files beside path (name .<basename>.<random>.tmp,
-    see _write_json_atomic) older than max_age seconds; catches orphans left by a kill
-    between mkstemp and os.replace. Core's cache is in /tmp, where any user can make such a
-    name, so only a regular file of ours with one link is removed, and an entry that cannot be
-    looked at or removed is skipped rather than stopping the flush
+    """ delete our own atomic-write temp files beside path (.<basename>.<random>.tmp) older than
+    max_age seconds; only a regular file of ours with one link is removed, and an entry that
+    cannot be looked at or removed is skipped
     """
     directory = os.path.dirname(path) or "."
     prefix = ".%s." % os.path.basename(path)
@@ -429,7 +422,7 @@ def _open_lock(path, flags, mode):
 def acquire_lock(cfg, sleep):
     """ core's update-tables lock (flock(2), same as util-linux flock(1)): the handle, None on
     timeout, or a lock_unusable reply when the path is not a regular file with one link that
-    the plugin can open safely. Core's own flock(1) wrappers would follow a symlink there; the plugin does not.
+    the plugin can open safely
     """
     path = cfg["lock_file"]
     fd = _open_lock(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, lib.CORE_FILE_MODE)
@@ -457,13 +450,9 @@ def acquire_lock(cfg, sleep):
 
 
 def _flush_emptied_tables(cfg, names):
-    """ core's update_tables.py --aliases (targeted) mode forces cnt_alias_pf_content
-    to the new content count, so it never runs PF.flush for an alias whose rebuilt
-    content is now empty; pf keeps the stale addresses until the next non-targeted
-    (cron) run. Flush pf ourselves for any such alias. A missing .txt means "not
-    managed / unknown": do nothing. Undecodable content is not provably empty:
-    treat it as non-empty, do nothing. Errors are per-table and never abort the
-    flush.
+    """ flush pf for each alias in names whose rebuilt content is empty, and return those names:
+    targeted mode never flushes an emptied table (core #10950). A missing or undecodable .txt
+    is not provably empty and is left alone; an error skips that table only
     """
     flushed = []
     for name in names:
@@ -575,8 +564,7 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
 
 
 def _flush(cfg, clock, sleep):
-    # the plugin's own files live in the state directory, so it is made safe before any of
-    # them is opened; every refusal below comes before any write
+    # every refusal comes before any write
     problem = ensure_state_dir(cfg)
     if problem:
         return refusal([problem])
@@ -619,12 +607,8 @@ def _flush(cfg, clock, sleep):
         if not names:
             return {"aliases": [], "note": "no mac aliases"}
 
-        # Read the host list before any side effect. Core's ArpCache.current_cache()
-        # turns a list_hosts failure into {} without raising; with the cache gone
-        # that would empty every mac alias and every alias nesting one. Refuse
-        # instead, change nothing and leave the rate limit unarmed. Only rows with a
-        # MAC and an address where core's cache takes them are written: core turns the
-        # cache into the alias's .txt, and pfctl -T replace -f resolves a hostname there.
+        # the host list is read before any side effect: a failure refuses, changes nothing and
+        # leaves the rate limit unarmed; only rows with a MAC and an address are written
         source, rows = read_hosts(cfg)
         if source is None or not rows:
             return {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
@@ -638,9 +622,7 @@ def _flush(cfg, clock, sleep):
 
         before = {name: pf_set(cfg, name) for name in names}
 
-        # Replace the cache with current data only (core's exact format), so stale
-        # MACs are dropped; if list_hosts fails again inside update_tables, core
-        # then merges into this rather than into {}.
+        # the cache is replaced with current data only, in core's format, so stale MACs are dropped
         _write_json_atomic(cfg["cache_file"], seeded)
 
         for name in lib.mac_aliases(tables):
@@ -664,16 +646,11 @@ def _flush(cfg, clock, sleep):
         except OSError as e:
             update = {"rc": None, "output": str(e)}
 
-        # Core's update_tables.py --aliases mode never flushes pf for an alias whose
-        # rebuild left it empty (see _flush_emptied_tables). Do it ourselves, still
-        # under the lock, unless the child never ran to completion.
+        # emptied tables are flushed under the lock, unless the child never ran to completion
         emptied = _flush_emptied_tables(cfg, names) if update["rc"] is not None else []
 
-        # Arm the rate limit before releasing the lock. Otherwise a flush queued
-        # behind us acquires the lock the instant we release it below (while we're
-        # still doing the post-release "after" pfctl reads), reads the last.json
-        # from before this flush started, and runs a second full rebuild instead
-        # of standing down.
+        # the rate limit is armed before the unlock, or a flush queued behind this one would
+        # read the previous last.json and rebuild again
         _write_json_atomic(last_file, {"at": now, "summary": []}, mode=0o600)
     finally:
         try:

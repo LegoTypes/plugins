@@ -34,9 +34,7 @@ import xml.etree.ElementTree as ET
 
 _SPLIT = re.compile(r"[,\n]")
 _MAC = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
-# core's AliasNameField pattern (26.7.7), verbatim: at most 31 characters, as pf allows. Core's
-# reserved words are left out: they are pf syntax refused at Save, and this guards a file path
-# and a pfctl -t argument
+# core's AliasNameField pattern (26.7.7), verbatim, without its reserved words
 _ALIAS_NAME = re.compile(r"([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9])[_a-zA-Z0-9]{0,29}))")
 _SAMPLES = 5
 _SAMPLE_LENGTH = 60
@@ -54,8 +52,8 @@ ARPCACHE_PY = _CORE + "scripts/filter/lib/alias/arpcache.py"
 UPDATE_TABLES_PY = _CORE + "scripts/filter/update_tables.py"
 LIST_HOSTS = _CORE + "scripts/interfaces/list_hosts.py"
 LIST_HOSTS_ARGV = (LIST_HOSTS, "-n")
-# What the flush imitates in core: the item, core's file and the texts that file must still hold
-# (None: it only has to be an executable file). Any drift blocks a flush
+# what the flush imitates in core: item, file and the texts it must still hold (None: only an
+# executable file); any drift blocks a flush
 CORE_CONTRACT = (
     ("arpcache", ARPCACHE_PY, (CACHE_FILE, "last_seen", repr(list(LIST_HOSTS_ARGV)), "hosts.get('rows', [])",
                                "current_macs[item[1]]['items'].append(item[2])")),
@@ -112,11 +110,8 @@ def expand_entries(entries, macs):
 
 
 def nesting_closure(tables, targets):
-    """
-    Every alias that nests a target, directly or through other aliases. Matching is on
-    whole address tokens (a nested alias is listed by exact name). Computed here rather
-    than via core's get_affected_aliases, which reuses dep_lists across iterations and
-    can skip a parent.
+    """ every alias that nests a target, directly or through other aliases, matched on whole
+    address tokens
     """
     targets = set(targets)
     found = set()
@@ -184,9 +179,7 @@ def validate_rows(rows):
 
 def seed_cache(good, now):
     """ {mac: {"items": [ip, ...], "last_seen": now}} in core's ArpCache format, from the rows
-    validate_rows kept; the MAC key is kept exactly as list_hosts returns it (core's
-    current_cache does the same). This is what core's cache is written from, so a row that
-    fails the check is left out here too
+    validate_rows kept; the MAC key is kept as list_hosts returns it
     """
     cache = {}
     for row in good:
@@ -201,9 +194,8 @@ def valid_alias_name(name):
 
 
 def core_contract(texts):
-    """ problems with the core files the flush imitates. texts maps each item to its file's
-    text, None when the file is missing or unreadable ("exists" or None for list_hosts). Every
-    problem blocks
+    """ blocking problems with the core files the flush imitates; texts maps each item to its
+    file's text, None when missing or unreadable ("exists" or None for list_hosts)
     """
     found = []
     for item, path, expected in CORE_CONTRACT:
@@ -280,9 +272,7 @@ def summarise(before, after):
 
 
 def _is_number(value):
-    """ an int or a float that is a finite float; a bool is an int in Python and is refused,
-    as is an int too large to convert, which would raise in later arithmetic
-    """
+    """ an int or a finite float; a bool and an int too large to convert are refused """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     try:

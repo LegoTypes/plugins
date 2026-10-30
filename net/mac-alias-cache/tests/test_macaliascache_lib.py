@@ -166,7 +166,7 @@ def test_last_schema_and_cache_schema():
 @pytest.mark.parametrize("at", [float("nan"), float("inf"), float("-inf"), True, False, 10 ** 400],
                          ids=["nan", "infinity", "minus-infinity", "true", "false", "int-beyond-float"])
 def test_last_schema_refuses_non_finite_and_bool_at(at):
-    # (s7) Python's json reads NaN and Infinity, and a bool is an int in Python; none of
+    # Python's json reads NaN and Infinity, and a bool is an int in Python; none of
     # them is a time, and an int beyond a float's range would raise in the rate limit's
     # arithmetic
     assert lib.last_schema({"at": at, "summary": []}) is None
@@ -180,7 +180,7 @@ def test_validate_rows_keeps_mac_case_and_both_families():
 
 
 def test_validate_rows_keeps_unzoned_link_local():
-    # (r6) host discovery and NDP list unzoned fe80:: rows (core strips the zone itself); they must stay
+    # host discovery and NDP list unzoned fe80:: rows (core strips the zone itself); they must stay
     rows = [["vlan0.10", "aa:bb:cc:00:00:05", "fe80::5"]]
     assert lib.validate_rows(rows) == (rows, [])
 
@@ -194,7 +194,7 @@ def test_validate_rows_keeps_unzoned_link_local():
     ["vlan0.10", "aa:bb:cc:00:01", "192.0.2.5"],
 ], ids=["hostname", "zone", "incomplete", "none-mac", "two-columns", "five-octets"])
 def test_validate_rows_rejects_hostname_zone_incomplete_and_none(row):
-    # (r7) the zone case: ipaddress accepts a scoped address, the row check must not
+    # the zone case: ipaddress accepts a scoped address, the row check must not
     kept = ["vlan0.10", "aa:bb:cc:00:00:02", "192.0.2.6"]
     assert lib.validate_rows([kept, row]) == ([kept], [repr(row)])
 
@@ -229,7 +229,7 @@ def test_validate_rows_keeps_five_samples_of_at_most_60_characters():
 @pytest.mark.parametrize("value", [1, True, None, b"192.0.2.5", "fe80::1%vlan0.10", "192.0.2.5%1", "laptop.lan",
                                    " 192.0.2.5", "192.0.2.5\n", ""])
 def test_valid_ip_refuses_non_strings_zones_and_names(value):
-    # (r9) ipaddress.ip_address itself accepts an int, a bool and a scoped address
+    # ipaddress.ip_address itself accepts an int, a bool and a scoped address
     assert not lib.valid_ip(value)
 
 
@@ -327,7 +327,7 @@ def test_core_contract_is_the_table_of_cores_files():
 
 
 def test_core_contract_matches_fixture_copies():
-    # (c7) the fixtures hold 26.7.7's own lines, so a stock box raises no problem
+    # the fixtures hold 26.7.7's own lines, so a stock box raises no problem
     texts = fixture_texts()
     assert None not in texts.values()
     assert lib.core_contract(texts) == []

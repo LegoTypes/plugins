@@ -775,7 +775,7 @@ def test_read_json_rejects_bad_schema(env, content):
 @pytest.mark.parametrize("at, now", [("NaN", 5000.0), ("Infinity", 5000.0), ("-Infinity", 5000.0), ("true", 5.0)],
                          ids=["nan", "infinity", "minus-infinity", "true"])
 def test_last_json_with_non_finite_or_bool_at_neither_arms_nor_blocks_the_rate_limit(env, at, now):
-    # (s7) Python's json reads NaN and Infinity as floats, and true is an int (1) in Python's
+    # Python's json reads NaN and Infinity as floats, and true is an int (1) in Python's
     # arithmetic: 5.0 - true would be 4 s ago and refuse as too_soon. None of them is a time.
     cfg, tmp = env
     os.mkdir(cfg["state_dir"], 0o700)
@@ -953,7 +953,7 @@ def test_write_json_atomic_sets_mode_0600_under_state_dir(env):
 
 
 def test_status_lists_state_dir_problem_when_state_dir_is_a_regular_file(env):
-    # (s8) an unusable state directory is reported as a problem in one JSON object, never an internal error
+    # an unusable state directory is reported as a problem in one JSON object, never an internal error
     cfg, tmp = env
     pathlib.Path(cfg["state_dir"]).write_text("x")
     out = macalias.cmd_status(cfg, now=0.0)
@@ -966,7 +966,7 @@ def test_status_lists_state_dir_problem_when_state_dir_is_a_regular_file(env):
 
 
 def test_status_creates_state_dir_0700(env):
-    # (s9) status puts the state directory in place right after an upgrade, and writes nothing else there
+    # status puts the state directory in place right after an upgrade, and writes nothing else there
     cfg, tmp = env
     assert not os.path.exists(cfg["state_dir"])
     out = macalias.cmd_status(cfg, now=0.0)
@@ -978,7 +978,7 @@ def test_status_creates_state_dir_0700(env):
 
 @pytest.mark.parametrize("kind", ["absent", "regular", "fifo", "symlink"])
 def test_status_lock_file_problem(env, kind):
-    # (s10) core's flock(1) creates the lock on use, so absent is fine; only a regular file may be opened
+    # core's flock(1) creates the lock on use, so absent is fine; only a regular file may be opened
     cfg, tmp = env
     path = cfg["lock_file"]
     if kind == "regular":
@@ -1005,7 +1005,7 @@ def test_status_lock_file_problem(env, kind):
 
 
 def test_emlink_from_open_reads_absent_and_refuses_cores_lock(env, monkeypatch):
-    # (s11) FreeBSD's open(2) answers O_NOFOLLOW on a symlink with EMLINK, not ELOOP, so
+    # FreeBSD's open(2) answers O_NOFOLLOW on a symlink with EMLINK, not ELOOP, so
     # any OSError from the open must read as absent, or refuse core's lock, never escape
     cfg, tmp = env
     _write_last(cfg, {"at": 4995.0, "summary": []})
@@ -1031,7 +1031,7 @@ def test_emlink_from_open_reads_absent_and_refuses_cores_lock(env, monkeypatch):
 
 
 def test_status_without_cache_file_has_no_problem_and_flush_creates_it(env):
-    # (s12) core's cache is absent after a boot until something writes it
+    # core's cache is absent after a boot until something writes it
     cfg, tmp = env
     (tmp / "arp.cache").unlink()
     out = macalias.cmd_status(cfg, now=0.0)
@@ -1045,7 +1045,7 @@ def test_status_without_cache_file_has_no_problem_and_flush_creates_it(env):
 
 @pytest.mark.parametrize("target", ["last", "cache"])
 def test_undecodable_bytes_read_as_absent(env, target):
-    # (s13) undecodable bytes read as absent, never an exception
+    # undecodable bytes read as absent, never an exception
     cfg, tmp = env
     if target == "last":
         os.mkdir(cfg["state_dir"], 0o700)
@@ -1062,7 +1062,7 @@ def test_undecodable_bytes_read_as_absent(env, target):
 
 
 def test_reads_decode_utf8_whatever_the_locale(env):
-    # (s13) the files are UTF-8 JSON; run status under a Latin-1 locale, where a default open() would misread them
+    # the files are UTF-8 JSON; run status under a Latin-1 locale, where a default open() would misread them
     cfg, tmp = env
     row = {"name": "Café", "before": 1, "after": 1, "added": [], "removed": []}
     os.mkdir(cfg["state_dir"], 0o700)
@@ -1395,7 +1395,7 @@ def test_clean_flush_reports_no_rejected_rows(env):
 
 
 def test_flush_with_only_link_local_rows_seeds_them(env):
-    # (r8) host discovery may be IPv6-heavy on a segment; unzoned link-local rows are real devices
+    # host discovery may be IPv6-heavy on a segment; unzoned link-local rows are real devices
     cfg, tmp = env
     _list_hosts(cfg, tmp, [["vlan0.10", "aa:bb:cc:00:00:01", "fe80::5"], ["vlan0.10", "aa:bb:cc:00:00:01", "fe80::6"]])
     out = _flush(cfg)
@@ -1432,7 +1432,7 @@ def test_core_files_are_the_files_the_flush_imitates_and_runs():
 
 
 def test_stock_core_files_give_no_problem(env):
-    # (c7) the fixtures hold 26.7.7's own lines, so a stock box raises no problem
+    # the fixtures hold 26.7.7's own lines, so a stock box raises no problem
     cfg, tmp = env
     texts = macalias.read_core_texts(cfg)
     assert set(texts) == set(CORE_FILES)
@@ -1594,7 +1594,7 @@ INTERNAL_TABLE = "<table><name>__lan_network</name><type>network</type><address>
 
 
 def test_alias_name_checks_the_refresh_set_only(env):
-    # (n3) core's own internal tables (__lan_network and the like) fail the pattern, and are no
+    # core's own internal tables (__lan_network and the like) fail the pattern, and are no
     # concern of the flush until one nests a mac alias and so joins the refresh set
     cfg, tmp = env
     conf = tmp / "filter_tables.conf"
