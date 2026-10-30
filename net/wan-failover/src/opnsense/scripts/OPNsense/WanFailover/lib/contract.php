@@ -49,6 +49,10 @@ const WF_DRIFT_RULES_FORMAT = 'pfctl -vvsr no longer prints rule labels or route
 /* a pf listing pfctl did not give whole on two tries (wf_pf_listing()): it tells no drift */
 const WF_UNREAD_RULES = 'pfctl -vvsr could not be read';
 const WF_UNREAD_STATES = 'pfctl -vvss could not be read';
+/* the evaluations in a row that cannot read the rule listing before it stands as a failback drift (wf_contract_kept()) */
+const WF_UNREAD_MAX_EVALUATIONS = 3;
+/* the said key that counts them, as decimal text */
+const WF_SAID_UNREAD_COUNT = 'rules_unread_count';
 
 function wf_ini_section(string $text, string $name): ?string
 {
@@ -289,26 +293,40 @@ function wf_contract_failback(?string $rawRules, array $groups): array
 }
 
 /**
- * The contract as an evaluation acts on it and the page shows it. A rule listing that could not be read
- * (WF_UNREAD_RULES in the failback class) tells no drift, so the class keeps the rule-format drift as the last
+ * The contract as an evaluation acts on it, and as the page and --dry show it. A rule listing that could not be read
+ * (WF_UNREAD_RULES in the failback class) tells no drift at first: the class keeps the rule-format drift as the last
  * evaluation read it ($last, wf_contract_log()'s), present or not, and wf_contract_log() logs nothing new for it. The
- * groups' drift is read every time and stands as read.
+ * evaluations in a row that could not read it are counted in $said (WF_SAID_UNREAD_COUNT). From the
+ * WF_UNREAD_MAX_EVALUATIONS-th on, WF_UNREAD_RULES stands as the failback drift, so a listing that stays unreadable is
+ * logged and raised as a contract change; a whole read clears it and the count. The groups' drift is read every time
+ * and stands as read.
  *
  * @param array{judging: list<string>, command: list<string>, failback: list<string>, tailscale: list<string>,
  *               removal: list<string>, names: list<string>} $contract wf_snapshot()'s
+ * @param array<string, string> $said the state's said map, as the last evaluation left it
  * @return array{contract: array{judging: list<string>, command: list<string>, failback: list<string>,
- *                                tailscale: list<string>, removal: list<string>, names: list<string>}, line: ?string}
- *     line: the notice for an unread listing, for the caller to log once (wf_once()); null when it was read
+ *                                tailscale: list<string>, removal: list<string>, names: list<string>}, line: ?string,
+ *               said: array<string, string>}
+ *     line: the notice while the last reading is kept, for the caller to log once (wf_once()); null otherwise;
+ *     said: $said with this evaluation's count, which only an evaluation keeps
  */
-function wf_contract_kept(array $contract, string $last): array
+function wf_contract_kept(array $contract, string $last, array $said): array
 {
+    $stored = $said[WF_SAID_UNREAD_COUNT] ?? '';
+    unset($said[WF_SAID_UNREAD_COUNT]);
     if (!in_array(WF_UNREAD_RULES, $contract['failback'], true)) {
-        return ['contract' => $contract, 'line' => null];
+        return ['contract' => $contract, 'line' => null, 'said' => $said];
+    }
+    $count = (preg_match('/\A\d{1,9}\z/', $stored) === 1 ? (int)$stored : 0) + 1;
+    $said[WF_SAID_UNREAD_COUNT] = (string)$count;
+    if ($count >= WF_UNREAD_MAX_EVALUATIONS) {
+        return ['contract' => $contract, 'line' => null, 'said' => $said];
     }
     $kept = in_array(WF_DRIFT_RULES_FORMAT, explode("\n", $last), true) ? [WF_DRIFT_RULES_FORMAT] : [];
     $contract['failback'] = array_merge($kept, array_values(array_diff($contract['failback'], [WF_UNREAD_RULES])));
-    return ['contract' => $contract,
-            'line' => 'core-contract: ' . WF_UNREAD_RULES . ' on two tries; the failback check keeps its last result'];
+    return ['contract' => $contract, 'line' => 'core-contract: ' . WF_UNREAD_RULES . ' on two tries; the failback check '
+        . 'keeps its last result, and reports the listing as a drift once ' . WF_UNREAD_MAX_EVALUATIONS
+        . ' evaluations in a row cannot read it', 'said' => $said];
 }
 
 /**

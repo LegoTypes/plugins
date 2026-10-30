@@ -34,7 +34,8 @@ Plugin Changelog
   mask blocks nothing. Each shows on the page. A pf listing failback
   reads that a ruleset load cuts short is read again; one still cut
   short is not taken as a change, and a due failback waits for a whole
-  one
+  one. A rule listing that 3 evaluations in a row cannot read suspends
+  failback and shows on the page until one reads it
 * The page's API call service/holds is now service/wan_status, and the
   old name no longer answers: a caller of it must move, and a page left
   open across the upgrade shows "Status unavailable." on its next

@@ -285,31 +285,35 @@ wf_register_suite('contract', function (): int {
     $cut = ['out' => "@0 scrub on vtnet1 all fragment reassemble\n", 'err' => $altq . "pfctl: DIOCGETRULE: Device busy\n", 'rc' => 0];
     $clean = $read($groups);
     $none = ['judging' => [], 'command' => [], 'failback' => [], 'tailscale' => [], 'removal' => [], 'names' => []];
-    /* one evaluation's contract from its listing runs and the last one's contract_last: what it keeps, logs and reads */
-    $tick = function (array $runs, string $last) use ($pfctl, $clean, $none): array {
+    /* one evaluation's contract from its listing runs, the last one's contract_last and its said map: what it keeps, logs,
+     * reads and counts */
+    $tick = function (array $runs, string $last, array $said = []) use ($pfctl, $clean, $none): array {
         $p = $pfctl($runs);
         $kept = wf_contract_kept(array_merge($none, ['failback' => wf_contract_failback(wf_pf_listing($p['run'], ['-vvsr']),
-            $clean)]), $last);
-        return ['failback' => $kept['contract']['failback'], 'notice' => $kept['line'],
+            $clean)]), $last, $said);
+        return ['failback' => $kept['contract']['failback'], 'notice' => $kept['line'], 'said' => $kept['said'],
                 'log' => wf_contract_log($kept['contract'], $last), 'calls' => $p['calls']->getArrayCopy()];
     };
     $quiet = fn (string $last): array => ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
-    $notice = 'core-contract: pfctl -vvsr could not be read on two tries; the failback check keeps its last result';
+    $notice = 'core-contract: pfctl -vvsr could not be read on two tries; the failback check keeps its last result, and '
+        . 'reports the listing as a drift once 3 evaluations in a row cannot read it';
     $lastDrift = wf_contract_log(array_merge($none, ['failback' => [$rulesDrift]]), '')['last'];
+    $other = ['unresolved' => 'x'];
 
-    $r = $tick([$whole], '');
+    $r = $tick([$whole], '', $other);
     wf_check($t, 'failback contract: a whole rule listing is read once and reports nothing',
-        $r['calls'] === [['-vvsr']] && $r['failback'] === [] && $r['notice'] === null && $r['log'] === $quiet(''));
+        $r['calls'] === [['-vvsr']] && $r['failback'] === [] && $r['notice'] === null && $r['log'] === $quiet('')
+        && $r['said'] === $other);
     $r = $tick([$cut, $whole], '');
     wf_check($t, 'failback contract: a rule listing cut short is read once more, and the whole one reports no drift',
         $r['calls'] === [['-vvsr'], ['-vvsr']] && $r['failback'] === [] && $r['notice'] === null && $r['log'] === $quiet(''));
-    $after = $tick([$cut, $cut], '');
+    $after = $tick([$cut, $cut], '', $other);
     $held = $tick([$cut, $cut], $lastDrift);
-    $groupsToo = wf_contract_kept(array_merge($none, ['failback' => [$rulesUnread, $groupsDrift]]), $lastDrift);
+    $groupsToo = wf_contract_kept(array_merge($none, ['failback' => [$rulesUnread, $groupsDrift]]), $lastDrift, []);
     wf_check($t, 'failback contract: a rule listing cut short twice is no new drift: the last reading stands, nothing new is '
         . 'logged, and one notice says why',
         $after['calls'] === [['-vvsr'], ['-vvsr']] && $after['failback'] === [] && $after['log'] === $quiet('')
-        && $after['notice'] === $notice
+        && $after['notice'] === $notice && $after['said'] === $other + ['rules_unread_count' => '1']
         && $held['failback'] === [$rulesDrift] && $held['log'] === $quiet($lastDrift) && $held['notice'] === $notice
         && $groupsToo['contract']['failback'] === [$rulesDrift, $groupsDrift] && $groupsToo['line'] === $notice);
     $moved = ['out' => str_replace('label "', 'label:', $rules), 'err' => $altq, 'rc' => 0];
@@ -319,7 +323,48 @@ wf_register_suite('contract', function (): int {
         && $r['log']['line'] === 'core-contract: core changed what the plugin relies on (failback suspended): ' . $rulesDrift
         && $r['log']['prio'] === LOG_WARNING);
     wf_check($t, 'failback contract: a contract read whole is kept as it is',
-        wf_contract_kept(array_merge($none, ['failback' => [$groupsDrift]]), $lastDrift)
-            === ['contract' => array_merge($none, ['failback' => [$groupsDrift]]), 'line' => null]);
+        wf_contract_kept(array_merge($none, ['failback' => [$groupsDrift]]), $lastDrift, [])
+            === ['contract' => array_merge($none, ['failback' => [$groupsDrift]]), 'line' => null, 'said' => []]);
+
+    /* evaluations one after another, each handed the last one's contract_last and said map */
+    $run = function (array $ticks) use ($tick): array {
+        $last = '';
+        $said = [];
+        $out = [];
+        foreach ($ticks as $runs) {
+            $r = $tick($runs, $last, $said);
+            $last = $r['log']['last'];
+            $said = $r['said'];
+            $out[] = $r;
+        }
+        return $out;
+    };
+    $unreadDrift = 'core-contract: core changed what the plugin relies on (failback suspended): ' . $rulesUnread;
+    [$u1, $u2, $u3, $u4, $back] = $run([[$cut, $cut], [$cut, $cut], [$cut, $cut], [$cut, $cut], [$whole]]);
+    wf_check($t, 'failback contract: two evaluations in a row that cannot read the rule listing keep the last reading',
+        $u1['failback'] === [] && $u1['log'] === $quiet('') && $u1['notice'] === $notice
+        && $u1['said'] === ['rules_unread_count' => '1']
+        && $u2['failback'] === [] && $u2['log'] === $quiet('') && $u2['notice'] === $notice
+        && $u2['said'] === ['rules_unread_count' => '2']);
+    wf_check($t, 'failback contract: the 3rd evaluation in a row that cannot read the rule listing reports it as a failback '
+        . 'drift, logged once as a warning',
+        $u3['failback'] === [$rulesUnread] && $u3['log']['line'] === $unreadDrift && $u3['log']['prio'] === LOG_WARNING
+        && $u3['notice'] === null && $u3['said'] === ['rules_unread_count' => '3']
+        && $u4['failback'] === [$rulesUnread] && $u4['log'] === $quiet($rulesUnread) && $u4['notice'] === null
+        && $u4['said'] === ['rules_unread_count' => '4']);
+    wf_check($t, 'failback contract: a whole read after that clears the drift with core matches again and the count',
+        $back['failback'] === [] && $back['log'] === ['line' => 'core-contract: core matches again', 'prio' => LOG_NOTICE,
+            'last' => ''] && $back['notice'] === null && $back['said'] === []);
+    [$i1, $i2, $i3, $i4] = $run([[$cut, $cut], [$whole], [$cut, $cut], [$cut, $cut]]);
+    wf_check($t, 'failback contract: a rule listing cut short now and then (unread, read, unread) never counts to 3',
+        $i1['said'] === ['rules_unread_count' => '1'] && $i2['said'] === [] && $i3['said'] === ['rules_unread_count' => '1']
+        && $i4['said'] === ['rules_unread_count' => '2']
+        && array_map(fn (array $r): array => $r['failback'], [$i1, $i2, $i3, $i4]) === [[], [], [], []]
+        && array_map(fn (array $r): ?string => $r['log']['line'], [$i1, $i2, $i3, $i4]) === [null, null, null, null]);
+    wf_check($t, 'failback contract: a count the said map holds in any other form counts as none',
+        wf_contract_kept(array_merge($none, ['failback' => [$rulesUnread]]), '', ['rules_unread_count' => 'x'])['said']
+            === ['rules_unread_count' => '1']
+        && wf_contract_kept(array_merge($none, ['failback' => [$rulesUnread]]), '', ['rules_unread_count' => '-5'])['said']
+            === ['rules_unread_count' => '1']);
     return wf_tally_report('contract', $t);
 });
