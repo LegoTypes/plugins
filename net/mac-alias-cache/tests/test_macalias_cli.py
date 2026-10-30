@@ -1484,11 +1484,15 @@ def test_flush_refuses_on_blocking_contract_problem(env, change):
 def test_flush_refuses_when_cores_host_row_line_changes(env):
     cfg, tmp = env
     path = _core(cfg, "arpcache")
-    path.write_text(path.read_text().replace("item[2])", "item[0])"))
+    text = path.read_text()
+    assert "item[2])" in text
+    path.write_text(text.replace("item[2])", "item[0])"))
     before = _snapshot(tmp)
     out = _flush(cfg)
     assert out["error"] == "core_changed"
     assert [p["item"] for p in out["problems"]] == ["arpcache"]
+    assert out["problems"][0]["blocks_flush"] is True
+    assert out["detail"] == out["problems"][0]["problem"]
     _unchanged(tmp, cfg, before)
 
 
