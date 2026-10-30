@@ -79,8 +79,15 @@
             return "{{ lang._('Result of this flush') }}: " + parts.join(", ") + " {{ lang._('across') }} " + totals.changed + " " + alias;
         }
 
+        function sourceText(source) {
+            if (source === 'discovery') return "{{ lang._('Host list: host discovery') }}";
+            if (source === 'arp-ndp') return "{{ lang._('Host list: ARP and NDP tables (host discovery is off)') }}";
+            return "{{ lang._('Host list:') }} " + source;
+        }
+
         function render(data) {
             var banners = [];
+            var sourceLine = '';
             var resultShown = $('#result').is(':visible');
             var lastFlushText = '';
             var lastSummaryBuilt = [];
@@ -94,11 +101,14 @@
             } else {
                 if (data.source === null || data.source === undefined) {
                     banners.push(banner('warning', "{{ lang._('The host list could not be read; the current addresses shown may be incomplete.') }}"));
-                } else if (data.source === 'arp-ndp') {
-                    banners.push(banner('warning', "{{ lang._('Host discovery (hostwatch) is not in use; core resolves MAC aliases from the ARP/NDP tables.') }}"));
+                } else {
+                    sourceLine = sourceText(data.source);
                 }
                 $.each(data.problems || [], function (i, p) {
                     banners.push(banner(p.blocks_flush ? 'danger' : 'warning', p.problem || p.item));
+                });
+                $.each(data.notes || [], function (i, n) {
+                    banners.push(banner('info', n.note));
                 });
                 if (!data.aliases.length) {
                     tbody.append($('<tr/>').append($('<td colspan="6"/>').text("{{ lang._('No MAC aliases defined.') }}")));
@@ -146,6 +156,7 @@
 
             $('#banners').empty().append(banners);
             $('#last-flush').text(lastFlushText);
+            $('#source').text(sourceLine);
             $('#last-flush-summary').empty().append(lastSummaryBuilt);
             $('#aliases tbody').replaceWith(tbody);
         }
@@ -222,6 +233,7 @@
     <button class="btn btn-primary" id="btn-flush"><i class="fa fa-recycle fa-fw"></i> {{ lang._('Flush & rebuild') }}</button>
     <button class="btn btn-default" id="btn-refresh"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
     <span id="last-flush" class="text-muted" style="margin-left: 1em;"></span>
+    <span id="source" class="text-muted" style="margin-left: 1em;"></span>
     <div id="last-flush-summary" style="margin-top: 1em;"></div>
     <div id="result" style="display: none; margin-top: 1em;"></div>
     <table class="table table-striped" id="aliases" style="margin-top: 1em;">
