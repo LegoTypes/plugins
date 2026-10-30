@@ -241,15 +241,16 @@ function wf_removing(): bool
  * The config writer: force_down on the changed gateways and exactly the plan's hold records after the write
  * (wf_holds_rows()), every other row removed, in one save without a config backup. An evaluation calls it under core's
  * gateway lock; the early boot hook, before routing starts, takes none. This takes Config::lock() and builds both
- * models after it, so they read the config as it is now. Nothing is
- * written when a changed gateway's force_down moved since the snapshot (wf_write_guard(); those gateways come back as
- * skipped), or, unless this is the removal's own write, when the removal's marker exists, read under Config::lock(). A
- * write that only releases skips model validation, so a gateway field that fails validation can never pin a hold. It
- * never throws and logs nothing: a write that did not land returns why, and the priority, for its caller to log.
+ * models after it, so they read the config as it is now. Nothing is written when a changed gateway's force_down moved
+ * since the snapshot (wf_write_guard(); those gateways come back as skipped), or, unless this is the removal's own
+ * write, when the removal's marker exists, read under Config::lock(). A write that only releases skips model
+ * validation, so a gateway field that fails validation can never pin a hold. It never throws and logs nothing: a write
+ * that did not land returns why, and the priority, for its caller to log.
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
  * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
- * ServiceController; its Apply, core's reconfigureAction(), does not, and only starts an evaluation, whose writes are
+ * ServiceController; its Apply, core's reconfigureAction(), does not. Apply starts an evaluation while the service
+ * runs, else its start (enabled) or stop (disabled), which restart cron and then evaluate or release; their writes are
  * the engine's own decisions from the saved settings.
  *
  * @param array<string, bool> $changes gateway name => force_down
@@ -408,7 +409,8 @@ function wf_holds_drop_legacy(): void
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
  * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
- * ServiceController; its Apply, core's reconfigureAction(), does not, and only starts an evaluation, whose writes are
+ * ServiceController; its Apply, core's reconfigureAction(), does not. Apply starts an evaluation while the service
+ * runs, else its start (enabled) or stop (disabled), which restart cron and then evaluate or release; their writes are
  * the engine's own decisions from the saved settings.
  *
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()
