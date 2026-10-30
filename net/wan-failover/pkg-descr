@@ -31,9 +31,10 @@ Plugin Changelog
   how pf prints its rules or in the gateway groups' shape (or a groups
   API that cannot be read) suspends failback only, and a dry run says a
   due failback is suspended where the real one would be. A change in the
-  mask blocks nothing. Each shows on the page. A pf listing that a
-  ruleset load cuts short is read again; one still cut short is no
-  change, and a due failback waits for a whole one
+  mask blocks nothing. Each shows on the page. A pf listing failback
+  reads that a ruleset load cuts short is read again; one still cut
+  short is not taken as a change, and a due failback waits for a whole
+  one
 * The page's API call service/holds is now service/wan_status, and the
   old name no longer answers: a caller of it must move, and a page left
   open across the upgrade shows "Status unavailable." on its next
