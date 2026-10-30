@@ -111,7 +111,8 @@ def expand_entries(entries, macs):
 
 def nesting_closure(tables, targets):
     """ every alias that nests a target, directly or through other aliases, matched on whole
-    address tokens
+    address tokens; computed here because core's get_affected_aliases reuses its dependency lists
+    across iterations and can skip a parent
     """
     targets = set(targets)
     found = set()
