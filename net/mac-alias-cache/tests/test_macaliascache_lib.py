@@ -280,8 +280,8 @@ EXPIRY_NOTE = ("core's arpcache.py no longer holds the lines that add a fixed 12
 
 
 def core_rows():
-    """ the contract's rows and core's fixes, read by index; 1.1_2's lib, which these cases
-    also run against, has 4-column contract rows and no CORE_FIXES
+    """ the contract's rows and core's fixes, read by index; the previous release's lib, which
+    these cases also run against, may lack CORE_FIXES and carry 4-column contract rows
     """
     return lib.CORE_CONTRACT + getattr(lib, "CORE_FIXES", ())
 
@@ -417,6 +417,17 @@ def test_core_fixes_both_notes_never_block():
     assert lib.core_fixes(texts) == [{"item": "cache_expiry", "note": EXPIRY_NOTE},
                                      {"item": "emptied_table", "note": EMPTIED_NOTE}]
     assert lib.core_contract(texts) == []
+
+
+def test_core_fixes_contract_drift_in_update_tables_gives_no_note():
+    # the other direction: each contract text gone from update_tables.py blocks and gives no note
+    path = core_paths()["emptied_table"]
+    drifts = [(row[0], text) for row in lib.CORE_CONTRACT if row[1] == path for text in row[2]]
+    assert drifts
+    for item, text in drifts:
+        texts = without(fixture_texts(), path, text)
+        assert [(p["item"], p["blocks_flush"]) for p in lib.core_contract(texts)] == [(item, True)], text
+        assert lib.core_fixes(texts) == [], text
 
 
 def test_core_fixes_unreadable_file_gives_no_note():
