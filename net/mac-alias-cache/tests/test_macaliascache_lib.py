@@ -463,3 +463,47 @@ def test_valid_alias_name_accepts_core_mask_and_rejects_slash_space_long():
     for name in ("Dev/Macs", "Dev Macs", "../DevMacs", "a" * 32, "", "_", "1a", "__lan_network", "Dev.Macs",
                  "Dev-Macs", "DevMacs\n", "DévMacs", None, 5):
         assert not lib.valid_alias_name(name), name
+
+
+@pytest.mark.parametrize("value, expected", [
+    ("2001:DB8::0050", "2001:db8::50"),
+    ("2001:db8:0:0:0:0:0:77", "2001:db8::77"),
+    ("FE80::5", "fe80::5"),
+    ("192.0.2.5", "192.0.2.5"),
+])
+def test_canonical_ip_both_families_and_two_ways(value, expected):
+    assert lib.canonical_ip(value) == expected
+
+
+def test_canonical_ip_gives_one_form_to_an_ipv4_mapped_address():
+    assert lib.canonical_ip("::FFFF:192.0.2.5") == lib.canonical_ip("::ffff:192.0.2.5")
+    assert lib.canonical_ip("::FFFF:192.0.2.5") is not None
+
+
+@pytest.mark.parametrize("value", ["fe80::1%hn0", 1, True, None, b"192.0.2.5", "laptop.lan", "192.0.2.05", ""])
+def test_canonical_ip_refuses_zones_non_strings_and_names(value):
+    assert lib.canonical_ip(value) is None
+
+
+def test_alias_view_compares_addresses_in_canonical_form():
+    t = lib.parse_tables(NEST_XML)
+    cache = {"aa:bb:cc:00:00:01": {"items": ["2001:DB8::0050", "2001:db8::50", "192.0.2.50"], "last_seen": 1000.0}}
+    hosts = [["vlan0.140", "aa:bb:cc:00:00:01", "2001:db8::50"], ["vlan0.120", "aa:bb:cc:00:00:01", "192.0.2.50"]]
+    mac = lib.alias_view(t, cache, hosts, {}, now=1060.0)[0]["macs"][0]
+    assert mac["cache_items"] == mac["current_items"] == ["192.0.2.50", "2001:db8::50"]
+
+
+def test_alias_view_keeps_an_unparsed_cached_item_as_written():
+    t = lib.parse_tables(NEST_XML)
+    cache = {"aa:bb:cc:00:00:01": {"items": ["fe80::1%hn0", "laptop.lan", "192.0.2.05", "192.0.2.50"], "last_seen": 1000.0}}
+    hosts = [["vlan0.120", "aa:bb:cc:00:00:01", "192.0.2.50"]]
+    mac = lib.alias_view(t, cache, hosts, {}, now=1060.0)[0]["macs"][0]
+    assert mac["cache_items"] == ["192.0.2.05", "192.0.2.50", "fe80::1%hn0", "laptop.lan"]
+    assert mac["current_items"] == ["192.0.2.50"]
+
+
+def test_summarise_both_families():
+    before = {"C": ["192.0.2.1", "2001:db8::1"]}
+    after = {"C": ["192.0.2.1", "2001:db8::2"]}
+    assert lib.summarise(before, after) == [
+        {"name": "C", "before": 2, "after": 2, "added": ["2001:db8::2"], "removed": ["2001:db8::1"]}]

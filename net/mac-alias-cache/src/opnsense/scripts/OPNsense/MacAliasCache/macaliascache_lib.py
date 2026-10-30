@@ -157,6 +157,13 @@ def valid_ip(s):
     return True
 
 
+def canonical_ip(s):
+    """ the address in the one form the status view compares, or None where valid_ip refuses it """
+    if not valid_ip(s):
+        return None
+    return str(ipaddress.ip_address(s))
+
+
 def _valid_row(row):
     """ a list_hosts row with a MAC and an address in the columns core's cache takes them from """
     return isinstance(row, (list, tuple)) and len(row) >= 3 and valid_mac(row[1]) and valid_ip(row[2])
@@ -230,7 +237,7 @@ def alias_view(tables, cache, hosts, pf_counts, now):
     current = {}
     for row in hosts:
         if _valid_row(row):
-            current.setdefault(row[1].lower(), set()).add(row[2])
+            current.setdefault(row[1].lower(), set()).add(canonical_ip(row[2]))
     cache = {mac.lower(): value for mac, value in cache.items()}
     known = set(current) | set(cache)
     rows = []
@@ -242,7 +249,7 @@ def alias_view(tables, cache, hosts, pf_counts, now):
             last_seen = cached.get("last_seen")
             mac_rows.append({
                 "mac": mac,
-                "cache_items": sorted(cached.get("items", [])),
+                "cache_items": sorted({canonical_ip(ip) or ip for ip in cached.get("items", [])}),
                 "cache_age_s": int(now - last_seen) if isinstance(last_seen, (int, float)) else None,
                 "current_items": sorted(current.get(mac, set())),
             })
