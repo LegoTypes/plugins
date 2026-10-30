@@ -32,13 +32,16 @@ use OPNsense\Base\BaseModel;
 use OPNsense\Base\Messages\Message;
 use OPNsense\Routing\Gateways;
 
-$lib = dirname(__DIR__, 5) . '/scripts/OPNsense/WanFailover/lib/judge.php';
-if (!function_exists('wf_unjudgeable')) {
-    if (!is_readable($lib)) {
-        throw new \RuntimeException('plugin library missing: ' . $lib);
+/* in a scope of its own, so loading the model leaves no variable in the scope that loads it */
+(static function (): void {
+    $lib = dirname(__DIR__, 5) . '/scripts/OPNsense/WanFailover/lib/judge.php';
+    if (!function_exists('wf_unjudgeable')) {
+        if (!is_readable($lib)) {
+            throw new \RuntimeException('plugin library missing: ' . $lib);
+        }
+        require_once $lib;
     }
-    require_once $lib;
-}
+})();
 
 class WanFailover extends BaseModel
 {

@@ -145,6 +145,18 @@ wf_register_suite('model', function (): int {
     require_once $loader;
     require_once $class;
 
+    /* the model required by path in a fresh php, at its top scope: whatever its load does, it leaves no variable there */
+    $out = [];
+    $rc = 0;
+    exec('/usr/local/bin/php -d log_errors=0 -r ' . escapeshellarg('require_once "script/load_phalcon.php"; $before = '
+        . 'array_keys(get_defined_vars()); require_once ' . var_export($class, true) . '; echo json_encode(array_values('
+        . 'array_diff(array_keys(get_defined_vars()), $before, ["before"])));') . ' 2>&1', $out, $rc);
+    $ok = $rc === 0 && $out === ['[]'];
+    wf_check($t, 'model: loading the model by path leaves no variable behind', $ok);
+    if (!$ok) {
+        printf("  exit %d, output: %s\n", $rc, implode(' | ', $out));
+    }
+
     $dhcp = wf_t_model_gateway_uuid('WAN_DHCP');
     $b = wf_t_model_gateway_uuid('WAN_B');
     if ($dhcp === '' || $b === '') {
