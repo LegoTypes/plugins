@@ -275,31 +275,49 @@ def test_alias_view_ignores_rejected_rows_without_raising():
 CORE_ROOT = "/usr/local/opnsense/"
 EMPTIED_NOTE = ("core may now flush emptied tables itself (core #10950); "
                 "the plugin's own flush is redundant but harmless")
+EXPIRY_NOTE = ("core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
+               "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary")
+
+
+def core_rows():
+    """ the contract's rows and core's fixes, read by index; 1.1_2's lib, which these cases
+    also run against, has 4-column contract rows and no CORE_FIXES
+    """
+    return lib.CORE_CONTRACT + getattr(lib, "CORE_FIXES", ())
+
+
+def core_paths():
+    return {row[0]: row[1] for row in core_rows()}
 
 
 def fixture_texts():
     """ the texts macalias reads from a stock 26.7.7 box, taken from the fixture copies of its lines """
     texts = {}
-    for item, path, expected, note in lib.CORE_CONTRACT:
-        local = os.path.join(FIXTURES, path[len(CORE_ROOT):])
-        if expected is None:
-            texts[item] = "exists" if os.access(local, os.X_OK) else None
+    for row in core_rows():
+        local = os.path.join(FIXTURES, row[1][len(CORE_ROOT):])
+        if row[2] is None:
+            texts[row[0]] = "exists" if os.access(local, os.X_OK) else None
         else:
             with open(local, encoding="utf-8") as f:
-                texts[item] = f.read()
+                texts[row[0]] = f.read()
     return texts
+
+
+def without(texts, path, text):
+    """ texts with text removed from every item read from core's file at path """
+    paths = core_paths()
+    return {item: value.replace(text, "") if paths[item] == path and value is not None else value
+            for item, value in texts.items()}
 
 
 def test_core_contract_is_the_table_of_cores_files():
     assert lib.CORE_CONTRACT == (
         ("arpcache", CORE_ROOT + "scripts/filter/lib/alias/arpcache.py",
-         ("/tmp/alias_filter_arp.cache", "items", "last_seen"), None),
-        ("update_lock", CORE_ROOT + "service/conf/actions.d/actions_filter.conf",
-         ("/tmp/filter_update_tables.lock",), None),
-        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py", ("/var/db/aliastables/%s.md5.txt",), None),
-        ("targeted_mode", CORE_ROOT + "scripts/filter/update_tables.py", ("--aliases",), None),
-        ("emptied_table", CORE_ROOT + "scripts/filter/update_tables.py", ("else cnt_alias_content",), EMPTIED_NOTE),
-        ("list_hosts", CORE_ROOT + "scripts/interfaces/list_hosts.py", None, None),
+         ("/tmp/alias_filter_arp.cache", "items", "last_seen")),
+        ("update_lock", CORE_ROOT + "service/conf/actions.d/actions_filter.conf", ("/tmp/filter_update_tables.lock",)),
+        ("md5_marker", CORE_ROOT + "scripts/filter/lib/alias/__init__.py", ("/var/db/aliastables/%s.md5.txt",)),
+        ("targeted_mode", CORE_ROOT + "scripts/filter/update_tables.py", ("--aliases",)),
+        ("list_hosts", CORE_ROOT + "scripts/interfaces/list_hosts.py", None),
     )
 
 
@@ -324,7 +342,7 @@ def test_core_contract_each_drift_blocks(item, text):
     texts[item] = None if text is None else texts[item].replace(text, "")
     found = lib.core_contract(texts)
     assert [(p["item"], p["blocks_flush"]) for p in found] == [(item, True)]
-    path = dict((i, p) for i, p, _e, _n in lib.CORE_CONTRACT)[item]
+    path = core_paths()[item]
     if text is None:
         assert found[0]["problem"] == "core's %s is missing or not executable" % path
     else:
@@ -353,11 +371,9 @@ def test_core_contract_blocks_when_the_md5_marker_moves_directory():
 def test_core_contract_missing_file_blocks(item):
     texts = fixture_texts()
     texts[item] = None
-    if item == "targeted_mode":
-        texts["emptied_table"] = None   # the same file: its note gives way to the blocking problem
     found = lib.core_contract(texts)
     assert [(p["item"], p["blocks_flush"]) for p in found] == [(item, True)]
-    path = dict((i, p) for i, p, _e, _n in lib.CORE_CONTRACT)[item]
+    path = core_paths()[item]
     absent = "not executable" if item == "list_hosts" else "cannot be read"
     assert found[0]["problem"] == "core's %s is missing or %s" % (path, absent)
 
@@ -368,11 +384,52 @@ def test_core_contract_with_nothing_read_blocks_on_every_file():
         ("arpcache", True), ("update_lock", True), ("md5_marker", True), ("targeted_mode", True), ("list_hosts", True)]
 
 
-def test_core_contract_emptied_table_fix_is_non_blocking_note():
+def test_core_fixes_is_the_table_of_cores_fixes():
+    assert lib.CORE_FIXES == (
+        ("cache_expiry", CORE_ROOT + "scripts/filter/lib/alias/arpcache.py",
+         ("_address_ttl = 43200", "cls._data.update(cls.current_cache())"), EXPIRY_NOTE),
+        ("emptied_table", CORE_ROOT + "scripts/filter/update_tables.py", ("else cnt_alias_content",), EMPTIED_NOTE),
+    )
+
+
+def test_core_fixes_stock_core_gives_no_note():
+    assert lib.core_fixes(fixture_texts()) == []
+
+
+@pytest.mark.parametrize("item, text, note", [
+    ("cache_expiry", "_address_ttl = 43200", EXPIRY_NOTE),
+    ("cache_expiry", "cls._data.update(cls.current_cache())", EXPIRY_NOTE),
+    ("emptied_table", "else cnt_alias_content", EMPTIED_NOTE),
+])
+def test_core_fixes_each_fix_is_a_note(item, text, note):
+    # the text leaves every item read from that file, so it is no contract text
+    texts = without(fixture_texts(), core_paths()[item], text)
+    assert lib.core_fixes(texts) == [{"item": item, "note": note}]
+    assert lib.core_contract(texts) == []
+
+
+def test_core_fixes_both_notes_never_block():
+    paths = core_paths()
     texts = fixture_texts()
-    fixed = texts["emptied_table"].replace("else cnt_alias_content", "else alias.get_pf_addr_count()")
-    texts["targeted_mode"] = texts["emptied_table"] = fixed
-    assert lib.core_contract(texts) == [{"item": "emptied_table", "problem": EMPTIED_NOTE, "blocks_flush": False}]
+    texts = without(texts, paths["cache_expiry"], "_address_ttl = 43200")
+    texts = without(texts, paths["cache_expiry"], "cls._data.update(cls.current_cache())")
+    texts = without(texts, paths["emptied_table"], "else cnt_alias_content")
+    assert lib.core_fixes(texts) == [{"item": "cache_expiry", "note": EXPIRY_NOTE},
+                                     {"item": "emptied_table", "note": EMPTIED_NOTE}]
+    assert lib.core_contract(texts) == []
+
+
+def test_core_fixes_unreadable_file_gives_no_note():
+    # a fix's file is a contract file, whose absence already blocks
+    texts = fixture_texts()
+    texts["cache_expiry"] = texts["emptied_table"] = None
+    assert lib.core_fixes(texts) == []
+    assert lib.core_fixes({}) == []
+
+
+def test_core_fixes_files_are_contract_files():
+    contract = {row[1] for row in lib.CORE_CONTRACT}
+    assert [row[1] for row in lib.CORE_FIXES if row[1] not in contract] == []
 
 
 def test_valid_alias_name_accepts_core_mask_and_rejects_slash_space_long():

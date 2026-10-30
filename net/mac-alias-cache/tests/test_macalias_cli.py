@@ -24,9 +24,11 @@ TABLES = """<?xml version="1.0"?>
 </tabledef>
 """
 
-# the core files the flush imitates, relative to /usr/local/opnsense; the fixtures mirror them
+# the core files the flush imitates or reads core's fixes from, relative to /usr/local/opnsense;
+# the fixtures mirror them
 CORE_FILES = {
     "arpcache": "scripts/filter/lib/alias/arpcache.py",
+    "cache_expiry": "scripts/filter/lib/alias/arpcache.py",
     "update_lock": "service/conf/actions.d/actions_filter.conf",
     "md5_marker": "scripts/filter/lib/alias/__init__.py",
     "targeted_mode": "scripts/filter/update_tables.py",
@@ -615,6 +617,8 @@ CANNOT_CHECK = {
 }
 EMPTIED_NOTE = ("core may now flush emptied tables itself (core #10950); "
                 "the plugin's own flush is redundant but harmless")
+EXPIRY_NOTE = ("core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
+               "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary")
 
 
 def _items(out, item):
@@ -1420,7 +1424,7 @@ def test_core_files_are_the_files_the_flush_imitates_and_runs():
     assert macalias.DEFAULTS["cache_file"] == "/tmp/alias_filter_arp.cache"
     assert macalias.DEFAULTS["lock_file"] == "/tmp/filter_update_tables.lock"
     assert macalias.DEFAULTS["aliastables_dir"] == "/var/db/aliastables"
-    expected = {item: texts for item, _path, texts, _note in lib.CORE_CONTRACT}
+    expected = {row[0]: row[2] for row in lib.CORE_CONTRACT}
     assert macalias.DEFAULTS["cache_file"] in expected["arpcache"]
     assert macalias.DEFAULTS["lock_file"] in expected["update_lock"]
     assert os.path.join(macalias.DEFAULTS["aliastables_dir"], "%s.md5.txt") in expected["md5_marker"]
@@ -1434,7 +1438,9 @@ def test_stock_core_files_give_no_problem(env):
     assert texts["list_hosts"] == "exists"
     assert None not in texts.values()
     assert lib.core_contract(texts) == []
-    assert macalias.cmd_status(cfg, now=0.0)["problems"] == []
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["problems"] == []
+    assert out["notes"] == []
 
 
 def test_read_core_texts_replaces_undecodable_bytes(env):
@@ -1475,7 +1481,8 @@ def test_flush_refuses_on_blocking_contract_problem(env, change):
 
 
 def test_flush_refuses_when_update_tables_is_missing(env):
-    # the same file holds the targeted-mode and the emptied-table texts: only the blocking item is listed
+    # the file also holds the text of core's emptied-table fix, which gives a note, never a problem:
+    # only the blocking item is listed
     cfg, tmp = env
     _core(cfg, "targeted_mode").unlink()
     before = _snapshot(tmp)
@@ -1485,15 +1492,39 @@ def test_flush_refuses_when_update_tables_is_missing(env):
     _unchanged(tmp, cfg, before)
 
 
-def test_flush_runs_on_non_blocking_contract_note(env):
+def _fix_core(cfg, item, text):
+    path = _core(cfg, item)
+    path.write_text(path.read_text().replace(text, ""))
+
+
+def test_status_lists_core_fixes_as_notes(env):
     cfg, tmp = env
-    path = _core(cfg, "emptied_table")
-    path.write_text(path.read_text().replace("else cnt_alias_content", "else alias.get_pf_addr_count()"))
+    _fix_core(cfg, "emptied_table", "else cnt_alias_content")
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["problems"] == []
+    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
+    _fix_core(cfg, "cache_expiry", "_address_ttl = 43200")
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["problems"] == []
+    assert out["notes"] == [{"item": "cache_expiry", "note": EXPIRY_NOTE},
+                            {"item": "emptied_table", "note": EMPTIED_NOTE}]
     out = _flush(cfg)
-    assert "error" not in out
+    assert "error" not in out and "notes" not in out
     assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
-    assert macalias.cmd_status(cfg, now=0.0)["problems"] == [
-        {"item": "emptied_table", "problem": EMPTIED_NOTE, "blocks_flush": False}]
+
+
+def test_refusal_never_carries_a_note(env):
+    cfg, tmp = env
+    arpcache = _core(cfg, "arpcache")
+    arpcache.write_text(arpcache.read_text().replace("/tmp/alias_filter_arp.cache", "/var/cache/alias_filter_arp.cache"))
+    _fix_core(cfg, "emptied_table", "else cnt_alias_content")
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    assert [p["item"] for p in out["problems"]] == ["arpcache"]
+    assert "notes" not in out
+    _unchanged(tmp, cfg, before)
+    assert macalias.cmd_status(cfg, now=0.0)["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
 
 
 BAD_NAME_TABLES = """<?xml version="1.0"?>
@@ -1592,11 +1623,10 @@ def test_status_lists_problems(env):
         out = macalias.cmd_status(cfg, now=0.0)
     assert "error" not in out
     assert [(p["item"], p["blocks_flush"]) for p in out["problems"]] == [
-        ("state_dir", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True),
-        ("emptied_table", False)]
+        ("state_dir", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True)]
     assert _items(out, "cache_file")[0]["problem"] == CACHE_FORGED % cfg["cache_file"]
     assert _items(out, "alias_name")[0]["problem"] == ALIAS_NAME % "'Dev Macs'"
-    assert _items(out, "emptied_table")[0]["problem"] == EMPTIED_NOTE
+    assert out["notes"] == [{"item": "emptied_table", "note": EMPTIED_NOTE}]
 
     # with the state directory usable, what is inside it is listed too
     pathlib.Path(cfg["state_dir"]).unlink()
@@ -1605,15 +1635,14 @@ def test_status_lists_problems(env):
     with _within(5):
         out = macalias.cmd_status(cfg, now=0.0)
     assert [(p["item"], p["blocks_flush"]) for p in out["problems"]] == [
-        ("plugin_lock", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True),
-        ("emptied_table", False)]
+        ("plugin_lock", True), ("lock_file", True), ("cache_file", False), ("alias_name", True), ("arpcache", True)]
     os.rmdir(macalias.state_paths(cfg)["plugin_lock"])
 
     # a flush refuses with the first class that blocks and carries every problem
     with _within(5):
         out = _flush(cfg)
     assert out["error"] == "lock_unusable"
-    assert [p["item"] for p in out["problems"]] == ["lock_file", "cache_file", "alias_name", "arpcache", "emptied_table"]
+    assert [p["item"] for p in out["problems"]] == ["lock_file", "cache_file", "alias_name", "arpcache"]
     os.unlink(cfg["lock_file"])
     out = _flush(cfg)
     assert out["error"] == "core_changed"
@@ -1666,9 +1695,6 @@ def test_every_problem_item_has_a_refusal_code(env):
     os.rmdir(macalias.state_paths(cfg)["plugin_lock"])
     os.rmdir(cfg["state_dir"])
     pathlib.Path(cfg["state_dir"]).write_text("x")
-    shutil.copytree(FIXTURES, tmp / "core")
-    update_tables = _core(cfg, "emptied_table")
-    update_tables.write_text(update_tables.read_text().replace("else cnt_alias_content", ""))
     with _within(5):
         seen.update(p["item"] for p in macalias.problems(cfg))
     assert seen == set(macalias._REFUSAL_CODE)
@@ -1678,7 +1704,7 @@ def test_every_problem_item_has_a_refusal_code(env):
     assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "state_unusable"} == {
         "state_dir", "last_file", "plugin_lock", "cache_file"}
     assert {item for item, code in macalias._REFUSAL_CODE.items() if code == "core_changed"} == {
-        "alias_name", "arpcache", "update_lock", "md5_marker", "targeted_mode", "emptied_table", "list_hosts"}
+        "alias_name", "arpcache", "update_lock", "md5_marker", "targeted_mode", "list_hosts"}
 
 
 @pytest.fixture

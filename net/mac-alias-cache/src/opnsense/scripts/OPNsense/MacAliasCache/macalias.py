@@ -42,8 +42,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import macaliascache_lib as lib  # noqa: E402
 
-# item -> core's file, for each file the flush imitates; the contract checks the programs it runs
-_CORE_FILES = {item: path for item, path, _expected, _note in lib.CORE_CONTRACT}
+# item -> core's file, for each file the flush imitates or reads core's fixes from; the contract
+# checks the programs it runs
+_CORE_FILES = {row[0]: row[1] for row in lib.CORE_CONTRACT + lib.CORE_FIXES}
 
 DEFAULTS = {
     "tables_conf": "/usr/local/etc/filter_tables.conf",
@@ -63,7 +64,7 @@ DEFAULTS = {
 
 # every item problems() can list, with the error code it refuses a flush with when it blocks;
 # when items of several codes block at once, the earliest code in _REFUSAL_ORDER wins. Every
-# core-contract item is core_changed, emptied_table too, although it never blocks
+# core-contract item is core_changed; core's fixes are notes, never problems
 _REFUSAL_CODE = {
     "state_dir": "state_unusable",
     "last_file": "state_unusable",
@@ -72,7 +73,7 @@ _REFUSAL_CODE = {
     "lock_file": "lock_unusable",
     "alias_name": "core_changed",
 }
-_REFUSAL_CODE.update((item, "core_changed") for item in _CORE_FILES)
+_REFUSAL_CODE.update((item, "core_changed") for item, _path, _expected in lib.CORE_CONTRACT)
 _REFUSAL_ORDER = ("state_unusable", "lock_unusable", "core_changed")
 
 
@@ -215,18 +216,21 @@ def _alias_name_problem(tables):
                     % ", ".join(repr(name) for name in bad), True)
 
 
-def problems(cfg, tables=None):
+def problems(cfg, tables=None, texts=None):
     """ what makes the plugin's state or core's files unsafe to use, for status and for a
     flush before it takes core's lock; ensure_state_dir puts the state directory in place.
-    tables is filter_tables.conf as the caller parsed it, so the names checked are the names used
+    tables is filter_tables.conf as the caller parsed it, so the names checked are the names used;
+    texts is read_core_texts as the caller read it, so status reads each core file once
     """
     state = ensure_state_dir(cfg)
     if tables is None:
         tables = read_tables(cfg)
+    if texts is None:
+        texts = read_core_texts(cfg)
     # nothing inside a state directory that failed its check is looked at
     found = [state, None if state else _last_file_problem(cfg), None if state else _plugin_lock_problem(cfg),
              _lock_file_problem(cfg), _cache_file_problem(cfg), _alias_name_problem(tables)]
-    return [problem for problem in found if problem] + lib.core_contract(read_core_texts(cfg))
+    return [problem for problem in found if problem] + lib.core_contract(texts)
 
 
 def refusal(found):
@@ -313,9 +317,9 @@ def _executable(path):
 
 
 def read_core_texts(cfg):
-    """ {item: text} of each core file the flush imitates, read once per file: None for a
-    file that is missing or unusable; list_hosts only has to be executable, so its text is
-    "exists" or None
+    """ {item: text} of each core file the flush imitates or reads core's fixes from, read once
+    per file: None for a file that is missing or unusable; list_hosts only has to be
+    executable, so its text is "exists" or None
     """
     texts, read = {}, {}
     for item, path in cfg["core_files"].items():
@@ -486,7 +490,8 @@ def _flush_emptied_tables(cfg, names):
 
 def cmd_status(cfg, now):
     tables = read_tables(cfg)
-    found = problems(cfg, tables)
+    texts = read_core_texts(cfg)
+    found = problems(cfg, tables, texts)
     source, hosts = read_hosts(cfg)
     good, _rejected = lib.validate_rows(hosts)
     cache = _read_json(cfg["cache_file"], lib.cache_schema) or {}
@@ -504,6 +509,7 @@ def cmd_status(cfg, now):
         "aliases": lib.alias_view(tables, cache, good, pf_counts, now),
         "last_flush": last,
         "problems": found,
+        "notes": lib.core_fixes(texts),
     }
 
 

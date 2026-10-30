@@ -50,17 +50,25 @@ CORE_FILE_MODE = 0o640
 ALIASTABLES_DIR = "/var/db/aliastables"
 
 _CORE = "/usr/local/opnsense/"
-# What the flush imitates in core: the item, core's file, the texts that file must still hold
-# (None: it only has to be an executable file) and, for an item whose absence does not block a
-# flush, the note shown instead
+ARPCACHE_PY = _CORE + "scripts/filter/lib/alias/arpcache.py"
+UPDATE_TABLES_PY = _CORE + "scripts/filter/update_tables.py"
+# What the flush imitates in core: the item, core's file and the texts that file must still hold
+# (None: it only has to be an executable file). Any drift blocks a flush
 CORE_CONTRACT = (
-    ("arpcache", _CORE + "scripts/filter/lib/alias/arpcache.py", (CACHE_FILE, "items", "last_seen"), None),
-    ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", (UPDATE_LOCK,), None),
-    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (ALIASTABLES_DIR + "/%s.md5.txt",), None),
-    ("targeted_mode", _CORE + "scripts/filter/update_tables.py", ("--aliases",), None),
-    ("emptied_table", _CORE + "scripts/filter/update_tables.py", ("else cnt_alias_content",),
+    ("arpcache", ARPCACHE_PY, (CACHE_FILE, "items", "last_seen")),
+    ("update_lock", _CORE + "service/conf/actions.d/actions_filter.conf", (UPDATE_LOCK,)),
+    ("md5_marker", _CORE + "scripts/filter/lib/alias/__init__.py", (ALIASTABLES_DIR + "/%s.md5.txt",)),
+    ("targeted_mode", UPDATE_TABLES_PY, ("--aliases",)),
+    ("list_hosts", _CORE + "scripts/interfaces/list_hosts.py", None),
+)
+# Core's bugs the plugin works around: the item, core's file, the texts it holds while the bug
+# stands and the note shown once any of them is gone. A note is information and never blocks
+CORE_FIXES = (
+    ("cache_expiry", ARPCACHE_PY, ("_address_ttl = 43200", "cls._data.update(cls.current_cache())"),
+     "core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
+     "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary"),
+    ("emptied_table", UPDATE_TABLES_PY, ("else cnt_alias_content",),
      "core may now flush emptied tables itself (core #10950); the plugin's own flush is redundant but harmless"),
-    ("list_hosts", _CORE + "scripts/interfaces/list_hosts.py", None, None),
 )
 
 
@@ -181,26 +189,33 @@ def valid_alias_name(name):
 
 def core_contract(texts):
     """ problems with the core files the flush imitates. texts maps each item to its file's
-    text, None when the file is missing or unreadable ("exists" or None for list_hosts). A
-    missing file blocks; the emptied-table note needs its file, whose absence already blocks
+    text, None when the file is missing or unreadable ("exists" or None for list_hosts). Every
+    problem blocks
     """
     found = []
-    for item, path, expected, note in CORE_CONTRACT:
+    for item, path, expected in CORE_CONTRACT:
         text = texts.get(item)
         if text is None:
-            if note is None:
-                absent = "not executable" if expected is None else "cannot be read"
-                found.append({"item": item, "problem": "core's %s is missing or %s" % (path, absent),
-                              "blocks_flush": True})
+            absent = "not executable" if expected is None else "cannot be read"
+            found.append({"item": item, "problem": "core's %s is missing or %s" % (path, absent), "blocks_flush": True})
             continue
         missing = [part for part in expected or () if part not in text]
-        if not missing:
-            continue
-        if note is None:
+        if missing:
             found.append({"item": item, "problem": "core's %s no longer contains %s; the flush imitates it, so it refuses"
                           % (path, ", ".join(repr(part) for part in missing)), "blocks_flush": True})
-        else:
-            found.append({"item": item, "problem": note, "blocks_flush": False})
+    return found
+
+
+def core_fixes(texts):
+    """ notes for core's fixes that have landed, from the texts core_contract reads: a fix whose
+    file no longer holds one of its texts gives its note. A missing file gives none, since it is
+    a contract file whose absence already blocks
+    """
+    found = []
+    for item, _path, expected, note in CORE_FIXES:
+        text = texts.get(item)
+        if text is not None and any(part not in text for part in expected):
+            found.append({"item": item, "note": note})
     return found
 
 
