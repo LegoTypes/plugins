@@ -26,3 +26,14 @@ def test_notes_render_as_information():
     text = page()
     assert "data.notes" in text
     assert "banner('info', n.note)" in text
+
+
+def test_the_null_source_warning_stays_and_the_source_line_is_emptied_on_error():
+    text = page()
+    assert "banner('warning', \"{{ lang._('The host list could not be read;" in text
+    assert "var sourceLine = '';" in text
+    assert "$('#source').text(sourceLine);" in text
+    head, _, tail = text.partition("var sourceLine = '';")
+    assert "sourceLine = sourceText(" not in head
+    error_branch = tail.split("} else {", 1)[0]
+    assert "sourceLine" not in error_branch
