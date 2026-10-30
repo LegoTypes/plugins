@@ -142,9 +142,14 @@ wf_register_suite('failback', function (): int {
     wf_check($t, 'failback: a pf listing that could not be read leaves the failback pending and names the listing, not a drift',
         wf_failback_suspended('WAN_A', array_merge($pf, ['drift' => [$rulesUnread]]))
             === 'failback WAN_A: pfctl -vvsr could not be read; still pending'
-        && wf_failback_suspended('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => [$statesUnread, $rulesUnread, 'x']]))
+        && wf_failback_suspended('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => [$statesUnread, $rulesUnread]]))
             === 'failback WAN_A: pfctl -vvss could not be read; pfctl -vvsr could not be read; still pending'
         && wf_failback_dry('WAN_A', array_merge($pf, ['drift' => [$rulesUnread]]), $gwIp, true)
             === '[dry] failback WAN_A: pfctl -vvsr could not be read; still pending');
+    wf_check($t, 'failback: a real drift found in the same read as an unread listing is named too, and suspends failback',
+        wf_failback_suspended('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => [$statesUnread, $rulesUnread, 'x']]))
+            === 'failback WAN_A: x (core contract); pfctl -vvss could not be read; pfctl -vvsr could not be read; failback suspended'
+        && wf_failback_suspended('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => [$rulesUnread]]))
+            === 'failback WAN_A: pf state format did not parse (core contract); pfctl -vvsr could not be read; failback suspended');
     return wf_tally_report('failback', $t);
 });
