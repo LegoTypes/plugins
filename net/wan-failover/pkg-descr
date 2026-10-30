@@ -36,8 +36,8 @@ Plugin Changelog
   change, and a due failback waits for a whole one
 * The page's API call service/holds is now service/wan_status, and the
   old name no longer answers: a caller of it must move, and a page left
-  open across the upgrade shows "Status unavailable." until it is
-  reloaded. service/failbacknow is now service/failback_now; the old
+  open across the upgrade shows "Status unavailable." on its next
+  refresh. service/failbacknow is now service/failback_now; the old
   spelling still reaches it
 * The selftest helper is no longer installed
 
