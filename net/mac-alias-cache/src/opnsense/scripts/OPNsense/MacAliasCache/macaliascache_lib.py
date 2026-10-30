@@ -179,7 +179,8 @@ def validate_rows(rows):
 
 def seed_cache(good, now):
     """ {mac: {"items": [ip, ...], "last_seen": now}} in core's ArpCache format, from the rows
-    validate_rows kept; the MAC key is kept as list_hosts returns it
+    validate_rows kept, skipping any that fails the row check; the MAC key is kept as list_hosts
+    returns it
     """
     cache = {}
     for row in good:

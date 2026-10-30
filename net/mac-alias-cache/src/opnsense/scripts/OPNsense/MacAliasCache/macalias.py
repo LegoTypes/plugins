@@ -201,8 +201,8 @@ def _cache_file_problem(cfg):
 
 
 def _alias_name_problem(tables):
-    """ every name the flush refreshes must pass core's alias name pattern, as it becomes a path
-    under the alias tables directory and a pfctl -t argument. Core's internal tables
+    """ every name the flush refreshes must pass core's alias name pattern, because each becomes
+    a path under the alias tables directory and a pfctl -t argument. Core's internal tables
     (__lan_network ...) fail the pattern and are never refreshed
     """
     bad = [name for name in lib.refresh_set(tables) if not lib.valid_alias_name(name)]
