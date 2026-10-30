@@ -222,6 +222,36 @@ wf_register_suite('wiring', function (): int {
     wf_check($t, "evaluate.php's dry run says what the failback gate would do, through wf_failback_dry()",
         str_contains($src, 'wf_log(wf_failback_dry($n, wf_snapshot_pf($wanTargets), $wanTargets, $fb[\'top\']));')
         && !str_contains($src, 'would kill'));
+    /* every pf listing the snapshot and apply's failback gate read goes through the one runner, read again when cut short */
+    $snapshotSrc = (string)@file_get_contents(dirname($evaluate) . '/lib/snapshot.php');
+    wf_check($t, "the snapshot's and the failback gate's pf listings are read through wf_pf_listing() and wf_pfctl_run(), never a shell",
+        substr_count($snapshotSrc, "wf_pf_listing('wf_pfctl_run', ['-vvsr'])") === 2
+        && substr_count($snapshotSrc, "wf_pf_listing('wf_pfctl_run', ['-vvss'])") === 1
+        && preg_match('/shell_exec\([^)]*pfctl/', $snapshotSrc) === 0);
+    /* an evaluation and the page keep the last failback reading for a rule listing that could not be read */
+    $kept = strpos($src, "\$kept = wf_contract_kept(\$snap['contract'], \$state['contract_last']);");
+    $logged = strpos($src, "\$cl = wf_contract_log(\$snap['contract'], \$state['contract_last']);");
+    wf_check($t, 'evaluate.php keeps the last failback reading for an unread rule listing before it logs the contract, says so '
+        . 'once, and the page shows the same contract',
+        $kept !== false && $logged !== false && $kept < $logged
+        && str_contains($src, "\$snap['contract'] = \$kept['contract'];")
+        && str_contains($src, "wf_once(\$state['said'], 'rules_unread', \$kept['line'])")
+        && str_contains($src, "'contract' => wf_contract_kept(\$snap['contract'], \$s['contract_last'])['contract']"));
+    /* the runner itself, on the box's own pf, read-only: a listing whole, and a failing run's stderr kept apart */
+    $r = wf_t_run(['/usr/local/bin/php', '-d', 'log_errors=0', '-r', 'require_once "script/load_phalcon.php"; require_once '
+        . var_export(dirname($evaluate) . '/lib/snapshot.php', true) . ';
+        $l = wf_pfctl_run(["-vvsr"]);
+        $f = wf_pfctl_run(["-s", "wfnosuchmodifier"]);
+        echo json_encode(["rc" => $l["rc"], "whole" => wf_pf_whole($l), "parses" => wf_rules_selfcheck($l["out"]),
+            "failed_rc" => $f["rc"], "failed_out" => $f["out"], "failed_err" => str_contains($f["err"], "pfctl:")]);']);
+    $got = json_decode(trim($r['out']), true);
+    $ok = $r['rc'] === 0 && $got === ['rc' => 0, 'whole' => true, 'parses' => true, 'failed_rc' => 1, 'failed_out' => '',
+        'failed_err' => true];
+    wf_check($t, "wf_pfctl_run() reads the box's rule listing whole, and a pfctl that fails gives its exit status with its "
+        . 'stderr kept out of stdout', $ok);
+    if (!$ok) {
+        printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
+    }
     /* a cron-only drift is a removal drift too, and must not stop the removal running core's routing command itself */
     wf_check($t, '(d12) the removal decides its routing fallback with wf_contract_routes_fallback(), not from an empty removal list',
         str_contains($src, "wf_contract_routes_fallback(\$snap['contract']['removal'])")

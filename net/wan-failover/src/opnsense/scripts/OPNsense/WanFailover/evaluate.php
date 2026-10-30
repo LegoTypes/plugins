@@ -126,7 +126,8 @@ function wf_main(string $mode, array $args): int
                            ? wf_failback_wait($s['pending_failbacks'][$n], $snap['now'], $snap['failback_delay']) : null];
         }
         echo json_encode(['enabled' => $snap['enabled'], 'dry' => $snap['dry'], 'wans' => $rows,
-                          'unresolved' => $snap['unresolved'], 'contract' => $snap['contract'],
+                          'unresolved' => $snap['unresolved'],
+                          'contract' => wf_contract_kept($snap['contract'], $s['contract_last'])['contract'],
                           'tailscale' => ['default_gw' => $s['ts']['default_gw'], 'restarted_at' => $s['ts']['restarted_at']],
                           'state_corrupt' => $loaded['corrupt'], 'foreign' => count($s['foreign_pruned'])]), "\n";
         return 0;
@@ -201,6 +202,13 @@ function wf_main(string $mode, array $args): int
         $loaded['state']['boot_id'] = 'corrupt';
     }
     $state = $loaded['state'];
+    /* a rule listing that could not be read keeps the failback drift as the last evaluation read it, said once */
+    $kept = wf_contract_kept($snap['contract'], $state['contract_last']);
+    $snap['contract'] = $kept['contract'];
+    $unread = wf_once($state['said'], 'rules_unread', $kept['line']);
+    if ($unread !== null) {
+        wf_log($unread);
+    }
     $cl = wf_contract_log($snap['contract'], $state['contract_last']);
     if ($cl['line'] !== null) {
         wf_log($cl['line'], $cl['prio']);

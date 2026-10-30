@@ -126,8 +126,9 @@ function wf_failback_gate(string $recovering, array $flows, array $rulePref, arr
 
 /**
  * Whether failback may act on a pf read: only when its state listing parsed (wf_pf_selfcheck()) and its rule listing
- * and groups show no drift (wf_contract_failback()). Otherwise the line saying why failback is suspended, the drift
- * first, which the apply gate logs and a dry run says too.
+ * and groups show no drift (wf_contract_failback()). Otherwise the line saying why it does not, which the apply gate
+ * logs and a dry run says too: a listing that could not be read (WF_UNREAD_STATES, WF_UNREAD_RULES) tells no drift, so
+ * the line names it and the failback stays pending; else failback is suspended, the drift first.
  *
  * @param array{selfcheck: bool, drift: list<string>} $pf wf_snapshot_pf()
  */
@@ -135,6 +136,10 @@ function wf_failback_suspended(string $n, array $pf): ?string
 {
     if ($pf['selfcheck'] && $pf['drift'] === []) {
         return null;
+    }
+    $unread = array_values(array_intersect($pf['drift'], [WF_UNREAD_STATES, WF_UNREAD_RULES]));
+    if ($unread !== []) {
+        return "failback {$n}: " . implode('; ', $unread) . '; still pending';
     }
     $why = array_merge($pf['drift'], $pf['selfcheck'] ? [] : ['pf state format did not parse']);
     return "failback {$n}: " . implode('; ', $why) . ' (core contract); failback suspended';

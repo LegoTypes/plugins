@@ -60,6 +60,37 @@ function wf_route_get(string $dst): array
     return wf_parse_route_get((string)shell_exec('/sbin/route -n get -inet ' . escapeshellarg($dst) . ' 2>/dev/null'));
 }
 
+/**
+ * /sbin/pfctl with $args and no shell: its stdout, its stderr kept apart (in a temporary file, so a long listing cannot
+ * block on a full pipe), and its exit status. A pfctl that cannot be started, or no temporary file for its stderr, is a
+ * failed run (rc -1). Every pf listing the snapshot and the failback gate read comes through here (wf_pf_listing()).
+ *
+ * @param list<string> $args
+ * @return array{out: string, err: string, rc: int}
+ */
+function wf_pfctl_run(array $args): array
+{
+    $errFile = tempnam(sys_get_temp_dir(), 'wf_pfctl');
+    if ($errFile === false) {
+        return ['out' => '', 'err' => 'pfctl: no temporary file for its stderr', 'rc' => -1];
+    }
+    try {
+        $pipes = [];
+        $proc = proc_open(array_merge(['/sbin/pfctl'], $args),
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', $errFile, 'w']], $pipes);
+        if (!is_resource($proc)) {
+            return ['out' => '', 'err' => 'pfctl: could not be started', 'rc' => -1];
+        }
+        $out = (string)stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $rc = proc_close($proc);
+        $err = (string)file_get_contents($errFile);
+    } finally {
+        unlink($errFile);
+    }
+    return ['out' => $out, 'err' => $err, 'rc' => $rc];
+}
+
 /** The live IPv4 default route as a route target (gateway@interface), or null without one. */
 function wf_live_default(): ?string
 {
@@ -103,7 +134,8 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *     engine can never judge it (wf_unjudgeable());
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
  *     legacy_held: the gateways 1.3_1's held list names while it is still in the config;
- *     contract.failback: read only while failback is on, since its drift suspends failback alone
+ *     contract.failback: read only while failback is on, since its drift suspends failback alone; WF_UNREAD_RULES in it
+ *     is a rule listing that could not be read, which wf_contract_kept() resolves before anything acts on it
  */
 function wf_snapshot(): array
 {
@@ -200,7 +232,7 @@ function wf_snapshot(): array
     $tailscale = wf_contract_tailscale($tsActions);
     $names = wf_contract_name_mask($read(WF_CORE_GATEWAYS_XML));
     $failbackOn = $mdl->failback->isEqual('1');
-    $failback = $failbackOn ? wf_contract_failback((string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null'),
+    $failback = $failbackOn ? wf_contract_failback(wf_pf_listing('wf_pfctl_run', ['-vvsr']),
         wf_contract_groups_read(WF_CORE_GROUPS_CLASS, WF_CORE_GROUPS_METHOD)) : [];
     return [
         'now' => $now, 'boot_id' => $bootId, 'release' => null,
@@ -219,19 +251,22 @@ function wf_snapshot(): array
 }
 
 /**
- * drift is the failback contract on this read's own rule listing and groups (wf_contract_failback()); groups that
- * cannot be read, or a group whose shape drifted, give no preference (wf_rule_pref()), so the read never throws on
- * them.
+ * Both listings are read through wf_pf_listing(), once more when cut short. drift is the failback contract on this
+ * read's own rule listing and groups (wf_contract_failback()), after WF_UNREAD_STATES when the state listing could not
+ * be read; such a read never parses (selfcheck false). Groups that cannot be read, or a group whose shape drifted, give
+ * no preference (wf_rule_pref()), so the read never throws on them.
  *
  * @param array<string, string> $wanTargets WAN name => route target
  * @return array{flows: list<array>, renderings: array<string, list<array>>, pinned: array<string, true>,
  *               rule_pref: array<string, list<string>>, default: ?string, selfcheck: bool, drift: list<string>,
- *               raw_states: string, raw_rules: string}
+ *               raw_states: string, raw_rules: string} raw_states, raw_rules: empty when unread
  */
 function wf_snapshot_pf(array $wanTargets): array
 {
-    $rawStates = (string)shell_exec('/sbin/pfctl -vvss 2>/dev/null');
-    $rawRules = (string)shell_exec('/sbin/pfctl -vvsr 2>/dev/null');
+    $readStates = wf_pf_listing('wf_pfctl_run', ['-vvss']);
+    $readRules = wf_pf_listing('wf_pfctl_run', ['-vvsr']);
+    $rawStates = $readStates ?? '';
+    $rawRules = $readRules ?? '';
     $states = wf_parse_states($rawStates);
     $flows = wf_flows($states, array_flip($wanTargets));
     $pinned = wf_pinned_hosts($flows, function (string $host, array $f): bool {
@@ -247,6 +282,8 @@ function wf_snapshot_pf(array $wanTargets): array
     $pref = wf_rule_pref($ruleGateways, $groups['groups']);
     $default = array_search(wf_live_default(), $wanTargets, true);
     return ['flows' => $flows, 'renderings' => wf_parse_rules($rawRules), 'pinned' => $pinned, 'rule_pref' => $pref,
-            'default' => $default === false ? null : $default, 'selfcheck' => wf_pf_selfcheck($rawStates, $states),
-            'drift' => wf_contract_failback($rawRules, $groups), 'raw_states' => $rawStates, 'raw_rules' => $rawRules];
+            'default' => $default === false ? null : $default,
+            'selfcheck' => $readStates !== null && wf_pf_selfcheck($rawStates, $states),
+            'drift' => array_merge($readStates === null ? [WF_UNREAD_STATES] : [], wf_contract_failback($readRules, $groups)),
+            'raw_states' => $rawStates, 'raw_rules' => $rawRules];
 }

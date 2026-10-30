@@ -240,9 +240,11 @@ wf_register_suite('contract', function (): int {
         wf_contract_failback($rules, $read(['G1' => ['tiers' => 'WAN_A']])) === [$groupsDrift]
         && wf_contract_failback($rules, $read(['G1' => []])) === [$groupsDrift]
         && wf_contract_failback($rules, $read(['G1' => ['tiers' => [1 => [7]]]])) === [$groupsDrift]);
-    wf_check($t, 'failback contract: an unreadable listing is a drift',
-        wf_contract_failback(null, $read($groups)) === [$rulesDrift] && wf_contract_failback('', $read($groups)) === [$rulesDrift]
-        && wf_contract_failback(null, $read(['G1' => []])) === [$rulesDrift, $groupsDrift]);
+    $rulesUnread = 'pfctl -vvsr could not be read';
+    wf_check($t, 'failback contract: an unread or blank listing says it could not be read, not that the format moved',
+        wf_contract_failback(null, $read($groups)) === [$rulesUnread] && wf_contract_failback('', $read($groups)) === [$rulesUnread]
+        && wf_contract_failback("\n", $read($groups)) === [$rulesUnread]
+        && wf_contract_failback(null, $read(['G1' => []])) === [$rulesUnread, $groupsDrift]);
     /* core 26.7.7 (GatewayGroups.php getGroupsConfig()) gives every group tiers 1-5, each explode(',') of its item
      * field, so an empty tier is [''] and a group with no members has five of them */
     $core = fn (string $name, array $named): array => ['name' => $name, 'trigger' => 'downloss', 'poolopts' => '',
@@ -264,6 +266,60 @@ wf_register_suite('contract', function (): int {
         && $threw === $unreadable('WfTGroupsThrows::getGroupsConfig() threw RuntimeException')
         && $scalar === $unreadable('WfTGroupsScalar::getGroupsConfig() no longer returns an array')
         && wf_contract_failback($rules, $threw) === ['WfTGroupsThrows::getGroupsConfig() threw RuntimeException']
-        && wf_contract_failback(null, $scalar) === [$rulesDrift, 'WfTGroupsScalar::getGroupsConfig() no longer returns an array']);
+        && wf_contract_failback(null, $scalar) === [$rulesUnread, 'WfTGroupsScalar::getGroupsConfig() no longer returns an array']);
+
+    /* The failback contract's rule listing, read through wf_pf_listing() from a stand-in for wf_pfctl_run() that gives
+     * the runs a case lists, in order. A ruleset load, an identical one too, cuts a listing short with
+     * `pfctl: DIOCGETRULE: Device busy` on stderr while pfctl still exits 0 (the test VM: 3 of 200 listings during six
+     * filter reloads, cut at 265 to 375 of 480 lines) */
+    $pfctl = function (array $runs): array {
+        $calls = new ArrayObject();
+        $run = function (array $args) use ($calls, &$runs): array {
+            $calls[] = $args;
+            return array_shift($runs) ?? ['out' => '', 'err' => "pfctl: no run left\n", 'rc' => 1];
+        };
+        return ['run' => $run, 'calls' => $calls];
+    };
+    $altq = "No ALTQ support in kernel\nALTQ related functions disabled\n";
+    $whole = ['out' => $rules, 'err' => $altq, 'rc' => 0];
+    $cut = ['out' => "@0 scrub on vtnet1 all fragment reassemble\n", 'err' => $altq . "pfctl: DIOCGETRULE: Device busy\n", 'rc' => 0];
+    $clean = $read($groups);
+    $none = ['judging' => [], 'command' => [], 'failback' => [], 'tailscale' => [], 'removal' => [], 'names' => []];
+    /* one evaluation's contract from its listing runs and the last one's contract_last: what it keeps, logs and reads */
+    $tick = function (array $runs, string $last) use ($pfctl, $clean, $none): array {
+        $p = $pfctl($runs);
+        $kept = wf_contract_kept(array_merge($none, ['failback' => wf_contract_failback(wf_pf_listing($p['run'], ['-vvsr']),
+            $clean)]), $last);
+        return ['failback' => $kept['contract']['failback'], 'notice' => $kept['line'],
+                'log' => wf_contract_log($kept['contract'], $last), 'calls' => $p['calls']->getArrayCopy()];
+    };
+    $quiet = fn (string $last): array => ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
+    $notice = 'core-contract: pfctl -vvsr could not be read on two tries; the failback check keeps its last result';
+    $lastDrift = wf_contract_log(array_merge($none, ['failback' => [$rulesDrift]]), '')['last'];
+
+    $r = $tick([$whole], '');
+    wf_check($t, 'failback contract: a whole rule listing is read once and reports nothing',
+        $r['calls'] === [['-vvsr']] && $r['failback'] === [] && $r['notice'] === null && $r['log'] === $quiet(''));
+    $r = $tick([$cut, $whole], '');
+    wf_check($t, 'failback contract: a rule listing cut short is read once more, and the whole one reports no drift',
+        $r['calls'] === [['-vvsr'], ['-vvsr']] && $r['failback'] === [] && $r['notice'] === null && $r['log'] === $quiet(''));
+    $after = $tick([$cut, $cut], '');
+    $held = $tick([$cut, $cut], $lastDrift);
+    $groupsToo = wf_contract_kept(array_merge($none, ['failback' => [$rulesUnread, $groupsDrift]]), $lastDrift);
+    wf_check($t, 'failback contract: a rule listing cut short twice is no new drift: the last reading stands, nothing new is '
+        . 'logged, and one notice says why',
+        $after['calls'] === [['-vvsr'], ['-vvsr']] && $after['failback'] === [] && $after['log'] === $quiet('')
+        && $after['notice'] === $notice
+        && $held['failback'] === [$rulesDrift] && $held['log'] === $quiet($lastDrift) && $held['notice'] === $notice
+        && $groupsToo['contract']['failback'] === [$rulesDrift, $groupsDrift] && $groupsToo['line'] === $notice);
+    $moved = ['out' => str_replace('label "', 'label:', $rules), 'err' => $altq, 'rc' => 0];
+    $r = $tick([$moved], '');
+    wf_check($t, 'failback contract: a whole rule listing whose format moved is read once and is a drift, logged as before',
+        $r['calls'] === [['-vvsr']] && $r['failback'] === [$rulesDrift] && $r['notice'] === null
+        && $r['log']['line'] === 'core-contract: core changed what the plugin relies on (failback suspended): ' . $rulesDrift
+        && $r['log']['prio'] === LOG_WARNING);
+    wf_check($t, 'failback contract: a contract read whole is kept as it is',
+        wf_contract_kept(array_merge($none, ['failback' => [$groupsDrift]]), $lastDrift)
+            === ['contract' => array_merge($none, ['failback' => [$groupsDrift]]), 'line' => null]);
     return wf_tally_report('contract', $t);
 });

@@ -136,5 +136,15 @@ wf_register_suite('failback', function (): int {
             count($ready['kills']), $ready['spared'])
         && wf_failback_dry('WAN_A', array_merge($pf, ['default' => 'WAN_B']), $gwIp, true)
             === sprintf('[dry] failback WAN_A would kill %d states, spare %d flows (not ready)', count($stale['kills']), $stale['spared']));
+    /* a listing pfctl did not give whole on two tries (wf_pf_listing()) tells no drift */
+    $rulesUnread = 'pfctl -vvsr could not be read';
+    $statesUnread = 'pfctl -vvss could not be read';
+    wf_check($t, 'failback: a pf listing that could not be read leaves the failback pending and names the listing, not a drift',
+        wf_failback_suspended('WAN_A', array_merge($pf, ['drift' => [$rulesUnread]]))
+            === 'failback WAN_A: pfctl -vvsr could not be read; still pending'
+        && wf_failback_suspended('WAN_A', array_merge($pf, ['selfcheck' => false, 'drift' => [$statesUnread, $rulesUnread, 'x']]))
+            === 'failback WAN_A: pfctl -vvss could not be read; pfctl -vvsr could not be read; still pending'
+        && wf_failback_dry('WAN_A', array_merge($pf, ['drift' => [$rulesUnread]]), $gwIp, true)
+            === '[dry] failback WAN_A: pfctl -vvsr could not be read; still pending');
     return wf_tally_report('failback', $t);
 });

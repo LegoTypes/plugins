@@ -45,6 +45,10 @@ const WF_GATEWAY_LOCK = '/tmp/filter_reload_gateway.lock';
 const WF_DRIFT_ROUTES_CONFIGURE = '[routes.configure] changed';
 const WF_DRIFT_CRON_RESTART = 'actions_cron.conf [restart] changed';
 const WF_INSTANCE_KEYS = ['current_losslow', 'current_losshigh', 'current_time_period', 'current_interval', 'current_loss_interval'];
+const WF_DRIFT_RULES_FORMAT = 'pfctl -vvsr no longer prints rule labels or route-to targets as the failback parser reads them';
+/* a pf listing pfctl did not give whole on two tries (wf_pf_listing()): it tells no drift */
+const WF_UNREAD_RULES = 'pfctl -vvsr could not be read';
+const WF_UNREAD_STATES = 'pfctl -vvss could not be read';
 
 function wf_ini_section(string $text, string $name): ?string
 {
@@ -267,7 +271,8 @@ function wf_contract_groups_read(string $class, string $method): array
 /**
  * The reads failback rests on: `pfctl -vvsr`'s format (wf_rules_selfcheck()), whose labels and route-to targets tell
  * whether a rule renders its preferred WAN yet, and the groups (wf_contract_groups_read()), whose tiers give that
- * preference. Null is a listing that could not be read.
+ * preference. Null, or a blank listing, is one that could not be read (wf_pf_listing()): it says so (WF_UNREAD_RULES),
+ * not that the format moved, and wf_contract_kept() keeps the last reading in its place.
  *
  * @param array{groups: ?array<array-key, mixed>, drift: list<string>} $groups wf_contract_groups_read()
  * @return list<string>
@@ -275,10 +280,35 @@ function wf_contract_groups_read(string $class, string $method): array
 function wf_contract_failback(?string $rawRules, array $groups): array
 {
     $p = [];
-    if ($rawRules === null || !wf_rules_selfcheck($rawRules)) {
-        $p[] = 'pfctl -vvsr no longer prints rule labels or route-to targets as the failback parser reads them';
+    if ($rawRules === null || trim($rawRules) === '') {
+        $p[] = WF_UNREAD_RULES;
+    } elseif (!wf_rules_selfcheck($rawRules)) {
+        $p[] = WF_DRIFT_RULES_FORMAT;
     }
     return array_merge($p, $groups['drift']);
+}
+
+/**
+ * The contract as an evaluation acts on it and the page shows it. A rule listing that could not be read
+ * (WF_UNREAD_RULES in the failback class) tells no drift, so the class keeps the rule-format drift as the last
+ * evaluation read it ($last, wf_contract_log()'s), present or not, and wf_contract_log() logs nothing new for it. The
+ * groups' drift is read every time and stands as read.
+ *
+ * @param array{judging: list<string>, command: list<string>, failback: list<string>, tailscale: list<string>,
+ *               removal: list<string>, names: list<string>} $contract wf_snapshot()'s
+ * @return array{contract: array{judging: list<string>, command: list<string>, failback: list<string>,
+ *                                tailscale: list<string>, removal: list<string>, names: list<string>}, line: ?string}
+ *     line: the notice for an unread listing, for the caller to log once (wf_once()); null when it was read
+ */
+function wf_contract_kept(array $contract, string $last): array
+{
+    if (!in_array(WF_UNREAD_RULES, $contract['failback'], true)) {
+        return ['contract' => $contract, 'line' => null];
+    }
+    $kept = in_array(WF_DRIFT_RULES_FORMAT, explode("\n", $last), true) ? [WF_DRIFT_RULES_FORMAT] : [];
+    $contract['failback'] = array_merge($kept, array_values(array_diff($contract['failback'], [WF_UNREAD_RULES])));
+    return ['contract' => $contract,
+            'line' => 'core-contract: ' . WF_UNREAD_RULES . ' on two tries; the failback check keeps its last result'];
 }
 
 /**

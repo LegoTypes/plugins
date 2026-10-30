@@ -258,5 +258,31 @@ wf_register_suite('pfstate', function (): int {
     wf_check($t, 'rules selfcheck: one route-to line of an unread form beside parsed ones is not a drift',
         wf_rules_selfcheck($rulesRaw . '@2500 pass in quick on vlan0.140 route-to vtnet9 inet proto tcp from any to any keep state '
             . "label \"66666666-6666-4666-8666-666666666666\"\n"));
+
+    /* one pfctl run as wf_pfctl_run() gives it: stdout, stderr kept apart, exit status */
+    $altq = "No ALTQ support in kernel\nALTQ related functions disabled\n";
+    $busy = "pfctl: DIOCGETRULE: Device busy\n";
+    wf_check($t, 'pf listing: whole when pfctl exits 0 and prints it, its ALTQ notices on stderr aside',
+        wf_pf_whole(['out' => $rulesRaw, 'err' => '', 'rc' => 0]) && wf_pf_whole(['out' => $rulesRaw, 'err' => $altq, 'rc' => 0]));
+    wf_check($t, 'pf listing: not whole with a pfctl: line on stderr though pfctl exits 0, on a non-zero exit, or with nothing printed',
+        !wf_pf_whole(['out' => $rulesRaw, 'err' => $altq . $busy, 'rc' => 0])
+        && !wf_pf_whole(['out' => $rulesRaw, 'err' => $busy, 'rc' => 0])
+        && !wf_pf_whole(['out' => $rulesRaw, 'err' => '', 'rc' => 1]) && !wf_pf_whole(['out' => $rulesRaw, 'err' => '', 'rc' => -1])
+        && !wf_pf_whole(['out' => "\n", 'err' => '', 'rc' => 0]));
+    $listed = function (array $runs): array {
+        $calls = new ArrayObject();
+        $out = wf_pf_listing(function (array $args) use ($calls, &$runs): array {
+            $calls[] = $args;
+            return array_shift($runs) ?? ['out' => '', 'err' => "pfctl: no run left\n", 'rc' => 1];
+        }, ['-vvss']);
+        return [$out, $calls->getArrayCopy()];
+    };
+    $cutRun = ['out' => substr($raw, 0, 200), 'err' => $altq . $busy, 'rc' => 0];
+    $wholeRun = ['out' => $raw, 'err' => $altq, 'rc' => 0];
+    wf_check($t, 'pf listing: a whole listing is read once; one not whole is read once more, never a third time, and null '
+        . 'when neither was whole',
+        $listed([$wholeRun]) === [$raw, [['-vvss']]] && $listed([$cutRun, $wholeRun]) === [$raw, [['-vvss'], ['-vvss']]]
+        && $listed([$cutRun, $cutRun, $wholeRun]) === [null, [['-vvss'], ['-vvss']]]
+        && $listed([['out' => '', 'err' => 'pfctl: could not be started', 'rc' => -1], $cutRun]) === [null, [['-vvss'], ['-vvss']]]);
     return wf_tally_report('pfstate', $t);
 });

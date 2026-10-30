@@ -253,6 +253,45 @@ function wf_pf_selfcheck(string $raw, array $states): bool
 }
 
 /**
+ * Whether one pfctl run gave its listing whole: it exited 0, printed something, and wrote no stderr line beginning
+ * `pfctl:`. A ruleset load during a listing, an identical one too, cuts it short with `pfctl: DIOCGETRULE: Device busy`
+ * while pfctl still exits 0, so the exit status alone cannot tell. pf's ALTQ notices ("No ALTQ support in kernel") do
+ * not begin so and change nothing.
+ *
+ * @param array{out: string, err: string, rc: int} $run one wf_pfctl_run()
+ */
+function wf_pf_whole(array $run): bool
+{
+    if ($run['rc'] !== 0 || trim($run['out']) === '') {
+        return false;
+    }
+    foreach (preg_split('/\R/', $run['err']) ?: [] as $line) {
+        if (str_starts_with(ltrim($line), 'pfctl:')) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * A pf listing, pfctl with $args, read once more when the first run did not give it whole (wf_pf_whole()). Null when
+ * neither run did: an unread listing, which the caller tells apart from one whose format moved.
+ *
+ * @param callable(list<string>): array{out: string, err: string, rc: int} $run wf_pfctl_run()
+ * @param list<string> $args
+ */
+function wf_pf_listing(callable $run, array $args): ?string
+{
+    for ($i = 0; $i < 2; $i++) {
+        $r = $run($args);
+        if (wf_pf_whole($r)) {
+            return $r['out'];
+        }
+    }
+    return null;
+}
+
+/**
  * The states pf routes via $target (gateway@interface), whatever the target's token, that carry an id.
  *
  * @param list<array{id: ?string, creatorid: ?string, rt_target: ?string}> $states wf_parse_states()
