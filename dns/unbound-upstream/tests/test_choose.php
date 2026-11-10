@@ -125,6 +125,33 @@ uu_register_suite('choose', function (): int {
     uu_check($t, 'a long settled gap (900 s) counts in full', $r['wg-a']['counted'] === 910);
     $r = uu_timers_update(['wg-a' => uu_test_timer(80, null, null)], ['wg-a' => 'young'], ['wg-a' => false],
         ['wg-a' => 'no gateway status'], 1000, $w);
+    /* carried through a monitor restart: last_at stands, the window counts on settling, never otherwise */
+    $c = uu_timers_update(['wg-a' => uu_test_timer(300, null, 1000)], ['wg-a' => 'young'], ['wg-a' => false], [],
+        1030, $w, ['wg-a' => true]);
+    uu_check($t, 'carried young reading: last_at stands and nothing is counted yet',
+        $c['wg-a']['last_at'] === 1000 && $c['wg-a']['counted'] === 300);
+    $c = uu_timers_update($c, ['wg-a' => 'young'], ['wg-a' => false], [], 1060, $w, ['wg-a' => true]);
+    $c = uu_timers_update($c, ['wg-a' => 'settled'], ['wg-a' => true], [], 1120, $w, ['wg-a' => false]);
+    uu_check($t, 'settled again after a carried window: the whole span since last_at counts',
+        $c['wg-a']['counted'] === 420 && $c['wg-a']['last_at'] === 1120);
+    $c = uu_timers_update(['wg-a' => uu_test_timer(300, null, 1000)], ['wg-a' => 'young'], ['wg-a' => false], [],
+        1030, $w, ['wg-a' => true]);
+    $c = uu_timers_update($c, ['wg-a' => 'young'], ['wg-a' => false], [], 1200, $w, ['wg-a' => false]);
+    uu_check($t, 'a carry that ends before settling clears last_at, counting nothing',
+        $c['wg-a']['last_at'] === null && $c['wg-a']['counted'] === 300);
+    $c = uu_timers_update($c, ['wg-a' => 'settled'], ['wg-a' => true], [], 1260, $w);
+    uu_check($t, 'and the next settled reading starts from there', $c['wg-a']['counted'] === 300
+        && $c['wg-a']['last_at'] === 1260);
+    $c = uu_timers_update(['wg-a' => uu_test_timer(300, null, 1000)], ['wg-a' => 'none'], ['wg-a' => false], [],
+        1002, $w, ['wg-a' => true]);
+    $c = uu_timers_update($c, ['wg-a' => 'young'], ['wg-a' => false], [], 1006, $w, ['wg-a' => true]);
+    uu_check($t, 'a reading with nothing to read yet (pending), then a young one: last_at stands through both',
+        $c['wg-a']['last_at'] === 1000 && $c['wg-a']['counted'] === 300);
+    $c = uu_timers_update(['wg-a' => uu_test_timer(300, null, 1000)], ['wg-a' => 'young'], ['wg-a' => false],
+        ['wg-a' => 'lost 16 of losshigh'], 1030, $w, ['wg-a' => true]);
+    uu_check($t, 'a down verdict wins over a carried flag', $c['wg-a']['counted'] === 0
+        && $c['wg-a']['last_at'] === null);
+
     uu_check($t, 'down on a young tick still resets counted, and records last_down',
         $r['wg-a']['counted'] === 0 && $r['wg-a']['last_down'] === ['at' => $w, 'reason' => 'no gateway status']);
 

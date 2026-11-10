@@ -34,7 +34,10 @@ declare(strict_types=1);
  *                                  last_down: ?array{at: int, reason: string}, resolver: string}>
  * A member's timer counts the seconds between two consecutive evaluations that both read it settled and usable.
  * last_at is the previous such evaluation; any other reading (young, cached, none, unusable) clears it, so the
- * gap is neither counted nor does it reset the count. A down verdict resets the count; when the member had been
+ * gap is neither counted nor does it reset the count. One exception: while a member's standing holds through a
+ * monitor restart (uu_restart_standing() carried or pending), last_at stands, so the restart's window counts once
+ * the member reads settled again and is not counted when it does not. A down verdict resets the count; when the
+ * member had been
  * counting, it also records last_down (wall-clock time and the verdict), which stays until the next such down.
  */
 
@@ -61,12 +64,22 @@ function uu_timer_new(): array
  * @param int $now monotonic seconds (intdiv(hrtime(true), 1000000000)); the wall clock is never used, so an NTP
  *             step cannot move a timer or a resolver-failed mark
  * @param int $wall wall-clock seconds, for display only (a last_down record); no timer reads it
+ * @param array<string, bool> $standing whether the member's standing holds through a monitor restart
+ *             (uu_restart_standing() carried or pending, read from $timers as passed in); a member absent from it
+ *             has none
  * @return array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                             probe_failures: int,
  *                                 last_down: ?array{at: int, reason: string}, resolver: string}>
  */
-function uu_timers_update(array $timers, array $kinds, array $usable, array $down, int $now, int $wall): array
-{
+function uu_timers_update(
+    array $timers,
+    array $kinds,
+    array $usable,
+    array $down,
+    int $now,
+    int $wall,
+    array $standing = []
+): array {
     $out = [];
     foreach ($kinds as $name => $kind) {
         $timer = $timers[$name] ?? uu_timer_new();
@@ -83,7 +96,7 @@ function uu_timers_update(array $timers, array $kinds, array $usable, array $dow
             }
             $timer['usable_since'] = $timer['usable_since'] ?? $now;
             $timer['last_at'] = $now;
-        } else {
+        } elseif (!($standing[$name] ?? false)) {
             $timer['last_at'] = null;
         }
         $out[$name] = $timer;
@@ -126,7 +139,8 @@ function uu_timers_follow_resolvers(array $timers, array $resolvers): array
  * Members in the order they should be tried; the first is the target, and the current member first means stay.
  *
  * @param list<list<string>> $tiers best tier first, configured order within a tier
- * @param array<string, bool> $usableSettled settled and usable per member; gates entering and returning only
+ * @param array<string, bool> $usableSettled settled and usable per member, or carried through a monitor restart
+ *             (uu_usable_carried()); gates entering and returning only
  * @param array<string, bool> $down member has a down verdict; the current member stays while it is not down
  * @param array<string, array{usable_since: ?int, counted: int, last_at: ?int, resolver_failed_until: ?int,
  *                            probe_failures: int,

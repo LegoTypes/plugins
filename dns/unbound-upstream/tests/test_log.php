@@ -133,12 +133,29 @@ uu_register_suite('log', function (): int {
         . 'time and failures',
         $doc['members'] === [
             ['name' => 'wg-a', 'tier' => 1, 'resolver' => '10.2.0.1', 'kind' => 'settled', 'verdict' => null,
-             'usable' => true, 'healthy_for' => 40979, 'healthy_for_text' => '11 h 22 min', 'last_down' => null,
+             'usable' => true, 'carried' => false, 'healthy_for' => 40979, 'healthy_for_text' => '11 h 22 min', 'last_down' => null,
              'resolver_failed_for' => null, 'probe_failures' => 1],
             ['name' => 'wg-b', 'tier' => 2, 'resolver' => '10.2.0.1', 'kind' => 'settled', 'verdict' => 'settled down',
-             'usable' => false, 'healthy_for' => 0, 'healthy_for_text' => '0 s', 'last_down' => $down,
+             'usable' => false, 'carried' => false, 'healthy_for' => 0, 'healthy_for_text' => '0 s', 'last_down' => $down,
              'resolver_failed_for' => 30, 'probe_failures' => 0],
         ]);
+    uu_check($t, 'status: a member carried through a monitor restart reads young, not usable, carried; one with a '
+        . 'down verdict, or no settled evaluation before, is not carried',
+        uu_try_case(function () use ($s, $now, $armed): bool {
+            $rows = function (array $probeB, ?int $lastAt) use ($s, $now, $armed): array {
+                $s['probes']['wg-b'] = $probeB;
+                $st = uu_test_plan_state('wg-a', ['wg-a' => uu_test_timer(500, null, $now - 60),
+                    'wg-b' => uu_test_timer(500, null, $lastAt)]);
+                return uu_status_doc($s, uu_plan($s, $st), $armed)['members'][1];
+            };
+            $young = $rows(uu_test_probe('none', '0.0 %', 5), $now - 60);
+            $lossy = $rows(uu_test_probe('down', '100.0 %', 20), $now - 60);
+            $fresh = $rows(uu_test_probe('none', '0.0 %', 5), null);
+            return $young['kind'] === 'young' && $young['usable'] === false && $young['carried'] === true
+                && $young['healthy_for'] === 500
+                && $lossy['verdict'] === 'all lost 10 s' && $lossy['carried'] === false
+                && $fresh['kind'] === 'young' && $fresh['carried'] === false;
+        }));
     $contract = uu_contract($s['contract_input']);
     uu_check($t, 'status: checks, contract and the next evaluation\'s action',
         $doc['checks'] === $st['checks']
@@ -270,13 +287,13 @@ uu_register_suite('log', function (): int {
         $doc['unbound']['running'] === false && $doc['blocked'] === null && $doc['route']['flags'] === []
         && uu_test_reason_has($doc['next']['reasons'], 'Unbound not running'));
 
-    /* 1.3_2's status for one address: the document without the keys 1.4 adds (routes, addresses and each member's
-     * resolver), encoded as evaluate.php status encodes it, against what 1.3_2's own code printed for the same
-     * snapshot and state (fixtures/status_1.3_2_*.json) */
+    /* 1.3_2's status for one address: the document without the keys added since (routes, addresses, fail_closed and
+     * each member's resolver and carried), encoded as evaluate.php status encodes it, against what 1.3_2's own code
+     * printed for the same snapshot and state (fixtures/status_1.3_2_*.json) */
     $as132 = function (array $doc): string {
         unset($doc['routes'], $doc['addresses'], $doc['fail_closed']);
         foreach (array_keys($doc['members']) as $i) {
-            unset($doc['members'][$i]['resolver']);
+            unset($doc['members'][$i]['resolver'], $doc['members'][$i]['carried']);
         }
         return json_encode($doc, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
     };
@@ -289,16 +306,16 @@ uu_register_suite('log', function (): int {
 
     uu_check($t, '(l2) one IPv4 address in tunnel mode: every key and value 1.3_2 printed, byte for byte',
         uu_try_case(fn (): bool => $as132(uu_status_doc($s, $plan, $armed)) === $printed('tunnel')));
-    uu_check($t, '(l2) …and the keys it adds are only routes, addresses, fail_closed and each member\'s resolver: the one address, '
-        . 'its route as route shows it',
+    uu_check($t, '(l2) …and the keys it adds are only routes, addresses, fail_closed and each member\'s resolver and '
+        . 'carried: the one address, its route as route shows it',
         uu_try_case(function () use ($s, $plan, $armed, $printed, $memberFlags): bool {
             $doc = uu_status_doc($s, $plan, $armed);
             $was = json_decode($printed('tunnel'), true);
             $added = fn (array $now, array $then): array => array_values(array_diff(array_keys($now),
                 array_keys($then)));
             return $added($doc, $was) === ['routes', 'addresses', 'fail_closed']
-                && $added($doc['members'][0], $was['members'][0]) === ['resolver']
-                && $added($doc['members'][1], $was['members'][1]) === ['resolver']
+                && $added($doc['members'][0], $was['members'][0]) === ['resolver', 'carried']
+                && $added($doc['members'][1], $was['members'][1]) === ['resolver', 'carried']
                 && $doc['routes'] === ['10.2.0.1' => $s['routes']['10.2.0.1'] + ['flags' => $memberFlags,
                     'footprint' => false]]
                 && $doc['addresses'] === ['10.2.0.1'] && array_column($doc['members'], 'resolver') === ['10.2.0.1',

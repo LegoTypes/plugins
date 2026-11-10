@@ -128,5 +128,58 @@ uu_register_suite('verdict', function (): int {
         && !uu_usable_settled($forced, uu_test_probe('none', '0.0 %', 90), 'downloss')
         && !uu_usable_settled($off, uu_test_probe('none', '0.0 %', 90), 'downloss'));
 
+    /* carried through a monitor restart: time_period 80, the gap UU_CARRY_GAP_SECONDS */
+    $clean = uu_test_probe('none', '0.0 %', 5);
+    uu_check($t, 'carried: a young, clean window whose monitor started within the gap of a settled, usable evaluation',
+        UU_CARRY_GAP_SECONDS === 120
+        && uu_usable_carried($a, $clean, 'downloss', 940, 1000)
+        && uu_usable_carried($a, uu_test_probe('none', '0.0 %', 79), 'downloss', 940, 1139)
+        && !uu_usable_carried($a, $clean, 'downloss', null, 1000));
+    uu_check($t, 'carried: the bound is on the monitor\'s start (now less its age): 120 s after last_at yes, 121 s no',
+        uu_usable_carried($a, uu_test_probe('none', '0.0 %', 5), 'downloss', 875, 1000)
+        && !uu_usable_carried($a, uu_test_probe('none', '0.0 %', 5), 'downloss', 874, 1000)
+        && uu_usable_carried($a, uu_test_probe('none', '0.0 %', 60), 'downloss', 874, 1054)
+        && !uu_usable_carried($a, uu_test_probe('none', '0.0 %', 60), 'downloss', 874, 1055));
+    uu_check($t, 'carried: never with a lost probe, a status unusable for the trigger, a settled or absent reading',
+        !uu_usable_carried($a, uu_test_probe('none', '0.1 %', 30), 'downloss', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('loss', '0.0 %', 30), 'downloss', 940, 1000)
+        && uu_usable_carried($a, uu_test_probe('delay', '0.0 %', 30), 'downloss', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('delay', '0.0 %', 30), 'downlatency', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('none', '0.0 %', 90), 'downloss', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('none', '0.0 %', null), 'downloss', 940, 1000));
+    uu_check($t, 'carried: no data yet with the watcher\'s last status usable, the bound on the evaluation itself '
+        . 'when the monitor has no age',
+        uu_usable_carried($a, uu_test_probe('down', '~', null, 'none'), 'downloss', 880, 1000)
+        && !uu_usable_carried($a, uu_test_probe('down', '~', null, 'none'), 'downloss', 879, 1000)
+        && uu_usable_carried($a, uu_test_probe('down', '~', 2, 'none'), 'downloss', 879, 1000)
+        && !uu_usable_carried($a, uu_test_probe('down', '~', null, 'down'), 'downloss', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('down', '~', null, 'loss'), 'downloss', 940, 1000)
+        && !uu_usable_carried($a, uu_test_probe('down', '~', null, null), 'downloss', 940, 1000));
+    uu_check($t, 'standing: nothing to read at all yet (no data, no status of the watcher\'s) is pending inside the gap, '
+        . 'lost past it; data with no monitor age is lost; a settled reading is judged on its own',
+        uu_restart_standing($a, uu_test_probe('down', '~', null, null), 'downloss', 880, 1000) === 'pending'
+        && uu_restart_standing($a, uu_test_probe('down', '~', null, null), 'downloss', 879, 1000) === 'lost'
+        && uu_restart_standing($a, uu_test_probe('down', '~', null, null), 'downloss', null, 1000) === 'lost'
+        && uu_restart_standing($a, uu_test_probe('none', '0.0 %', null), 'downloss', 940, 1000) === 'lost'
+        && uu_restart_standing($a, uu_test_probe('none', '0.0 %', 90), 'downloss', 940, 1000) === 'lost'
+        && uu_restart_standing($a, $clean, 'downloss', 940, 1000) === 'carried'
+        && uu_restart_standing($a, uu_test_probe('none', '0.1 %', 30), 'downloss', 940, 1000) === 'lost'
+        && !uu_usable_carried($a, uu_test_probe('down', '~', null, null), 'downloss', 880, 1000));
+    uu_check($t, 'standing: the monitor\'s age and the evaluation\'s time are read at different moments, so a start up to '
+        . '5 s before last_at is still a restart after it; one earlier is a monitor that was never restarted',
+        UU_CARRY_SKEW_SECONDS === 5
+        && uu_restart_standing($a, uu_test_probe('none', '0.0 %', 62), 'downloss', 940, 1000) === 'carried'
+        && uu_restart_standing($a, uu_test_probe('none', '0.0 %', 65), 'downloss', 940, 1000) === 'carried'
+        && uu_restart_standing($a, uu_test_probe('none', '0.0 %', 66), 'downloss', 940, 1000) === 'lost');
+    uu_check($t, 'standing: a monitor that ran through the last settled evaluation and now reads no data (its sends fail) '
+        . 'was not restarted: lost, whatever the watcher last recorded, at once and for good',
+        uu_restart_standing($a, uu_test_probe('down', '~', 500, 'none'), 'downloss', 990, 1000) === 'lost'
+        && uu_restart_standing($a, uu_test_probe('down', '~', 5000, 'none'), 'downloss', 940, 1000) === 'lost'
+        && uu_restart_standing($a, uu_test_probe('down', '~', 500, null), 'downloss', 990, 1000) === 'lost'
+        && !uu_usable_carried($a, uu_test_probe('down', '~', 500, 'none'), 'downloss', 990, 1000));
+    uu_check($t, 'carried: never a disabled or forced-down member',
+        !uu_usable_carried($forced, $clean, 'downloss', 940, 1000)
+        && !uu_usable_carried($off, $clean, 'downloss', 940, 1000));
+
     return uu_tally_report('verdict', $t);
 });

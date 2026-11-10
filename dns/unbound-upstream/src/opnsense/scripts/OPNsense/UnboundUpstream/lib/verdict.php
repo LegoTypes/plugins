@@ -141,7 +141,8 @@ function uu_member_down(array $m, array $p, string $trigger, bool $named): ?stri
 }
 
 /**
- * Only a settled, usable window qualifies a member for choice; cached, young and none never do.
+ * A settled, usable window qualifies a member for choice; a cached or young reading only as uu_usable_carried()
+ * says, none never.
  *
  * @param array{name: string, interface: string, if: string, next_hop: string, disabled: bool, force_down: bool,
  *              monitor_disable: bool, monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int} $m
@@ -151,4 +152,58 @@ function uu_usable_settled(array $m, array $p, string $trigger): bool
 {
     return !$m['disabled'] && !$m['force_down'] && uu_reading_kind($m, $p) === 'settled'
         && !uu_status_unusable($p['status'], $trigger);
+}
+
+/**
+ * A restarted monitor is not a lost member: how a reading that is not settled stands against the settled, usable
+ * evaluation before it ($lastAt, the timer's last_at), when the member's monitor was started after that evaluation
+ * (UU_CARRY_SKEW_SECONDS before it at the earliest) and no later than UU_CARRY_GAP_SECONDS after it. A monitor that
+ * was running at that evaluation and has since gone silent was not restarted, and stands as lost.
+ *  - 'carried': nothing read since speaks against the member, and it keeps its standing for choice: a young window
+ *    with no loss and a usable status, or no data yet with the watcher's last status usable.
+ *  - 'pending': there is nothing to read at all yet (no data, and no status of the watcher's): the member does not
+ *    qualify, and its standing waits for the next evaluation.
+ *  - 'lost': anything else, a settled reading included (it is judged on its own).
+ * The monitor's start is the evaluation's time less the monitor's age; without an age (no process yet) it is the
+ * evaluation's time. A down verdict (uu_member_down()) is the caller's to apply first, so the young window's own
+ * loss rules still drop the member. $lastAt does not move while the member is carried or pending, so a monitor
+ * restarted again later than the gap is neither, and the longest carry is the gap and one time period.
+ *
+ * @param array{name: string, interface: string, if: string, next_hop: string, disabled: bool, force_down: bool,
+ *              monitor_disable: bool, monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int} $m
+ * @param array{status: string, loss: string, sock_age: ?int, cached: ?string} $p
+ * @param ?int $lastAt monotonic seconds of the member's last settled, usable evaluation, null when the evaluation
+ *             before this one was not one (or one this function called pending or carried)
+ * @param int $now monotonic seconds
+ * @return string carried, pending or lost
+ */
+function uu_restart_standing(array $m, array $p, string $trigger, ?int $lastAt, int $now): string
+{
+    if ($lastAt === null || $m['disabled'] || $m['force_down']) {
+        return 'lost';
+    }
+    $startedAfter = $now - (int)($p['sock_age'] ?? 0) - $lastAt;
+    if ($startedAfter < -UU_CARRY_SKEW_SECONDS || $startedAfter > UU_CARRY_GAP_SECONDS) {
+        return 'lost';
+    }
+    $kind = uu_reading_kind($m, $p);
+    if ($kind === 'young') {
+        return uu_loss_value($p['loss']) === 0.0 && !uu_status_unusable($p['status'], $trigger) ? 'carried' : 'lost';
+    }
+    if ($kind === 'cached') {
+        return uu_status_unusable((string)$p['cached'], $trigger) ? 'lost' : 'carried';
+    }
+    return $kind === 'none' && uu_loss_value($p['loss']) === null ? 'pending' : 'lost';
+}
+
+/**
+ * Whether a reading that is not settled keeps the member's standing for choice (uu_restart_standing() carried).
+ *
+ * @param array{name: string, interface: string, if: string, next_hop: string, disabled: bool, force_down: bool,
+ *              monitor_disable: bool, monitor: string, time_period: int, interval: int, loss_interval: int, losshigh: int} $m
+ * @param array{status: string, loss: string, sock_age: ?int, cached: ?string} $p
+ */
+function uu_usable_carried(array $m, array $p, string $trigger, ?int $lastAt, int $now): bool
+{
+    return uu_restart_standing($m, $p, $trigger, $lastAt, $now) === 'carried';
 }

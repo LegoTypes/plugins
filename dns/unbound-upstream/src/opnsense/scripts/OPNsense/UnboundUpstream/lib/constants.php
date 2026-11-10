@@ -32,6 +32,11 @@ declare(strict_types=1);
  */
 
 const UU_DEAD_MIN_SECONDS = 10;           /* all packets lost this long, on a young window, is down */
+const UU_CARRY_GAP_SECONDS = 120;         /* a monitor restarted within this long after a settled, usable evaluation
+                                           * (two minute ticks) keeps the member's standing while its new
+                                           * window fills (uu_restart_standing()) */
+const UU_CARRY_SKEW_SECONDS = 5;          /* a monitor's age and the evaluation's time are read at different moments:
+                                           * a start this long before that evaluation still counts as after it */
 const UU_FIB_SYNC_MARGIN_MS = 500;        /* added to net.route.algo.fib_max_sync_delay_ms before probing */
 const UU_PROBE_TIMEOUT_SECONDS = 3;       /* one resolver probe */
 const UU_PROBE_TRIES = 2;                 /* a probe is tried once more before it counts as failed */

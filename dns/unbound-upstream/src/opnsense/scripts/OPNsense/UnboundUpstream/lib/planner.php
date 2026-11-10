@@ -102,6 +102,7 @@ function uu_plan_route_via(array $route, array $m): bool
  *                            probe_failures: int,
  *                                last_down: ?array{at: int, reason: string}, resolver: string}> $timers
  * @param list<string> $excluded the members the contract makes no candidate (uu_contract())
+ * @param array<string, bool> $carried carried through a monitor restart per member (uu_usable_carried())
  */
 function uu_plan_note(
     string $name,
@@ -111,7 +112,8 @@ function uu_plan_note(
     array $usable,
     array $timers,
     int $now,
-    array $excluded
+    array $excluded,
+    array $carried = []
 ): string {
     if (!isset($kinds[$name])) {
         return "$name not in group $group";
@@ -128,6 +130,10 @@ function uu_plan_note(
     }
     if ($usable[$name] ?? false) {
         return sprintf('%s usable and settled %d s', $name, $timers[$name]['counted'] ?? 0);
+    }
+    if ($carried[$name] ?? false) {
+        return sprintf('%s usable, monitor restarted (reading %s), settled %d s before it', $name, $kinds[$name],
+            $timers[$name]['counted'] ?? 0);
     }
     return "$name reading {$kinds[$name]}";
 }
@@ -530,6 +536,8 @@ function uu_plan_steps(array $s, array $st): array
     /* readings and verdicts for every group member; one without a gateway record or status cannot carry it */
     $kinds = [];
     $usable = [];
+    $carried = [];
+    $standing = [];
     $down = [];
     $verdicts = [];
     foreach ($s['tiers'] as $tier) {
@@ -539,11 +547,18 @@ function uu_plan_steps(array $s, array $st): array
             if ($m === null || $p === null) {
                 $kinds[$name] = 'none';
                 $usable[$name] = false;
+                $carried[$name] = false;
+                $standing[$name] = false;
                 $verdict = $m === null ? 'no gateway record' : 'no gateway status';
             } else {
                 $kinds[$name] = uu_reading_kind($m, $p);
                 $usable[$name] = uu_usable_settled($m, $p, $trigger);
                 $verdict = uu_member_down($m, $p, $trigger, in_array($name, $s['named'], true));
+                /* read from the timers as the last evaluation left them; a down verdict wins */
+                $after = $verdict !== null ? 'lost'
+                    : uu_restart_standing($m, $p, $trigger, $st['timers'][$name]['last_at'] ?? null, $now);
+                $carried[$name] = $after === 'carried';
+                $standing[$name] = $after !== 'lost';
             }
             $down[$name] = $verdict !== null;
             if ($verdict !== null) {
@@ -551,11 +566,16 @@ function uu_plan_steps(array $s, array $st): array
             }
         }
     }
+    /* what gates entering a member: a settled, usable window, or the one before a monitor restart */
+    $enterable = [];
+    foreach ($usable as $name => $settled) {
+        $enterable[$name] = $settled || $carried[$name];
+    }
     $resolverOf = uu_plan_resolvers($s);
     /* the address each member's timer last followed: the resolver it had before a Save changed it */
     $followed = array_map(fn (array $timer): string => $timer['resolver'], $st['timers']);
     $st['timers'] = uu_timers_follow_resolvers(
-        uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall']), $resolverOf);
+        uu_timers_update($st['timers'], $kinds, $usable, $verdicts, $now, $s['wall'], $standing), $resolverOf);
 
     /* when the state file does not say tunnel, the live root decides the mode, unless it is Unbound's configured root
      * zone (uu_plan_live_ours()); with the control channel silent there is no live root, and our route via a member is
@@ -597,7 +617,7 @@ function uu_plan_steps(array $s, array $st): array
      * down member: a worse tier needs no failback delay */
     $contract = uu_contract($s['contract_input']);
     $candidates = array_values(array_filter(
-        uu_candidates($s['tiers'], $usable, $down, $st['timers'], $now, $s['settings']['failback_delay'], $current),
+        uu_candidates($s['tiers'], $enterable, $down, $st['timers'], $now, $s['settings']['failback_delay'], $current),
         fn (string $name): bool => !in_array($name, $contract['excluded'], true)));
 
     $stopReason = uu_plan_stop_reason($s);
@@ -688,7 +708,7 @@ function uu_plan_steps(array $s, array $st): array
     }
 
     $note = fn (string $name): string => uu_plan_note($name, $group, $verdicts, $kinds, $usable, $st['timers'],
-        $now, $contract['excluded']);
+        $now, $contract['excluded'], $carried);
     $target = $candidates[0] ?? null;
     if ($target === null) {
         if ($mode === 'fallback' && $restore !== null) {

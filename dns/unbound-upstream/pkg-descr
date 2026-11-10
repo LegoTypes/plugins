@@ -19,6 +19,19 @@ its queries leave through that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.7
+
+* A restarted gateway monitor no longer costs a member its standing.
+  When the monitors are restarted (a gateway saved or applied, a routing
+  reconfigure) at the moment the member in use goes down, another member
+  that read settled and usable in the evaluation before is entered at
+  once, while its new window fills, instead of DNS moving to the
+  fallback for up to a monitor window and a minute. It holds only for a
+  monitor restarted within 2 minutes after that evaluation, while
+  nothing its new window reads speaks against the member, and the
+  resolver is still probed through the member before it is used. The reason line and the status name it ("monitor
+  restarted"); each member's status has a new field, carried
+
 1.6
 
 * While the plugin is enabled, Save now refuses Unbound's Outgoing

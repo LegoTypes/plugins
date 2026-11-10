@@ -671,8 +671,9 @@ uu_register_suite('planner', function (): int {
     $s['probes']['wg-b'] = uu_test_probe('none', '0.0 %', 6, 'none');
     $s['named'] = ['wg-a', 'wg-b'];
     $p = uu_plan($s, uu_test_plan_state('wg-a', $usable));
-    uu_check($t, 'named healthy wg-a (device recreation), route absent → none + route_repair',
-        $p['action'] === 'none' && $p['candidates'] === ['wg-a'] && $p['route_repair'] && !$p['reassert']
+    uu_check($t, 'named healthy wg-a (device recreation), route absent → none + route_repair; wg-b, its monitor '
+        . 'restarted too, stays a candidate behind it',
+        $p['action'] === 'none' && $p['candidates'] === ['wg-a', 'wg-b'] && $p['route_repair'] && !$p['reassert']
         && $p['state']['member'] === 'wg-a');
 
     $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
@@ -1149,6 +1150,85 @@ uu_register_suite('planner', function (): int {
     $rejectRoute = ['present' => true, 'gateway' => '', 'interface' => 'lo0', 'reject' => true, 'ours' => true];
     $mapEntry = fn (?array $route, bool $forwarded, ?int $released = null): array
         => ['route' => $route, 'forwarded' => $forwarded, 'released_at' => $released];
+
+    /* the trace of 2026-11-09: the current member is forced down and, in the same step, every monitor restarted */
+    $restartedMonitors = function (array $probeB, ?int $lastAtB): array {
+        $s = uu_test_in_tunnel(uu_test_snapshot(), 'wg-a');
+        $s['members']['wg-a']['force_down'] = true;
+        $s['probes']['wg-a'] = uu_test_probe('force_down', '0.0 %', 1);
+        $s['probes']['wg-b'] = $probeB;
+        return uu_plan($s, uu_test_plan_state('wg-a', ['wg-a' => uu_test_timer(500, null, $s['now'] - 60),
+            'wg-b' => uu_test_timer(500, null, $lastAtB)], 0, null, '10.2.0.1', $s));
+    };
+    uu_check($t, '(c1) current forced down, the other member young and clean right after a settled evaluation → '
+        . 'tunnel [wg-b], the reason naming the restart; its timer keeps last_at',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('none', '0.0 %', 1), $now - 60);
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b']
+                && uu_test_reason_has($p['reasons'], 'leave wg-a for wg-b: wg-a down: force_down',
+                    'wg-b usable, monitor restarted (reading young), settled 500 s before it')
+                && $p['state']['timers']['wg-b']['last_at'] === $now - 60
+                && $p['state']['timers']['wg-b']['counted'] === 500;
+        }));
+    uu_check($t, '(c2) the same before the first reply (no data, the watcher\'s last status usable) → tunnel [wg-b]',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('down', '~', null, 'none'), $now - 60);
+            return $p['action'] === 'tunnel' && $p['candidates'] === ['wg-b']
+                && uu_test_reason_has($p['reasons'], 'wg-b usable, monitor restarted (reading cached)');
+        }));
+    uu_check($t, '(c7) the hook\'s evaluation before any reply or watcher status (nothing to read): fallback this time, '
+        . 'yet wg-b keeps last_at, and the next evaluation, young and clean, enters it from the fallback',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('down', '~', null, null), $now - 60);
+            if ($p['action'] !== 'fallback' || $p['candidates'] !== []
+                || $p['state']['timers']['wg-b']['last_at'] !== $now - 60) {
+                return false;
+            }
+            $s = uu_test_snapshot();
+            $s['now'] = $now + 4;
+            $s['members']['wg-a']['force_down'] = true;
+            $s['probes']['wg-a'] = uu_test_probe('force_down', '0.0 %', 5);
+            $s['probes']['wg-b'] = uu_test_probe('none', '0.0 %', 5);
+            $st = uu_test_plan_state(null, $p['state']['timers']);
+            $q = uu_plan($s, $st);
+            return $q['action'] === 'tunnel' && $q['candidates'] === ['wg-b']
+                && uu_test_reason_has($q['reasons'], 'enter tunnel via wg-b', 'monitor restarted (reading young)');
+        }));
+    uu_check($t, '(c8) the other member\'s monitor was not restarted and reads no data (its sends fail), the watcher\'s '
+        . 'last status still usable → not carried: fallback, and its last_at is cleared',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('down', '~', 3000, 'none'), $now - 60);
+            return $p['action'] === 'fallback' && $p['candidates'] === []
+                && uu_test_reason_has($p['reasons'], 'no candidate, fallback', 'wg-b reading cached')
+                && $p['state']['timers']['wg-b']['last_at'] === null;
+        }));
+    uu_check($t, '(c3) no settled evaluation before it (a boot, a member just added) → fallback, reading young',
+        uu_try_case(function () use ($restartedMonitors): bool {
+            $p = $restartedMonitors(uu_test_probe('none', '0.0 %', 1), null);
+            return $p['action'] === 'fallback' && $p['candidates'] === []
+                && uu_test_reason_has($p['reasons'], 'no candidate, fallback', 'wg-b reading young');
+        }));
+    uu_check($t, '(c4) a monitor restarted later than the gap after the settled evaluation → fallback',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('none', '0.0 %', 1), $now - 1 - UU_CARRY_GAP_SECONDS - 1);
+            return $p['action'] === 'fallback' && $p['candidates'] === []
+                && $p['state']['timers']['wg-b']['last_at'] === null;
+        }));
+    uu_check($t, '(c5) a young window with a lost probe is not carried → fallback',
+        uu_try_case(function () use ($restartedMonitors, $now): bool {
+            $p = $restartedMonitors(uu_test_probe('none', '6.3 %', 20), $now - 60);
+            return $p['action'] === 'fallback' && $p['candidates'] === []
+                && $p['state']['timers']['wg-b']['last_at'] === null;
+        }));
+    uu_check($t, '(c6) from fallback, a better-tier member carried with the failback delay counted → enter it',
+        uu_try_case(function () use ($now): bool {
+            $s = uu_test_snapshot();
+            $s['probes']['wg-a'] = uu_test_probe('none', '0.0 %', 10);
+            $p = uu_plan($s, uu_test_plan_state(null, ['wg-a' => uu_test_timer(120, null, $now - 60)]));
+            return $p['action'] === 'tunnel' && ($p['candidates'][0] ?? null) === 'wg-a'
+                && uu_test_reason_has($p['reasons'], 'enter tunnel via wg-a',
+                    'wg-a usable, monitor restarted (reading young), settled 120 s before it');
+        }));
 
     uu_check($t, '(p4) per member: tunnel on wg-a (live root its own resolver), wg-a down → tunnel [wg-b]',
         uu_try_case(function () use ($perMember, $onA, $settledDown): bool {

@@ -38,7 +38,8 @@
             if (!c) { return "{{ lang._('not yet') }}"; }
             return (c.ok ? "{{ lang._('ok') }}" : "{{ lang._('failed') }}") + ' (' + plain(c.member) + ', ' + new Date(c.at * 1000).toLocaleString() + ')';
         }
-        /* the member's reading: only a settled window qualifies it for choice */
+        /* the member's reading: a settled window qualifies it for choice, and so does the one before a monitor
+           restart while the new window fills (carried) */
         var readings = {
             'settled': "{{ lang._('settled') }}",
             'young': "{{ lang._('young (window not yet full)') }}",
@@ -121,9 +122,9 @@
                         .append($('<td/>').text(plain(m.name)))
                         .append($('<td/>').text(m.tier))
                         .append($('<td/>').text(plain(m.resolver)))
-                        .append($('<td/>').text(plain(readings[m.kind] || m.kind)))
+                        .append($('<td/>').text(plain(readings[m.kind] || m.kind) + (m.carried ? "{{ lang._(', monitor restarted') }}" : '')))
                         .append($('<td/>').text(plain(m.verdict === null ? "{{ lang._('up') }}" : m.verdict)))
-                        .append($('<td/>').text(yesno(m.usable)))
+                        .append($('<td/>').text(yesno(m.usable || m.carried)))
                         .append($('<td/>').text(m.resolver_failed_for === null ? '' : m.resolver_failed_for + ' s'))
                         .append($('<td/>').text(plain(m.healthy_for_text)))
                         .append($('<td/>').text(lastDown(m.last_down))));

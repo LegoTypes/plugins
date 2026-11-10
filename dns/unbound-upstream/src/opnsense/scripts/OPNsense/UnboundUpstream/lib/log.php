@@ -246,6 +246,10 @@ function uu_status_doc(array $s, array $plan, array $blockTable): array
             'verdict' => $m === null ? 'no gateway record'
                 : ($p === null ? 'no gateway status' : uu_member_down($m, $p, $s['trigger'], false)),
             'usable' => $m !== null && $p !== null && uu_usable_settled($m, $p, $s['trigger']),
+            /* a carried member's last_at stands in the planned timers, so they answer as the planner's did */
+            'carried' => $m !== null && $p !== null
+                && uu_member_down($m, $p, $s['trigger'], in_array($name, $s['named'], true)) === null
+                && uu_usable_carried($m, $p, $s['trigger'], $timer['last_at'], $s['now']),
             'healthy_for' => $timer['counted'],
             'healthy_for_text' => uu_duration_text($timer['counted']),
             'last_down' => $timer['last_down'],
