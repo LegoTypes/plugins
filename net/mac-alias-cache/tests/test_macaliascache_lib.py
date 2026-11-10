@@ -30,6 +30,61 @@ def test_parse_tables_splits_addresses_and_reads_ttl():
     assert t["NoTtl"]["ttl"] is None
 
 
+@pytest.mark.parametrize("text, ttl", [
+    ("30", 30), ("43200.0", 43200), ("0", 0), ("0.5", 0), ("-1", None), ("1.2.3", None), ("", None),
+    (" 30\n", 30), ("5.", 5), (".5", 0), (".", None), ("30s", None), ("1e3", None), ("\u00b2", None),
+    ("9" * 400, None),
+], ids=["digits", "float", "zero", "fraction", "negative", "two-dots", "absent", "padded", "trailing-dot",
+        "leading-dot", "dot-alone", "unit", "exponent", "superscript", "beyond-a-float"])
+def test_alias_ttl_reads_a_ttl_as_core_reads_it(text, ttl):
+    # core's Alias: digits with at most one dot become int(float(text)); anything else leaves its
+    # default of -1, which is None here. The last two would raise in core, and read as None
+    assert lib.alias_ttl(text) == ttl
+
+
+TTL_XML = """<?xml version="1.0"?>
+<tabledef>
+  <table><name>Daily</name><type>mac</type><address>aa:bb:cc:00:00:01</address><ttl>43200.0</ttl></table>
+  <table><name>Never</name><type>mac</type><address>aa:bb:cc:00:00:02</address><ttl>0.0</ttl></table>
+  <table><name>Fraction</name><type>mac</type><address>aa:bb:cc:00:00:03</address><ttl>0.5</ttl></table>
+  <table><name>Unset</name><type>mac</type><address>aa:bb:cc:00:00:04</address></table>
+  <table><name>Stock</name><type>mac</type><address>aa:bb:cc:00:00:05</address><ttl>30</ttl></table>
+  <table><name>DisabledNever</name><type>mac</type><address></address><ttl>0</ttl></table>
+  <table><name>HostNever</name><type>host</type><address>192.0.2.1</address><ttl>0</ttl></table>
+</tabledef>
+"""
+
+
+def test_parse_tables_reads_the_float_ttl_core_writes_for_an_update_frequency():
+    t = lib.parse_tables(TTL_XML)
+    assert {name: table["ttl"] for name, table in t.items()} == {
+        "Daily": 43200, "Never": 0, "Fraction": 0, "Unset": None, "Stock": 30, "DisabledNever": 0, "HostNever": 0}
+
+
+def test_no_expiry_names_the_enabled_mac_aliases_without_a_lifetime_above_zero():
+    # a disabled alias and an alias of another type are not the flush's to expire
+    assert lib.no_expiry(lib.parse_tables(TTL_XML)) == ["Fraction", "Never", "Unset"]
+    assert lib.no_expiry(lib.parse_tables(TABLES_XML)) == []
+
+
+@pytest.mark.parametrize("text, reply", [
+    ('{"status": "ok"}', {"status": "ok", "messages": []}),
+    ('{"status": "error", "messages": ["Error loading alias [A]: x", "Error loading alias [B]: y"]}',
+     {"status": "error", "messages": ["Error loading alias [A]: x", "Error loading alias [B]: y"]}),
+    ("", {"status": None, "messages": []}),
+    ("Traceback (most recent call last):", {"status": None, "messages": []}),
+    ('["ok"]', {"status": None, "messages": []}),
+    ('{"status": 1, "messages": ["x"]}', {"status": None, "messages": []}),
+    ('{"messages": ["x"]}', {"status": None, "messages": []}),
+    ('{"status": "error", "messages": "x"}', {"status": "error", "messages": []}),
+    ('{"status": "error", "messages": ["x", 1, null]}', {"status": "error", "messages": ["x"]}),
+    ("[" * 200000, {"status": None, "messages": []}),
+], ids=["ok", "error-with-messages", "empty", "not-json", "json-list", "status-not-a-string", "no-status",
+        "messages-not-a-list", "messages-not-all-strings", "nested-beyond-the-parser"])
+def test_parse_update_reply(text, reply):
+    assert lib.parse_update_reply(text) == reply
+
+
 def test_mac_aliases_lowercases_and_skips_empty():
     m = lib.mac_aliases(lib.parse_tables(TABLES_XML))
     assert m == {

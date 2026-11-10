@@ -38,6 +38,7 @@ import sys
 import syslog
 import tempfile
 import time
+from typing import TypedDict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import macaliascache_lib as lib  # noqa: E402
@@ -46,7 +47,34 @@ import macaliascache_lib as lib  # noqa: E402
 # checks the programs it runs
 _CORE_FILES = {row[0]: row[1] for row in lib.CORE_CONTRACT + lib.CORE_FIXES}
 
-DEFAULTS = {
+
+class Config(TypedDict):
+    """ the paths, programs and limits a status or a flush works with; DEFAULTS is the box's own """
+    tables_conf: str
+    cache_file: str
+    lock_file: str
+    state_dir: str
+    aliastables_dir: str
+    list_hosts: list[str]
+    update_tables: str
+    core_files: dict[str, str]
+    pfctl: str
+    lock_timeout: float
+    lock_retry: float
+    min_interval: float
+    update_timeout: int
+
+
+class UpdateRun(TypedDict):
+    """ one run of core's update_tables.py as the flush reply carries it (_run_update) """
+    rc: int | None
+    output: str
+    status: str | None
+    messages: list[str]
+    complete: bool
+
+
+DEFAULTS: Config = {
     "tables_conf": "/usr/local/etc/filter_tables.conf",
     "cache_file": lib.CACHE_FILE,
     "lock_file": lib.UPDATE_LOCK,
@@ -62,9 +90,9 @@ DEFAULTS = {
     "update_timeout": 60,
 }
 
-# every item problems() can list, with the error code it refuses a flush with when it blocks;
-# when items of several codes block at once, the earliest code in _REFUSAL_ORDER wins. Every
-# core-contract item is core_changed; core's fixes are notes, never problems
+# every item problems() can list that may block a flush, with the error code it refuses with when
+# it does; when items of several codes block at once, the earliest code in _REFUSAL_ORDER wins.
+# Every core-contract item is core_changed; core's fixes are notes, never problems
 _REFUSAL_CODE = {
     "state_dir": "state_unusable",
     "last_file": "state_unusable",
@@ -75,6 +103,8 @@ _REFUSAL_CODE = {
 }
 _REFUSAL_CODE.update((item, "core_changed") for item, _path, _expected in lib.CORE_CONTRACT)
 _REFUSAL_ORDER = ("state_unusable", "lock_unusable", "core_changed")
+# the items problems() lists that never block a flush, so none has a refusal code
+_ADVISORY_ITEMS = ("alias_ttl",)
 
 
 def state_paths(cfg):
@@ -213,6 +243,16 @@ def _alias_name_problem(tables):
                     % ", ".join(repr(name) for name in bad), True)
 
 
+def _alias_ttl_problems(cfg: Config, tables: dict[str, lib.Table]) -> list[dict[str, object]]:
+    """ one problem per enabled MAC alias that core never rebuilds (lib.no_expiry), so a flush leaves it as
+    it is; the other aliases are rebuilt all the same, so none blocks
+    """
+    return [_problem("alias_ttl", "MAC alias %s has no lifetime above 0 in core's alias table file (%s), so core "
+                     "never rebuilds it and a flush cannot change it; clear the alias's update frequency"
+                     % (name, cfg["tables_conf"]), False)
+            for name in lib.no_expiry(tables)]
+
+
 def problems(cfg, tables=None, texts=None):
     """ what makes the plugin's state or core's files unsafe to use, for status and for a
     flush before it takes core's lock; ensure_state_dir puts the state directory in place.
@@ -227,7 +267,7 @@ def problems(cfg, tables=None, texts=None):
     # nothing inside a state directory that failed its check is looked at
     found = [state, None if state else _last_file_problem(cfg), None if state else _plugin_lock_problem(cfg),
              _lock_file_problem(cfg), _cache_file_problem(cfg), _alias_name_problem(tables)]
-    return [problem for problem in found if problem] + lib.core_contract(texts)
+    return [problem for problem in found if problem] + _alias_ttl_problems(cfg, tables) + lib.core_contract(texts)
 
 
 def refusal(found):
@@ -477,6 +517,34 @@ def _flush_emptied_tables(cfg, names):
     return flushed
 
 
+def _run_update(cfg: Config, names: list[str]) -> UpdateRun:
+    """ core's targeted update of the aliases names, and what it answered: its exit status (None when it never
+    started or was killed at the timeout), its output, and the status and messages of its reply, read once,
+    after an exit status of 0. The run is complete when it ended with exit status 0 and a reply: only then are
+    the alias files it left known to be whole
+    """
+    rc: int | None = None
+    reply: lib.UpdateReply = {"status": None, "messages": []}
+    try:
+        proc = subprocess.run(
+            [cfg["update_tables"], "--aliases", ",".join(names)],
+            capture_output=True, text=True, timeout=cfg["update_timeout"],
+        )
+        rc = proc.returncode
+        if rc == 0:
+            output = proc.stdout.strip()
+            reply = lib.parse_update_reply(output)
+        else:
+            # a crash's traceback is usually on stderr; keep both so it isn't lost
+            output = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
+    except subprocess.TimeoutExpired:
+        output = "timeout after %ss" % cfg["update_timeout"]
+    except OSError as e:
+        output = str(e)
+    return {"rc": rc, "output": output, "status": reply["status"], "messages": reply["messages"],
+            "complete": rc == 0 and reply["status"] is not None}
+
+
 def cmd_status(cfg, now):
     tables = read_tables(cfg)
     texts = read_core_texts(cfg)
@@ -630,24 +698,11 @@ def _flush(cfg, clock, sleep):
             if os.path.isfile(md5):
                 os.utime(md5, (0, 0))
 
-        try:
-            proc = subprocess.run(
-                [cfg["update_tables"], "--aliases", ",".join(names)],
-                capture_output=True, text=True, timeout=cfg["update_timeout"],
-            )
-            if proc.returncode == 0:
-                output = proc.stdout.strip()
-            else:
-                # a crash's traceback is usually on stderr; keep both so it isn't lost
-                output = "\n".join(part for part in (proc.stdout.strip(), proc.stderr.strip()) if part)
-            update = {"rc": proc.returncode, "output": output}
-        except subprocess.TimeoutExpired:
-            update = {"rc": None, "output": "timeout after %ss" % cfg["update_timeout"]}
-        except OSError as e:
-            update = {"rc": None, "output": str(e)}
+        update = _run_update(cfg, names)
 
-        # emptied tables are flushed under the lock, unless the child never ran to completion
-        emptied = _flush_emptied_tables(cfg, names) if update["rc"] is not None else []
+        # emptied tables are flushed under the lock, and only after a complete update: one that crashed, was
+        # killed or printed no reply may have left an alias file empty that it had not written yet
+        emptied = _flush_emptied_tables(cfg, names) if update["complete"] else []
 
         # the rate limit is armed before the unlock, or a flush queued behind this one would
         # read the previous last.json and rebuild again
@@ -662,7 +717,7 @@ def _flush(cfg, clock, sleep):
     summary = lib.summarise(before, after)
     _write_json_atomic(last_file, {"at": now, "summary": summary}, mode=0o600)
     return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied,
-            "rows_rejected": len(rows) - len(good), "rejected": rejected}
+            "no_expiry": lib.no_expiry(tables), "rows_rejected": len(rows) - len(good), "rejected": rejected}
 
 
 def main(argv):

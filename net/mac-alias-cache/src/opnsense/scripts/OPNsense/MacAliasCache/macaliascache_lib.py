@@ -28,9 +28,11 @@ Inputs mirror what core uses: /usr/local/etc/filter_tables.conf (applied
 alias definitions), list_hosts.py rows and the ArpCache JSON file.
 """
 import ipaddress
+import json
 import math
 import re
 import xml.etree.ElementTree as ET
+from typing import TypedDict
 
 _SPLIT = re.compile(r"[,\n]")
 _MAC = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
@@ -77,20 +79,47 @@ CORE_FIXES = (
 )
 
 
-def parse_tables(xml_text):
-    """ filter_tables.conf text -> {name: {type, address: [str], ttl: int|None}} """
-    result = {}
+class Table(TypedDict):
+    """ one alias of filter_tables.conf as parse_tables reads it; a disabled alias has no address """
+    type: str
+    address: list[str]
+    ttl: int | None
+
+
+class UpdateReply(TypedDict):
+    """ what a flush reads from update_tables.py's reply: status is None when it printed no reply """
+    status: str | None
+    messages: list[str]
+
+
+def alias_ttl(text: str) -> int | None:
+    """ an alias's lifetime in seconds as core's Alias reads a <ttl>: digits with at most one dot, cut to
+    an int (core writes update frequency * 86400 as a float); None for any other text, which core leaves at
+    its default of -1, never expiring
+    """
+    text = text.strip()
+    if len(text.split(".")) > 2 or not text.replace(".", "").isdigit():
+        return None
+    try:
+        return int(float(text))
+    # str.isdigit takes digits float() does not read (a superscript), and a long run of digits is infinite
+    except (ValueError, OverflowError):
+        return None
+
+
+def parse_tables(xml_text: str) -> dict[str, Table]:
+    """ filter_tables.conf text -> {name: {type, address: [str], ttl: int|None}}; ttl as alias_ttl reads it """
+    result: dict[str, Table] = {}
     root = ET.fromstring(xml_text)
     for table in root.iter("table"):
         name = (table.findtext("name") or "").strip()
         if not name:
             continue
         address = [a.strip() for a in _SPLIT.split(table.findtext("address") or "") if a.strip()]
-        ttl_text = (table.findtext("ttl") or "").strip()
         result[name] = {
             "type": (table.findtext("type") or "").strip(),
             "address": address,
-            "ttl": int(ttl_text) if ttl_text.isdigit() else None,
+            "ttl": alias_ttl(table.findtext("ttl") or ""),
         }
     return result
 
@@ -102,6 +131,14 @@ def mac_aliases(tables):
         for name, table in tables.items()
         if table["type"] == "mac" and table["address"]
     }
+
+
+def no_expiry(tables: dict[str, Table]) -> list[str]:
+    """ the enabled mac aliases core never rebuilds, sorted: core expires an alias only while its lifetime is
+    above 0, and forcing that expiry is how a flush makes core rebuild one
+    """
+    lifetimes = {name: tables[name]["ttl"] for name in mac_aliases(tables)}
+    return sorted(name for name, ttl in lifetimes.items() if ttl is None or ttl <= 0)
 
 
 def expand_entries(entries, macs):
@@ -272,6 +309,23 @@ def summarise(before, after):
             "removed": sorted(set(b) - set(a)) if both else [],
         })
     return result
+
+
+def parse_update_reply(text: str) -> UpdateReply:
+    """ update_tables.py's reply: the status and the messages of a JSON object whose status is a string;
+    no status and no messages for any other text, and only the messages that are strings
+    """
+    try:
+        reply = json.loads(text)
+    # ValueError is no JSON; RecursionError is nesting deeper than the parser goes
+    except (ValueError, RecursionError):
+        return {"status": None, "messages": []}
+    if not isinstance(reply, dict) or not isinstance(reply.get("status"), str):
+        return {"status": None, "messages": []}
+    messages = reply.get("messages")
+    if not isinstance(messages, list):
+        messages = []
+    return {"status": reply["status"], "messages": [message for message in messages if isinstance(message, str)]}
 
 
 def _is_number(value):

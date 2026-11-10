@@ -10,6 +10,24 @@ or "configctl macaliascache flush").
 Plugin Changelog
 ================
 
+1.3
+
+* Both configd actions name allowed_groups (wheel, wwwonly): a local
+  account in neither group can neither flush nor read the MAC and
+  address list through status
+* A flush reads core's reply. The page warns when core reports an error
+  loading a table, and the reply carries core's status and messages
+* A table core's update left empty is flushed only after an update that
+  ran to its end and answered. After one that crashed, was killed or
+  printed no reply, such a table keeps its addresses, and the page says
+  so
+* A MAC alias whose lifetime in core's alias table file is not above 0
+  (an update frequency that comes to less than a second) can never be
+  rebuilt by a flush; status and the page name it. The lifetime is read
+  as core reads it, fractions included
+* The page shows the texts of core and of the plugin as written, without
+  HTML entities
+
 1.2_1
 
 * The page shows core's fix for core #10114 as an information note, since

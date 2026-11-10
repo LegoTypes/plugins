@@ -99,13 +99,18 @@ def env(tmp_path):
 @pytest.fixture(autouse=True)
 def problems_name_only_mapped_items():
     """ every problem any case here produces or refuses with names an item that has a refusal
-    code, so an item added without one fails here instead of raising KeyError in a flush
+    code, so an item added without one fails here instead of raising KeyError in a flush; or it
+    names an advisory item, which has no code and must never block
     """
     real_problems, real_refusal = macalias.problems, macalias.refusal
+    # the previous release, which these cases also run against, has no advisory item
+    advisory = getattr(macalias, "_ADVISORY_ITEMS", ())
 
     def check(found):
-        unmapped = [problem["item"] for problem in found if problem["item"] not in macalias._REFUSAL_CODE]
+        unmapped = [problem["item"] for problem in found
+                    if problem["item"] not in macalias._REFUSAL_CODE and problem["item"] not in advisory]
         assert unmapped == [], found
+        assert [problem for problem in found if problem["item"] in advisory and problem["blocks_flush"]] == [], found
 
     def problems(*args, **kwargs):
         found = real_problems(*args, **kwargs)
@@ -273,6 +278,88 @@ def test_flush_skips_pf_flush_when_txt_is_undecodable(env):
     assert "error" not in out
     assert out["emptied"] == []
     assert not (tmp / "pfctl_flush_args").exists()
+
+
+UPDATE_OK = {"rc": 0, "output": '{"status": "ok"}', "status": "ok", "messages": [], "complete": True}
+
+
+def _emptying_update(tmp, name, last_line):
+    """ an update_tables.py that leaves both alias files empty, as core does between opening a file
+    and writing it, then runs last_line
+    """
+    return _exe(tmp / name, f"""
+        echo "$@" >> "{tmp}/update_args"
+        : > "{tmp}/aliastables/DevMacs.txt"
+        : > "{tmp}/aliastables/Parent.txt"
+        {last_line}
+    """)
+
+
+def _pf_untouched(tmp):
+    """ no pf table was flushed, and both still hold what the fixture put there """
+    return (not (tmp / "pfctl_flush_args").exists()
+            and (tmp / "pf" / "DevMacs").read_text() == "192.0.2.50\n192.0.2.99\n"
+            and (tmp / "pf" / "Parent").read_text() == "192.0.2.50\n192.0.2.99\n")
+
+
+def test_flush_reply_carries_cores_status_and_messages(env):
+    cfg, tmp = env
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["update_tables"] == UPDATE_OK
+
+
+def test_flush_keeps_the_tables_an_update_that_crashed_left_empty(env):
+    # core truncates an alias file when it opens it and writes it afterwards: a run that ends in
+    # between leaves the file empty while the alias is not, so its pf table must keep its addresses
+    cfg, tmp = env
+    cfg["update_tables"] = _emptying_update(tmp, "crashing_update", "exit 3")
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["emptied"] == []
+    assert _pf_untouched(tmp)
+    assert out["update_tables"] == {"rc": 3, "output": "", "status": None, "messages": [], "complete": False}
+
+
+def test_flush_keeps_the_tables_an_update_killed_at_the_timeout_left_empty(env):
+    cfg, tmp = env
+    cfg["update_tables"] = _emptying_update(tmp, "hanging_update", "exec sleep 30")
+    cfg["update_timeout"] = 1
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["emptied"] == []
+    assert _pf_untouched(tmp)
+    assert out["update_tables"] == {
+        "rc": None, "output": "timeout after 1s", "status": None, "messages": [], "complete": False}
+
+
+@pytest.mark.parametrize("last_line, output", [
+    (":", ""),
+    ("echo done", "done"),
+    ("echo '[\"ok\"]'", '["ok"]'),
+    ("echo '{\"status\": 1}'", '{"status": 1}'),
+    ("echo '{\"messages\": [\"x\"]}'", '{"messages": ["x"]}'),
+], ids=["nothing", "text", "json-list", "status-not-a-string", "no-status"])
+def test_flush_keeps_the_tables_an_update_without_a_reply_left_empty(env, last_line, output):
+    # exit status 0 alone does not say the run reached its end: core exits 0 early, printing nothing,
+    # when no alias is selected
+    cfg, tmp = env
+    cfg["update_tables"] = _emptying_update(tmp, "silent_update", last_line)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["emptied"] == []
+    assert _pf_untouched(tmp)
+    assert out["update_tables"] == {"rc": 0, "output": output, "status": None, "messages": [], "complete": False}
+
+
+def test_flush_carries_cores_error_and_still_flushes_the_emptied_tables(env):
+    # the run reached its end and answered, so its files are whole and the emptied aliases are
+    # truly empty; the error is about loading another alias's table
+    cfg, tmp = env
+    reply = '{"status": "error", "messages": ["Error loading alias [Other]: x"]}'
+    cfg["update_tables"] = _emptying_update(tmp, "error_update", "echo '%s'" % reply)
+    out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
+    assert out["update_tables"] == {"rc": 0, "output": reply, "status": "error",
+                                    "messages": ["Error loading alias [Other]: x"], "complete": True}
+    assert out["emptied"] == ["DevMacs", "Parent"]
+    assert (tmp / "pfctl_flush_args").read_text().splitlines() == ["-t DevMacs -T flush", "-t Parent -T flush"]
+    assert (tmp / "pf" / "DevMacs").read_text() == ""
 
 
 def _snapshot(tmp):
@@ -492,7 +579,7 @@ def test_flush_reports_update_tables_failure_and_empty_output(env):
     cfg, tmp = env
     cfg["update_tables"] = _exe(tmp / "failing_update", "exit 3\n")
     out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
-    assert out["update_tables"] == {"rc": 3, "output": ""}
+    assert out["update_tables"] == {"rc": 3, "output": "", "status": None, "messages": [], "complete": False}
     assert json.loads((tmp / "arp.cache").read_text()) == {
         "aa:bb:cc:00:00:01": {"items": ["192.0.2.50"], "last_seen": 5000.0}}
 
@@ -1588,6 +1675,62 @@ def test_status_never_passes_a_bad_alias_name_to_pfctl(env, monkeypatch):
     assert {row["name"]: row["pf_count"] for row in out["aliases"]} == {"Dev Macs": None, "DevMacs": 2}
     assert _items(out, "alias_name") == [
         {"item": "alias_name", "problem": ALIAS_NAME % "'Dev Macs'", "blocks_flush": True}]
+
+
+ALIAS_TTL = ("MAC alias %s has no lifetime above 0 in core's alias table file (%s), so core never rebuilds it and "
+             "a flush cannot change it; clear the alias's update frequency")
+
+
+def _devmacs_ttl(tmp, ttl):
+    """ filter_tables.conf with DevMacs's <ttl> holding the text ttl, or left out for None """
+    (tmp / "filter_tables.conf").write_text(
+        TABLES.replace("<ttl>30</ttl>", "" if ttl is None else "<ttl>%s</ttl>" % ttl))
+
+
+@pytest.mark.parametrize("ttl", ["0", "0.0", "0.5", "-1", None],
+                         ids=["zero", "zero-float", "under-a-second", "not-digits", "absent"])
+def test_status_names_a_mac_alias_core_never_rebuilds_and_the_flush_still_runs(env, ttl):
+    # core expires an alias only while its lifetime is above 0, so setting the .md5.txt mark to 0 does
+    # nothing for this one; the aliases beside it are rebuilt all the same
+    cfg, tmp = env
+    _devmacs_ttl(tmp, ttl)
+    problem = {"item": "alias_ttl", "problem": ALIAS_TTL % ("DevMacs", cfg["tables_conf"]), "blocks_flush": False}
+    assert macalias.cmd_status(cfg, now=0.0)["problems"] == [problem]
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["no_expiry"] == ["DevMacs"]
+    assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
+    assert out["update_tables"] == UPDATE_OK
+
+
+@pytest.mark.parametrize("ttl", ["30", "43200.0", "1"], ids=["stock", "update-frequency", "one-second"])
+def test_a_mac_alias_with_a_lifetime_above_zero_is_no_problem(env, ttl):
+    # 43200.0 is what core writes for an update frequency of half a day: a float
+    cfg, tmp = env
+    _devmacs_ttl(tmp, ttl)
+    assert macalias.cmd_status(cfg, now=0.0)["problems"] == []
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["no_expiry"] == []
+    assert os.stat(tmp / "aliastables" / "DevMacs.md5.txt").st_mtime == 0
+
+
+def test_a_refusal_carries_the_advisory_problem_and_is_decided_without_it(env):
+    cfg, tmp = env
+    _devmacs_ttl(tmp, "0")
+    _core(cfg, "targeted_mode").unlink()
+    before = _snapshot(tmp)
+    out = _flush(cfg)
+    assert out["error"] == "core_changed"
+    assert [(p["item"], p["blocks_flush"]) for p in out["problems"]] == [("alias_ttl", False), ("targeted_mode", True)]
+    assert out["detail"] == out["problems"][1]["problem"]
+    _unchanged(tmp, cfg, before)
+
+
+def test_the_advisory_item_has_no_refusal_code_and_refuses_nothing():
+    assert macalias._ADVISORY_ITEMS == ("alias_ttl",)
+    assert set(macalias._ADVISORY_ITEMS) & set(macalias._REFUSAL_CODE) == set()
+    assert macalias.refusal([{"item": "alias_ttl", "problem": "p", "blocks_flush": False}]) is None
 
 
 INTERNAL_TABLE = "<table><name>__lan_network</name><type>network</type><address>%s</address></table>"
