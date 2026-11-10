@@ -58,8 +58,60 @@ class ServiceController extends ApiMutableServiceControllerBase
     }
 
     /**
-     * Status for the page: mode, member, live and configured forwarders, the route, the rules, the checks, every
-     * member's verdict and the contract findings.
+     * Start changes the running service, so a read-only user (user-config-readonly) is refused, before the request
+     * method is looked at.
+     *
+     * @throws \OPNsense\Base\UserException for a read-only user
+     * @throws \Exception when the configd action fails
+     */
+    public function startAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::startAction();
+    }
+
+    /**
+     * Stop leaves tunnel mode, so a read-only user is refused, as for start.
+     *
+     * @throws \OPNsense\Base\UserException for a read-only user
+     * @throws \Exception when the configd action fails
+     */
+    public function stopAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::stopAction();
+    }
+
+    /**
+     * Restart runs the start action, so a read-only user is refused, as for start.
+     *
+     * @throws \OPNsense\Base\UserException for a read-only user
+     * @throws \Exception when the configd action fails
+     */
+    public function restartAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::restartAction();
+    }
+
+    /**
+     * Apply runs stop, start or one evaluation, whichever the saved settings and the running service call for, and
+     * a filter reload, so a read-only user is refused, as for start.
+     *
+     * @throws \OPNsense\Base\UserException for a read-only user
+     * @throws \Exception when a configd action fails
+     * @throws \ReflectionException when the model cannot be instantiated
+     */
+    public function reconfigureAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::reconfigureAction();
+    }
+
+    /**
+     * Status for the page and for a status poller: mode, member, live and configured forwarders, the route, the
+     * rules, the checks, every member's verdict and the contract findings. It changes nothing and takes no
+     * read-only guard, so a key that holds only the status privilege reads it.
      */
     public function stateAction(): array
     {

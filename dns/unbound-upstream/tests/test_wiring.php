@@ -493,6 +493,53 @@ VOLT;
         $allows('page-services-unboundupstream', '/api/unboundupstream/service/state')
         && array_filter($writes, fn (string $u): bool => !$allows('page-services-unboundupstream', $u)) === []);
 
+    /* configd serves each action of the plugin to the groups wheel and wwwonly alone: root (cron, the hooks, a shell)
+     * and the web GUI's user, whichever of the two it runs as. The installed file is read as configd reads it: a
+     * [section] line, then its key:value lines. No action has a description, since core offers an action that has
+     * one as a scheduled job (System: Settings: Cron) and runs such a job as nobody, whom the groups refuse */
+    $actionsFile = '/usr/local/opnsense/service/conf/actions.d/actions_unboundupstream.conf';
+    $actionsText = is_readable($actionsFile) ? (string)file_get_contents($actionsFile) : '';
+    $actionGroups = [];
+    $described = [];
+    $section = null;
+    foreach (preg_split('/\R/', $actionsText) ?: [] as $line) {
+        if (preg_match('/^\[([^\]]+)\]$/', $line, $m) === 1) {
+            $section = $m[1];
+            $actionGroups[$section] = [];
+        } elseif ($section !== null && str_starts_with($line, 'allowed_groups:')) {
+            $actionGroups[$section][] = substr($line, strlen('allowed_groups:'));
+        } elseif ($section !== null && str_starts_with($line, 'description:')) {
+            $described[] = $section;
+        }
+    }
+    uu_check($t, 'configd: each of the plugin\'s seven actions (start, restart, reload, stop, status, state, evaluate) '
+        . 'names allowed_groups wheel,wwwonly, once',
+        $actionGroups === array_fill_keys(['start', 'restart', 'reload', 'stop', 'status', 'state', 'evaluate'],
+            ['wheel,wwwonly']));
+    uu_check($t, 'configd: no action of the plugin has a description, so core offers none as a scheduled job, which it '
+        . 'would run as nobody',
+        $actionsText !== '' && $described === []);
+
+    /* a read-only user (user-config-readonly) changes nothing through the service API: each of the four stock actions
+     * that run a configd action refuses first and only then hands over to core's own. The status call stays open to
+     * such a user, and with it to a poller whose key holds the status privilege alone */
+    $serviceFile = '/usr/local/opnsense/mvc/app/controllers/OPNsense/UnboundUpstream/Api/ServiceController.php';
+    $serviceText = is_readable($serviceFile) ? (string)file_get_contents($serviceFile) : '';
+    $unguarded = array_values(array_filter(['startAction', 'stopAction', 'restartAction', 'reconfigureAction'],
+        fn (string $action): bool => !str_contains($serviceText, "\n    public function {$action}(): array\n    {\n"
+            . "        \$this->throwReadOnly();\n        return parent::{$action}();\n    }\n")));
+    uu_check($t, 'service API: start, stop, restart and reconfigure each refuse a read-only user before they call '
+        . 'core\'s own action',
+        $serviceText !== '' && $unguarded === []);
+    $stateBody = preg_match('/\n    public function stateAction\(\): array\n    \{\n(.*?)\n    \}\n/s', $serviceText,
+        $m) === 1 ? $m[1] : null;
+    uu_check($t, 'service API: the status call takes no read-only guard: state runs configd\'s state action and '
+        . 'nothing else, and status is core\'s own',
+        $stateBody !== null && !str_contains($stateBody, 'throwReadOnly')
+        && substr_count($stateBody, 'configdRun(') === 1
+        && str_contains($stateBody, "configdRun('unboundupstream state')")
+        && !str_contains($serviceText, 'function statusAction('));
+
     /* (l5) the five resolver actions, run as the API runs them over rows added to the controller's model in memory
      * only, with the controller's save counted instead of run (the controller's own validation and actions, only save()
      * replaced), so no case and no broken action writes config.xml: search lists a row with its member's name, get

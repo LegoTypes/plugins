@@ -19,6 +19,22 @@ its queries leave through that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.8
+
+* Every configd action of the plugin names allowed_groups (wheel,
+  wwwonly), as core's own sensitive actions do: a local account in
+  neither group is answered "Action not allowed or missing". Root (cron,
+  the hooks, the shell) and the web GUI, with it the status API, are
+  admitted. Core's own actions stay open to every local account and are
+  core's to restrict: "service stop unboundupstream" stops the service,
+  and "interface routes alarm" starts an evaluation. The evaluation is
+  not offered as a scheduled job under System: Settings: Cron: core runs
+  such a job as nobody, whom the action refuses, and the plugin runs its
+  own evaluation each minute
+* The service API refuses a read-only user (user-config-readonly) for
+  start, stop, restart and reconfigure. The status call, service/state,
+  takes no such guard
+
 1.7
 
 * A restarted gateway monitor no longer costs a member its standing.
