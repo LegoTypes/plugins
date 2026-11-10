@@ -498,7 +498,7 @@ function wgct_write_freshness_state(?array $s): bool {
  */
 function wgct_pf_checksum(array $siLines): ?string {
     foreach ($siLines as $line) {
-        if (preg_match('/^Checksum:\s+(0x[0-9a-f]+)\s*$/', (string)$line, $m) === 1) {
+        if (preg_match('/^Checksum:\s+(0x[0-9a-f]+)\s*$/D', (string)$line, $m) === 1) {
             return $m[1];
         }
     }
@@ -1184,7 +1184,8 @@ function wgct_rules_looked_for(?array $rendered, ?array $fallback, ?array $footp
 }
 
 /**
- * Self-test for the render wrapper. No config, no pf, no /var/run.
+ * Self-test for the render wrapper. No config, no pf, no live state file; its files lie in fixture directories of
+ * its own.
  *
  * @return int exit code, 0 when every case passes
  */
@@ -1903,7 +1904,7 @@ function wgct_render_selftest(): int {
             !== array_values(array_unique(array_column(wgct_pin_rules($pinsE), 'label')))
         && wgct_pin_labels_hash(wgct_pin_rules($pinsD)) === wgct_pin_labels_hash(wgct_pin_rules($pinsE))
         && wgct_pin_labels_hash(wgct_pin_rules($pinsA)) === wgct_pin_labels_hash(wgct_pin_rules($pinsB))
-        && preg_match('/^[0-9a-f]{32}$/', wgct_pin_labels_hash(wgct_pin_rules($pinsA))) === 1;
+        && preg_match('/^[0-9a-f]{32}$/D', wgct_pin_labels_hash(wgct_pin_rules($pinsA))) === 1;
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] labels hash: order and duplicates do not matter\n", $ok ? 'PASS' : 'FAIL');
@@ -2046,9 +2047,8 @@ function wgct_render_selftest(): int {
     $total++;
     printf("[%s] record: corrupt reads as none\n", $ok ? 'PASS' : 'FAIL');
 
-    /* the trusted-file reader and the state directories, on temporary files */
-    $tmp = sys_get_temp_dir() . '/wgct-state-' . getmypid();
-    mkdir($tmp, 0700);
+    /* the trusted-file reader and the state directories, on the files of a fixture */
+    $tmp = wgct_selftest_dir('render-state');
     file_put_contents("$tmp/good", '{"a":1}');
     file_put_contents("$tmp/big", str_repeat('x', 100));
     symlink("$tmp/good", "$tmp/link");
@@ -2083,13 +2083,6 @@ function wgct_render_selftest(): int {
         $total++;
         printf("[%s] %s\n", $ok ? 'PASS' : 'FAIL', $desc);
     }
-    foreach (['new/sub', 'new', 'loose', 'dir'] as $d) {
-        @rmdir("$tmp/$d");
-    }
-    foreach (['good', 'big', 'link', 'empty'] as $f) {
-        @unlink("$tmp/$f");
-    }
-    @rmdir($tmp);
 
     $footprint = wgct_footprint_selftest($makeFw);
     $fail += $footprint['fail'];
@@ -2107,7 +2100,7 @@ function wgct_render_selftest(): int {
 /**
  * Self-test for the footprint: what a render records, the hook's
  * copied literals, the hook's readers, the render state the views show and the labels freshness looks for.
- * Writes only temporary files.
+ * Writes only the files of a fixture.
  *
  * @param callable $makeFw (): \OPNsense\Firewall\Plugin, wgct_render_selftest()'s recording stand-in
  * @return array{fail: int, total: int}
@@ -2191,9 +2184,8 @@ function wgct_footprint_selftest(callable $makeFw): array {
         $safely(fn (): bool => str_contains((string)@file_get_contents(dirname(__DIR__) . '/entry.php'),
             "const WGCT_ENTRY_RUN_DIR = '" . WGCT_RUN_DIR . "';")));
 
-    /* the hook's footprint reader, on temporary root-owned files */
-    $d = sys_get_temp_dir() . '/wgct-footprint-' . getmypid();
-    @mkdir($d, 0700);
+    /* the hook's footprint reader, on root-owned files of a fixture */
+    $d = wgct_selftest_dir('render-footprint');
     $wanRule = [
         'type' => 'block', 'direction' => 'out', 'quick' => true, 'log' => true, 'interface' => 'opt2',
         'interfacenot' => true, 'ipprotocol' => 'inet', 'protocol' => 'udp', 'to' => '192.0.2.10',
@@ -2262,7 +2254,6 @@ function wgct_footprint_selftest(callable $makeFw): array {
     foreach ($bad as $what => $content) {
         wgct_check($t, "footprint reader: $what reads as no footprint", $safely(fn (): bool => $read($content) === null));
     }
-    @unlink("$d/fp.json");
 
     /* the hook's fallback.json reader */
     $readFallback = function (string $content) use ($d): mixed {
@@ -2279,8 +2270,6 @@ function wgct_footprint_selftest(callable $makeFw): array {
             && $readFallback(json_encode($fb + ['x' => 1])) === null
             && $readFallback(json_encode(['at' => 1, 'reason' => 'x'])) === null
             && $readFallback('{') === null && $readFallback('') === null));
-    @unlink("$d/fallback.json");
-    @rmdir($d);
 
     /* what the views show, and which pins pf holds, for each render state (part D) */
     $fpAt = date('Y-m-d H:i:s', $good['at']);

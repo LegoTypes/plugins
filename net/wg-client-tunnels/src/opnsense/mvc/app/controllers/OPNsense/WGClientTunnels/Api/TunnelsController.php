@@ -37,15 +37,15 @@ use OPNsense\Core\Backend;
  * done in-process, because only they may see a private key;
  * each then runs the keyless configd action `wgclienttunnels apply_mode`.
  * Every other action runs in its own process through configd, with uuids,
- * gateway names and addresses as its only parameters. Every POST action that
- * writes, measures or previews (dry) refuses a read-only user first, before it
- * reads the dry flag.
+ * gateway names and addresses as its only parameters, each checked here
+ * before configd is called: a uuid by wgct_valid_uuid(), a WAN name by
+ * wgct_request_gateway_name(), which also refuses a leading "-". Every POST
+ * action that writes, measures or previews (dry) refuses a read-only user
+ * first, before it reads the dry flag.
  */
 class TunnelsController extends ApiControllerBase
 {
     private const LIB = '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/lib';
-    private const UUID = '/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/';
-    private const GATEWAY_NAME = '/^[a-zA-Z0-9_-]{1,32}$/';
     private const NAT_ALIAS_TYPES = ['host', 'network', 'networkgroup', 'dynipv6host'];
 
     /**
@@ -98,7 +98,7 @@ class TunnelsController extends ApiControllerBase
     public function editFormAction(string $uuid = ''): array
     {
         require_once self::LIB . '/writer.php';
-        if (preg_match(self::UUID, $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             return ['status' => 'failed', 'errors' => ['not a tunnel uuid']];
         }
         $prefill = wgct_edit_prefill(wgct_action_snapshot(), $uuid);
@@ -229,7 +229,7 @@ class TunnelsController extends ApiControllerBase
         }
         $this->throwReadOnly();
         require_once self::LIB . '/writer.php';
-        if (preg_match(self::UUID, $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             return ['status' => 'failed', 'result' => 'failed', 'errors' => ['not a tunnel uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));
@@ -303,7 +303,7 @@ class TunnelsController extends ApiControllerBase
         require_once self::LIB . '/addr.php';
         $wan = $this->postString('wan');
         $endpoint = $this->postString('endpoint');
-        if (preg_match(self::GATEWAY_NAME, $wan) !== 1 || wgct_endpoint_ip($endpoint) === null) {
+        if (!wgct_request_gateway_name($wan) || wgct_endpoint_ip($endpoint) === null) {
             return ['status' => 'failed', 'ok' => false, 'errors' => ['choose the WAN and paste a config with an IPv4 or [IPv6] endpoint first']];
         }
         return wgct_configd_json('wgclienttunnels measure_mtu', [$wan, $endpoint], 120);
@@ -316,7 +316,7 @@ class TunnelsController extends ApiControllerBase
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
-        if (preg_match(self::UUID, $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             return ['status' => 'failed', 'ok' => false, 'errors' => ['not a tunnel uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));
@@ -336,7 +336,7 @@ class TunnelsController extends ApiControllerBase
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
-        if (preg_match(self::UUID, $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             return ['status' => 'failed', 'ok' => false, 'errors' => ['not a tunnel uuid']];
         }
         return wgct_configd_json('wgclienttunnels apply', [$uuid], 300);
@@ -353,8 +353,7 @@ class TunnelsController extends ApiControllerBase
         $form = $this->request->getPost('rebind');
         $wan = is_array($form) && is_string($form['wan'] ?? null) ? $form['wan'] : '';
         $stale = is_array($form) && is_string($form['stale'] ?? null) ? $form['stale'] : '';
-        if (preg_match(self::UUID, $uuid) !== 1 || preg_match(self::GATEWAY_NAME, $wan) !== 1
-            || ($stale !== '' && preg_match(self::UUID, $stale) !== 1)) {
+        if (!wgct_valid_uuid($uuid) || !wgct_request_gateway_name($wan) || ($stale !== '' && !wgct_valid_uuid($stale))) {
             return ['status' => 'failed', 'ok' => false, 'errors' => ['choose a WAN (and, optionally, a stale route to delete)']];
         }
         return wgct_configd_json('wgclienttunnels rebind', [$uuid, $wan, $stale], 300);
@@ -367,7 +366,7 @@ class TunnelsController extends ApiControllerBase
         }
         $this->throwReadOnly();
         require_once self::LIB . '/apply.php';
-        if (preg_match(self::UUID, $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             return ['status' => 'failed', 'ok' => false, 'errors' => ['not an instance uuid']];
         }
         $dry = wgct_dry_flag($this->request->getPost('dry'));

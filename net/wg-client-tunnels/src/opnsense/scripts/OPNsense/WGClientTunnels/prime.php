@@ -32,7 +32,8 @@
  * that learns the client address from non-ICMP traffic then sends the replies back to it. No config write, no
  * gateway lock. The decisions are lib/prime.php's; this file reads, connects and logs.
  *
- * --dry prints each watched tunnel's judgement and sends nothing; --selftest runs the decision tests.
+ * --dry prints each watched tunnel's judgement and sends nothing; --selftest, with no other argument, runs the
+ * decision tests, and beside anything else it is refused and nothing runs.
  */
 
 require_once 'config.inc';
@@ -83,9 +84,9 @@ function wgct_prime_connect(string $source, string $dst, int $port, int $timeout
     }
 }
 
-$args = $argv ?? [];
-if (in_array('--selftest', $args, true)) {
-    exit(wgct_prime_selftest());
+$args = array_slice($argv ?? [], 1);
+if (wgct_selftest_only('prime.php', $args)) {
+    exit(wgct_selftest_run(['prime' => 'wgct_prime_selftest']));
 }
 $dry = in_array('--dry', $args, true);
 

@@ -1,6 +1,7 @@
 
-# A real removal: the plugin's state directories, with the removal marker, go with its files. An upgrade keeps
-# them, so the new version resumes with the footprint and the boot record.
+# A real removal: the plugin's state directories, with the removal marker, and the directory its self-tests keep
+# their files in go with its files. An upgrade keeps them, so the new version resumes with the footprint and the
+# boot record.
 if [ -z "${PKG_UPGRADE:-}" ]; then
-    rm -rf /var/run/wgclienttunnels /var/db/wgclienttunnels
+    rm -rf /var/run/wgclienttunnels /var/db/wgclienttunnels /var/run/wgclienttunnels-selftest
 fi

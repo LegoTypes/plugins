@@ -76,11 +76,13 @@ function wgclienttunnels_configure()
  * guard, freshness and the core-contract check follow in a queued reconcile,
  * so no hook waits on them or on configd.
  *
- * Invoked directly rather than through configd. Core's alarm path
- * ([routes.alarm], rc.routing_configure alarm) does not fire "monitor"; the
- * hook runs under the gateway lock only when the plugin's own mirror, Create
- * or Edit holds it around "interface routes configure", and a configd action
- * started from here that waited on that lock would stall until its timeout.
+ * Invoked directly rather than through configd, because the hook runs under
+ * the gateway lock. Core's alarm path ([routes.alarm], rc.routing_configure
+ * alarm) holds that lock with its flock and runs core's monitor syshook, which
+ * ends by running every plugin's "monitor" configure hook, this one included;
+ * the plugin's own mirror, Create and Edit hold it around "interface routes
+ * configure". A configd action started from here that waited on that lock
+ * would stall until its timeout.
  */
 function wgclienttunnels_configure_do($verbose = false)
 {
@@ -322,7 +324,7 @@ function wgclienttunnels_read_footprint(string $path): ?array
     $keys = array_keys($data);
     sort($keys);
     if ($keys !== ['anchor', 'at', 'mss', 'priority', 'rules'] || !is_int($data['at']) || !is_int($data['priority'])
-        || !is_string($data['anchor']) || preg_match('/^[a-z_]+$/', $data['anchor']) !== 1
+        || !is_string($data['anchor']) || preg_match('/^[a-z_]+$/D', $data['anchor']) !== 1
         || !is_array($data['rules']) || !array_is_list($data['rules'])
         || !is_array($data['mss']) || !array_is_list($data['mss'])) {
         return null;
@@ -331,7 +333,7 @@ function wgclienttunnels_read_footprint(string $path): ?array
                  'from_not', 'to', 'label', 'descr'];
     foreach ($data['rules'] as $rule) {
         if (!is_array($rule) || ($rule['type'] ?? null) !== 'block'
-            || !is_string($rule['label'] ?? null) || preg_match('/^[0-9a-f]{32}$/', $rule['label']) !== 1) {
+            || !is_string($rule['label'] ?? null) || preg_match('/^[0-9a-f]{32}$/D', $rule['label']) !== 1) {
             return null;
         }
         foreach ($rule as $key => $value) {

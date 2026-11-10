@@ -1,6 +1,6 @@
 <acl>
     <page-vpn-wgclienttunnels>
-        <name>VPN: WireGuard: Upstream tunnels</name>
+        <name>VPN: WireGuard: Upstream tunnels (creates and removes WireGuard instances, gateways, routes and outbound NAT)</name>
         <patterns>
             <pattern>ui/wgclienttunnels/*</pattern>
             <pattern>api/wgclienttunnels/*</pattern>

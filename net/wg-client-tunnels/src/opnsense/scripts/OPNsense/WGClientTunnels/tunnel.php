@@ -27,8 +27,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  * WireGuard upstream tunnels from the command line:
- * list|status|reconcile|create|edit|remove|rebind|adopt|ensure-sentinel|measure-mtu|apply [MODE]|release-holds [--dry]
- * [--json], and --selftest. See lib/cli.php. The legacy includes are for Remove's interface_reset().
+ * [--json] [--dry] list|status|reconcile|create|edit|remove|rebind|adopt|ensure-sentinel|measure-mtu|apply|release-holds
+ * [ARGUMENT ...], or --selftest with no other argument. The options stand before the command, and every word after
+ * the command is its argument. See lib/cli.php. The legacy includes are for Remove's interface_reset().
  */
 
 require_once 'config.inc';
@@ -36,6 +37,8 @@ require_once 'util.inc';
 require_once 'interfaces.inc';
 require_once '/usr/local/opnsense/mvc/script/load_phalcon.php';
 $wgctArgs = array_slice($argv ?? [], 1);
+/* Read before the library can be loaded, for a load failure alone: whether it is printed as JSON, and its exit status.
+ * lib/cli.php's wgct_cli_parse() reads the arguments of every command that runs. */
 $wgctJson = in_array('--json', $wgctArgs, true);
 /* release-holds is the package removal's: it exits 0 whatever happens, so pkg delete completes */
 $wgctCommand = array_values(array_filter($wgctArgs, fn (string $a): bool => strncmp($a, '--', 2) !== 0))[0] ?? '';

@@ -60,7 +60,8 @@
  * front, and a forbidden default that would otherwise be removed is instead
  * left in place and logged.
  *
- * Usage: default_guard.php [--dry] [--selftest]
+ * Usage: default_guard.php [--dry]
+ *        default_guard.php --selftest   (with no other argument; beside anything else it is refused and nothing runs)
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
@@ -165,7 +166,7 @@ function guard_delete_failed_message(string $family, array $judged, ?array $now)
         $judged['gateway'], $judged['interface']);
 }
 
-if (in_array('--selftest', $argv ?? [], true)) {
+if (wgct_selftest_only('default_guard.php', array_slice($argv ?? [], 1))) {
     $gws = [
         ['name' => 'WAN_A6', 'ipprotocol' => 'inet6', 'gateway' => 'fe80::1', 'if' => 'igc1', 'defaultgw' => true],
         ['name' => 'wg-A-ipv6', 'ipprotocol' => 'inet6', 'gateway' => 'fd00::5:2', 'if' => 'wg5', 'defaultgw' => false],

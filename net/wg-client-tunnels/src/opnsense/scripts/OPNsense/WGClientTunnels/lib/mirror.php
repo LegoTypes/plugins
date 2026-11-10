@@ -60,8 +60,15 @@ require_once __DIR__ . '/render.php';
 /* Used only when a gateway has no time_period configured. */
 const SETTLE_FALLBACK_SECONDS = 60;
 
-function logMsg($tag, $msg) {
-    wgct_log(LOG_NOTICE, "[$tag] $msg");
+/**
+ * One line to core's WireGuard log, under a run's tag.
+ *
+ * @param string $tag      the log prefix without brackets
+ * @param string $msg
+ * @param int    $priority a syslog priority: warning for a failure, notice for every line of a run that went as meant
+ */
+function logMsg(string $tag, string $msg, int $priority = LOG_NOTICE): void {
+    wgct_log($priority, "[$tag] $msg");
 }
 
 /* The tick lock and the markers that make a skipped tick log once per state. */
@@ -96,6 +103,18 @@ function wgct_skip_log_plan(bool $skipped, bool $markerExists): array {
 }
 
 /**
+ * The priority of a line wgct_note_lock() logs: a skip at the priority its caller names, a resume always at notice.
+ * Pure.
+ *
+ * @param string $log          wgct_skip_log_plan()'s log: 'skip' or 'resume'
+ * @param int    $skipPriority the priority of the skip line
+ * @return int a syslog priority
+ */
+function wgct_skip_log_priority(string $log, int $skipPriority): int {
+    return $log === 'skip' ? $skipPriority : LOG_NOTICE;
+}
+
+/**
  * Apply wgct_skip_log_plan() for one lock: log the change of state, keep the marker in step.
  *
  * @param string $marker  the marker file of this lock
@@ -103,11 +122,14 @@ function wgct_skip_log_plan(bool $skipped, bool $markerExists): array {
  * @param string $skipMsg logged on the first skip
  * @param string $resumeMsg logged on the first success after a skip
  * @param string $tag     the log prefix without brackets
+ * @param int    $skipPriority the priority of the skip line: warning where the skip is a failure, notice where it is
+ *                             part of a normal run; the resume line is always a notice
  */
-function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $resumeMsg, string $tag = 'wgct-health'): void {
+function wgct_note_lock(string $marker, bool $skipped, string $skipMsg, string $resumeMsg, string $tag = 'wgct-health',
+    int $skipPriority = LOG_NOTICE): void {
     $plan = wgct_skip_log_plan($skipped, wgct_read_state_file($marker, 16) !== null);
     if ($plan['log'] !== null) {
-        logMsg($tag, $plan['log'] === 'skip' ? $skipMsg : $resumeMsg);
+        logMsg($tag, $plan['log'] === 'skip' ? $skipMsg : $resumeMsg, wgct_skip_log_priority($plan['log'], $skipPriority));
     }
     if ($plan['marker'] === 'write') {
         wgct_write_file_atomic($marker, "skipped\n");
@@ -349,6 +371,18 @@ function wgct_gateway_status() {
 }
 
 /**
+ * What is logged when an alarm replay did not answer OK. Pure.
+ *
+ * @param list<string> $names the gateways the replay named
+ * @param string       $reply configd's reply, trimmed
+ * @return ?string the line, null for OK
+ */
+function wgct_replay_failure_line(array $names, string $reply): ?string {
+    return $reply === 'OK' ? null
+        : 'alarm replay for ' . implode(',', $names) . ' failed: ' . ($reply === '' ? 'no reply' : $reply);
+}
+
+/**
  * Replay the gateway alarm OPNsense dropped for our own force_down changes.
  *
  * The step before it, under the gateway lock, tells gateway_watcher to re-read
@@ -365,11 +399,13 @@ function wgct_gateway_status() {
  * without restarting monitors, runs the monitor syshooks (state kill) for the
  * named gateways, and rebuilds the filter. Core reads a gateway's flag from
  * the configuration with its status; only where a monitor has no data does it
- * take the watcher's last status instead.
+ * take the watcher's last status instead. A replay that does not answer OK is
+ * logged as a warning (wgct_replay_failure_line()); nothing repeats it.
  *
- * @param array $expected name => bool force_down for every gateway we changed
+ * @param array  $expected name => bool force_down for every gateway we changed
+ * @param string $logTag   the log prefix without brackets
  */
-function wgct_replay_alarm(array $expected, $logTag) {
+function wgct_replay_alarm(array $expected, string $logTag): void {
     wgct_await_gateway_status($expected, $logTag);
     /*
      * Run it through configd, never exec() from here: PHP opens files without close-on-exec, so anything this
@@ -377,18 +413,17 @@ function wgct_replay_alarm(array $expected, $logTag) {
      * reconfigure (re)starts keeps them for as long as it lives, blocking every reconfigure and every later tick.
      * configd starts the action from its own process, which holds neither.
      */
-    $result = trim((new OPNsense\Core\Backend())->configdpRun(
-        'wgclienttunnels replay_alarm',
-        [implode(',', array_keys($expected))]
-    ));
-    if ($result !== 'OK') {
-        logMsg($logTag, 'alarm replay for ' . implode(',', array_keys($expected)) . " failed: {$result}");
+    $names = array_map('strval', array_keys($expected));
+    $reply = trim((string)(new OPNsense\Core\Backend())->configdpRun('wgclienttunnels replay_alarm', [implode(',', $names)]));
+    $failure = wgct_replay_failure_line($names, $reply);
+    if ($failure !== null) {
+        logMsg($logTag, $failure, LOG_WARNING);
     }
 }
 
 /**
  * Wait, at most 20 s, until gateway status shows the force_down values we wrote, so the alarm replayed next sees
- * them; a status still stale then is logged and the replay goes ahead.
+ * them; a status still stale then is logged as a warning and the replay goes ahead.
  *
  * @param array<string, bool> $expected name => force_down for every gateway to replay
  */
@@ -408,7 +443,7 @@ function wgct_await_gateway_status(array $expected, string $logTag): void {
         sleep(1);
     } while (time() < $deadline);
     if (!empty($pending)) {
-        logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway');
+        logMsg($logTag, 'gateway status still stale for ' . implode(',', $pending) . ' after 20s; replaying alarm anyway', LOG_WARNING);
     }
 }
 
@@ -793,6 +828,57 @@ function wgct_hold_prune_lines(array $config): array {
 }
 
 /**
+ * What a save of hold records alone logs: the gateways whose record was re-stamped with the live boot, recorded,
+ * rewritten or removed, by name. Such a save changes no gateway and takes no configuration history entry, so this
+ * line is its trace; wgct_hold_prune_lines() says why a record went. Pure.
+ *
+ * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $before the records as stored
+ * @param list<array{gateway: string, boot: string, underlay: string, taken_at: int}> $after  the records as written
+ * @param array<string, array> $gateways wgct_collect_config()'s gateway rows by name, each with its uuid
+ * @return string
+ */
+function wgct_hold_save_line(array $before, array $after, array $gateways): string {
+    $names = [];
+    foreach ($gateways as $name => $g) {
+        $names[$g['uuid']] = (string)$name;
+    }
+    $stored = [];
+    foreach ($before as $row) {
+        $stored[$row['gateway']][] = $row;
+    }
+    $written = [];
+    foreach ($after as $row) {
+        $written[$row['gateway']] = $row;
+    }
+    $what = ['re-stamped for this boot' => [], 'recorded' => [], 'rewritten' => [], 'second record removed' => [], 'removed' => []];
+    foreach ($written as $uuid => $row) {
+        $name = $names[$uuid] ?? (string)$uuid;
+        $had = $stored[$uuid] ?? [];
+        if ($had === []) {
+            $what['recorded'][] = $name;
+            continue;
+        }
+        if (!in_array($row, $had, true)) {
+            $what[in_array($row['boot'], array_column($had, 'boot'), true) ? 'rewritten' : 're-stamped for this boot'][] = $name;
+        }
+        if (count($had) > 1) {
+            $what['second record removed'][] = $name;
+        }
+    }
+    foreach (array_keys(array_diff_key($stored, $written)) as $uuid) {
+        $what['removed'][] = $names[$uuid] ?? (string)$uuid;
+    }
+    $parts = [];
+    foreach ($what as $label => $list) {
+        if ($list !== []) {
+            sort($list);
+            $parts[] = $label . ': ' . implode(', ', $list);
+        }
+    }
+    return 'hold records saved' . ($parts === [] ? '' : ': ' . implode('; ', $parts));
+}
+
+/**
  * Write the hold records for the planner's held set into the engine model when they differ from config. Call
  * only inside wgct_locked_commit(), with $config from a collection made under that lock. With no live boot id
  * nothing is written.
@@ -800,17 +886,18 @@ function wgct_hold_prune_lines(array $config): array {
  * @param array  $heldNames name => true
  * @param array  $config    wgct_collect_config() made under the lock
  * @param string $liveBoot  the live kern.boot_id
- * @return bool whether the model was serialized (the caller must save)
+ * @return list<array{gateway: string, boot: string, underlay: string, taken_at: int}>|null the records the model was
+ *         serialized with (the caller must save), null when they are the stored ones and nothing was written
  */
-function wgct_commit_held(array $heldNames, array $config, string $liveBoot): bool {
+function wgct_commit_held(array $heldNames, array $config, string $liveBoot): ?array {
     $rows = wgct_hold_rows_next($config, $heldNames, $liveBoot, time());
     if ($rows === null) {
-        return false;
+        return null;
     }
     $engine = new OPNsense\WGClientTunnels\Engine();
     $engine->setHolds($rows);
     $engine->serializeToConfig();
-    return true;
+    return $rows;
 }
 
 /**
@@ -1085,15 +1172,19 @@ function wgct_apply_changes($mdl, array $changes) {
  * @param callable $mutate builds models, changes and serializes them; returns an
  *                         array whose 'save' key says whether to save
  * @param string|null $description the config-history text of the save (null: core's default)
+ * @param bool $history whether the save takes a configuration history entry, as Config::save() makes one: the
+ *                      history file, the audit line and the configuration-change event that runs the config
+ *                      syshooks. A save made for a person takes one. The mirror's own saves take none: a hold or a
+ *                      release is in the mirror's log, and reaches the history inside the next writer's file.
  * @return array whatever $mutate returned
  */
-function wgct_locked_commit(callable $mutate, ?string $description = null) {
+function wgct_locked_commit(callable $mutate, ?string $description = null, bool $history = true) {
     $cfg = Config::getInstance();
     $cfg->lock();
     try {
         $result = $mutate();
         if (!empty($result['save'])) {
-            $cfg->save($description !== null ? ['description' => $description] : null);
+            $cfg->save($description !== null ? ['description' => $description] : null, $history);
         }
         return $result;
     } finally {
@@ -1324,15 +1415,14 @@ function wgct_selftest() {
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] plan: a reading's age is its dpinger's, capped by the time since the mirror's last change; none without a socket\n", $ok ? 'PASS' : 'FAIL');
-    $changeDir = sys_get_temp_dir() . '/wgct-mirror-changed-' . getmypid() . '-' . bin2hex(random_bytes(4));
+    /* a directory that does not exist yet, inside a fixture: recording the change makes it */
+    $changeDir = wgct_selftest_dir('mirror-changed') . '/run';
     $changeFile = "{$changeDir}/mirror.changed";
     $ok = wgct_since_change($changeFile, 5000) === null && wgct_record_change($changeFile, 5000)
         && wgct_since_change($changeFile, 5000) === 0 && wgct_since_change($changeFile, 5042) === 42
         && wgct_since_change($changeFile, 4999) === null
         && (fileperms($changeFile) & 0777) === 0600 && (fileperms($changeDir) & 0777) === 0700
         && file_put_contents($changeFile, "soon\n") !== false && wgct_since_change($changeFile, 5042) === null;
-    @unlink($changeFile);
-    @rmdir($changeDir);
     $fail += $ok ? 0 : 1;
     $total++;
     printf("[%s] plan: the mirror's last change is recorded as monotonic seconds in a 0600 file, read back as the seconds since; no record, a later one or other text is none\n", $ok ? 'PASS' : 'FAIL');
@@ -1512,8 +1602,9 @@ function wgct_selftest() {
     $total++;
     printf("[%s] boot record: written as {\"boot_id\", \"at\"}\n", $ok ? 'PASS' : 'FAIL');
 
-    /* ---- boot.json is written only when it does not name the boot already (a temporary file, never the real one) ---- */
-    $bootDir = rtrim(sys_get_temp_dir(), '/') . '/wgct-boot-selftest.' . getmypid();
+    /* ---- boot.json is written only when it does not name the boot already (in a directory that does not exist yet,
+     * inside a fixture; never the real one) ---- */
+    $bootDir = wgct_selftest_dir('mirror-boot') . '/db';
     $bootPath = "{$bootDir}/boot.json";
     $bootStat = function () use ($bootPath): ?array {
         clearstatcache(true, $bootPath);
@@ -1527,8 +1618,6 @@ function wgct_selftest() {
     $missing = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
     file_put_contents($bootPath, '{"boot_id":');
     $unreadable = wgct_record_boot_at($bootPath, $live1) ? $bootStat() : null;
-    @unlink($bootPath);
-    @rmdir($bootDir);
     $bootWrites = [
         ['no boot.json yet => written with the boot id', $written !== null && $written['boot'] === $live1],
         ['boot.json already naming the boot => not written again: the same file (inode) and content',
@@ -1809,6 +1898,39 @@ function wgct_selftest() {
             printf("       got %s\n", json_encode($got));
         }
     }
+
+    /* ---- what a failure logs, and at which priority ---- */
+    $ok = wgct_replay_failure_line(['tun_a', 'tun_a-ipv6'], 'OK') === null
+        && wgct_replay_failure_line(['tun_a', 'tun_a-ipv6'], 'Error (1)') === 'alarm replay for tun_a,tun_a-ipv6 failed: Error (1)'
+        && wgct_replay_failure_line(['tun_a'], 'Action not allowed or missing') === 'alarm replay for tun_a failed: Action not allowed or missing'
+        && wgct_replay_failure_line(['tun_a'], '') === 'alarm replay for tun_a failed: no reply';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] replay: a replay that does not answer OK gives one line naming its gateways and the reply, or that there was none; OK gives none\n", $ok ? 'PASS' : 'FAIL');
+    $ok = wgct_skip_log_priority('skip', LOG_WARNING) === LOG_WARNING && wgct_skip_log_priority('skip', LOG_NOTICE) === LOG_NOTICE
+        && wgct_skip_log_priority('resume', LOG_WARNING) === LOG_NOTICE && wgct_skip_log_priority('resume', LOG_NOTICE) === LOG_NOTICE;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] skip log: a skip is logged at the priority its caller names, a resume always at notice\n", $ok ? 'PASS' : 'FAIL');
+
+    /* ---- the one line a save of hold records alone logs ---- */
+    $saveGws = ['tun_a' => $row(['uuid' => $uA]), 'tun_a-ipv6' => $row(['uuid' => $uB])];
+    $ok = wgct_hold_save_line([$stamped($uA, $prev1, $at), $stamped($uB, $prev1, $at, 'tun_a')],
+            [$stamped($uA, $live1, $at), $stamped($uB, $live1, $at, 'tun_a')], $saveGws)
+            === 'hold records saved: re-stamped for this boot: tun_a, tun_a-ipv6'
+        && wgct_hold_save_line([$stamped($uA, $other, $at), $stamped($uC, $other, $at)], [], $saveGws)
+            === "hold records saved: removed: {$uC}, tun_a"
+        && wgct_hold_save_line([$stamped($uA, $live1, $at), $stamped($uA, $other, $at)], [$stamped($uA, $live1, $at)], $saveGws)
+            === 'hold records saved: second record removed: tun_a'
+        && wgct_hold_save_line([$stamped($uA, $prev1, $at)],
+            [$stamped($uA, $live1, $at), $stamped($uB, $live1, $now, 'tun_a')], $saveGws)
+            === 'hold records saved: re-stamped for this boot: tun_a; recorded: tun_a-ipv6'
+        && wgct_hold_save_line([$stamped($uA, $live1, $at, 'WAN_X')], [$stamped($uA, $live1, $at, 'WAN_A')], $saveGws)
+            === 'hold records saved: rewritten: tun_a'
+        && wgct_hold_save_line([], [], $saveGws) === 'hold records saved';
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] hold records: a save of the records alone logs one line naming each gateway whose record was re-stamped, recorded, rewritten or removed (a gateway that is gone by its uuid)\n", $ok ? 'PASS' : 'FAIL');
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

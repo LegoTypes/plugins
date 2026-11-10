@@ -53,11 +53,11 @@
 #      is free the tick stops at the marker: no hold record, rehearse not forced down.
 #   b. With PKG_UPGRADE set: +PRE_DEINSTALL.pre with rehearse held changes nothing (the hold and its record, the
 #      state directories with the footprint, the MSS anchor, the pin labels in pf, no removal marker), and
-#      +POST_DEINSTALL.post keeps both state directories.
+#      +POST_DEINSTALL.post keeps both state directories and the self-tests' directory.
 #   c. A real removal with rehearse held, mirror ticks running back to back all the while: +PRE_DEINSTALL.pre
 #      releases rehearse and no tick re-takes the hold; the removal marker stays, the MSS anchor is empty; with the
 #      marker wgct.sh reconcile, request_reconcile and a filter reload rebuild nothing; +POST_DEINSTALL.post then
-#      removes both state directories.
+#      removes both state directories and the self-tests' directory.
 #   e. +POST_INSTALL.pre deletes a removal marker.
 # At exit, even on failure: configd running, the removal marker gone, config.xml put back as it was at the start
 # through core's Config::restoreBackup(), routing re-synced, the state rebuilt (wgct.sh reconcile, a filter reload,
@@ -74,6 +74,8 @@ TUNNEL="$S/tunnel.php"
 MIRROR="$S/health_mirror.php"
 DB=/var/db/wgclienttunnels
 RUN=/var/run/wgclienttunnels
+# where the self-tests keep their files (lib/selftest.php wgct_selftest_root())
+SELFTEST_ROOT=/var/run/wgclienttunnels-selftest
 MARKER="$RUN/removing"
 ANCHOR=wgclienttunnels_mss
 PHPLOG=/var/lib/php/tmp/PHP_errors.log
@@ -449,9 +451,10 @@ pfctl -a "$ANCHOR" -sr 2> /dev/null > "$T/anchor.after"
 check "b: the MSS anchor is unchanged" "$(cmp -s "$T/anchor.before" "$T/anchor.after" && echo same || echo changed)" same
 check "b: every pin label is still in pf" "$(pins)" "$pins_before"
 check "b: nothing logged by release-holds" "$(deinstall_lines "$mark")" ""
+mkdir -p -m 700 "$SELFTEST_ROOT"
 PKG_UPGRADE=true sh "$DIR/+POST_DEINSTALL.post"
-check "b: PKG_UPGRADE=true sh +POST_DEINSTALL.post exits 0 and keeps both state directories with the footprint" \
-    "$? $([ -s "$DB/footprint.json" ] && [ -d "$RUN" ] && echo kept || echo gone)" "0 kept"
+check "b: PKG_UPGRADE=true sh +POST_DEINSTALL.post exits 0 and keeps both state directories with the footprint, and the self-tests' directory" \
+    "$? $([ -s "$DB/footprint.json" ] && [ -d "$RUN" ] && [ -d "$SELFTEST_ROOT" ] && echo kept || echo gone)" "0 kept"
 
 # c. a real removal, rehearse still held, with mirror ticks running back to back from before the .pre to after it
 rm -f "$T/stop" "$T/ticks"
@@ -493,8 +496,8 @@ check "c: with the marker, request_reconcile queues nothing, and reconcile and a
 check "c: the minute reconcile says the package is being removed, once per run" \
     "$(lcount wireguard "$mark" -- 'the package is being removed')" 1
 sh "$DIR/+POST_DEINSTALL.post"
-check "c: sh +POST_DEINSTALL.post exits 0 and removes both state directories, the marker with them" \
-    "$? $([ -e "$DB" ] || [ -e "$RUN" ] && echo present || echo gone)" "0 gone"
+check "c: sh +POST_DEINSTALL.post exits 0 and removes both state directories, the marker with them, and the self-tests' directory" \
+    "$? $([ -e "$DB" ] || [ -e "$RUN" ] || [ -e "$SELFTEST_ROOT" ] && echo present || echo gone)" "0 gone"
 check "PHP's error log did not grow" "$(stat -f %z "$PHPLOG" 2> /dev/null || echo 0)" "$phplog"
 release_wan_b
 

@@ -259,6 +259,17 @@ const WGCT_ALIAS_NAME_MASK = '/^([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-
 /* the per-interface network aliases core itself adds to the model (__lan_network, __GroupA_network, ...), which the
  * field's user-facing mask would refuse: "__", a valid interface key, "_network" */
 const WGCT_ALIAS_INTERNAL_MASK = '/^__(.+)_network$/D';
+/* a uuid as core's models write them, in either case: what names a WireGuard instance or a static route in a request,
+ * on the command line and in the plugin's own records */
+const WGCT_UUID_MASK = '/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/D';
+
+/**
+ * @param mixed $v a value from a request, the command line or a state file
+ * @return bool a uuid
+ */
+function wgct_valid_uuid(mixed $v): bool {
+    return is_string($v) && preg_match(WGCT_UUID_MASK, $v) === 1;
+}
 
 /**
  * @param mixed $v a value read from config
@@ -266,6 +277,18 @@ const WGCT_ALIAS_INTERNAL_MASK = '/^__(.+)_network$/D';
  */
 function wgct_valid_gateway_name(mixed $v): bool {
     return is_string($v) && preg_match(WGCT_GATEWAY_NAME_MASK, $v) === 1;
+}
+
+/**
+ * The rule for a gateway name an API request sends on to a command line: a name core accepts that does not start
+ * with "-". Core allows the leading "-", and a gateway named so still derives, shows and binds; it only cannot be
+ * named in such a request.
+ *
+ * @param mixed $v a value from a request
+ * @return bool
+ */
+function wgct_request_gateway_name(mixed $v): bool {
+    return is_string($v) && wgct_valid_gateway_name($v) && !str_starts_with($v, '-');
 }
 
 /**
@@ -328,7 +351,8 @@ function wgct_valid_ip_field(mixed $v, bool $allowEmpty = false): bool {
  *  - instance numbers that are not all digits become '' (the derivation's "no device")
  *  - gateways and gateway groups whose name fails core's mask, and gateways whose interface key does, are dropped;
  *    a failing group member is dropped from its group
- *  - interfaces whose key or device name fails are dropped
+ *  - interfaces whose key or device name fails are dropped; 'interface_keys', the key of every interface as read,
+ *    is carried through untouched, so a key whose interface was dropped still counts as taken (wgct_pick_opt())
  *  - alias names that fail core's mask are dropped
  *
  * @param array $raw the snapshot as read from config; 'aliases' is optional
@@ -470,7 +494,7 @@ function wgct_core_read_routes(array &$core, \SimpleXMLElement $root): void {
 function wgct_core_read(bool $context): array {
     $root = Config::getInstance()->object();
     $core = [
-        'instances' => [], 'peers' => [], 'interfaces' => [], 'routes' => [], 'gateways' => [],
+        'instances' => [], 'peers' => [], 'interfaces' => [], 'interface_keys' => [], 'routes' => [], 'gateways' => [],
         'snat' => [], 'groups' => [], 'dns_servers' => [], 'forwarders' => [], 'aliases' => [],
     ];
     foreach ((new \OPNsense\Wireguard\Server())->servers->server->iterateItems() as $uuid => $s) {
@@ -491,6 +515,8 @@ function wgct_core_read(bool $context): array {
         ];
     }
     foreach ($root->interfaces->children() as $opt => $if) {
+        /* every key as read: wgct_snapshot_validate() drops an interface it refuses, and its key is still taken */
+        $core['interface_keys'][] = (string)$opt;
         $core['interfaces'][$opt] = [
             'if' => (string)$if->if,
             'enable' => isset($if->enable) && (string)$if->enable !== '0',
@@ -1724,7 +1750,7 @@ function wgct_tunnels_selftest() {
     $rules = wgct_pin_rules($ps);
     $wanRule = $rules[0];
     $innerRule = $rules[1];
-    $labelRe = '/^[0-9a-f]{32}$/';
+    $labelRe = '/^[0-9a-f]{32}$/D';
     $ok = count($rules) === 2
         && $wanRule['type'] === 'block' && $wanRule['direction'] === 'out' && $wanRule['quick'] === true && $wanRule['log'] === true
         && $wanRule['interface'] === 'opt1' && $wanRule['interfacenot'] === true && $wanRule['ipprotocol'] === 'inet'
@@ -2448,6 +2474,24 @@ function wgct_tunnels_selftest() {
         }));
     $fail += $p['fail'];
     $total += $p['total'];
+
+    /* what a request may name: a uuid, and a gateway name no command line reads as an option */
+    $r = ['fail' => 0, 'total' => 0];
+    $u = '00000000-0000-4000-8000-00000000000a';
+    wgct_check($r, 'request: a uuid in either case is one; one beside a line break, a shorter one, other text and a value that is no string are not',
+        wgct_valid_uuid($u) && wgct_valid_uuid(strtoupper($u)) && !wgct_valid_uuid($u . "\n") && !wgct_valid_uuid("\n" . $u)
+        && !wgct_valid_uuid(substr($u, 1)) && !wgct_valid_uuid('--selftest') && !wgct_valid_uuid('') && !wgct_valid_uuid(null)
+        && !wgct_valid_uuid(7));
+    wgct_check($r, 'request: a gateway name of 1 to 32 of core\'s characters is taken; 33 of them, none, one followed by a line break and one with a space are not',
+        wgct_request_gateway_name('WAN_A') && wgct_request_gateway_name('a') && wgct_request_gateway_name(str_repeat('a', 32))
+        && wgct_request_gateway_name('tun_a-ipv6') && !wgct_request_gateway_name(str_repeat('a', 33))
+        && !wgct_request_gateway_name('') && !wgct_request_gateway_name("WAN_A\n") && !wgct_request_gateway_name('WAN A')
+        && !wgct_request_gateway_name(null));
+    wgct_check($r, 'request: a gateway name that starts with "-" is refused in a request, though core accepts it as a name',
+        !wgct_request_gateway_name('--selftest') && !wgct_request_gateway_name('-wan') && !wgct_request_gateway_name('-')
+        && wgct_valid_gateway_name('--selftest') && wgct_valid_gateway_name('-wan'));
+    $fail += $r['fail'];
+    $total += $r['total'];
 
     printf("%d/%d passed\n", $total - $fail, $total);
     return $fail === 0 ? 0 : 1;

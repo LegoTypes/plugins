@@ -31,8 +31,8 @@ Features:
   owns each part, and findings; it reloads as soon as an action completes
 - Gives each managed tunnel's IPv6 gateway its host routes (to its next hop
   and to its own monitor) and keeps its tunnel address in place: at boot,
-  on gateway and WAN address events, on every configuration change, and
-  every minute as a safety net
+  on gateway and WAN address events, on every configuration change that
+  takes a history entry, and every minute as a safety net
 - Health mirror (every 15 s):
   - binds each tunnel to the WAN its endpoint route uses and holds the
     tunnel down while that WAN is down, so a tunnel never migrates to the
@@ -67,11 +67,57 @@ Features:
   - clamps TCP MSS in both directions from each tunnel's MTU, so an
     MTU change on the WireGuard page takes effect without other edits
 - Leaves disabled gateways and an operator's manual force-down alone
+- One privilege for the page and its API. Its holder can create, change
+  and remove WireGuard instances and peers, interface assignments,
+  gateways, static routes and outbound NAT rules through the plugin, and
+  send sized pings from a WAN, without the privileges of those core pages
 - Per node: not synchronised to a CARP peer; each firewall manages its
   own tunnels
 
 Plugin Changelog
 ================
+
+3.13
+
+* Every configd action of the plugin names allowed_groups (wheel,
+  wwwonly), as core's own sensitive actions do: a local account in
+  neither group is answered "Action not allowed or missing". Root (cron,
+  the hooks, the shell) and the web GUI are admitted. Core's own
+  actions stay open to every local account and are core's to restrict:
+  "service stop wgclienttunnels" stops the service, and "interface
+  routes alarm" runs the route set and a reconcile
+* The service API refuses a read-only user (user-config-readonly) for
+  start, stop, restart and reconfigure. Core's Status: Services page
+  uses core's own API, which the plugin cannot guard
+* tunnel.php runs its self-tests only as "tunnel.php --selftest", with
+  no other argument; health_mirror.php, prime.php and default_guard.php
+  likewise, and --selftest beside anything else is refused and runs
+  nothing. tunnel.php reads --json and --dry only before the command,
+  refuses an unknown option and a surplus argument, and takes every
+  word after the command as an argument, so a value passed through a
+  configd action is never read as an option
+* The self-tests keep their files in a root-only directory of their
+  own, /var/run/wgclienttunnels-selftest, each set in a directory with
+  an unpredictable name; a suite that cannot make one fails. None lies
+  under /tmp
+* The API refuses a WAN name that starts with "-", and a name or uuid
+  followed by a line break
+* The health mirror's own saves take no configuration history entry,
+  like os-wan-failover's: no history file, no audit line and no
+  configuration-change event. The mirror's log names every hold and
+  release, and with one "hold records saved" line every save of its
+  hold records alone (a re-stamp after a reboot, a record removed). A
+  save made from the page takes its entry
+* A full routing reconfigure or an alarm replay that does not answer OK
+  after a mirror change is logged as a warning, as are a tick lock that
+  cannot be opened, a gateway change left for the next tick, a gateway
+  status still stale at the replay and an unreadable boot id
+* Create chooses the new interface key (optN) among every key in the
+  configuration, also one whose interface the plugin does not read, so
+  no key is written twice
+* The privilege is named "VPN: WireGuard: Upstream tunnels (creates and
+  removes WireGuard instances, gateways, routes and outbound NAT)", and
+  the description says what it grants
 
 3.12
 

@@ -39,11 +39,21 @@
 #         (user-config-readonly set)" (UserBaseException::getHttpCode() is 500), so "refused" means that pair.
 # Case 2: its dry=1 POSTs to edit, remove, adopt and the sentinel are refused, and configd's log shows no plugin
 #         action in that window. The control user's dry sentinel preview answers 200 and does appear in the log, so
-#         the check can see what it looks for. (core's reconfigure flow writes no config, so it has no read-only
-#         guard; the service's Apply is case 7.)
+#         the check can see what it looks for.
+# Case 2a: the service controller guards all four stock actions as it guards its own sentinel action: the
+#         read-only user's POSTs to service/stop, start, restart and reconfigure are refused the same way, configd's
+#         log shows no plugin action in that window, and the plugin's status is as before. The control user's Apply
+#         (service/reconfigure) is case 7.
 # Case 2b: every request the plugin refuses answers status failed: a GET to create, an empty create form, edit
 #         with a value that is not a uuid, edit with dry=yes, remove with a value that is not a uuid, measure_mtu
 #         without a WAN and the sentinel with dry=yes.
+# Case 2c: a value that reaches a command line is never read as an option. The control user's measure_mtu with the
+#         WAN `--selftest`, and with a WAN followed by a line break, and its rebind to the WAN `--selftest` are
+#         refused by the controller, and configd logs neither a measurement nor a rebind. The request
+#         `wgclienttunnels apply --selftest`, sent as `configctl -- wgclienttunnels apply --selftest` (configctl
+#         takes a word that starts with "-" as its own option unless "--" stands before the command), reaches the
+#         action as its parameter, which configd's log shows, and answers the JSON refusal "not a uuid" without one
+#         self-test line.
 # Case 3: two concurrent measure-mtu runs give one measurement and one refusal.
 # Case 4: the control user's settings/set POST naming `managed` and `held` is
 #         saved with no validation message and changes neither the settings node (its persisted_at stamp aside,
@@ -248,6 +258,15 @@ for what in "tunnels/edit/$UUID" "tunnels/remove/$UUID" "tunnels/adopt/$UUID" se
 done
 check "read-only user: no plugin action in configd's log" "$(actions "$mark")" 0
 
+# case 2a
+running=$(configctl wgclienttunnels status)
+mark=$(lmark configd)
+for what in service/stop service/start service/restart service/reconfigure; do
+    check "read-only user: POST to $what is refused" "$(refused "$RO_CRED" "$what")" refused
+done
+check "read-only user: no plugin action in configd's log after the four service POSTs, and the plugin's status is as before" \
+    "$(actions "$mark") $(configctl wgclienttunnels status)" "0 $running"
+
 # case 2b: the reply's status, of the body the last request left
 status_of() {
     $PHP -r '$j = json_decode((string)file_get_contents($argv[1]), true); echo is_array($j) ? ($j["status"] ?? "none") : "not-json";' "$T/body"
@@ -268,6 +287,28 @@ call "$CTL_CRED" service/sentinel -d dry=yes > /dev/null
 statuses="$statuses sentinel-dry-yes=$(status_of)"
 check "api: every refused request answers status failed" "$statuses" \
     "get-create=failed empty-create=failed edit-not-a-uuid=failed edit-dry-yes=failed remove-not-a-uuid=failed measure-no-wan=failed sentinel-dry-yes=failed"
+
+# case 2c: the controller's own refusal, by its message, of the body the last request left
+refusal_of() {
+    echo "$(status_of) $(grep -c -F -e "$1" "$T/body")"
+}
+mark=$(lmark configd)
+call "$CTL_CRED" tunnels/measure_mtu -d 'wan=--selftest' -d "endpoint=$ENDPOINT" > /dev/null
+option=$(refusal_of 'choose the WAN and paste a config')
+call "$CTL_CRED" tunnels/measure_mtu -d "wan=$WAN%0A" -d "endpoint=$ENDPOINT" > /dev/null
+linebreak=$(refusal_of 'choose the WAN and paste a config')
+call "$CTL_CRED" "tunnels/rebind/$UUID" -d 'rebind[wan]=--selftest' > /dev/null
+rebind=$(refusal_of 'choose a WAN')
+check "api: measure_mtu with the WAN --selftest, measure_mtu with a WAN followed by a line break and rebind to the WAN --selftest are refused by the controller, and configd logs no measurement and no rebind" \
+    "$option; $linebreak; $rebind; $(lcount configd "$mark" -E -e 'measuring the tunnel MTU|rebinding WireGuard')" \
+    "failed 1; failed 1; failed 1; 0"
+mark=$(lmark configd)
+configctl -- wgclienttunnels apply --selftest > "$T/selftest.out" 2>&1
+check "configd: \`wgclienttunnels apply --selftest\` reaches the action as its parameter (configd logs it once) and answers the JSON refusal 'not a uuid', with no self-test line" \
+    "$(lcount configd "$mark" -F -e 'applying WireGuard upstream tunnel --selftest') $(grep -c '^\[PASS\]' "$T/selftest.out") $($PHP -r '
+        $j = json_decode((string)file_get_contents($argv[1]), true);
+        echo is_array($j) && ($j["ok"] ?? null) === false && str_contains(implode(" ", $j["errors"] ?? []), "not a uuid: --selftest") ? "refused: not a uuid" : "not that refusal";' "$T/selftest.out")" \
+    "1 0 refused: not a uuid"
 
 # case 3: two measurements at once; the loser is refused while the winner pings (about 3 s)
 $PHP "$TUNNEL" --json measure-mtu "$WAN" "$ENDPOINT" > "$T/m1" &

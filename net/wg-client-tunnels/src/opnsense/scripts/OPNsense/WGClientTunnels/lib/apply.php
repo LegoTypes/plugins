@@ -290,7 +290,7 @@ function wgct_rerun_mode(?string $recorded): string {
  * CARP vhid, for which start, stop, restart and configure act on every
  * instance (wg-service-control.php:212).
  */
-const WGCT_CORE_INSTANCE_UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/';
+const WGCT_CORE_INSTANCE_UUID = '/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/D';
 const WGCT_WIREGUARD_INSTANCE_ACTIONS = ['wireguard start', 'wireguard stop', 'wireguard restart', 'wireguard configure'];
 
 /**
@@ -543,7 +543,7 @@ function wgct_pending_from_json(mixed $data): array {
         return $out;
     }
     foreach ($data as $uuid => $record) {
-        if (!is_string($uuid) || preg_match('/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/', $uuid) !== 1) {
+        if (!wgct_valid_uuid($uuid)) {
             continue;
         }
         if (is_int($record)) {
@@ -725,7 +725,7 @@ function wgct_route_todo_key(string $gatewayUuid, string $ip): string {
  */
 function wgct_write_route_todos(array $todos): void {
     foreach ($todos as $uuid => $network) {
-        if (preg_match('/^[0-9a-fA-F-]{36}$/', (string)$uuid) !== 1) {
+        if (preg_match('/^[0-9a-fA-F-]{36}$/D', (string)$uuid) !== 1) {
             throw new \RuntimeException("not a route uuid: {$uuid}");
         }
         /* 'x' never opens a path that exists, a symlink included: /tmp is world-writable and
@@ -843,7 +843,7 @@ function wgct_gateway_locked_commit(callable $commit): array {
         if ($pending === null) {
             throw $replayError;
         }
-        logMsg(WGCT_ACTION_LOG_TAG, 'alarm replay failed while unwinding ' . get_class($pending) . ': ' . $replayError->getMessage());
+        logMsg(WGCT_ACTION_LOG_TAG, 'alarm replay failed while unwinding ' . get_class($pending) . ': ' . $replayError->getMessage(), LOG_WARNING);
     }
     if ($pending !== null) {
         throw $pending;
@@ -897,15 +897,15 @@ function wgct_routing_action(callable $commit, bool $dry): array {
      * gateways and for any other gateway whose status changed meanwhile.
      *
      * When $pending is set we are already unwinding a real failure, so a second failure out of wgct_after_apply()
-     * must not replace it as the exception the caller sees: it is caught, logged (nothing replayed here carries
-     * key material) and the original is rethrown. With nothing pending, an after_apply failure is the only error
+     * must not replace it as the exception the caller sees: it is caught, logged as a warning (nothing replayed
+     * here carries key material) and the original is rethrown. With nothing pending, an after_apply failure is the only error
      * and propagates as from a direct call.
      */
     if ($pending !== null) {
         try {
             wgct_after_apply($ours, $before);
         } catch (\Throwable $afterError) {
-            logMsg(WGCT_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage());
+            logMsg(WGCT_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage(), LOG_WARNING);
         }
         throw $pending;
     }
@@ -1026,7 +1026,7 @@ function wgct_apply_only(string $uuid, ?string $mode = null): array {
         try {
             wgct_after_apply($gatewayNames, $before);
         } catch (\Throwable $afterError) {
-            logMsg(WGCT_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage());
+            logMsg(WGCT_ACTION_LOG_TAG, 'after_apply failed while unwinding ' . get_class($pending) . ': ' . $afterError->getMessage(), LOG_WARNING);
         }
         throw $pending;
     }
@@ -1208,20 +1208,23 @@ function wgct_watcher_pending(array $changes, array $seen): array {
  * ($plan's wait) as saved. No monitor is restarted, so every other gateway keeps its reading. The alarm the
  * watcher raises for the change is dropped when it finds the lock still held, and the replay applies routing and
  * the filter once the lock is released. Core's full "interface routes configure", which restarts every monitor
- * and starts the watcher, runs instead, with one line saying why, when the watcher cannot be told (it is not
- * running, or core's code is no longer what the plugin pins), when it does not show the change in time, or when
- * a changed gateway has no running monitor ($plan's absent).
+ * and starts the watcher, runs instead, with one line at notice saying why, when the watcher cannot be told (it is
+ * not running, or core's code is no longer what the plugin pins), when it does not show the change in time, or when
+ * a changed gateway has no running monitor ($plan's absent). A full reconfigure that does not answer OK is logged as
+ * a warning naming its reply and the changed gateways; nothing repeats it, and the alarm replay that follows applies
+ * routing and the filter from the saved flag.
  *
  * @param callable(string): string $configd runs a configd action and returns its reply
- * @param callable(string): void $log
+ * @param callable(string, int): void $log a line and its syslog priority
  * @param ?string $drift wgct_watcher_reload_drift()
  * @param array{wait: array<string, bool>, absent: list<string>} $plan wgct_watcher_plan()
  * @param callable(): array<string, string> $cache wgct_watcher_cache()
  * @param callable(): void $pause waits WGCT_WATCHER_POLL_MS
- * @return string 'watcher' or 'configure', the step that ran
+ * @param list<string> $changed every gateway whose force_down the save changed
+ * @return string 'watcher' or 'configure', the step that ran; 'failed' when the full reconfigure did not answer OK
  */
 function wgct_force_down_resync(callable $configd, callable $log, ?string $drift, array $plan, callable $cache,
-    callable $pause): string {
+    callable $pause, array $changed): string {
     if ($drift !== null) {
         $why = "core changed what the watcher reload relies on ({$drift})";
     } elseif ($plan['absent'] !== []) {
@@ -1246,8 +1249,13 @@ function wgct_force_down_resync(callable $configd, callable $log, ?string $drift
             $why = 'gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . ')';
         }
     }
-    $log("{$why}: full routing reconfigure instead");
-    $configd('interface routes configure');
+    $log("{$why}: full routing reconfigure instead", LOG_NOTICE);
+    $reply = trim($configd('interface routes configure'));
+    if ($reply !== 'OK') {
+        $log('full routing reconfigure failed (' . ($reply === '' ? 'no reply' : $reply)
+            . '): routing and the filter may not show the change for ' . implode(',', $changed), LOG_WARNING);
+        return 'failed';
+    }
     return 'configure';
 }
 
@@ -1330,7 +1338,7 @@ function wgct_core_contract_log(array $result, string $file, callable $log, ?arr
 }
 
 /**
- * Self-tests for the pure parts of the apply. No configd, no locks.
+ * Self-tests for the pure parts of the apply. No configd, no locks; its files lie in fixture directories of its own.
  *
  * @return int exit code, 0 when every case passes
  */
@@ -1473,6 +1481,17 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'apply: the Apply button re-runs the recorded mode; Create\'s first apply and no record re-run as the tunnel apply',
         wgct_rerun_mode('filter') === 'filter' && wgct_rerun_mode('routes') === 'routes'
         && wgct_rerun_mode('first') === 'tunnel' && wgct_rerun_mode('tunnel') === 'tunnel' && wgct_rerun_mode(null) === 'tunnel');
+    /* `tunnel.php apply UUID` hands on no MODE (null); `apply UUID ''` hands on an empty one */
+    $emptyMode = null;
+    try {
+        wgct_apply_mode_steps('', $u1);
+    } catch (\InvalidArgumentException $e) {
+        $emptyMode = $e->getMessage();
+    }
+    wgct_check($t, 'apply: an absent MODE takes the mode the pending record still needs; an empty MODE is refused as no apply mode, before anything runs',
+        wgct_apply_mode_steps(wgct_rerun_mode(null), $u1) === wgct_apply_mode_steps('tunnel', $u1)
+        && wgct_apply_mode_steps(wgct_rerun_mode('filter'), $u1) === [['filter reload', []]]
+        && $emptyMode === 'not an apply mode:  (filter, routes, first, tunnel)');
     wgct_check($t, 'apply: pending file -- a 3.0 bare time reads as Create\'s (first); a malformed mode or uuid reads as nothing',
         wgct_pending_from_json([$u1 => 7]) === [$u1 => ['at' => 7, 'mode' => 'first', 'mark' => 0]]
         && wgct_pending_from_json([$u1 => ['at' => 7, 'mode' => 'routes', 'mark' => 5]]) === [$u1 => ['at' => 7, 'mode' => 'routes', 'mark' => 5]]
@@ -1502,9 +1521,8 @@ function wgct_apply_selftest(): int {
         wgct_failure_footer('list', '') === '' && wgct_failure_footer('status', '') === ''
         && wgct_failure_footer('reconcile', '') === '' && wgct_failure_footer('measure-mtu', '') === '');
 
-    /* the core contract, against this core's own files (the test VM's 26.7.7) and temporary copies of them */
-    $dir = sys_get_temp_dir() . '/wgct-contract-' . getmypid();
-    mkdir($dir);
+    /* the core contract, against this core's own files (the test VM's 26.7.7) and copies of them in a fixture */
+    $dir = wgct_selftest_dir('apply-contract');
     wgct_check($t, 'contract: core as of 26.7.7 has no drift', (wgct_core_contract()['drift'] ?? null) === []);
     /* $copy(path, search, replace): a copy of core's file at path with search replaced, by its path */
     $copies = 0;
@@ -1539,6 +1557,8 @@ function wgct_apply_selftest(): int {
     }
     /* a force_down save: the watcher reload and its confirmation, and the full reconfigure whenever the watcher
      * cannot be told or does not show the change */
+    /* $resync(...): the step, the configd actions run, the lines logged as [priority, line] and the number of waits.
+     * A line logged without a priority is recorded with -1, which no expected line carries. */
     $resync = function (array $replies, ?string $pinDrift, array $changes, array $caches, array $absent = []): array {
         $ran = [];
         $lines = [];
@@ -1547,19 +1567,19 @@ function wgct_apply_selftest(): int {
         $step = wgct_force_down_resync(function (string $action) use (&$ran, $replies): string {
             $ran[] = $action;
             return $replies[$action] ?? '';
-        }, function (string $line) use (&$lines): void {
-            $lines[] = $line;
+        }, function (string $line, int $priority = -1) use (&$lines): void {
+            $lines[] = [$priority, $line];
         }, $pinDrift, ['wait' => $changes, 'absent' => $absent], function () use (&$reads, $caches): array {
             $seen = $caches[min($reads, count($caches) - 1)];
             $reads++;
             return $seen;
         }, function () use (&$pauses): void {
             $pauses++;
-        });
+        }, array_merge(array_map('strval', array_keys($changes)), $absent));
         return [$step, $ran, $lines, $pauses];
     };
     $hold = ['tun_a' => true];
-    $okReply = ['wgclienttunnels watcher_reload' => "OK\n"];
+    $okReply = ['wgclienttunnels watcher_reload' => "OK\n", 'interface routes configure' => "OK\n"];
     $shown = ['WAN_A' => 'none', 'tun_a' => 'force_down'];
     $stale = ['WAN_A' => 'none', 'tun_a' => 'down'];
     wgct_check($t, 'force_down resync: the watcher reload alone once its record shows the hold, with no line; it is waited for',
@@ -1583,30 +1603,44 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'force_down resync: with nothing to wait for (a silent monitor, monitoring off) the save is in step as soon '
         . 'as the watcher is told, with no wait',
         $resync($okReply, null, [], [[]]) === ['watcher', ['wgclienttunnels watcher_reload'], [], 0]);
-    wgct_check($t, 'force_down resync: a changed gateway no dpinger answers for: the full reconfigure at once, naming it, the '
-        . 'watcher never signalled or waited for',
+    wgct_check($t, 'force_down resync: a changed gateway no dpinger answers for: the full reconfigure at once, naming it at '
+        . 'notice, the watcher never signalled or waited for',
         $resync($okReply, null, $hold, [$shown], ['tun_c', 'tun_d']) === ['configure', ['interface routes configure'],
-            ['tun_c,tun_d has no running monitor: full routing reconfigure instead'], 0]);
+            [[LOG_NOTICE, 'tun_c,tun_d has no running monitor: full routing reconfigure instead']], 0]);
     $tries = intdiv(WGCT_WATCHER_CONFIRM_MS, WGCT_WATCHER_POLL_MS);
     wgct_check($t, 'force_down resync: a record that never shows the change (a stalled watcher, a gateway with no monitor data): '
-        . 'the full reconfigure after 15 s of looking, naming the gateway',
+        . 'the full reconfigure after 15 s of looking, naming the gateway at notice',
         WGCT_WATCHER_CONFIRM_MS === 15000 && WGCT_WATCHER_POLL_MS === 250
         && $resync($okReply, null, $hold, [$stale]) === ['configure',
             ['wgclienttunnels watcher_reload', 'interface routes configure'],
-            ['the gateway watcher did not show tun_a as saved within 15 s: full routing reconfigure instead'], $tries]
+            [[LOG_NOTICE, 'the gateway watcher did not show tun_a as saved within 15 s: full routing reconfigure instead']], $tries]
         && $resync($okReply, null, $hold, [[]])[0] === 'configure');
     $notReloaded = function (string $reply) use ($resync, $hold, $shown): bool {
-        return $resync(['wgclienttunnels watcher_reload' => $reply], null, $hold, [$shown]) === ['configure',
-            ['wgclienttunnels watcher_reload', 'interface routes configure'],
-            ['gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . '): full routing reconfigure instead'], 0];
+        return $resync(['wgclienttunnels watcher_reload' => $reply, 'interface routes configure' => 'OK'], null, $hold, [$shown])
+            === ['configure', ['wgclienttunnels watcher_reload', 'interface routes configure'],
+                [[LOG_NOTICE, 'gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . '): full routing reconfigure instead']], 0];
     };
     wgct_check($t, 'force_down resync: no watcher (the action exits non-zero), an unknown action or no reply: the full reconfigure, '
-        . 'with the reason, and the record is not looked at',
+        . 'with the reason at notice, and the record is not looked at',
         $notReloaded('Error (1)') && $notReloaded('Error (3)') && $notReloaded('Action not allowed or missing') && $notReloaded(''));
-    wgct_check($t, 'force_down resync: core drifted from the pinned watcher code: the full reconfigure, the watcher never signalled',
+    wgct_check($t, 'force_down resync: core drifted from the pinned watcher code: the full reconfigure, the watcher never signalled, '
+        . 'the reason at notice',
         $resync($okReply, 'watcher_reload: x no longer holds "y"', $hold, [$shown]) === ['configure',
             ['interface routes configure'],
-            ['core changed what the watcher reload relies on (watcher_reload: x no longer holds "y"): full routing reconfigure instead'], 0]);
+            [[LOG_NOTICE, 'core changed what the watcher reload relies on (watcher_reload: x no longer holds "y"): full routing reconfigure instead']], 0]);
+    /* $fallbackFails(reply, shown): the watcher is not running and the full reconfigure answers reply */
+    $fallbackFails = function (string $reply, string $shownReply) use ($resync, $shown): bool {
+        return $resync(['wgclienttunnels watcher_reload' => 'Error (1)', 'interface routes configure' => $reply], null,
+            ['tun_a' => true, 'tun_a-ipv6' => true], [$shown]) === ['failed',
+                ['wgclienttunnels watcher_reload', 'interface routes configure'],
+                [[LOG_NOTICE, 'gateway watcher not reloaded (Error (1)): full routing reconfigure instead'],
+                 [LOG_WARNING, "full routing reconfigure failed ({$shownReply}): routing and the filter may not show the change for tun_a,tun_a-ipv6"]],
+                0];
+    };
+    wgct_check($t, 'force_down resync: a full reconfigure that does not answer OK (it exits non-zero, a refused action, no reply) is '
+        . 'one warning naming the reply and the changed gateways, and the step reads failed',
+        $fallbackFails("Error (1)\n", 'Error (1)') && $fallbackFails('Action not allowed or missing', 'Action not allowed or missing')
+        && $fallbackFails('', 'no reply'));
     $cacheFile = "{$dir}/gateways.status";
     file_put_contents($cacheFile, serialize(['WAN_A' => 'none', 'tun_a' => 'force_down', 7 => 'loss', 'odd' => ['x']]));
     $read = wgct_watcher_cache($cacheFile);
@@ -1740,8 +1774,6 @@ function wgct_apply_selftest(): int {
     wgct_core_contract_log(['drift' => [], 'fixed' => []], $retired, $log, ['fix_b']);
     wgct_check($t, 'contract: a retired item\'s note is dropped without a line; a checked item\'s note still clears once',
         count($logged) === $count + 1 && str_ends_with($logged[$count][1], ': fix_b: z fixed'));
-    array_map('unlink', glob("$dir/*"));
-    rmdir($dir);
 
     $cmd = wgct_log_command(LOG_ERR, '[wgct-x] boom');
     wgct_check($t, 'log: a line goes to logger under the program name core\'s WireGuard log matches, at its level',
@@ -1753,10 +1785,8 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'log: an unknown priority logs at notice', str_contains(wgct_log_command(99, 'x'), ' -p user.notice '));
     wgct_check($t, 'log: warning and info map to their names',
         str_contains(wgct_log_command(LOG_WARNING, 'x'), ' -p user.warning ') && str_contains(wgct_log_command(LOG_INFO, 'x'), ' -p user.info '));
-    /* the apply-pending record's lock is waited for a bounded time: a temporary lock file, held by a second open */
-    $lockDir = rtrim(sys_get_temp_dir(), '/') . '/wgct-pending-selftest.' . getmypid();
-    @mkdir($lockDir, 0700);
-    $lockPath = "{$lockDir}/apply_pending.json.lock";
+    /* the apply-pending record's lock is waited for a bounded time: a lock file in a fixture, held by a second open */
+    $lockPath = wgct_selftest_dir('apply-pending') . '/apply_pending.json.lock';
     $holder = new \SplFileObject($lockPath, 'c');
     $holder->flock(LOCK_EX);
     $started = hrtime(true);
@@ -1774,8 +1804,6 @@ function wgct_apply_selftest(): int {
     wgct_check($t, 'apply: the lock free => taken at once', $taken->flock(LOCK_EX | LOCK_NB));
     $taken->flock(LOCK_UN);
     unset($holder, $taken);
-    @unlink($lockPath);
-    @rmdir($lockDir);
     $entry = (string)@file_get_contents(dirname(__DIR__) . '/entry.php');
     $shell = (string)@file_get_contents(dirname(__DIR__) . '/wgct.sh');
     wgct_check($t, 'apply: entry.php and wgct.sh name the removal marker WGCT_REMOVING_FILE names',

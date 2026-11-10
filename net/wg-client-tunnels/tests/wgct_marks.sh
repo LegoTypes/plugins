@@ -24,13 +24,14 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 #
-# Marker-bounded windows of core's WireGuard and configd logs, for the VM tests (sourced: . wgct_marks.sh). Root on
-# the disposable test VM only, never on a firewall. A test logs a marker line before a case; a count is of the lines
-# between that marker and a closing one logged after the case and waited for. The plugin, configd and the markers
-# all log through syslog's socket in order, so every line logged before the closing marker is written before it,
-# whatever syslog's latency.
+# Marker-bounded windows of core's WireGuard, configd and audit logs, for the VM tests (sourced: . wgct_marks.sh).
+# Root on the disposable test VM only, never on a firewall. A test logs a marker line before a case; a count is of the
+# lines between that marker and a closing one logged after the case and waited for. The plugin, configd and the
+# markers all log through syslog's socket in order, so every line logged before the closing marker is written before
+# it, whatever syslog's latency. The audit log holds what configd logs with the auth facility: each action it allowed
+# or denied, with the caller's user.
 #
-#   wgct_log_files LOG        LOG's newest two daily files (LOG: wireguard or configd), oldest first: syslog starts
+#   wgct_log_files LOG        LOG's newest two daily files (LOG: wireguard, configd or audit), oldest first: syslog starts
 #                             a new file at midnight, and latest.log can name the old one for hours after that.
 #                             With no daily file yet, nothing.
 #   lmark LOG                 log a unique marker line to LOG and wait (at most 10 s) until it is written; prints
@@ -44,6 +45,7 @@
 wgct_log_tag() {
     case "$1" in
     configd) echo configd.py ;;
+    audit) echo audit ;;
     *) echo wireguard ;;
     esac
 }

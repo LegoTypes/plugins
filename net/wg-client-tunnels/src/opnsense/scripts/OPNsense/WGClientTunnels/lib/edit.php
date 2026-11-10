@@ -134,7 +134,7 @@ function wgct_edit_request(#[\SensitiveParameter] array $raw, string $uuid): arr
         $errors['config'] = 'the wg-quick text';
     }
     $nat = ['inet' => $given('nat4') ? $list('nat4') : null, 'inet6' => $given('nat6') ? $list('nat6') : null];
-    if (preg_match('/^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$/', $uuid) !== 1) {
+    if (!wgct_valid_uuid($uuid)) {
         $errors['general'] = 'not a tunnel uuid';
     }
     return [
@@ -508,7 +508,7 @@ function wgct_plan_edit(array $snap, array $refs, array $req, ?array $swap): arr
             $e['ipv6'] = 'turning IPv6 on needs a replacement config whose Address has an IPv6 address (the provider assigns it with the key)';
         } elseif ($t['gw4'] === null) {
             $e['ipv6'] = "{$label} has no IPv4 gateway for an IPv6 gateway to follow";
-        } elseif (preg_match('/^[a-zA-Z0-9_-]{1,32}$/', $name6) !== 1 || isset($core['gateways'][$name6])) {
+        } elseif (!wgct_valid_gateway_name($name6) || isset($core['gateways'][$name6])) {
             $e['ipv6'] = "the IPv6 gateway would be named {$name6}, which is too long or already taken";
         } else {
             foreach ($core['gateways'] as $gwName => $g) {
@@ -998,7 +998,7 @@ function wgct_edit_selftest(): int {
         && $p['kernel_routes'] === [wgct_route_todo_key('g-a4', '203.0.113.9') => '203.0.113.9/32'] && $p['routes']['delete'] === []);
     $k1 = wgct_route_todo_key('g-a4', '203.0.113.9');
     wgct_check($t, 'edit: the old-monitor hand-off has a core-shaped, per-address todo key, so two pending ones never overwrite each other',
-        preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/', $k1) === 1 && $k1 === wgct_route_todo_key('g-a4', '203.0.113.9')
+        preg_match('/^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/D', $k1) === 1 && $k1 === wgct_route_todo_key('g-a4', '203.0.113.9')
         && $k1 !== wgct_route_todo_key('g-a4', '203.0.113.20'));
     foreach ([['an IPv6 address', '2001:db8::1'], ['empty', ''], ['not an address', 'x']] as [$desc, $ip]) {
         wgct_check($t, "edit: a new monitor that is {$desc} => refused on monitor", isset($plan(['monitor' => $ip] + $keepA)['errors']['monitor']));

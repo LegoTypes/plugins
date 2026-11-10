@@ -39,7 +39,7 @@ require_once __DIR__ . '/tunnels.php';
 require_once __DIR__ . '/selftest.php';
 
 /* core's gateway names stop at 32 characters and the IPv6 gateway adds "-ipv6" */
-const WGCT_NAME_PATTERN = '/^[a-zA-Z0-9_-]{1,27}$/';
+const WGCT_NAME_PATTERN = '/^[a-zA-Z0-9_-]{1,27}$/D';
 const WGCT_TUNNEL_MTU_MIN = 1280;
 const WGCT_TUNNEL_MTU_MAX = 1420;
 const WGCT_KEEPALIVE = '25';
@@ -174,7 +174,7 @@ function wgct_parse_wgquick(#[\SensitiveParameter] string $text): array {
     }
     $public['has_psk'] = $secret['psk'] !== '';
     $public['endpoint_family'] = '';
-    if (preg_match('/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9A-Fa-f:.]+)\]):(\d{1,5})$/', $endpoint, $m) === 1
+    if (preg_match('/^(?:(\d{1,3}(?:\.\d{1,3}){3})|\[([0-9A-Fa-f:.]+)\]):(\d{1,5})$/D', $endpoint, $m) === 1
         && (int)$m[3] >= 1 && (int)$m[3] <= 65535) {
         $ip = $m[1] !== '' ? (filter_var($m[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false ? $m[1] : null)
             : (wgct_is_global6($m[2]) ? wgct_canon_ip($m[2]) : null);

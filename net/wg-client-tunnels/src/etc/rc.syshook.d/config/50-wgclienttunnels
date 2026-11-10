@@ -25,13 +25,16 @@
 # POSSIBILITY OF SUCH DAMAGE.
 #
 # Config-change hook: core runs every script in rc.syshook.d/config/ after a
-# config save (Config::save -> syslog config-event -> configd
-# system.event.config_changed -> rc.syshook config). Queue a reconcile of the
-# managed tunnels' IPv6 addresses and routes, the default-route guard and the
-# rendered rules, and return at once: core runs these hooks one after another
-# and skips config events while they run. The reconcile is idempotent and
-# silent unless it repairs something, so the plugin's own saves do not loop.
-# It never writes config.
+# config save that takes a history entry (Config::save -> syslog config-event
+# -> configd system.event.config_changed -> rc.syshook config). Queue a
+# reconcile of the managed tunnels' IPv6 addresses and routes, the
+# default-route guard and the rendered rules, and return at once: core runs
+# these hooks one after another and skips config events while they run. The
+# reconcile is idempotent and silent unless it repairs something, so the
+# plugin's own saves do not loop. It never writes config. The health mirror's
+# own saves take no history entry and so run no config hook: the alarm replay
+# after a hold or a release runs the plugin's monitor hook, which queues the
+# reconcile (plugins.inc.d/wgclienttunnels.inc).
 
 /usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh request_reconcile
 exit 0

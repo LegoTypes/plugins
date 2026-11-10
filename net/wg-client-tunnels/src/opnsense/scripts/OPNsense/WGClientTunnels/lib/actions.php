@@ -366,12 +366,13 @@ function wgct_pick_instance(array $core, array $ports, bool $ipv6, string $ipv4A
 }
 
 /**
- * @param array $interfaces config interface key => anything
+ * @param list<string> $keys every interface key in the configuration as read, also one whose interface the plugin
+ *                           does not read (wgct_core_read()'s interface_keys)
  * @return string the lowest free optN from opt1 (core's own rule)
  */
-function wgct_pick_opt(array $interfaces): string {
+function wgct_pick_opt(array $keys): string {
     $i = 1;
-    while (isset($interfaces['opt' . $i])) {
+    while (in_array('opt' . $i, $keys, true)) {
         $i++;
     }
     return 'opt' . $i;
@@ -426,7 +427,7 @@ function wgct_instance_ipv6(array $core): array {
  */
 function wgct_unique_convention(array $derived): bool {
     foreach ($derived['tunnels'] as $t) {
-        if ($t['ipv6_address'] !== null && preg_match('/^wg(\d+)$/', $t['device'], $m) === 1
+        if ($t['ipv6_address'] !== null && preg_match('/^wg(\d+)$/D', $t['device'], $m) === 1
             && wgct_ip_equal(explode('/', $t['ipv6_address'])[0], "fd00::{$m[1]}:1")) {
             return true;
         }
@@ -439,7 +440,7 @@ function wgct_unique_convention(array $derived): bool {
  *              (not an interface group or other virtual entry such as `wireguard`)
  */
 function wgct_is_nat_interface_key(string $key): bool {
-    return preg_match('/^(wan|lan|opt\d+)$/', $key) === 1;
+    return preg_match('/^(wan|lan|opt\d+)$/D', $key) === 1;
 }
 
 /**
@@ -715,8 +716,8 @@ function wgct_plan_create(array $snap, array $req, array $conf): array {
         return $plan;
     }
 
-    /* the objects */
-    $opt = wgct_pick_opt($core['interfaces']);
+    /* the objects; the interface key is free among every key as read, so none is written twice */
+    $opt = wgct_pick_opt($core['interface_keys']);
     $device = 'wg' . $n;
     $far4 = '10.2.0.' . (3 + $n);
     $next6 = "fd00::{$n}:2";
@@ -1031,7 +1032,8 @@ function wgct_plan_remove(array $snap, array $refs, string $uuid): array {
  * NO_DEFAULT4/NO_DEFAULT6, address-less gateways at priority 254 on a
  * loopback assigned with "Dynamic gateway policy". Pure.
  *
- * @param array  $interfaces key => ['if', 'descr', 'gateway_interface', 'ipaddr', 'ipaddrv6']
+ * @param array  $interfaces key => ['if', 'descr', 'gateway_interface', 'ipaddr', 'ipaddrv6'], every interface in
+ *                           the configuration as read: a new assignment takes a key free among all of them
  * @param array  $gateways   name => the sentinel field set (plus 'priority') as strings
  * @param string $device        the sentinel loopback, e.g. lo1
  * @param bool   $loopbackAdded the writer is creating that loopback in this save
@@ -1049,7 +1051,7 @@ function wgct_plan_sentinel(array $interfaces, array $gateways, string $device, 
         }
     }
     if ($opt === null) {
-        $opt = wgct_pick_opt($interfaces);
+        $opt = wgct_pick_opt(array_map('strval', array_keys($interfaces)));
         $plan['assignment'] = 'add';
         $plan['changes'][] = "interface {$opt} (" . WGCT_SENTINEL_IF_DESCR . ") -> {$device}, dynamic gateway policy";
     } else {
@@ -1183,6 +1185,8 @@ function wgct_actions_fixture(): array {
         'dns_servers' => ['203.0.113.53'],
         'forwarders' => ['203.0.113.54'],
     ];
+    /* every interface key as read (wgct_core_read()): here each interface passed validation */
+    $core['interface_keys'] = array_map('strval', array_keys($core['interfaces']));
     foreach ($snat as $r) {
         if ($r['enabled'] === '1') {
             $core['snat'][] = ['interface' => $r['interface'], 'ipprotocol' => $r['ipprotocol'], 'source' => $r['fields']['source_net']];
@@ -1292,6 +1296,18 @@ function wgct_actions_selftest(): int {
         && !isset($p['nat'][0]['interface']) && !isset($p['nat'][0]['sequence']));
     wgct_check($t, 'create: the change list names unique addressing and raises no NAT warning',
         $has($p['changes'], 'unique addressing: fd00::3:1/128') && !$has($p['changes'], 'nat-missing'));
+    /* a key whose interface failed validation is in the configuration all the same: opt4 here, read but dropped */
+    $s = $snap;
+    $s['core']['interface_keys'][] = 'opt4';
+    $q = wgct_plan_create($s, $req, $conf);
+    wgct_check($t, 'create: an interface key the plugin does not read (opt4, dropped by validation) is taken: the new interface is opt5, on every object that names it',
+        !isset($s['core']['interfaces']['opt4']) && $q['errors'] === [] && $q['opt'] === 'opt5'
+        && ($q['gateways'][0]['fields']['interface'] ?? '') === 'opt5' && ($q['gateways'][1]['fields']['interface'] ?? '') === 'opt5'
+        && $has($q['changes'], 'on opt5'));
+    wgct_check($t, 'pick opt: the lowest optN free among the keys given, whatever their order; wan, lan and other keys take none',
+        wgct_pick_opt(['wan', 'lan', 'opt1', 'opt2', 'opt3']) === 'opt4' && wgct_pick_opt(['opt3', 'opt1']) === 'opt2'
+        && wgct_pick_opt(['wan', 'lan', 'wireguard', 'opt10']) === 'opt1' && wgct_pick_opt([]) === 'opt1'
+        && wgct_pick_opt(['opt1', 'opt1', 'opt2']) === 'opt3');
 
     /* the NAT copy names the new tunnel, and refuses a rule that names the template's own interface */
     $s = $snap;
@@ -1651,6 +1667,10 @@ function wgct_actions_selftest(): int {
         && $p['gateways']['NO_DEFAULT6'] === ['action' => 'add', 'set' => $want('inet6', 'NO_DEFAULT6', 'opt2')]);
     wgct_check($t, 'sentinel: blank slate => loopback, interface and routing applies, in that order',
         $p['steps'] === [['interface loopback configure', []], ['interface reconfigure', ['opt2']], ['interface routes configure', []]]);
+    $gap = $ifs + ['opt3' => ['if' => 'igc2', 'descr' => 'LANB', 'gateway_interface' => '', 'ipaddr' => '', 'ipaddrv6' => '']];
+    wgct_check($t, 'sentinel: a new assignment takes the lowest optN free among every interface it is given (opt2 below a taken opt3, opt4 above taken ones)',
+        wgct_plan_sentinel($gap, $gws, 'lo1', true)['opt'] === 'opt2'
+        && wgct_plan_sentinel($gap + ['opt2' => $gap['opt3']], $gws, 'lo1', true)['opt'] === 'opt4');
     $ifs2 = $ifs + ['opt10' => ['if' => 'lo1', 'descr' => 'NODEFAULT', 'gateway_interface' => '1', 'ipaddr' => '', 'ipaddrv6' => '']];
     $gws2 = $gws + ['NO_DEFAULT4' => $want('inet', 'NO_DEFAULT4', 'opt10'), 'NO_DEFAULT6' => $want('inet6', 'NO_DEFAULT6', 'opt10')];
     $p = wgct_plan_sentinel($ifs2, $gws2, 'lo1', false);

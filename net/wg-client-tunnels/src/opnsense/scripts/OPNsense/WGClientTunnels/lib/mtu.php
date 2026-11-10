@@ -129,7 +129,7 @@ function wgct_pick_source6(string $ifconfigOut, string $endpoint): ?string {
     $best = null;
     $bestKey = null;
     foreach (preg_split('/\R/', $ifconfigOut) ?: [] as $line) {
-        if (preg_match('/^\s*inet6\s+(\S+)(.*)$/', $line, $m) !== 1) {
+        if (preg_match('/^\s*inet6\s+(\S+)(.*)$/D', $line, $m) !== 1) {
             continue;
         }
         $addr = explode('%', $m[1])[0];

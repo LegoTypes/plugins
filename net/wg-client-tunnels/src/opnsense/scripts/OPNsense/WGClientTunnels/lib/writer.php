@@ -81,7 +81,7 @@ function wgct_model_errors(\OPNsense\Base\BaseModel $mdl, string $label): array 
     $out = [];
     foreach ($mdl->performValidation() as $msg) {
         $field = (string)$msg->getField();
-        $text = preg_match('/(^|\.)(privkey|psk)$/', $field) === 1 ? 'rejected (the value is not shown)' : (string)$msg->getMessage();
+        $text = preg_match('/(^|\.)(privkey|psk)$/D', $field) === 1 ? 'rejected (the value is not shown)' : (string)$msg->getMessage();
         $out[] = "{$label}: {$field}: {$text}";
     }
     return $out;
@@ -165,7 +165,7 @@ const WGCT_PREFIX_FILE_MAX_BYTES = 4096;
 function wgct_local6_files(array $devices, callable $read): array {
     $out = [];
     foreach (array_unique(array_map('strval', $devices)) as $dev) {
-        if (preg_match('/^[A-Za-z0-9_][A-Za-z0-9._:-]{0,31}$/', $dev) !== 1) {
+        if (preg_match('/^[A-Za-z0-9_][A-Za-z0-9._:-]{0,31}$/D', $dev) !== 1) {
             continue;
         }
         foreach (["/tmp/{$dev}_prefixv6", "/tmp/{$dev}:slaac_prefixv6"] as $path) {

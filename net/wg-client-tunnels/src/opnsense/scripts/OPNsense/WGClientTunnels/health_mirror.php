@@ -83,8 +83,9 @@
  * for.
  *
  * --dry reports every decision against live config and live gateway status
- * without writing or reconfiguring anything. --selftest exercises the decision
- * logic without touching config. --snapshot prints the decision input
+ * without writing or reconfiguring anything. --selftest, with no other argument,
+ * exercises the decision logic without touching config; beside anything else it
+ * is refused and nothing runs. --snapshot prints the decision input
  * (config, live status, held tunnels) as JSON and writes nothing; --plan-from=FILE
  * decides from a snapshot saved that way and prints what --dry would.
  *
@@ -101,8 +102,8 @@ wgct_entry_load('health_mirror.php', 'wgct-health', ['mirror.php', 'apply.php'])
 $logTag = 'wgct-health';
 
 // Self-test: validate the decision logic in isolation, no config access.
-if (in_array('--selftest', $argv ?? [], true)) {
-    exit(wgct_selftest());
+if (wgct_selftest_only('health_mirror.php', array_slice($argv ?? [], 1))) {
+    exit(wgct_selftest_run(['mirror' => 'wgct_selftest']));
 }
 
 $settleOverride = null;
@@ -176,14 +177,16 @@ if ($dryRun ? wgct_migration_pending() : wgct_pending_refuses('tick', $logTag)) 
  * rebuilt), two overlapping runs would race one teardown against another's
  * rebuild and leave dpinger dead -- at which point every gateway reads a false
  * "down".
- * If another run holds the lock, skip this tick (logged once per state); the next one catches up.
+ * If another run holds the lock, skip this tick (logged once per state, as a notice: a tick that changes a gateway
+ * usually outlasts the spacing, so the line belongs to every normal hold and release); the next one catches up.
  */
 $tickMsg = 'tick skipped: another run holds health.lock';
 try {
     $selfLock = wgct_poll_lock(WGCT_HEALTH_LOCK_FILE, 0, 50);
 } catch (\RuntimeException | \LogicException $e) {
-    /* the lock file cannot be opened (SplFileObject throws a LogicException for a directory): quiet exit, logged once */
-    wgct_note_lock(WGCT_HEALTH_UNOPENABLE_FILE, true, 'tick skipped: health.lock cannot be opened: ' . $e->getMessage(), 'health.lock opens again');
+    /* the lock file cannot be opened (SplFileObject throws a LogicException for a directory): quiet exit, logged once,
+     * as a warning: no tick runs until it opens */
+    wgct_note_lock(WGCT_HEALTH_UNOPENABLE_FILE, true, 'tick skipped: health.lock cannot be opened: ' . $e->getMessage(), 'health.lock opens again', $logTag, LOG_WARNING);
     exit(0);
 }
 /*
@@ -220,7 +223,7 @@ if ($dryRun) {
 
 wgct_note_lock(WGCT_BOOT_UNREADABLE_FILE, $config['boot_unreadable'],
     'kern.boot_id cannot be read: no hold is taken, released or recorded until it can',
-    'kern.boot_id can be read again; holds are taken and released again');
+    'kern.boot_id can be read again; holds are taken and released again', $logTag, LOG_WARNING);
 
 if (empty($plan['changes'])) {
     foreach ($plan['log'] as $msg) {
@@ -230,7 +233,9 @@ if (empty($plan['changes'])) {
         /*
          * Hold records only (a re-stamp after a reboot, a prune, a tunnel that
          * no longer exists): a config write with no routing change, so no
-         * gateway lock. Re-plan under the config lock; if config changed
+         * gateway lock, and like every save of the mirror's own it takes no
+         * configuration history entry: one line names the records it wrote
+         * (wgct_hold_save_line()). Re-plan under the config lock; if config changed
          * meanwhile and the re-plan now wants a force_down change, save
          * nothing -- that needs the gateway lock and an apply, which the next
          * tick does -- and leave boot.json as it is, so a previous-boot record
@@ -247,12 +252,14 @@ if (empty($plan['changes'])) {
             if (!empty($replan['changes'])) {
                 return ['save' => false, 'deferred' => true];
             }
-            return ['save' => wgct_commit_held($replan['held'], $now, $now['live_boot']), 'deferred' => false, 'config' => $now];
-        });
+            $written = wgct_commit_held($replan['held'], $now, $now['live_boot']);
+            return ['save' => $written !== null, 'deferred' => false, 'config' => $now, 'written' => $written];
+        }, null, false);
         if ($commit['deferred']) {
             exit(0);
         }
         if ($commit['save']) {
+            logMsg($logTag, wgct_hold_save_line($commit['config']['holds_rows'], $commit['written'], $commit['config']['gateways']));
             foreach (wgct_hold_prune_lines($commit['config']) as $msg) {
                 logMsg($logTag, $msg);
             }
@@ -278,7 +285,11 @@ if (empty($plan['changes'])) {
  *   3. Config::lock(), which re-reads config.xml; the decisions are planned
  *      again from fresh models, including the hold records, so a GUI save
  *      made while this run waited is kept. The force_down values and the hold
- *      records are saved together, once.
+ *      records are saved together, once, with no configuration history entry:
+ *      no history file, no audit line and no configuration-change event. The
+ *      lines logged below name every hold and release, and the alarm replay of
+ *      step 4 runs core's monitor hooks, this plugin's among them, which queues
+ *      the reconcile.
  *   4. Unlock, then apply and replay the alarms the hold dropped: our own
  *      and any other gateway's whose status changed meanwhile.
  *
@@ -293,7 +304,7 @@ try {
     /* the removal marker appeared while this tick waited for the gateway lock: it saves nothing */
     exit(0);
 } catch (\RuntimeException $e) {
-    wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, true, 'gateway change left for the next tick: ' . $e->getMessage(), 'gateway lock available again');
+    wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, true, 'gateway change left for the next tick: ' . $e->getMessage(), 'gateway lock available again', $logTag, LOG_WARNING);
     exit(0);
 }
 wgct_note_lock(WGCT_GATEWAY_SKIPPED_FILE, false, '', 'gateway lock available again');
@@ -312,9 +323,9 @@ $commit = wgct_locked_commit(function () use ($live, $settleOverride) {
         $routingMdl->serializeToConfig();
         $save = true;
     }
-    $held = wgct_commit_held($plan['held'], $now, $now['live_boot']);
+    $held = wgct_commit_held($plan['held'], $now, $now['live_boot']) !== null;
     return ['save' => $held || $save, 'plan' => $plan, 'held' => $held, 'config' => $now];
-});
+}, null, false);
 if (!empty($commit['pending'])) {
     $gwLock->flock(LOCK_UN);
     exit(0);
@@ -331,22 +342,25 @@ if ($commit['held']) {
 if (!empty($plan['changes'])) {
     /* the next ticks' readings are settled only once their window has passed since this change */
     wgct_record_change();
-    /* force_down alone changed: the watcher re-reads the configuration and no monitor restarts */
+    /* force_down alone changed: the watcher re-reads the configuration and no monitor restarts. Whatever the step
+     * answers, the replay below applies routing and the filter from the saved flag; a failed one is in the log. */
+    $changed = array_map('strval', array_keys($plan['changes']));
     $monitors = [];
-    foreach (array_keys($plan['changes']) as $name) {
-        $monitors[(string)$name] = wgct_monitor_state(wgct_dpinger_line((string)$name));
+    foreach ($changed as $name) {
+        $monitors[$name] = wgct_monitor_state(wgct_dpinger_line($name));
     }
     wgct_force_down_resync(
         fn (string $action): string => (string)(new OPNsense\Core\Backend())->configdRun($action),
-        function (string $line) use ($logTag): void {
-            logMsg($logTag, $line);
+        function (string $line, int $priority) use ($logTag): void {
+            logMsg($logTag, $line, $priority);
         },
         wgct_watcher_reload_drift(),
         wgct_watcher_plan($plan['changes'], $commit['config']['gateways'], $monitors),
         'wgct_watcher_cache',
         function (): void {
             usleep(WGCT_WATCHER_POLL_MS * 1000);
-        }
+        },
+        $changed
     );
 }
 $gwLock->flock(LOCK_UN);

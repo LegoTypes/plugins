@@ -30,6 +30,12 @@ namespace OPNsense\WGClientTunnels\Api;
 
 use OPNsense\Base\ApiMutableServiceControllerBase;
 
+/**
+ * The service API of the plugin. A read-only user (user-config-readonly) changes nothing through it: the four
+ * stock actions that start, stop or reload the route set (start, stop, restart, reconfigure) each refuse such a
+ * user before anything else, for any request method, and the sentinel action refuses such a user's POST (a request
+ * that is no POST it answers as failed, for every user). status is open to every holder of the page's privilege.
+ */
 class ServiceController extends ApiMutableServiceControllerBase
 {
     protected static $internalServiceClass = '\OPNsense\WGClientTunnels\WGClientTunnels';
@@ -42,6 +48,51 @@ class ServiceController extends ApiMutableServiceControllerBase
     protected function reconfigureForceRestart(): bool
     {
         return false;
+    }
+
+    /**
+     * Start the route set; refused for a read-only user.
+     *
+     * @return array
+     */
+    public function startAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::startAction();
+    }
+
+    /**
+     * Stop: remove every tunnel's IPv6 address and routes and the footprint; refused for a read-only user.
+     *
+     * @return array
+     */
+    public function stopAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::stopAction();
+    }
+
+    /**
+     * Stop, then start; refused for a read-only user.
+     *
+     * @return array
+     */
+    public function restartAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::restartAction();
+    }
+
+    /**
+     * The page's Apply: core's reconfigure flow, which stops a disabled plugin, starts a stopped one and reloads a
+     * running one; refused for a read-only user.
+     *
+     * @return array
+     */
+    public function reconfigureAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::reconfigureAction();
     }
 
     /**

@@ -282,7 +282,7 @@ function wgct_prime_line(array $w, int $handshakeAge, string $outcome, int $n): 
 function wgct_prime_handshake_age(array $lines, int $now): ?int {
     $newest = 0;
     foreach ($lines as $line) {
-        if (preg_match('/^\S+\t(\d+)$/', trim((string)$line), $m) === 1) {
+        if (preg_match('/^\S+\t(\d+)$/D', trim((string)$line), $m) === 1) {
             $newest = max($newest, (int)$m[1]);
         }
     }
