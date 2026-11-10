@@ -44,31 +44,22 @@ const WF_CLEAN = 'clean';
 const WF_UNKNOWN = 'unknown';
 
 /**
- * dpinger_status() prints "~" when average, deviation and loss are all 0: a perfect link, or no data at
- * all (sends failing). Core then reports the gateway down in the second case, so "~" on a dpinger that
- * has run a whole time_period counts as 0% loss only while core does not call it down: a dead link would
- * otherwise read as a perfect one.
+ * A window is settled once its dpinger has run a whole time_period and reports a loss figure. Core prints "~" for a
+ * monitor with no data (no process, a socket that does not open, or an answer of all zeros, as while its sends fail),
+ * whatever its age: that is no loss figure, so such a window is never settled and never reads loss-free.
  *
- * @param array{loss: ?float, tilde: bool, status: string, sock_age: ?int, time_period: int} $w
- */
-function wf_effective_loss(array $w): ?float
-{
-    if ($w['loss'] !== null) {
-        return $w['loss'];
-    }
-    return $w['tilde'] && $w['status'] !== 'down' && $w['sock_age'] !== null && $w['sock_age'] >= $w['time_period'] ? 0.0 : null;
-}
-
-/**
- * @param array{loss: ?float, tilde: bool, status: string, sock_age: ?int, time_period: int} $w
+ * @param array{loss: ?float, sock_age: ?int, time_period: int} $w loss: null where core prints "~"
  */
 function wf_settled(array $w): bool
 {
-    return $w['sock_age'] !== null && $w['sock_age'] >= $w['time_period'] && wf_effective_loss($w) !== null;
+    return $w['sock_age'] !== null && $w['sock_age'] >= $w['time_period'] && $w['loss'] !== null;
 }
 
 /**
- * @param array{disabled: bool, manual_down: bool, present: bool, status: string, tilde: bool, carrier: bool, has_ipv4: bool,
+ * One tick's evidence for one WAN. A WAN with no loss figure reads unknown, however long its dpinger has run, so a held
+ * WAN whose monitor has no data never reads clean: only a loss figure of 0 over a settled window does.
+ *
+ * @param array{disabled: bool, manual_down: bool, present: bool, carrier: bool, has_ipv4: bool,
  *              loss: ?float, sock_age: ?int, losslow: float, losshigh: float,
  *              time_period: int, interval: int, loss_interval: int} $w
  */
@@ -77,7 +68,7 @@ function wf_reading(array $w, int $deadMinSeconds): string
     if ($w['disabled'] || $w['manual_down'] || !$w['carrier'] || !$w['has_ipv4']) {
         return WF_UNAVAILABLE;
     }
-    $loss = wf_effective_loss($w);
+    $loss = $w['loss'];
     if (!$w['present'] || $loss === null || $w['sock_age'] === null) {
         return WF_UNKNOWN;
     }

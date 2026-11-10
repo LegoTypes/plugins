@@ -276,6 +276,66 @@ wf_register_suite('wiring', function (): int {
     wf_check($t, 'the service controller names its actions failbackNowAction and wanStatusAction',
         str_contains($service, 'function failbackNowAction(') && str_contains($service, 'function wanStatusAction(')
         && !str_contains($service, 'function failbacknowAction(') && !str_contains($service, 'function holdsAction('));
+    /* core's four stock service actions check only the request method, so the controller overrides each one */
+    $unguarded = [];
+    foreach (['start', 'stop', 'restart', 'reconfigure'] as $action) {
+        if (preg_match('/^    public function ' . $action . 'Action\(\): array\n    \{\n        \$this->throwReadOnly\(\);\n'
+            . '        return parent::' . $action . 'Action\(\);\n    \}$/m', $service) !== 1) {
+            $unguarded[] = "{$action}Action";
+        }
+    }
+    wf_check($t, 'the service controller overrides startAction, stopAction, restartAction and reconfigureAction, and each calls '
+        . 'throwReadOnly() first, then the stock action', $unguarded === []);
+    if ($unguarded !== []) {
+        printf("    not overridden that way: %s\n", implode(', ', $unguarded));
+    }
+    wf_check($t, 'Release holds and Fail back now still call throwReadOnly() before they reach configd',
+        preg_match_all('/\$this->throwReadOnly\(\);\n        \$result = trim\(\(new Backend\(\)\)->configdRun\(\'wanfailover '
+            . '(release|failback_now)\'\)\);/', $service) === 2);
+    /* every configd action of the plugin is refused to a local account in neither group, the read-only ones included */
+    $own = (string)@file_get_contents(dirname(__DIR__) . '/src/opnsense/service/conf/actions.d/actions_wanfailover.conf');
+    preg_match_all('/^\[([^\]\n]+)\]$/m', $own, $found);
+    $open = [];
+    foreach ($found[1] as $name) {
+        $body = (string)wf_ini_section($own, $name);
+        if (preg_match_all('/^allowed_groups:(.*)$/m', $body, $groups) !== 1 || $groups[1][0] !== 'wheel,wwwonly'
+            || !str_ends_with(rtrim($body, "\n"), "\nallowed_groups:wheel,wwwonly")) {
+            $open[] = $name;
+        }
+    }
+    $sections = ['start', 'reload', 'restart', 'stop', 'status', 'holds', 'evaluate', 'release', 'failback_now', 'kill_states',
+                 'watcher_reload', 'replay_alarm'];
+    wf_check($t, "the tree's action file has its 12 sections, and each ends with the one line allowed_groups:wheel,wwwonly",
+        $found[1] === $sections && $open === []);
+    if ($found[1] !== $sections || $open !== []) {
+        printf("    sections: %s\n    without the line as their last: %s\n", implode(' ', $found[1]),
+            $open === [] ? '(none)' : implode(' ', $open));
+    }
+    /* core lists an action that has a description on its cron page and runs a job made there as nobody, whom every
+     * section refuses; the plugin's own minute job is root's, registered by its command (wanfailover_cron()) */
+    $inc = (string)@file_get_contents(dirname(__DIR__) . '/src/etc/inc/plugins.inc.d/wanfailover.inc');
+    wf_check($t, "the tree's action file gives no action a description, so core offers none as a scheduled job, and the "
+        . "plugin's own minute job is registered by its command",
+        $own !== '' && preg_match('/^description:/m', $own) === 0
+        && str_contains($inc, "\$jobs[]['autocron'] = ['/usr/local/sbin/configctl wanfailover evaluate', '*'];"));
+    /* an evaluation whose config change did not land says what tries it again and exits 1, in every mode; one the
+     * removal's marker overtook ends as the marker's rule has it, with exit status 0 */
+    $said = strpos($src, "\n        if (\$applied['problem'] !== null) {\n            \$removing = wf_removing();\n"
+        . "            \$failed = !\$removing;\n"
+        . "            wf_log(wf_problem_line(\$applied['problem'], \$stopping ? 'stop' : \$mode, \$enabled, \$removing), "
+        . "\$applied['prio']);\n        }\n");
+    $read = strpos($src, "\n    \$enabled = \$snap['enabled'];\n    if (\$stopping) {\n        \$snap['enabled'] = false;\n");
+    wf_check($t, 'evaluate.php logs an apply\'s problem through wf_problem_line(), with the request, the saved Enabled setting '
+        . 'read before a stop overrides it and the removal marker, and wf_main() then returns 1, or 0 under the marker',
+        $said !== false && $read !== false && $read < $said
+        && substr_count($src, '$failed = ') === 2 && str_contains($src, "\n    \$failed = false;\n")
+        && str_ends_with(substr($src, 0, (int)strpos($src, "\n/**\n * The package removal's release, run by")),
+            "\n    return \$failed ? 1 : 0;\n}\n")
+        && !str_contains($src, 'next tick'));
+    if ($said === false || $read === false) {
+        printf("    the problem branch: %s; the Enabled read: %s\n", $said === false ? 'not found' : "at {$said}",
+            $read === false ? 'not found' : "at {$read}");
+    }
     /* the tree's snapshot, as an evaluation takes it, of WAN_DHCP and WAN_B selected with WAN_B's monitoring off: both
      * changed in the child's configuration object only (serialized, never saved), with config.xml's md5 as the guard */
     $config = '/conf/config.xml';

@@ -47,6 +47,44 @@ class ServiceController extends ApiMutableServiceControllerBase
     }
 
     /**
+     * Start: cron regenerated, then one evaluation. Refused for a read-only user (user-config-readonly), whatever the
+     * request method, before core's action looks at the request.
+     */
+    public function startAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::startAction();
+    }
+
+    /**
+     * Stop: cron regenerated, then every hold released. Refused for a read-only user, as start is.
+     */
+    public function stopAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::stopAction();
+    }
+
+    /**
+     * Restart: the same as start. Refused for a read-only user, as start is.
+     */
+    public function restartAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::restartAction();
+    }
+
+    /**
+     * The page's Apply: one evaluation while the service runs, else its start (enabled) or stop (disabled). Refused for
+     * a read-only user, as start is.
+     */
+    public function reconfigureAction(): array
+    {
+        $this->throwReadOnly();
+        return parent::reconfigureAction();
+    }
+
+    /**
      * Status for the page: per-WAN readings, held flags, pending failbacks, core-contract findings.
      */
     public function wanStatusAction(): array

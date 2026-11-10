@@ -93,6 +93,23 @@ wf_register_suite('holds', function (): int {
     $p = wf_plan_holds(['WAN_A' => wf_t_h(WF_UNAVAILABLE, WF_BAD), 'WAN_B' => wf_t_h(WF_BAD, WF_BAD, ['rank' => 2, 'held' => true])], $now, 120);
     wf_check($t, 'alternative unavailable (carrier loss): release', $p['release'] === ['WAN_B']);
 
+    /* a held WAN whose monitor has no data reads unknown, with no loss figure */
+    $silent = ['rank' => 2, 'held' => true, 'raw_loss' => null];
+    $p = wf_plan_holds(['WAN_A' => wf_t_h(WF_CLEAN, WF_CLEAN), 'WAN_B' => wf_t_h(WF_UNKNOWN, WF_BAD, $silent)], $now, 120);
+    wf_check($t, 'a held WAN with no data stays held while the other WAN is usable', $p['release'] === [] && $p['hold'] === []);
+    $p = wf_plan_holds(['WAN_A' => wf_t_h(WF_BAD, WF_BAD), 'WAN_B' => wf_t_h(WF_UNKNOWN, WF_BAD, $silent)], $now, 120);
+    wf_check($t, 'a held WAN with no data is still released when every other WAN has positively failed',
+        $p['release'] === ['WAN_B'] && $p['hold'] === [] && $p['log'] === ['release WAN_B: no other WAN usable']);
+    /* released that way while its judgement is still up and fresh (it read marginal a moment ago), it is usable: only
+     * its missing loss figure keeps it from backing a hold of the WAN that failed, and with a figure it backs one */
+    $p = wf_plan_holds(['WAN_A' => wf_t_h(WF_BAD, WF_BAD), 'WAN_B' => wf_t_h(WF_UNKNOWN, WF_MARGINAL, $silent)], $now, 120);
+    $q = wf_plan_holds(['WAN_A' => wf_t_h(WF_BAD, WF_BAD),
+        'WAN_B' => wf_t_h(WF_UNKNOWN, WF_MARGINAL, ['raw_loss' => 5.0] + $silent)], $now, 120);
+    wf_check($t, 'a WAN just released with its judgement still up and fresh backs no hold while it has no loss figure, and '
+        . 'backs one with a figure within losslow',
+        $p['release'] === ['WAN_B'] && $p['hold'] === [] && $q['release'] === ['WAN_B'] && $q['hold'] === ['WAN_A']
+        && in_array('hold WAN_A: bad, alternative WAN_B', $q['log'], true));
+
     $p = wf_plan_holds(['WAN_A' => wf_t_h(WF_CLEAN, WF_CLEAN), 'WAN_B' => wf_t_h(WF_UNAVAILABLE, WF_BAD, ['rank' => 2, 'manual_down' => true])], $now, 120);
     wf_check($t, 'manual force_down WAN is never held by us', $p['hold'] === []);
 

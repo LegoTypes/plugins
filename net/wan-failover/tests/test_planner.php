@@ -611,5 +611,46 @@ wf_register_suite('planner', function (): int {
     $r = wf_plan(wf_t_snap(31000, [], ['loss' => 30.0], ['contract' => $names]), wf_state_new('b1'));
     wf_check($t, 'planner: a names drift blocks no hold',
         $r['plan']['hold'] === ['WAN_B'] && !$r['plan']['stopped'] && $lines($r['plan'], 'not starting holds') === 0);
+
+    /* a held WAN whose monitor has no data: core prints "~" and, the gateway being forced down, the status force_down;
+     * its dpinger has run a whole window (a hold restarts no monitor) */
+    $silent = ['loss' => null, 'tilde' => true, 'force_down' => true, 'status' => 'force_down'];
+    $heldB = ['holds' => wf_t_rec('WAN_B')];
+    $s = wf_state_new('b1');
+    $s['last_held'] = ['WAN_B'];
+    $r1 = wf_plan(wf_t_snap(40000, [], $silent, $heldB), $s);
+    wf_check($t, 'planner: a held WAN with "~" and force_down is not released: it reads unknown, and nothing is written',
+        $r1['plan']['release'] === [] && $r1['plan']['hold'] === [] && $r1['plan']['held_after'] === ['WAN_B']
+        && !$r1['plan']['write'] && $lines($r1['plan'], 'loss-free') === 0
+        && $r1['state']['judgements']['WAN_B']['unknown_since'] === 40000);
+    $r = wf_plan(wf_t_snap(40000, ['loss' => 30.0], $silent, $heldB), $s);
+    wf_check($t, 'planner: a held WAN with "~" that was never judged, the other WAN bad: released as the last one left and '
+        . 'not as loss-free, and the other is not held, since a WAN with no judgement is not usable',
+        $r['plan']['hold'] === [] && $r['plan']['release'] === ['WAN_B']
+        && in_array('release WAN_B: no other WAN usable', $r['plan']['log'], true) && $lines($r['plan'], 'loss-free') === 0
+        && $lines($r['plan'], 'hold WAN_A') === 0 && $r['state']['judgements']['WAN_B']['value'] === null);
+    /* the same with a judgement that is up and fresh, where only the missing loss figure stands between the released
+     * WAN and a hold of the other: WAN_B is held, reads marginal over a settled window, and 15 s later is silent as
+     * WAN_A goes bad */
+    $t0 = wf_plan(wf_t_snap(41000, [], ['loss' => 30.0]), wf_state_new('b1'));
+    $t1 = wf_plan(wf_t_snap(41060, [], ['loss' => 5.0, 'force_down' => true, 'status' => 'force_down'], $heldB),
+        wf_t_applied($t0['state'], $t0['plan']));
+    $t2 = wf_plan(wf_t_snap(41075, ['loss' => 30.0], $silent, $heldB), $t1['state']);
+    $jB = $t2['state']['judgements']['WAN_B'];
+    wf_check($t, 'planner: a held WAN judged marginal a moment ago and now "~" backs no hold of the other WAN in the evaluation '
+        . 'that releases it: its judgement is up and fresh, and its missing loss figure alone keeps the other from being held',
+        $t0['plan']['hold'] === ['WAN_B'] && $t1['plan']['release'] === [] && $t1['plan']['hold'] === []
+        && $t2['plan']['release'] === ['WAN_B'] && in_array('release WAN_B: no other WAN usable', $t2['plan']['log'], true)
+        && $t2['plan']['hold'] === [] && $lines($t2['plan'], 'hold WAN_A') === 0
+        && wf_up($jB) && $jB['value'] === WF_MARGINAL && $jB['last_settled_at'] === 41060
+        && 41075 - $jB['last_settled_at'] <= WF_FRESH_SECONDS);
+    $r2 = wf_plan(wf_t_snap(40200, [], $silent, $heldB), $r1['state']);
+    $r3 = wf_plan(wf_t_snap(40260, [], ['loss' => 0.0, 'force_down' => true, 'status' => 'force_down'], $heldB), $r2['state']);
+    wf_check($t, 'planner: a held WAN with "~" for longer than unknown_max_seconds is judged bad and stays held, and the first '
+        . 'settled reading with samples and no loss releases it, its failback queued',
+        $r2['plan']['release'] === [] && $r2['plan']['held_after'] === ['WAN_B'] && !$r2['plan']['write']
+        && $r2['state']['judgements']['WAN_B']['value'] === WF_BAD
+        && $r3['plan']['release'] === ['WAN_B'] && $r3['plan']['held_after'] === []
+        && in_array('release WAN_B: loss-free', $r3['plan']['log'], true) && isset($r3['plan']['failback']['WAN_B']));
     return wf_tally_report('planner', $t);
 });

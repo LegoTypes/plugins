@@ -48,8 +48,12 @@ declare(strict_types=1);
  *   evaluate.php deinstall             the package removal's release (+PRE_DEINSTALL.pre, not on an upgrade): every
  *                                      hold the plugin took released, routing re-synced through core; always exits 0
  * While the package removal's marker exists, every mode but --plan-from, kill-states, status, holds and deinstall logs
- * that it was skipped and exits 0.
- * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core.
+ * that it was skipped and exits 0. An evaluation that was past that gate when the marker appeared comes under the same
+ * rule: its write is refused, it logs why, and it exits 0, as the removal releases every hold itself.
+ * Every failure is logged to the plugin's log and exits non-zero; nothing is thrown into configd or core. An evaluation
+ * whose config change did not land (core's gateway lock busy, the write refused or failed) is such a failure in every
+ * mode: it exits 1, so configd answers "Error (1)", and its log line says what tries the change again
+ * (wf_problem_line()).
  */
 
 const WF_RELEASE_WAIT_SECONDS = 60;
@@ -219,6 +223,8 @@ function wf_main(string $mode, array $args): int
     $state['contract_last'] = $cl['last'];
     $wanTargets = array_map(fn (array $w): string => $w['route_target'], $snap['wans']);
 
+    /* the saved setting, which decides whether a minute job exists; a stop plans as if it were off */
+    $enabled = $snap['enabled'];
     if ($stopping) {
         $snap['enabled'] = false;
     } elseif ($mode === 'release') {
@@ -243,6 +249,7 @@ function wf_main(string $mode, array $args): int
         wf_log(($dry ? '[dry] ' : '') . $line);
     }
 
+    $failed = false;
     if ($dry) {
         foreach ($plan['failback'] as $n => $fb) {
             wf_log(wf_failback_dry($n, wf_snapshot_pf($wanTargets), $wanTargets, $fb['top']));
@@ -258,9 +265,14 @@ function wf_main(string $mode, array $args): int
     } else {
         $applied = wf_apply($plan, $state, $snap, wf_live_io(WF_STATE, $wanTargets));
         $state = $applied['state'];
-        /* the next tick plans again from the config as it then is; a removal under way leaves no next tick */
+        /* the config change did not land: the line says what tries it again, by what was asked for and whether a
+         * minute job exists, and the exit status says so to configd, whoever asked. Under the removal's marker, which
+         * appeared after this evaluation passed its gate, nothing is to be tried again and nothing failed: the removal
+         * releases every hold itself, so the evaluation ends as one the marker skipped */
         if ($applied['problem'] !== null) {
-            wf_log($applied['problem'] . (wf_removing() ? '' : '; the change waits for the next tick'), $applied['prio']);
+            $removing = wf_removing();
+            $failed = !$removing;
+            wf_log(wf_problem_line($applied['problem'], $stopping ? 'stop' : $mode, $enabled, $removing), $applied['prio']);
         }
     }
 
@@ -276,7 +288,7 @@ function wf_main(string $mode, array $args): int
         }
         wf_trace(WF_TRACE, $record);
     }
-    return 0;
+    return $failed ? 1 : 0;
 }
 
 /**

@@ -637,7 +637,8 @@ wf_register_suite('apply', function (): int {
     $landed = fn (array $c, array $expected, array $recordsAfter, bool $removal = false): array => wf_t_written();
     $o = $once($dsnap(4000, false), $landed, fn (string $line): int => str_contains($line, '/usr/local/bin/flock') ? 1 : 0);
     $d10 = in_array('log deinstall: alarm replay failed for WAN_A,WAN_B', $o['calls'], true)
-        && array_filter(array_merge($o['log'], $o['calls']), fn (string $x): bool => str_contains($x, 'next tick')) === []
+        && array_filter(array_merge($o['log'], $o['calls']), fn (string $x): bool => str_contains($x, 'next tick')
+            || str_contains($x, 'next evaluation')) === []
         && end($o['log']) === '(' . LOG_WARNING . ') deinstall: released WAN_A, but the routing re-sync did not complete (see '
             . 'above): apply System: Gateways: Configuration to re-sync routing';
     wf_check($t, '(d10) a removal whose alarm replay failed says so without promising a next tick, and its last line says '
@@ -648,10 +649,22 @@ wf_register_suite('apply', function (): int {
     $o = $once($dsnap(4100, false), $landed, fn (string $line): int => 1);
     wf_check($t, '(d10) a removal whose routing reconfigure failed both ways ends the same way',
         str_starts_with((string)end($o['log']), '(' . LOG_WARNING . ') deinstall: released WAN_A, but the routing re-sync did not complete'));
+    /* a resumed release, as the planner hands it on: its pending apply is still in the state */
+    $pending = array_merge($state, ['apply_pending' => ['WAN_B' => 'release']]);
     $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
-    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN_B']]), $state, $snap, $f['io']);
-    wf_check($t, '(d10) an evaluation\'s failed replay still says the next tick resumes it, and is not resynced',
-        !$r['resynced'] && $r['ok'] && in_array('log alarm replay failed for WAN_B; resuming next tick', $f['calls']->getArrayCopy(), true));
+    $r = wf_apply(wf_t_plan(['redo_replay' => ['WAN_B']]), $pending, $snap, $f['io']);
+    wf_check($t, '(d10) an evaluation\'s failed replay says the next evaluation resumes it, keeps the apply pending, and is not '
+        . 'resynced',
+        !$r['resynced'] && $r['ok'] && $r['state']['apply_pending'] === ['WAN_B' => 'release']
+        && in_array('log alarm replay failed for WAN_B; the next evaluation resumes it', $f['calls']->getArrayCopy(), true));
+    /* a change made outside the engine: the replay has no pending apply behind it, so nothing would resume it */
+    $f = wf_t_io(['wanfailover replay_alarm' => 'Execute error']);
+    $r = wf_apply(wf_t_plan(['foreign' => ['WAN_B'], 'held_now' => ['WAN_B']]), $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'a failed replay for a change made outside the engine alone leaves nothing pending, and its line promises '
+        . 'no evaluation that resumes it',
+        !$r['resynced'] && $r['ok'] && $r['state']['apply_pending'] === [] && in_array('log alarm replay failed for WAN_B', $c, true)
+        && array_filter($c, fn (string $x): bool => str_contains($x, 'resumes') || str_contains($x, 'next tick')) === []);
 
     $runs = new ArrayObject();
     $o = $once($dsnap(4200, false), $landed, function (string $line) use ($runs): int {
@@ -688,5 +701,39 @@ wf_register_suite('apply', function (): int {
     $every = array_merge(...array_map(fn (ArrayObject $c): array => $c->getArrayCopy(), wf_t_io_made()));
     wf_check($t, '(a1) no apply case runs core\'s kill by gateway address (filter kill gateway_states)',
         $every !== [] && array_filter($every, fn (string $x): bool => str_contains($x, 'filter kill gateway_states')) === []);
+
+    /* the line for an apply whose change did not land: what was asked for, the saved Enabled setting, whether a removal
+     * is under way, and the ending that follows the problem */
+    $busy = 'gateway lock busy for 30 s';
+    $rows = [
+        'a removal under way ends with the problem, whatever was asked for' => [['evaluate', true, true], ''],
+        'a removal under way ends with the problem for a release too' => [['release', false, true], ''],
+        'a routine evaluation while enabled is planned again by the next one' => [['evaluate', true, false],
+            '; the next evaluation plans again'],
+        'a routine evaluation while disabled has no minute evaluation after it' => [['evaluate', false, false],
+            '; no minute evaluation runs while the plugin is disabled: a gateway alarm, a configuration save or a boot '
+            . 'starts the next one'],
+        'Release holds is not repeated by anything' => [['release', true, false],
+            '; the release was not done: press Release holds again'],
+        'a stop while enabled is not repeated by anything' => [['stop', true, false],
+            '; the holds were not released: stop again'],
+        'a stop while disabled, the disable\'s Apply, has no minute evaluation after it' => [['stop', false, false],
+            '; the holds were not released, and no minute evaluation runs while the plugin is disabled: press Apply again, '
+            . 'or a gateway alarm, a configuration save or a boot starts the next evaluation'],
+        'Fail back now is not repeated by anything' => [['failback-now', true, false],
+            '; fail back now was not carried out: press it again if a failback is still pending'],
+    ];
+    foreach ($rows as $what => [[$request, $enabled, $removing], $ending]) {
+        $line = wf_problem_line($busy, $request, $enabled, $removing);
+        wf_check($t, "problem line: {$what}", $line === $busy . $ending);
+        if ($line !== $busy . $ending) {
+            printf("    got: %s\n", $line);
+        }
+    }
+    $lines = array_map(fn (array $row): string => wf_problem_line($busy, ...$row[0]), array_values($rows));
+    wf_check($t, 'problem line: none names a tick, and only a routine evaluation while enabled names a next evaluation that '
+        . 'the minute job runs',
+        array_filter($lines, fn (string $l): bool => str_contains($l, 'tick')) === []
+        && count(array_filter($lines, fn (string $l): bool => str_ends_with($l, '; the next evaluation plans again'))) === 1);
     return wf_tally_report('apply', $t);
 });

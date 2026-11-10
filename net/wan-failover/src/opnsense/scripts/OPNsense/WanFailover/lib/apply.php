@@ -153,7 +153,7 @@ function wf_force_down_resync(array $io, array $plan, array $drift, bool $foreig
 function wf_apply(array $plan, array $state, array $snap, array $io): array
 {
     $log = $io['log'];
-    /* the package removal has no next tick to resume a replay in */
+    /* the package removal has no later evaluation to resume a replay in */
     $removal = $snap['release'] === 'removal';
     $resynced = true;
     $changes = [];
@@ -244,7 +244,11 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
         $replayOk = trim(($io['configd'])('wanfailover replay_alarm', [implode(',', $replay)])) === 'OK';
         if (!$replayOk) {
             $resynced = false;
-            $log('alarm replay failed for ' . implode(',', $replay) . ($removal ? '' : '; resuming next tick'));
+            /* what this apply wrote or resumed stays pending in the state, so the next evaluation, whatever starts it
+             * (the minute job only while the plugin is enabled), replays again; a replay for nothing but a change
+             * made outside the engine leaves nothing pending, and its line promises nothing */
+            $resumed = !$removal && array_intersect($replay, array_keys($state['apply_pending'])) !== [];
+            $log('alarm replay failed for ' . implode(',', $replay) . ($resumed ? '; the next evaluation resumes it' : ''));
         }
     }
     if ($replayOk) {
@@ -324,6 +328,36 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
     return ['state' => $state, 'ok' => true, 'problem' => null, 'prio' => LOG_NOTICE, 'resynced' => $resynced];
 }
 
+/**
+ * The log line for an apply whose config change did not land (wf_apply()'s problem): the problem, then what tries the
+ * change again, or that nothing does. The minute job exists only while the plugin is enabled. The next plan drops a
+ * hold or release that was never saved (wf_reconcile()) and decides anew from the readings, so a routine change is
+ * planned again, while a release or a stop that was asked for is not: only asking again repeats it. A removal under
+ * way stops every later evaluation, so its line ends with the problem.
+ *
+ * @param string $problem wf_apply()'s problem
+ * @param string $request what the evaluation was asked for: release (the page's Release holds), stop, failback-now,
+ *     or anything else for a routine evaluation (the minute job's, a hook's, start, reload)
+ * @param bool $enabled the saved setting, whatever a stop plans with
+ * @param bool $removing whether the package removal's marker exists (wf_removing())
+ */
+function wf_problem_line(string $problem, string $request, bool $enabled, bool $removing): string
+{
+    if ($removing) {
+        return $problem;
+    }
+    return $problem . match ($request) {
+        'release' => '; the release was not done: press Release holds again',
+        'failback-now' => '; fail back now was not carried out: press it again if a failback is still pending',
+        'stop' => $enabled ? '; the holds were not released: stop again'
+            : '; the holds were not released, and no minute evaluation runs while the plugin is disabled: press Apply again, '
+                . 'or a gateway alarm, a configuration save or a boot starts the next evaluation',
+        default => $enabled ? '; the next evaluation plans again'
+            : '; no minute evaluation runs while the plugin is disabled: a gateway alarm, a configuration save or a boot '
+                . 'starts the next one',
+    };
+}
+
 /** Whether the package removal's marker exists (+PRE_DEINSTALL.pre writes it; +POST_INSTALL.pre deletes it). */
 function wf_removing(): bool
 {
@@ -342,10 +376,9 @@ function wf_removing(): bool
  * that did not land returns why, and the priority, for its caller to log.
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
- * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
- * ServiceController; its Apply, core's reconfigureAction(), does not. Apply starts an evaluation while the service
- * runs, else its start (enabled) or stop (disabled), which restart cron and then evaluate or release; their writes are
- * the engine's own decisions from the saved settings.
+ * configd or a syshook, with no session. ServiceController calls the guard in every action of the API that can start
+ * a write: the four stock service actions (start, stop, restart and reconfigure, the page's Apply) and its own two,
+ * Release holds and Fail back now.
  *
  * @param array<string, bool> $changes gateway name => force_down
  * @param array<string, bool> $expected gateway name => the force_down the snapshot read, for each changed gateway
@@ -502,10 +535,9 @@ function wf_holds_drop_legacy(): void
  * names the list's gateways (legacy_held).
  *
  * The read-only guard (throwReadOnly()) protects a GUI session's privileges; this writer runs as root from cron,
- * configd or a syshook, with no session. The page's Release holds and Fail back now buttons call the guard in
- * ServiceController; its Apply, core's reconfigureAction(), does not. Apply starts an evaluation while the service
- * runs, else its start (enabled) or stop (disabled), which restart cron and then evaluate or release; their writes are
- * the engine's own decisions from the saved settings.
+ * configd or a syshook, with no session. ServiceController calls the guard in every action of the API that can start
+ * a write: the four stock service actions (start, stop, restart and reconfigure, the page's Apply) and its own two,
+ * Release holds and Fail back now.
  *
  * @param array{boot: string, held: list<string>} $proof wf_state_proof()
  */

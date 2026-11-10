@@ -67,7 +67,16 @@ wf_register_suite('judge', function (): int {
     wf_check($t, 'young 40 s at 33.3% (12 of 36 lost, as dpinger rounds it) is bad', wf_reading(wf_t_w(['loss' => 33.3, 'sock_age' => 40]), $d) === WF_BAD);
     wf_check($t, 'young 40 s at 30.6% (11 of 36 lost) is unknown', wf_reading(wf_t_w(['loss' => 30.6, 'sock_age' => 40]), $d) === WF_UNKNOWN);
     wf_check($t, 'young 0% is unknown, never clean', wf_reading(wf_t_w(['loss' => 0.0, 'sock_age' => 30]), $d) === WF_UNKNOWN);
-    wf_check($t, '~ on a settled dpinger (stddev and loss exactly 0) is clean while core does not call it down', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 300]), $d) === WF_CLEAN);
+    wf_check($t, '~ on a dpinger that has run a whole window is unknown: no loss figure is no data, never a loss-free link', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 300]), $d) === WF_UNKNOWN);
+    /* core reads a gateway with "~" as force_down (forced), down (monitored) or none (monitoring off) */
+    foreach (['force_down', 'none'] as $status) {
+        $silent = wf_t_w(['loss' => null, 'tilde' => true, 'status' => $status, 'sock_age' => 300]);
+        wf_check($t, "~ with core's status {$status} on a dpinger that has run a whole window is unknown, and its window is not settled",
+            wf_reading($silent, $d) === WF_UNKNOWN && !wf_settled($silent));
+    }
+    wf_check($t, 'a window is settled once its dpinger has run a whole time_period and reports a loss figure, 0 included',
+        wf_settled(wf_t_w(['loss' => 0.0, 'sock_age' => 60])) && !wf_settled(wf_t_w(['loss' => 0.0, 'sock_age' => 59]))
+        && !wf_settled(wf_t_w(['loss' => 0.0, 'sock_age' => null])));
     wf_check($t, '~ on a young dpinger is unknown', wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'sock_age' => 30]), $d) === WF_UNKNOWN);
 
     $j = wf_judgement_new(1000);
@@ -86,7 +95,7 @@ wf_register_suite('judge', function (): int {
     wf_check($t, 'marginal after bad keeps recovering set', $j6['value'] === WF_MARGINAL && $j6['recovering']);
     wf_check($t, 'wf_up: clean and marginal are up', wf_up($j) && wf_up($j6) && !wf_up($j5));
     wf_check($t, 'a settled "~" while core reports the gateway down is no data, not a perfect link',
-        wf_effective_loss(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down'])) === null
+        !wf_settled(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down']))
         && wf_reading(wf_t_w(['loss' => null, 'tilde' => true, 'status' => 'down']), $d) === WF_UNKNOWN);
     wf_check($t, 'unjudgeable: disabled first, then monitoring, else none',
         wf_unjudgeable(['disabled' => true, 'monitor_disable' => true]) === 'disabled'

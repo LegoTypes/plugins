@@ -213,7 +213,7 @@ function wf_plan(array $snap, array $state): array
         $input = $w + ['manual_down' => $manual];
         $reading = wf_reading($input, WF_DEAD_MIN_SECONDS);
         $settled = wf_settled($input);
-        $loss = wf_effective_loss($input);
+        $loss = $input['loss'];
         $j = wf_judge($state['judgements'][$name] ?? wf_judgement_new($now), $reading, $settled, $loss, $now, WF_UNKNOWN_MAX_SECONDS);
         if ($held) {
             $j['recovering'] = true;

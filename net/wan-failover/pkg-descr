@@ -19,6 +19,30 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.7
+
+* Every configd action of the plugin names allowed_groups (wheel,
+  wwwonly), as core's own sensitive actions do: a local account in
+  neither group is answered "Action not allowed or missing". Root (cron,
+  the hooks, the shell) and the web GUI are admitted. Core's own action
+  "interface routes alarm" stays open to every local account and starts
+  an evaluation; it reaches no stop, release or state kill. The
+  evaluation is not offered as a scheduled job under System: Settings:
+  Cron: core runs such a job as nobody, whom the action refuses, and the
+  plugin runs its own evaluation each minute
+* The service API refuses a read-only user (user-config-readonly) for
+  start, stop, restart and reconfigure
+* A held WAN whose monitor has no data is not read as loss-free. It
+  is released as loss-free only once its monitor has run for at least
+  its time period and reports a loss of 0, however few replies that
+  figure rests on; it is still released when every other WAN has
+  failed
+* An evaluation whose change did not land (core's gateway lock busy,
+  the write refused) exits non-zero: configd answers "Error (1)", and
+  the page shows the failure for Apply, Release holds and Fail back
+  now. Its log line says what tries the change again, or that nothing
+  does
+
 1.6
 
 * A hold or a release no longer restarts every gateway monitor. The
