@@ -44,6 +44,7 @@
  *   live.status       name => gateway_status.php status, null when unavailable
  *   live.loss         name => dpinger loss percent, null without data
  *   live.sock_age     name => dpinger socket age in seconds, null when absent
+ *   live.since_change seconds since the mirror last changed a hold, null when it changed none this boot
  *
  * Collectors build the snapshot; wgct_locked_commit() is the only way the
  * mirror writes config. The hold records live in
@@ -69,6 +70,9 @@ const WGCT_HEALTH_SKIPPED_FILE = WGCT_RUN_DIR . '/health.skipped';
 const WGCT_HEALTH_UNOPENABLE_FILE = WGCT_RUN_DIR . '/health.unopenable';
 const WGCT_GATEWAY_SKIPPED_FILE = WGCT_RUN_DIR . '/gateway.skipped';
 const WGCT_BOOT_UNREADABLE_FILE = WGCT_RUN_DIR . '/boot.unreadable';
+/* When the mirror last changed a hold (wgct_record_change()): monotonic seconds, under /var/run, so a boot starts
+ * without one. */
+const WGCT_MIRROR_CHANGED_FILE = WGCT_RUN_DIR . '/mirror.changed';
 
 /* The boot the mirror last ran under, recorded at the end of a tick when it names another one (wgct_record_boot()):
  * after a reboot it still names the previous boot until the first tick, which is how that tick knows the records
@@ -146,6 +150,49 @@ function wgct_socket_age($sock) {
 }
 
 /**
+ * How long a gateway's reading has stood undisturbed, which is what the settle guard measures (wgct_settled()): its
+ * dpinger's age, and no longer than the time since the mirror last changed a hold. A change of the mirror's moves
+ * traffic, and with it the loss the WANs and tunnels read, so no reading taken before it decides the next change;
+ * and a WAN whose loss hovers at its threshold can move a hold once per window, not once per tick. Pure.
+ *
+ * @param array  $live wgct_collect_live(): 'sock_age' name => int|null, 'since_change' int|null (seconds since the
+ *                     mirror's last change, null when it made none this boot)
+ * @return int|null seconds, null when the gateway has no dpinger socket
+ */
+function wgct_reading_age(array $live, string $name): ?int {
+    $age = $live['sock_age'][$name] ?? null;
+    $since = $live['since_change'] ?? null;
+    return $age === null || $since === null ? $age : min($age, max(0, (int)$since));
+}
+
+/** Monotonic seconds: the clock wgct_record_change() and wgct_since_change() share, which no time step moves. */
+function wgct_monotonic(): int {
+    return intdiv(hrtime(true), 1000000000);
+}
+
+/**
+ * Record that the mirror changed a hold now, for the next ticks' settle guard (wgct_reading_age()).
+ *
+ * @return bool whether the record was written
+ */
+function wgct_record_change(string $path = WGCT_MIRROR_CHANGED_FILE, ?int $now = null): bool {
+    return wgct_write_file_atomic($path, (string)($now ?? wgct_monotonic()));
+}
+
+/**
+ * Seconds since the mirror last changed a hold, null when no change is recorded (none this boot, or a record that
+ * is not a time at or before now).
+ */
+function wgct_since_change(string $path = WGCT_MIRROR_CHANGED_FILE, ?int $now = null): ?int {
+    $text = wgct_read_state_file($path, 32);
+    if ($text === null || preg_match('/\A\d{1,12}\z/', $text) !== 1) {
+        return null;
+    }
+    $since = ($now ?? wgct_monotonic()) - (int)$text;
+    return $since >= 0 ? $since : null;
+}
+
+/**
  * Decide whether the IPv6 gateway should be forced down, given the paired IPv4
  * gateway's current loss and its own loss watermarks. Mirrors dpinger's
  * hysteresis: trip at losshigh, recover at losslow, hold in between.
@@ -184,13 +231,14 @@ function wgct_decide_down($lossVal, $lossHigh, $lossLow, $currentDown, $settled 
  * @param array    $ipv4           that gateway's config row
  * @param bool     $ipv4Forced     its force_down as it stands, pass 1's decisions included
  * @param bool     $currentDown    the IPv6 gateway's force_down now (the hysteresis memory)
- * @param array    $readings       dpinger readings: 'loss' and 'sock_age', each name => int|null (wgct_collect_dpinger())
+ * @param array    $readings       dpinger readings: 'loss' and 'sock_age', each name => int|null (wgct_collect_dpinger()),
+ *                                 and 'since_change' when the mirror changed a hold this boot (wgct_reading_age())
  * @param int|null $settleOverride --settle=N
  * @return array{down: bool, why: string, loss: ?int, settled: bool, age: ?int, window: int, low: int, high: int}
  */
 function wgct_ipv6_decide(string $ipv4Name, array $ipv4, bool $ipv4Forced, bool $currentDown, array $readings, ?int $settleOverride): array {
     [$low, $high] = wgct_watermarks($ipv4);
-    [$settled, $age, $window] = wgct_settled($ipv4, $readings['sock_age'][$ipv4Name] ?? null, $settleOverride);
+    [$settled, $age, $window] = wgct_settled($ipv4, wgct_reading_age($readings, $ipv4Name), $settleOverride);
     $loss = $readings['loss'][$ipv4Name] ?? null;
     $down = $ipv4Forced || wgct_decide_down($loss, $high, $low, $currentDown, $settled);
     return [
@@ -223,8 +271,9 @@ function wgct_decide_underlay(array $wan, $held) {
     if ($wan['disabled'] || $wan['force_down'] || $wan['status'] === 'force_down') {
         return true;
     }
-    // Every routing reconfigure restarts all dpingers, and a fresh one reads down or up
-    // before it has samples. Until the WAN's reading has settled, the decision stands.
+    // A routing reconfigure restarts all dpingers, and a fresh one reads down or up
+    // before it has samples; and the mirror's own last change is younger than the window
+    // (wgct_reading_age()). Until the WAN's reading has settled, the decision stands.
     if (!$wan['settled']) {
         return $held;
     }
@@ -238,6 +287,21 @@ function wgct_decide_underlay(array $wan, $held) {
  * @return int|null loss percent, null when the socket is absent or unreadable
  */
 function wgct_read_loss($name) {
+    $line = wgct_dpinger_line((string)$name);
+    if ($line === null) {
+        return null;
+    }
+    $parts = preg_split('/\s+/', trim($line));
+    $loss = end($parts);
+    return is_numeric($loss) ? (int)$loss : null;
+}
+
+/**
+ * The line a gateway's dpinger answers on its control socket ("name average deviation loss").
+ *
+ * @return ?string null when the socket is absent or nothing answers on it
+ */
+function wgct_dpinger_line(string $name): ?string {
     $sock = "/var/run/dpinger_{$name}.sock";
     if (!file_exists($sock)) {
         return null;
@@ -249,12 +313,21 @@ function wgct_read_loss($name) {
     fwrite($fp, "\n");
     $line = fgets($fp, 1024);
     fclose($fp);
-    if (!$line) {
-        return null;
+    return $line === false || $line === '' ? null : $line;
+}
+
+/**
+ * What a gateway's monitor can tell core's gateway watcher, from the line its dpinger answers (wgct_dpinger_line()):
+ * 'data'; 'silent' when the average, deviation and loss are all 0, which core prints as "~" and takes for no data
+ * (a monitor just started, or one whose sends fail, as on a link that is down): the watcher records no status
+ * for it; 'absent' when no dpinger answers. Pure.
+ */
+function wgct_monitor_state(?string $line): string {
+    if ($line === null) {
+        return 'absent';
     }
-    $parts = preg_split('/\s+/', trim($line));
-    $loss = end($parts);
-    return is_numeric($loss) ? (int)$loss : null;
+    $parts = preg_split('/\s+/', trim($line)) ?: [];
+    return count($parts) >= 3 && array_slice($parts, -3) === ['0', '0', '0'] ? 'silent' : 'data';
 }
 
 /**
@@ -278,20 +351,21 @@ function wgct_gateway_status() {
 /**
  * Replay the gateway alarm OPNsense dropped for our own force_down changes.
  *
- * The reconfigure below restarts dpinger and SIGHUPs gateway_watcher, which
- * then raises "none -> force_down" (or back) for the gateways we changed and
- * calls the routes.alarm action. That action is
+ * The step before it, under the gateway lock, tells gateway_watcher to re-read
+ * the configuration (wgct_force_down_resync()). The watcher then raises
+ * "none -> force_down" (or back) for the gateways we changed and calls the
+ * routes.alarm action. That action is
  * `flock -n -E 0 /tmp/filter_reload_gateway.lock rc.routing_configure alarm`:
- * non-blocking, so while we still hold the lock it silently does nothing. The
- * filter is then never rebuilt with the new status of dpinger-monitored
- * gateways -- their status comes from the watcher, which had not re-read
- * config when our reconfigure generated the ruleset -- and 20-recover never
- * kills their states.
+ * non-blocking, so when it finds the lock still held it silently does nothing,
+ * and neither routing nor the filter is rebuilt with the new flag, nor does
+ * 20-recover kill the states.
  *
  * So, lock released: wait until gateway status shows what we wrote, then run
  * the alarm path ourselves, blocking on the lock. It reconfigures routing
  * without restarting monitors, runs the monitor syshooks (state kill) for the
- * named gateways, and rebuilds the filter.
+ * named gateways, and rebuilds the filter. Core reads a gateway's flag from
+ * the configuration with its status; only where a monitor has no data does it
+ * take the watcher's last status instead.
  *
  * @param array $expected name => bool force_down for every gateway we changed
  */
@@ -809,7 +883,7 @@ function wgct_release_plan(array $rows, string $liveBoot, ?string $previousBoot,
  * @return array see the file header
  */
 function wgct_collect_live() {
-    return ['status' => wgct_gateway_status()] + wgct_collect_dpinger();
+    return ['status' => wgct_gateway_status(), 'since_change' => wgct_since_change()] + wgct_collect_dpinger();
 }
 
 /**
@@ -873,7 +947,7 @@ function wgct_plan(array $config, array $live, array $held, $settleOverride) {
              * 'none' or 'force_down', never down: its reading is settled as it stands */
             [$wanSettled, $wanAge, $wanWindow] = $wanGw === null || !empty($wanGw['monitor_disable'])
                 ? [true, null, 0]
-                : wgct_settled($wanGw, $live['sock_age'][$wanName] ?? null, $settleOverride);
+                : wgct_settled($wanGw, wgct_reading_age($live, $wanName), $settleOverride);
             $wan = [
                 'disabled' => $wanGw === null || $wanGw['disabled'],
                 'force_down' => $wanGw !== null && $wanGw['force_down'],
@@ -1141,6 +1215,29 @@ function wgct_selftest() {
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
             $live(), ['tun_a', 'tun_a-ipv6'],
             ['tun_a' => false, 'tun_a-ipv6' => false], []],
+        ['WAN back, every monitor long settled, 15 s after the mirror\'s own last change => keep holding',
+            $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['since_change' => 15]), ['tun_a', 'tun_a-ipv6'],
+            [], ['tun_a', 'tun_a-ipv6']],
+        ['the same once the WAN\'s window (60 s) has passed since that change => release tunnel and IPv6',
+            $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
+            $live(['since_change' => 60]), ['tun_a', 'tun_a-ipv6'],
+            ['tun_a' => false, 'tun_a-ipv6' => false], []],
+        ['WAN reading loss 15 s after the mirror released its tunnel => not held again yet',
+            $config(), $live(['status' => ['WAN_A' => 'loss', 'tun_a' => 'none'], 'since_change' => 15]), [],
+            [], []],
+        ['the same 60 s after => held',
+            $config(), $live(['status' => ['WAN_A' => 'loss', 'tun_a' => 'none'], 'since_change' => 60]), [],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
+        ['a WAN forced down in configuration holds its tunnel at once, 1 s after the mirror\'s last change',
+            $config(['WAN_A' => ['force_down' => true]]), $live(['since_change' => 1]), [],
+            ['tun_a' => true, 'tun_a-ipv6' => true], ['tun_a', 'tun_a-ipv6']],
+        ['IPv4 tunnel reading 100% loss 15 s after the mirror\'s last change => IPv6 not held yet',
+            $config(), $live(['loss' => ['WAN_A' => 0, 'tun_a' => 100], 'since_change' => 15]), [],
+            [], []],
+        ['the same 60 s after => IPv6 held',
+            $config(), $live(['loss' => ['WAN_A' => 0, 'tun_a' => 100], 'since_change' => 60]), [],
+            ['tun_a-ipv6' => true], ['tun_a-ipv6']],
         ['WAN back, unsettled => keep holding',
             $config(['tun_a' => ['force_down' => true], 'tun_a-ipv6' => ['force_down' => true]]),
             $live(['sock_age' => ['WAN_A' => 5, 'tun_a' => 600]]), ['tun_a', 'tun_a-ipv6'],
@@ -1219,6 +1316,26 @@ function wgct_selftest() {
             printf("       changes %s held %s\n", json_encode($gotChanges), json_encode($gotHeld));
         }
     }
+    $ages = ['sock_age' => ['WAN_A' => 600, 'tun_a' => 20]];
+    $ok = wgct_reading_age($ages, 'WAN_A') === 600 && wgct_reading_age($ages + ['since_change' => null], 'WAN_A') === 600
+        && wgct_reading_age($ages + ['since_change' => 45], 'WAN_A') === 45
+        && wgct_reading_age($ages + ['since_change' => 45], 'tun_a') === 20
+        && wgct_reading_age($ages + ['since_change' => 45], 'absent') === null;
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] plan: a reading's age is its dpinger's, capped by the time since the mirror's last change; none without a socket\n", $ok ? 'PASS' : 'FAIL');
+    $changeDir = sys_get_temp_dir() . '/wgct-mirror-changed-' . getmypid() . '-' . bin2hex(random_bytes(4));
+    $changeFile = "{$changeDir}/mirror.changed";
+    $ok = wgct_since_change($changeFile, 5000) === null && wgct_record_change($changeFile, 5000)
+        && wgct_since_change($changeFile, 5000) === 0 && wgct_since_change($changeFile, 5042) === 42
+        && wgct_since_change($changeFile, 4999) === null
+        && (fileperms($changeFile) & 0777) === 0600 && (fileperms($changeDir) & 0777) === 0700
+        && file_put_contents($changeFile, "soon\n") !== false && wgct_since_change($changeFile, 5042) === null;
+    @unlink($changeFile);
+    @rmdir($changeDir);
+    $fail += $ok ? 0 : 1;
+    $total++;
+    printf("[%s] plan: the mirror's last change is recorded as monotonic seconds in a 0600 file, read back as the seconds since; no record, a later one or other text is none\n", $ok ? 'PASS' : 'FAIL');
     $unavailable = wgct_plan($config(), $live(['status' => null]), [], null);
     $ok = in_array('gateway status unavailable; underlay pass skipped this tick', $unavailable['log'], true)
         && in_array('underlay: gateway status unavailable, pass skipped', $unavailable['report'], true);

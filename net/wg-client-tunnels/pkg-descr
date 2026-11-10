@@ -73,6 +73,23 @@ Features:
 Plugin Changelog
 ================
 
+3.12
+
+* A hold or a release by the health mirror no longer restarts every
+  gateway monitor. The mirror tells core's gateway watcher to re-read
+  the configuration (a new configd action, watcher_reload), waits until
+  the watcher's own record shows the change, and its alarm replay
+  applies routing and the filter as before, so the other gateways keep
+  their readings. When the watcher is not running, does not show the
+  change within 15 seconds (a changed gateway's monitor has no data), or
+  core's watcher code is no longer what the core contract pins, the
+  mirror runs the full routing reconfigure as before and logs why
+* After a change of its own the mirror takes no reading as settled until
+  the gateway's monitor window has passed, as when that change restarted
+  the monitors: a WAN whose loss hovers at its threshold moves a hold at
+  most once per window. A WAN disabled or forced down in the
+  configuration still holds its tunnels at once
+
 3.11
 
 * The core contract checks the gateway code the no-default sentinels rely

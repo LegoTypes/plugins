@@ -52,6 +52,11 @@
 #            plugin, until stop
 #   routes_status
 #       per-tunnel IPv6 route and monitor state as JSON
+#   watcher_reload
+#       core's own signal to its gateway watcher (dpinger.inc sends it after a monitor configure): the watcher
+#       re-reads the configuration, so it knows a force_down the health mirror just saved. The pid file and the
+#       command line must both match, so a stale pid file never signals another process; exits non-zero when
+#       nothing matched, and the mirror then runs "interface routes configure" instead
 #   _routes [quiet] | _cleanup
 #       the route set and its removal; run only under routes.lock (below)
 #
@@ -496,8 +501,11 @@ case "$1" in
     routes_status)
         do_routes_status
         ;;
+    watcher_reload)
+        exec /bin/pkill -HUP -F /var/run/gateway_watcher.pid -f gateway_watcher.php
+        ;;
     *)
-        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|hook|request_reconcile|tick|tunnel <arguments>|status|routes_status}"
+        echo "Usage: $0 {start|stop|restart|configure_routes|reconcile|hook|request_reconcile|tick|tunnel <arguments>|status|routes_status|watcher_reload}"
         exit 1
         ;;
 esac

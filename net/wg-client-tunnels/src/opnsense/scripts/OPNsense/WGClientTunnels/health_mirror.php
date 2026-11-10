@@ -65,10 +65,13 @@
  * Settle guard: a dpinger that has just started has no samples yet, so what it
  * reports -- 0% or 100% loss, a gateway status of down or up -- says nothing
  * about the path. Every routing reconfigure restarts all dpingers -- any
- * gateway Apply, and the reconfigure this script itself triggers when it
- * changes a gateway -- so without this the mirror releases gateways in the
- * middle of an outage, or holds a healthy WAN's tunnels down, and each change
- * restarts the dpingers again. While a gateway's dpinger socket is younger than
+ * gateway Apply, and this script's own fallback when it cannot reload the
+ * gateway watcher (wgct_force_down_resync()) -- so without this the mirror
+ * releases gateways in the middle of an outage, or holds a healthy WAN's
+ * tunnels down. The mirror's own last change counts as such a restart
+ * (wgct_reading_age()): it moved traffic, and a WAN at its loss threshold
+ * moves a hold once per window, not once per tick. While a gateway's dpinger
+ * socket, or that change, is younger than
  * the settle window, or absent, its reading changes nothing: the previous
  * decision stands. A WAN that is disabled or forced down in configuration still
  * holds its tunnels at once; that is not a reading. A real outage that
@@ -167,11 +170,12 @@ if ($dryRun ? wgct_migration_pending() : wgct_pending_refuses('tick', $logTag)) 
 
 /*
  * Single-instance guard (health.lock under /var/run). Cron fires this script four times a minute
- * (0/15/30/45s). A tick that changes a gateway blocks below until a full
- * routing reconfigure completes (dpinger torn down and rebuilt), which can
- * outlast the 15s spacing. Two overlapping runs would issue overlapping
- * reconfigures, and those race dpinger's teardown against another's rebuild
- * and leave it dead -- at which point every gateway reads a false "down".
+ * (0/15/30/45s). A tick that changes a gateway blocks below until core is in
+ * step and the alarm replay has run, which can outlast the 15s spacing; when
+ * the tick falls back to a full routing reconfigure (dpinger torn down and
+ * rebuilt), two overlapping runs would race one teardown against another's
+ * rebuild and leave dpinger dead -- at which point every gateway reads a false
+ * "down".
  * If another run holds the lock, skip this tick (logged once per state); the next one catches up.
  */
 $tickMsg = 'tick skipped: another run holds health.lock';
@@ -263,9 +267,11 @@ if (empty($plan['changes'])) {
 /*
  * A change is needed. Commit it in the order every config writer follows:
  *
- *   1. core's gateway lock (/tmp/filter_reload_gateway.lock) -- applying force_down is a full
- *      routing reconfigure, which restarts every dpinger; overlapping
- *      reconfigures leave dpinger dead. Same lock routes.alarm uses.
+ *   1. core's gateway lock (/tmp/filter_reload_gateway.lock) -- the save and
+ *      the step that brings core in step with it (wgct_force_down_resync():
+ *      the gateway watcher's reload, or a full routing reconfigure, which
+ *      restarts every dpinger) run under it; overlapping reconfigures leave
+ *      dpinger dead. Same lock routes.alarm uses.
  *   2. Live readings, collected again: the wait for the lock can be long, and
  *      gateway_status.php reads config, so it must never run inside the
  *      config lock taken in step 3.
@@ -323,7 +329,25 @@ if ($commit['held']) {
     }
 }
 if (!empty($plan['changes'])) {
-    (new OPNsense\Core\Backend())->configdRun('interface routes configure');
+    /* the next ticks' readings are settled only once their window has passed since this change */
+    wgct_record_change();
+    /* force_down alone changed: the watcher re-reads the configuration and no monitor restarts */
+    $monitors = [];
+    foreach (array_keys($plan['changes']) as $name) {
+        $monitors[(string)$name] = wgct_monitor_state(wgct_dpinger_line((string)$name));
+    }
+    wgct_force_down_resync(
+        fn (string $action): string => (string)(new OPNsense\Core\Backend())->configdRun($action),
+        function (string $line) use ($logTag): void {
+            logMsg($logTag, $line);
+        },
+        wgct_watcher_reload_drift(),
+        wgct_watcher_plan($plan['changes'], $commit['config']['gateways'], $monitors),
+        'wgct_watcher_cache',
+        function (): void {
+            usleep(WGCT_WATCHER_POLL_MS * 1000);
+        }
+    );
 }
 $gwLock->flock(LOCK_UN);
 if (!empty($plan['changes'])) {

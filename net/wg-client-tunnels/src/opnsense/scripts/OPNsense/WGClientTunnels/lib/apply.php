@@ -105,6 +105,26 @@ const WGCT_CORE_COPIES = [
             "if (\$gateway['ipprotocol'] == \$ipproto) {",
         ],
     ],
+    /*
+     * A force_down the health mirror saves needs no monitor restart (wgct_force_down_resync()): core reads the flag
+     * from the configuration whenever it reads a gateway's status, and its gateway watcher, the one long-running
+     * reader, re-reads the configuration on the SIGHUP core itself sends it by this pid file
+     */
+    'watcher_reload' => [
+        'path' => '/usr/local/opnsense/scripts/routes/gateway_watcher.php',
+        'texts' => [
+            "pcntl_signal(SIGHUP, 'signalhandler');", 'OPNsense\Core\Config::getInstance()->forceReload();',
+            /* and writes each gateway's status as it then reads it, which wgct_watcher_cache() reads back */
+            "\$cache_file = '/tmp/gateways.status';", '$cache_data = serialize($mode);',
+        ],
+    ],
+    'watcher_signal' => [
+        'path' => '/usr/local/etc/inc/plugins.inc.d/dpinger.inc',
+        'texts' => [
+            "killbypid('/var/run/gateway_watcher.pid', 'HUP');",
+            "'status' => !empty(\$gwitem['force_down']) ? 'force_down' : \$gwstatus,",
+        ],
+    ],
     /* wgct_core_read_routes() reads the static routes raw, keeping the Routes model's view of them: enabled by default */
     'route_model' => [
         'path' => '/usr/local/opnsense/mvc/app/models/OPNsense/Routes/Route.xml',
@@ -132,6 +152,11 @@ const WGCT_CORE_FIXES = [
             . " so core may carry the fix: the plugin's IPv6 next-hop routes are a backstop",
     ],
 ];
+/* core's gateway watcher writes each gateway's status here (dpinger.inc, gateway_watcher.php; the watcher_reload
+ * contract item); how long a saved force_down may take to show in it, and how often it is looked for */
+const WGCT_WATCHER_CACHE_FILE = '/tmp/gateways.status';
+const WGCT_WATCHER_CONFIRM_MS = 15000;
+const WGCT_WATCHER_POLL_MS = 250;
 /* ModelRelationField's private option caches, which wgct_reset_field_caches() clears by reflection */
 const WGCT_RELATION_STATICS = ['internalCacheModelStruct', 'internalCacheOptionList'];
 /* as long as the replay action's `flock -w 120` waits */
@@ -1085,6 +1110,148 @@ function wgct_relation_cache_refusal(string $relationClass = \OPNsense\Base\Fiel
 }
 
 /**
+ * The drift of the core code wgct_force_down_resync() relies on (the watcher_reload and watcher_signal items), null
+ * when core matches.
+ *
+ * @param array<string, array{path: string, texts: list<string>, section?: string}> $copies WGCT_CORE_COPIES
+ */
+function wgct_watcher_reload_drift(array $copies = WGCT_CORE_COPIES): ?string {
+    foreach (['watcher_reload', 'watcher_signal'] as $item) {
+        $problem = wgct_core_copy_drift($copies[$item]);
+        if ($problem !== null) {
+            return "{$item}: {$problem}";
+        }
+    }
+    return null;
+}
+
+/**
+ * The status the gateway watcher last recorded for each gateway (core's dpinger_watcher(), read without core's
+ * legacy includes): its cache file, a regular file of root's and no link (it lies in /tmp, where another user can
+ * make a file of their own but not replace root's), unserialized as data only. An absent, foreign or unreadable
+ * file is no status at all, and the most a false one could do is end the wait early or run it out.
+ *
+ * @return array<string, string> gateway name => status
+ */
+function wgct_watcher_cache(string $path = WGCT_WATCHER_CACHE_FILE): array {
+    $text = wgct_read_state_file($path, WGCT_STATE_MAX_BYTES);
+    if ($text === null) {
+        return [];
+    }
+    $seen = @unserialize($text, ['allowed_classes' => false]);
+    if (!is_array($seen)) {
+        return [];
+    }
+    $out = [];
+    foreach ($seen as $name => $status) {
+        if (is_string($status)) {
+            $out[(string)$name] = $status;
+        }
+    }
+    return $out;
+}
+
+/**
+ * What the watcher can be waited for after a save of force_down, from each changed gateway's monitor
+ * (wgct_monitor_state()). Pure.
+ *  - wait: the changes of gateways whose monitor has data: the watcher records their status, so its record shows
+ *    the change once it has re-read the configuration.
+ *  - absent: the monitored gateways no dpinger answers for: nothing can show the change, and only core's full
+ *    routing reconfigure starts their monitor again.
+ * A gateway whose monitoring is off, or whose monitor is silent (just started, or its sends fail, as on a link
+ * that is down), is in neither: the watcher records no status for it, and core reads its flag from the
+ * configuration.
+ *
+ * @param array<string, bool>   $changes  gateway name => the force_down saved
+ * @param array<string, array>  $gateways wgct_collect_config()'s gateway rows
+ * @param array<string, string> $states   gateway name => wgct_monitor_state(), of the changed gateways
+ * @return array{wait: array<string, bool>, absent: list<string>}
+ */
+function wgct_watcher_plan(array $changes, array $gateways, array $states): array {
+    $wait = [];
+    $absent = [];
+    foreach ($changes as $name => $down) {
+        if (!empty($gateways[$name]['monitor_disable'])) {
+            continue;
+        }
+        $state = $states[$name] ?? 'absent';
+        if ($state === 'data') {
+            $wait[(string)$name] = (bool)$down;
+        } elseif ($state !== 'silent') {
+            $absent[] = (string)$name;
+        }
+    }
+    return ['wait' => $wait, 'absent' => $absent];
+}
+
+/**
+ * The gateways of $changes the watcher does not show as saved: forced down exactly where the save forced it. Pure.
+ *
+ * @param array<string, bool>   $changes gateway name => the force_down saved
+ * @param array<string, string> $seen    wgct_watcher_cache()
+ * @return list<string>
+ */
+function wgct_watcher_pending(array $changes, array $seen): array {
+    $pending = [];
+    foreach ($changes as $name => $down) {
+        if (!isset($seen[$name]) || ($seen[$name] === 'force_down') !== (bool)$down) {
+            $pending[] = (string)$name;
+        }
+    }
+    return $pending;
+}
+
+/**
+ * Bring core in step with a save that changed nothing but force_down on gateways, under the gateway lock, before
+ * the alarm replay: core's gateway watcher is told to re-read the configuration (the plugin's watcher_reload
+ * action) and is waited for, at most WGCT_WATCHER_CONFIRM_MS, until its own record shows every change it can show
+ * ($plan's wait) as saved. No monitor is restarted, so every other gateway keeps its reading. The alarm the
+ * watcher raises for the change is dropped when it finds the lock still held, and the replay applies routing and
+ * the filter once the lock is released. Core's full "interface routes configure", which restarts every monitor
+ * and starts the watcher, runs instead, with one line saying why, when the watcher cannot be told (it is not
+ * running, or core's code is no longer what the plugin pins), when it does not show the change in time, or when
+ * a changed gateway has no running monitor ($plan's absent).
+ *
+ * @param callable(string): string $configd runs a configd action and returns its reply
+ * @param callable(string): void $log
+ * @param ?string $drift wgct_watcher_reload_drift()
+ * @param array{wait: array<string, bool>, absent: list<string>} $plan wgct_watcher_plan()
+ * @param callable(): array<string, string> $cache wgct_watcher_cache()
+ * @param callable(): void $pause waits WGCT_WATCHER_POLL_MS
+ * @return string 'watcher' or 'configure', the step that ran
+ */
+function wgct_force_down_resync(callable $configd, callable $log, ?string $drift, array $plan, callable $cache,
+    callable $pause): string {
+    if ($drift !== null) {
+        $why = "core changed what the watcher reload relies on ({$drift})";
+    } elseif ($plan['absent'] !== []) {
+        $why = implode(',', $plan['absent']) . ' has no running monitor';
+    } else {
+        $reply = trim($configd('wgclienttunnels watcher_reload'));
+        if ($reply === 'OK') {
+            $tries = intdiv(WGCT_WATCHER_CONFIRM_MS, WGCT_WATCHER_POLL_MS);
+            for ($i = 0; ; $i++) {
+                $pending = wgct_watcher_pending($plan['wait'], $cache());
+                if ($pending === []) {
+                    return 'watcher';
+                }
+                if ($i >= $tries) {
+                    break;
+                }
+                $pause();
+            }
+            $why = 'the gateway watcher did not show ' . implode(',', $pending) . ' as saved within '
+                . intdiv(WGCT_WATCHER_CONFIRM_MS, 1000) . ' s';
+        } else {
+            $why = 'gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . ')';
+        }
+    }
+    $log("{$why}: full routing reconfigure instead");
+    $configd('interface routes configure');
+    return 'configure';
+}
+
+/**
  * One copied internal's drift: its file unreadable, its section or command gone, or the texts it no longer holds.
  *
  * @param array{path: string, texts: list<string>, section?: string} $copy a WGCT_CORE_COPIES item
@@ -1370,6 +1537,100 @@ function wgct_apply_selftest(): int {
         }
         wgct_check($t, "contract: {$item} drift is named when its text is gone", $named);
     }
+    /* a force_down save: the watcher reload and its confirmation, and the full reconfigure whenever the watcher
+     * cannot be told or does not show the change */
+    $resync = function (array $replies, ?string $pinDrift, array $changes, array $caches, array $absent = []): array {
+        $ran = [];
+        $lines = [];
+        $pauses = 0;
+        $reads = 0;
+        $step = wgct_force_down_resync(function (string $action) use (&$ran, $replies): string {
+            $ran[] = $action;
+            return $replies[$action] ?? '';
+        }, function (string $line) use (&$lines): void {
+            $lines[] = $line;
+        }, $pinDrift, ['wait' => $changes, 'absent' => $absent], function () use (&$reads, $caches): array {
+            $seen = $caches[min($reads, count($caches) - 1)];
+            $reads++;
+            return $seen;
+        }, function () use (&$pauses): void {
+            $pauses++;
+        });
+        return [$step, $ran, $lines, $pauses];
+    };
+    $hold = ['tun_a' => true];
+    $okReply = ['wgclienttunnels watcher_reload' => "OK\n"];
+    $shown = ['WAN_A' => 'none', 'tun_a' => 'force_down'];
+    $stale = ['WAN_A' => 'none', 'tun_a' => 'down'];
+    wgct_check($t, 'force_down resync: the watcher reload alone once its record shows the hold, with no line; it is waited for',
+        $resync($okReply, null, $hold, [$shown]) === ['watcher', ['wgclienttunnels watcher_reload'], [], 0]
+        && $resync($okReply, null, $hold, [$stale, $stale, $shown]) === ['watcher', ['wgclienttunnels watcher_reload'], [], 2]);
+    wgct_check($t, 'force_down resync: a release is shown once the record no longer says force_down; several changes need every one shown',
+        $resync($okReply, null, ['tun_a' => false], [$shown, $stale]) === ['watcher', ['wgclienttunnels watcher_reload'], [], 1]
+        && wgct_watcher_pending(['tun_a' => true, 'tun_b' => false], ['tun_a' => 'force_down', 'tun_b' => 'force_down']) === ['tun_b']
+        && wgct_watcher_pending(['tun_a' => true, 'tun_b' => false], ['tun_a' => 'force_down', 'tun_b' => 'loss']) === []
+        && wgct_watcher_pending(['tun_a' => true], []) === ['tun_a'] && wgct_watcher_pending([], $stale) === []);
+    $rows = ['tun_a' => ['monitor_disable' => false], 'tun_a-ipv6' => ['monitor_disable' => true],
+             'tun_b' => ['monitor_disable' => false], 'tun_c' => ['monitor_disable' => false]];
+    wgct_check($t, 'force_down resync: only a gateway whose monitor has data is waited for; one with monitoring off or a silent '
+        . 'monitor (its sends fail, as on a link that is down) is not; one no dpinger answers for is absent',
+        wgct_watcher_plan(['tun_a' => true, 'tun_a-ipv6' => true, 'tun_b' => false, 'tun_c' => true, 'gone' => false], $rows,
+            ['tun_a' => 'data', 'tun_a-ipv6' => 'absent', 'tun_b' => 'silent', 'tun_c' => 'absent'])
+            === ['wait' => ['tun_a' => true], 'absent' => ['tun_c', 'gone']]
+        && wgct_watcher_plan(['tun_a' => true], $rows, []) === ['wait' => [], 'absent' => ['tun_a']]
+        && wgct_monitor_state("tun_a 21345 1022 0\n") === 'data' && wgct_monitor_state("tun_a 0 0 100\n") === 'data'
+        && wgct_monitor_state("tun_a 0 0 0\n") === 'silent' && wgct_monitor_state(null) === 'absent');
+    wgct_check($t, 'force_down resync: with nothing to wait for (a silent monitor, monitoring off) the save is in step as soon '
+        . 'as the watcher is told, with no wait',
+        $resync($okReply, null, [], [[]]) === ['watcher', ['wgclienttunnels watcher_reload'], [], 0]);
+    wgct_check($t, 'force_down resync: a changed gateway no dpinger answers for: the full reconfigure at once, naming it, the '
+        . 'watcher never signalled or waited for',
+        $resync($okReply, null, $hold, [$shown], ['tun_c', 'tun_d']) === ['configure', ['interface routes configure'],
+            ['tun_c,tun_d has no running monitor: full routing reconfigure instead'], 0]);
+    $tries = intdiv(WGCT_WATCHER_CONFIRM_MS, WGCT_WATCHER_POLL_MS);
+    wgct_check($t, 'force_down resync: a record that never shows the change (a stalled watcher, a gateway with no monitor data): '
+        . 'the full reconfigure after 15 s of looking, naming the gateway',
+        WGCT_WATCHER_CONFIRM_MS === 15000 && WGCT_WATCHER_POLL_MS === 250
+        && $resync($okReply, null, $hold, [$stale]) === ['configure',
+            ['wgclienttunnels watcher_reload', 'interface routes configure'],
+            ['the gateway watcher did not show tun_a as saved within 15 s: full routing reconfigure instead'], $tries]
+        && $resync($okReply, null, $hold, [[]])[0] === 'configure');
+    $notReloaded = function (string $reply) use ($resync, $hold, $shown): bool {
+        return $resync(['wgclienttunnels watcher_reload' => $reply], null, $hold, [$shown]) === ['configure',
+            ['wgclienttunnels watcher_reload', 'interface routes configure'],
+            ['gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . '): full routing reconfigure instead'], 0];
+    };
+    wgct_check($t, 'force_down resync: no watcher (the action exits non-zero), an unknown action or no reply: the full reconfigure, '
+        . 'with the reason, and the record is not looked at',
+        $notReloaded('Error (1)') && $notReloaded('Error (3)') && $notReloaded('Action not allowed or missing') && $notReloaded(''));
+    wgct_check($t, 'force_down resync: core drifted from the pinned watcher code: the full reconfigure, the watcher never signalled',
+        $resync($okReply, 'watcher_reload: x no longer holds "y"', $hold, [$shown]) === ['configure',
+            ['interface routes configure'],
+            ['core changed what the watcher reload relies on (watcher_reload: x no longer holds "y"): full routing reconfigure instead'], 0]);
+    $cacheFile = "{$dir}/gateways.status";
+    file_put_contents($cacheFile, serialize(['WAN_A' => 'none', 'tun_a' => 'force_down', 7 => 'loss', 'odd' => ['x']]));
+    $read = wgct_watcher_cache($cacheFile);
+    file_put_contents($cacheFile, 'O:8:"stdClass":0:{}');
+    $object = wgct_watcher_cache($cacheFile);
+    file_put_contents($cacheFile, 'not serialized');
+    wgct_check($t, 'force_down resync: the watcher\'s record is read as data only: its statuses by name; an object, other text or no file is no status',
+        $read === ['WAN_A' => 'none', 'tun_a' => 'force_down', '7' => 'loss'] && $object === []
+        && wgct_watcher_cache($cacheFile) === [] && wgct_watcher_cache("{$dir}/absent.status") === []
+        && WGCT_WATCHER_CACHE_FILE === '/tmp/gateways.status');
+    $watcher = WGCT_CORE_COPIES['watcher_signal'];
+    $noHup = ['watcher_signal' => ['path' => $copy($watcher['path'], "'HUP'", "'TERM'")] + $watcher] + WGCT_CORE_COPIES;
+    wgct_check($t, 'force_down resync: this core has no watcher drift; a core that signals its watcher otherwise has',
+        wgct_watcher_reload_drift() === null
+        && str_starts_with((string)wgct_watcher_reload_drift($noHup), 'watcher_signal: ')
+        && str_ends_with((string)wgct_watcher_reload_drift($noHup), " no longer holds \"killbypid('/var/run/gateway_watcher.pid', 'HUP');\""));
+    $actionsFile = (string)file_get_contents('/usr/local/opnsense/service/conf/actions.d/actions_wgclienttunnels.conf');
+    $entry = (string)file_get_contents(dirname(__DIR__) . '/wgct.sh');
+    wgct_check($t, 'force_down resync: the watcher_reload action is a script action of wgct.sh, which signals by pid file and command line together',
+        preg_match('/^\[watcher_reload\]\s*$(.*?)(?=^\[|\z)/ms', $actionsFile, $section) === 1
+        && preg_match('/^command:(.*)$/m', $section[1], $command) === 1
+        && trim($command[1]) === '/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct.sh watcher_reload'
+        && preg_match('/^type:script$/m', $section[1]) === 1
+        && str_contains($entry, "    watcher_reload)\n        exec /bin/pkill -HUP -F /var/run/gateway_watcher.pid -f gateway_watcher.php\n"));
     /* the page files a row under the band its sort_order's first digit names, so band 0 needs that rule as well */
     $band = WGCT_CORE_COPIES['rules_band'];
     $bandDrift = $drift(['rules_band' => ['path' => $copy($band['path'], 'sortOrder.charAt(0)', 'sortOrder.charAt(1)')] + $band]);
