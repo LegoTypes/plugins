@@ -168,8 +168,8 @@ function wf_plan(array $snap, array $state): array
     }
 
     /* A judging drift counts only once it has persisted: a reconfigure in flight briefly removes dpinger
-     * sockets and the default route, and the engine's own holds cause reconfigures. Until then it only
-     * blocks new holds, like a command drift. */
+     * sockets and the default route, and any gateway change, the engine's own holds included, causes one.
+     * Until then it only blocks new holds, like a command drift. */
     $judgingDrift = $snap['contract']['judging'] !== [];
     if ($judgingDrift) {
         $state['contract_judging_since'] = $state['contract_judging_since'] ?? $now;

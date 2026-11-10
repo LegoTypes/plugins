@@ -124,6 +124,29 @@ wf_register_suite('contract', function (): int {
         && !wf_contract_routes_fallback(['[routes.configure] changed'])
         && !wf_contract_routes_fallback(['[routes.configure] changed', 'actions_cron.conf [restart] changed']));
     $tree = @file_get_contents(dirname(__DIR__) . '/src/opnsense/service/conf/actions.d/actions_wanfailover.conf');
+    $reload = $tree === false ? null : wf_ini_section($tree, 'watcher_reload');
+    wf_check($t, '(w1) the tree\'s [watcher_reload] is a script action whose command is WF_WATCHER_RELOAD_CMD: the pid file and the '
+        . 'command line together',
+        $reload !== null && wf_ini_command($reload) === WF_WATCHER_RELOAD_CMD && preg_match('/^type:script$/m', $reload) === 1
+        && WF_WATCHER_RELOAD_CMD === '/bin/pkill -HUP -F /var/run/gateway_watcher.pid -f gateway_watcher.php');
+    $wScript = "pcntl_signal(SIGHUP, 'signalhandler');\n    OPNsense\\Core\\Config::getInstance()->forceReload();\n"
+        . "    \$cache_data = serialize(\$mode);\n";
+    $wInc = "killbypid('/var/run/gateway_watcher.pid', 'HUP');\n'status' => !empty(\$gwitem['force_down']) ? 'force_down' : \$gwstatus,\n";
+    wf_check($t, '(w2) watcher contract: core as pinned has no drift; each line gone, or a file unreadable, is named',
+        wf_contract_watcher($wScript, $wInc) === []
+        && wf_contract_watcher(str_replace('SIGHUP', 'SIGUSR1', $wScript), $wInc) === ['gateway_watcher.php no longer re-reads the configuration on SIGHUP']
+        && wf_contract_watcher(str_replace('forceReload', 'reload', $wScript), $wInc) === ['gateway_watcher.php no longer re-reads the configuration on SIGHUP']
+        && wf_contract_watcher($wScript, str_replace("'HUP'", "'TERM'", $wInc)) === ['dpinger.inc no longer signals the gateway watcher with HUP by /var/run/gateway_watcher.pid']
+        && wf_contract_watcher($wScript, str_replace('force_down', 'forced', $wInc)) === ['dpinger.inc no longer reads force_down from the configuration at each status read']
+        && wf_contract_watcher(str_replace('serialize($mode)', 'json_encode($mode)', $wScript), $wInc)
+            === ['gateway_watcher.php no longer records each gateway\'s status as it reads it']
+        && wf_contract_watcher(null, null) === ['gateway_watcher.php unreadable', 'dpinger.inc unreadable']);
+    $w = wf_contract_log(['judging' => [], 'command' => [], 'tailscale' => [], 'removal' => [], 'names' => [],
+        'watcher' => ['dpinger.inc unreadable']], '');
+    wf_check($t, '(w3) log: a watcher-only drift is logged once, saying every hold and release restarts the monitors',
+        $w['line'] === 'core-contract: core changed what the plugin relies on (every hold and release restarts all gateway '
+            . 'monitors): dpinger.inc unreadable' && $w['prio'] === LOG_WARNING
+        && wf_contract_log(['judging' => [], 'command' => [], 'watcher' => ['dpinger.inc unreadable']], $w['last'])['line'] === null);
     $replay = $tree === false ? null : wf_ini_section($tree, 'replay_alarm');
     $cmd = $replay === null ? null : wf_ini_command($replay);
     wf_check($t, '(d5) the tree\'s [replay_alarm] command is WF_REPLAY_ALARM_CMD, which the package removal runs directly',

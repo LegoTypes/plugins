@@ -45,6 +45,91 @@ require_once __DIR__ . '/log.php';
 require_once __DIR__ . '/planner.php';
 
 /**
+ * What the watcher can be waited for after a save of force_down, from each changed WAN's monitor as the snapshot
+ * read it.
+ *  - wait: the changes of WANs whose monitor has data: the watcher records their status, so its record shows the
+ *    change once it has re-read the configuration. A name the snapshot has no monitor reading for is waited for too.
+ *  - absent: the WANs with no running monitor (no socket, or no live dpinger): nothing can show the change, and only
+ *    core's full routing reconfigure starts their monitor again.
+ * A WAN whose monitor is silent (core prints "~": just started, or its sends fail, as on a link that is down) is in
+ * neither: the watcher records no status for it, and core reads its flag from the configuration.
+ *
+ * @param array<string, bool> $changes gateway name => the force_down saved
+ * @param array<string, array> $wans wf_snapshot()'s wans
+ * @return array{wait: array<string, bool>, absent: list<string>}
+ */
+function wf_watcher_plan(array $changes, array $wans): array
+{
+    $wait = [];
+    $absent = [];
+    foreach ($changes as $name => $down) {
+        $w = $wans[$name] ?? [];
+        if (array_key_exists('sock_age', $w) && $w['sock_age'] === null) {
+            $absent[] = (string)$name;
+        } elseif (empty($w['tilde'])) {
+            $wait[(string)$name] = (bool)$down;
+        }
+    }
+    return ['wait' => $wait, 'absent' => $absent];
+}
+
+/**
+ * Bring core in step with a save of force_down on gateways, under the gateway lock, before the alarm replay: core's
+ * gateway watcher is told to re-read the configuration (the plugin's watcher_reload action) and is waited for, at
+ * most WF_WATCHER_CONFIRM_SECONDS, until its own record shows every change it can show ($plan's wait) as saved. This
+ * step restarts no monitor, so the other gateways keep their readings (core's own alarm hook, 20-recover, still
+ * restarts the monitor of a gateway that reads down). The alarm the watcher raises for the change is dropped when it
+ * finds the lock still held, and the replay applies routing and the filter once the lock is released. Core's full
+ * "interface routes configure", which restarts every monitor and starts the watcher, runs instead when:
+ *  - the watcher cannot be told (it is not running, or core's code is no longer what the watcher contract pins), it
+ *    does not show the change in time, or a changed WAN has no running monitor ($plan's absent): one line says why;
+ *  - the configuration changed outside the engine ($foreign: a backup restored or a revision reverted, which may
+ *    change any gateway field);
+ *  - the package is being removed, and its actions with it.
+ *
+ * @param array{configd: callable(string, list<string>): string, watcher: callable(): array<string, string>,
+ *              sleep: callable(int): int, log: callable(string, int=): void} $io
+ * @param array{wait: array<string, bool>, absent: list<string>} $plan wf_watcher_plan()
+ * @param list<string> $drift the watcher contract's drift (wf_contract_watcher())
+ * @return bool false when the full reconfigure ran and answered "failed"
+ */
+function wf_force_down_resync(array $io, array $plan, array $drift, bool $foreign, bool $removal): bool
+{
+    $why = null;
+    if ($foreign || $removal) {
+        /* the full reconfigure, by rule: nothing to say */
+    } elseif ($drift !== []) {
+        $why = 'core changed what the watcher reload relies on (' . implode('; ', $drift) . ')';
+    } elseif ($plan['absent'] !== []) {
+        $why = implode(',', $plan['absent']) . ' has no running monitor';
+    } else {
+        $reply = trim(($io['configd'])('wanfailover watcher_reload', []));
+        if ($reply === 'OK') {
+            for ($i = 0; ; $i++) {
+                $seen = ($io['watcher'])();
+                $pending = array_keys(array_filter($plan['wait'], fn (bool $down, string $n): bool
+                    => !isset($seen[$n]) || ($seen[$n] === 'force_down') !== $down, ARRAY_FILTER_USE_BOTH));
+                if ($pending === []) {
+                    return true;
+                }
+                if ($i >= WF_WATCHER_CONFIRM_SECONDS) {
+                    break;
+                }
+                ($io['sleep'])(1);
+            }
+            $why = 'the gateway watcher did not show ' . implode(',', $pending) . ' as saved within '
+                . WF_WATCHER_CONFIRM_SECONDS . ' s';
+        } else {
+            $why = 'gateway watcher not reloaded (' . ($reply === '' ? 'no reply' : $reply) . ')';
+        }
+    }
+    if ($why !== null) {
+        ($io['log'])("{$why}: full routing reconfigure instead");
+    }
+    return trim(($io['configd'])('interface routes configure', [])) !== 'failed';
+}
+
+/**
  * @param array{hold: list<string>, release: list<string>, held_after: list<string>,
  *               records_after: array<string, array{boot: string, since: int}>, expected: array<string, bool>,
  *               held_now: list<string>, write: bool,
@@ -52,15 +137,17 @@ require_once __DIR__ . '/planner.php';
  *               failback: array<string, array{top: bool}>, expected_default: ?string, alerts: list<string>, log: list<string>,
  *               acting: bool, stopped: bool, legacy_held: list<string>} $plan wf_plan()
  * @param array $state the shape returned by wf_state_new()
- * @param array{now: int, release: ?string, tailscale_restart: bool, wans: array<string, array{route_target: string}>} $snap
+ * @param array{now: int, release: ?string, tailscale_restart: bool, wans: array<string, array{route_target: string}>,
+ *               contract?: array{watcher?: list<string>}} $snap
  * @param array{configd: callable(string, list<string>): string,
  *             write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>, problem: ?string, prio: int},
  *             gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
+ *             watcher: callable(): array<string, string>,
  *             pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *             sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void} $io
  * @return array{state: array, ok: bool, problem: ?string, prio: int, resynced: bool} problem: why the config change did
  *     not land (the gateway lock busy, a force_down moved since the snapshot, the write refused or failed), and the
- *     priority to log it at, for the caller to log as it goes on; null otherwise. resynced: false when the routing
+ *     priority to log it at, for the caller to log as it goes on; null otherwise. resynced: false when the full routing
  *     reconfigure answered "failed" (the removal's core command, wf_deinstall_io()) or the alarm replay failed
  */
 function wf_apply(array $plan, array $state, array $snap, array $io): array
@@ -105,9 +192,10 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
                 $written = ($io['write'])($changes, $plan['expected'], $plan['records_after']);
                 ($io['crash_point'])('after-save');
             }
-            /* a write that only prunes hold records changes no gateway: no reconfigure, no dpinger restarts */
+            /* a write that only prunes hold records changes no gateway: core needs no word of it */
             if ($written['ok'] && ($changes !== [] || $plan['foreign'] !== [])) {
-                $resynced = trim(($io['configd'])('interface routes configure', [])) !== 'failed';
+                $resynced = wf_force_down_resync($io, wf_watcher_plan($changes, $snap['wans']),
+                    $snap['contract']['watcher'] ?? [], $plan['foreign'] !== [], $removal);
             }
         } finally {
             ($io['gw_unlock'])();
@@ -131,6 +219,12 @@ function wf_apply(array $plan, array $state, array $snap, array $io): array
     $replayOk = true;
     $replay = $plain($replay);
     if ($replay !== []) {
+        /* an apply resumed after a crash runs no re-sync of its own, and the crash may have come before the first
+         * one: the watcher is told again, which costs nothing when it already knows */
+        if (!$removal && ($plan['redo_apply'] !== [] || $plan['redo_replay'] !== [])
+            && ($snap['contract']['watcher'] ?? []) === []) {
+            ($io['configd'])('wanfailover watcher_reload', []);
+        }
         sort($replay);
         $want = [];
         foreach ($replay as $n) {
@@ -460,6 +554,7 @@ function wf_holds_import_legacy(string $bootId, array $proof): void
  * @return array{configd: callable(string, list<string>): string,
  *                 write: callable(array<string, bool>, array<string, bool>, array<string, array{boot: string, since: int}>, bool=): array{ok: bool, skipped: list<string>, problem: ?string, prio: int},
  *                 gw_lock: callable(): bool, gw_unlock: callable(): void, status: callable(): array<string, string>,
+ *                 watcher: callable(): array<string, string>,
  *                 pf: callable(): array, live_default: callable(): ?string, save_state: callable(array): void,
  *                 sleep: callable(int): int, log: callable(string, int=): void, crash_point: callable(string): void}
  */
@@ -479,6 +574,11 @@ function wf_live_io(string $statePath, array $wanTargets): array
             $lock = null;
         },
         'status' => fn (): array => array_map(fn (array $s): string => (string)$s['status'], dpinger_status()),
+        /* the status the gateway watcher last recorded for each gateway */
+        'watcher' => function (): array {
+            $seen = dpinger_watcher();
+            return is_array($seen) ? array_map('strval', array_filter($seen, 'is_string')) : [];
+        },
         'pf' => fn (): array => wf_snapshot_pf($wanTargets),
         'live_default' => fn (): ?string => wf_live_default(),
         'save_state' => function (array $s) use ($statePath): void {

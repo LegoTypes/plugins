@@ -53,12 +53,15 @@ function wf_t_io_made(?ArrayObject $calls = null): array
 /**
  * @param array<string, string> $configd action => result
  * @param list<array<string, string>> $statusSeq successive status() results; the last repeats
+ * @param ?array<string, string> $watcher what the gateway watcher's record shows at every read; null: each gateway
+ *     the fake write changed as saved (force_down or none), as a watcher that reloaded shows it
  * @return array{io: array, calls: ArrayObject}
  */
-function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, array $pfs = [], ?string $default = '203.0.113.1@vtnet1', array $statusSeq = []): array
+function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, array $pfs = [], ?string $default = '203.0.113.1@vtnet1', array $statusSeq = [], ?array $watcher = null): array
 {
     $calls = new ArrayObject();
     wf_t_io_made($calls);
+    $written = new ArrayObject();
     $pfQueue = new ArrayObject($pfs);
     $stQueue = new ArrayObject($statusSeq !== [] ? $statusSeq : [['WAN_B' => 'force_down', 'WAN_A' => 'none']]);
     $next = function (ArrayObject $q): array {
@@ -75,8 +78,11 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
             $calls[] = trim("configd {$a} " . implode(' ', $p));
             return $configd[$a] ?? ($a === 'filter kill state' ? 'killed 1 states' : 'OK');
         },
-        'write' => function (array $c, array $expected, array $recordsAfter) use ($calls, $write): array {
+        'write' => function (array $c, array $expected, array $recordsAfter) use ($calls, $write, $written): array {
             $calls[] = 'write ' . json_encode($c) . ' held=' . implode(',', array_keys($recordsAfter));
+            foreach ($c as $n => $down) {
+                $written[$n] = $down ? 'force_down' : 'none';
+            }
             return $write ? wf_t_written() : wf_t_written('config write failed: the fake write', LOG_ERR);
         },
         'gw_lock' => function () use ($calls, $lock): bool {
@@ -87,6 +93,7 @@ function wf_t_io(array $configd = [], bool $lock = true, bool $write = true, arr
             $calls[] = 'unlock';
         },
         'status' => fn (): array => $next($stQueue),
+        'watcher' => fn (): array => $watcher ?? $written->getArrayCopy(),
         'pf' => fn (): array => $next($pfQueue),
         'live_default' => fn (): ?string => $default,
         'save_state' => function (array $s) use ($calls): void {
@@ -134,9 +141,128 @@ wf_register_suite('apply', function (): int {
     $f = wf_t_io();
     $r = wf_apply($plan, $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    wf_check($t, 'hold: save pending, lock, one write with held, routes configure, unlock, replay, kill', array_slice($c, 0, 7) === [
-        'save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd interface routes configure', 'unlock',
-        'configd wanfailover replay_alarm WAN_B', 'configd wanfailover kill_states 198.51.100.254@vtnet2']);
+    wf_check($t, 'hold: save pending, lock, one write with held, the watcher reload (no routing reconfigure), unlock, replay, kill',
+        array_slice($c, 0, 7) === [
+        'save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd wanfailover watcher_reload', 'unlock',
+        'configd wanfailover replay_alarm WAN_B', 'configd wanfailover kill_states 198.51.100.254@vtnet2']
+        && !in_array('configd interface routes configure', $c, true));
+
+    /* the watcher cannot be told: the full reconfigure, and the reason logged */
+    $f = wf_t_io(['wanfailover watcher_reload' => 'Error (1)']);
+    $r = wf_apply($plan, $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'hold with no watcher running: the reload answers Error (1), so the full routing reconfigure runs under the lock, with one line',
+        array_slice($c, 0, 8) === ['save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd wanfailover watcher_reload',
+            'log gateway watcher not reloaded (Error (1)): full routing reconfigure instead', 'configd interface routes configure',
+            'unlock', 'configd wanfailover replay_alarm WAN_B'] && $r['ok'] && $r['resynced']);
+    $f = wf_t_io();
+    $r = wf_apply($plan, $state, ['contract' => ['watcher' => ['dpinger.inc unreadable']]] + $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'hold with a watcher contract drift: the watcher is never signalled, the full routing reconfigure runs, with one line',
+        array_slice($c, 0, 7) === ['save', 'lock', 'write {"WAN_B":true} held=WAN_B',
+            'log core changed what the watcher reload relies on (dpinger.inc unreadable): full routing reconfigure instead',
+            'configd interface routes configure', 'unlock', 'configd wanfailover replay_alarm WAN_B']
+        && !in_array('configd wanfailover watcher_reload', $c, true) && $r['resynced']);
+    $f = wf_t_io();
+    $r = wf_apply($plan, $state, ['release' => 'removal'] + $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'the package removal never uses the plugin\'s watcher action: the full routing reconfigure, with no line about it',
+        in_array('configd interface routes configure', $c, true) && !in_array('configd wanfailover watcher_reload', $c, true)
+        && array_filter($c, fn (string $x): bool => str_contains($x, 'watcher')) === []);
+    /* the watcher's record never shows the hold (it stalled, or WAN_B's monitor has no data): looked for every second
+     * for WF_WATCHER_CONFIRM_SECONDS, then the full reconfigure, naming the gateway */
+    $f = wf_t_io([], true, true, [], '203.0.113.1@vtnet1', [], ['WAN_B' => 'none', 'WAN_A' => 'none']);
+    $r = wf_apply($plan, $state, $snap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    wf_check($t, 'hold the watcher never shows: the full routing reconfigure under the lock after 15 s of looking, with one line',
+        WF_WATCHER_CONFIRM_SECONDS === 15
+        && array_slice($c, 0, 8) === ['save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd wanfailover watcher_reload',
+            'log the gateway watcher did not show WAN_B as saved within 15 s: full routing reconfigure instead',
+            'configd interface routes configure', 'unlock', 'configd wanfailover replay_alarm WAN_B'] && $r['ok'] && $r['resynced']);
+    $none = function (string $m, int $prio = LOG_NOTICE): void {
+    };
+    $resyncIo = function (array $replies, array $watcher, ?ArrayObject $slept = null) use ($none): array {
+        return ['configd' => fn (string $a, array $p): string => $replies[$a] ?? '', 'watcher' => function () use (&$watcher): array {
+            return count($watcher) > 1 ? array_shift($watcher) : $watcher[0];
+        }, 'sleep' => function (int $s) use ($slept): int {
+            if ($slept !== null) {
+                $slept[] = $s;
+            }
+            return 0;
+        }, 'log' => $none];
+    };
+    $waitFor = fn (array $changes, array $absent = []): array => ['wait' => $changes, 'absent' => $absent];
+    $slept = new ArrayObject();
+    wf_check($t, 'resync: the watcher is waited for a second at a time until its record shows the change; a release is shown once '
+        . 'it no longer says force_down',
+        wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => "OK\n", 'interface routes configure' => 'failed'],
+            [['WAN_B' => 'none'], ['WAN_B' => 'none'], ['WAN_B' => 'force_down']], $slept), $waitFor(['WAN_B' => true]), [], false, false) === true
+        && $slept->getArrayCopy() === [1, 1]
+        && wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'OK', 'interface routes configure' => 'failed'],
+            [['WAN_B' => 'loss']]), $waitFor(['WAN_B' => false]), [], false, false) === true);
+    $slept = new ArrayObject();
+    wf_check($t, 'resync: a record that never shows the change is looked for once a second, WF_WATCHER_CONFIRM_SECONDS times, '
+        . 'and with nothing to wait for (a silent monitor) not at all',
+        wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'OK'], [['WAN_B' => 'none']], $slept),
+            $waitFor(['WAN_B' => true]), [], false, false) === true
+        && $slept->getArrayCopy() === array_fill(0, WF_WATCHER_CONFIRM_SECONDS, 1)
+        && wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'OK', 'interface routes configure' => 'failed'],
+            [['WAN_B' => 'none']], $slept), $waitFor([]), [], false, false) === true
+        && count($slept) === WF_WATCHER_CONFIRM_SECONDS);
+    wf_check($t, 'watcher plan: a WAN whose monitor has data is waited for; a silent one (core prints "~") is not; one with no '
+        . 'running monitor is absent; a name the snapshot has no reading for is waited for',
+        wf_watcher_plan(['WAN_A' => true, 'WAN_B' => false, 'WAN_C' => true, 'WAN_D' => true], [
+            'WAN_A' => ['tilde' => false, 'sock_age' => 300], 'WAN_B' => ['tilde' => true, 'sock_age' => 300],
+            'WAN_C' => ['tilde' => true, 'sock_age' => null]])
+            === ['wait' => ['WAN_A' => true, 'WAN_D' => true], 'absent' => ['WAN_C']]);
+    wf_check($t, 'resync: a failed full reconfigure is the only not-resynced answer, whatever led to it',
+        wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'Error (1)', 'interface routes configure' => 'failed'],
+            [['WAN_B' => 'force_down']]), $waitFor(['WAN_B' => true]), [], false, false) === false
+        && wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'Error (3)'], [['WAN_B' => 'force_down']]),
+            $waitFor(['WAN_B' => true]), [], false, false) === true
+        && wf_force_down_resync($resyncIo(['wanfailover watcher_reload' => 'Action not allowed or missing'], [['WAN_B' => 'force_down']]),
+            $waitFor(['WAN_B' => true]), [], false, false) === true
+        && wf_force_down_resync($resyncIo(['interface routes configure' => 'failed'], [['WAN_B' => 'force_down']]),
+            $waitFor(['WAN_B' => true]), [], true, false) === false);
+    /* a link that is down: WAN_B's monitor is silent, so the watcher has nothing to show and is not waited for, though its
+     * record never shows the hold; with no running monitor at all, the full reconfigure at once */
+    $silentSnap = $snap;
+    $silentSnap['wans']['WAN_B'] += ['tilde' => true, 'sock_age' => 300];
+    $f = wf_t_io([], true, true, [], '203.0.113.1@vtnet1', [], ['WAN_B' => 'none', 'WAN_A' => 'none']);
+    wf_apply($plan, $state, $silentSnap, $f['io']);
+    $c = $f['calls']->getArrayCopy();
+    $goneSnap = $snap;
+    $goneSnap['wans']['WAN_B'] += ['tilde' => true, 'sock_age' => null];
+    $f2 = wf_t_io();
+    wf_apply($plan, $state, $goneSnap, $f2['io']);
+    $c2 = $f2['calls']->getArrayCopy();
+    wf_check($t, 'hold of a WAN with a silent monitor: the watcher reload and on at once; with no running monitor: the full '
+        . 'routing reconfigure at once, with one line, the watcher never signalled',
+        array_slice($c, 0, 6) === ['save', 'lock', 'write {"WAN_B":true} held=WAN_B', 'configd wanfailover watcher_reload', 'unlock',
+            'configd wanfailover replay_alarm WAN_B']
+        && array_slice($c2, 0, 7) === ['save', 'lock', 'write {"WAN_B":true} held=WAN_B',
+            'log WAN_B has no running monitor: full routing reconfigure instead', 'configd interface routes configure', 'unlock',
+            'configd wanfailover replay_alarm WAN_B']);
+
+    /* an apply resumed after a crash: no write and no re-sync of its own, so the watcher is told again before the replay */
+    foreach (['redo_apply', 'redo_replay'] as $redo) {
+        $f = wf_t_io();
+        wf_apply(wf_t_plan([$redo => ['WAN_B'], 'held_now' => ['WAN_B']]), $state, $snap, $f['io']);
+        $c = $f['calls']->getArrayCopy();
+        $at = array_search('configd wanfailover watcher_reload', $c, true);
+        $f2 = wf_t_io();
+        wf_apply(wf_t_plan([$redo => ['WAN_B'], 'held_now' => ['WAN_B']]), $state,
+            ['contract' => ['watcher' => ['dpinger.inc unreadable']]] + $snap, $f2['io']);
+        $f3 = wf_t_io();
+        wf_apply(wf_t_plan([$redo => ['WAN_B'], 'held_now' => ['WAN_B']]), $state, ['release' => 'removal'] + $snap, $f3['io']);
+        wf_check($t, "a resumed apply ({$redo}): the watcher reload before the alarm replay, no routing reconfigure; not with a "
+            . 'watcher contract drift, and never in a package removal',
+            $at !== false && $at < array_search('configd wanfailover replay_alarm WAN_B', $c, true)
+            && !in_array('configd interface routes configure', $c, true)
+            && !in_array('configd wanfailover watcher_reload', $f2['calls']->getArrayCopy(), true)
+            && in_array('configd wanfailover replay_alarm WAN_B', $f2['calls']->getArrayCopy(), true)
+            && !in_array('configd wanfailover watcher_reload', $f3['calls']->getArrayCopy(), true));
+    }
     wf_check($t, 'hold: apply_pending cleared, last_held set', $r['ok'] && $r['state']['apply_pending'] === [] && $r['state']['last_held'] === ['WAN_B']);
 
     $f = wf_t_io([], true, true, [], '203.0.113.1', [['WAN_B' => 'none', 'WAN_A' => 'none'], ['WAN_B' => 'force_down', 'WAN_A' => 'down']]);
@@ -182,8 +308,12 @@ wf_register_suite('apply', function (): int {
     $f = wf_t_io();
     $r = wf_apply(wf_t_plan(['foreign' => ['WAN_B'], 'held_now' => ['WAN_B']]), $state, $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    wf_check($t, 'a change outside the engine -> routes configure under the lock, then replay; no write; last_held follows config',
-        in_array('configd interface routes configure', $c, true) && in_array('configd wanfailover replay_alarm WAN_B', $c, true)
+    wf_check($t, 'a change outside the engine (a restored backup may change any gateway field) -> the full routing reconfigure '
+        . 'under the lock, never the watcher reload, with no line about it; then replay; no write; last_held follows config',
+        array_slice($c, 0, 4) === ['save', 'lock', 'configd interface routes configure', 'unlock']
+        && !in_array('configd wanfailover watcher_reload', $c, true)
+        && array_filter($c, fn (string $x): bool => str_contains($x, 'full routing reconfigure')) === []
+        && in_array('configd wanfailover replay_alarm WAN_B', $c, true)
         && count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'write'))) === 0 && $r['state']['last_held'] === ['WAN_B']);
 
     $states = wf_parse_states((string)file_get_contents(__DIR__ . '/fixtures/states.txt'));
@@ -252,9 +382,9 @@ wf_register_suite('apply', function (): int {
     $f = wf_t_io();
     wf_apply(wf_t_plan(['write' => true, 'held_after' => [], 'held_now' => ['GONE']]), wf_state_new('b1'), $snap, $f['io']);
     $c = $f['calls']->getArrayCopy();
-    wf_check($t, 'a prune-only write saves but does not reconfigure routing (no dpinger restarts)',
+    wf_check($t, 'a prune-only write saves, and neither reloads the watcher nor reconfigures routing',
         count(array_filter($c, fn (string $x): bool => str_starts_with($x, 'write'))) === 1
-        && !in_array('configd interface routes configure', $c, true));
+        && !in_array('configd interface routes configure', $c, true) && !in_array('configd wanfailover watcher_reload', $c, true));
 
     $fb = wf_state_new('b1');
     $fb['pending_failbacks']['WAN_A'] = ['since' => 990];

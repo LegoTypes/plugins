@@ -258,6 +258,13 @@ wf_register_suite('wiring', function (): int {
         printf("    exit %d, output: %s\n", $r['rc'], trim($r['out']) === '' ? '(none)' : trim($r['out']));
     }
     /* a cron-only drift is a removal drift too, and must not stop the removal running core's routing command itself */
+    $coreWatcher = @file_get_contents(WF_CORE_WATCHER_SCRIPT);
+    $coreDpinger = @file_get_contents(WF_CORE_DPINGER_INC);
+    wf_check($t, '(w4) this box\'s core holds every line the watcher contract pins, and its installed [watcher_reload] runs '
+        . 'WF_WATCHER_RELOAD_CMD',
+        wf_contract_watcher($coreWatcher === false ? null : $coreWatcher, $coreDpinger === false ? null : $coreDpinger) === []
+        && wf_ini_command((string)wf_ini_section((string)@file_get_contents(
+            '/usr/local/opnsense/service/conf/actions.d/actions_wanfailover.conf'), 'watcher_reload')) === WF_WATCHER_RELOAD_CMD);
     wf_check($t, '(d12) the removal decides its routing fallback with wf_contract_routes_fallback(), not from an empty removal list',
         str_contains($src, "wf_contract_routes_fallback(\$snap['contract']['removal'])")
         && !str_contains($src, "\$snap['contract']['removal'] === []"));

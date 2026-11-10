@@ -19,6 +19,20 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.6
+
+* A hold or a release no longer restarts every gateway monitor. The
+  plugin tells core's gateway watcher to re-read the configuration (a
+  new configd action, watcher_reload), waits until the watcher's own
+  record shows the change, and its alarm replay applies routing and the
+  filter as before, so the other gateways keep their readings. When the
+  watcher is not running, does not show the change
+  within 15 seconds, or core's watcher code is no longer what the core
+  contract pins (a new class of the contract, named on the page and in
+  the log), the plugin runs the full routing reconfigure as before and
+  logs why. A change made outside the plugin (a restored backup) and a
+  package removal still run the full reconfigure
+
 1.5
 
 * Saving the settings refuses a WAN gateway the plugin can never judge

@@ -131,6 +131,45 @@ function wf_contract_routes_fallback(array $removal): bool
 }
 
 /**
+ * What a hold or release relies on to bring core in step without restarting a monitor (wf_force_down_resync()):
+ * core's gateway watcher re-reads the configuration on SIGHUP and records each gateway's status as it then reads
+ * it, core itself signals it so by its pid file, and core reads force_down from the configuration whenever it reads
+ * a gateway's status. A drift here blocks nothing: the apply then runs core's full routing reconfigure, which
+ * restarts every monitor.
+ *
+ * @param ?string $watcherScript core's gateway_watcher.php (WF_CORE_WATCHER_SCRIPT), null when unreadable
+ * @param ?string $dpingerInc core's dpinger.inc (WF_CORE_DPINGER_INC), null when unreadable
+ * @return list<string>
+ */
+function wf_contract_watcher(?string $watcherScript, ?string $dpingerInc): array
+{
+    $p = [];
+    if ($watcherScript === null) {
+        $p[] = 'gateway_watcher.php unreadable';
+    } else {
+        if (!str_contains($watcherScript, "pcntl_signal(SIGHUP, 'signalhandler');")
+            || !str_contains($watcherScript, 'OPNsense\Core\Config::getInstance()->forceReload();')) {
+            $p[] = 'gateway_watcher.php no longer re-reads the configuration on SIGHUP';
+        }
+        /* the record the apply waits on (core's dpinger_watcher() reads it back) */
+        if (!str_contains($watcherScript, '$cache_data = serialize($mode);')) {
+            $p[] = 'gateway_watcher.php no longer records each gateway\'s status as it reads it';
+        }
+    }
+    if ($dpingerInc === null) {
+        $p[] = 'dpinger.inc unreadable';
+    } else {
+        if (!str_contains($dpingerInc, "killbypid('/var/run/gateway_watcher.pid', 'HUP');")) {
+            $p[] = 'dpinger.inc no longer signals the gateway watcher with HUP by /var/run/gateway_watcher.pid';
+        }
+        if (!str_contains($dpingerInc, "'status' => !empty(\$gwitem['force_down']) ? 'force_down' : \$gwstatus,")) {
+            $p[] = 'dpinger.inc no longer reads force_down from the configuration at each status read';
+        }
+    }
+    return $p;
+}
+
+/**
  * Tailscale is optional: no actions file means it is not installed, and a missing [restart] only turns
  * Tailscale restarts off; neither touches holds.
  *
@@ -343,13 +382,13 @@ function wf_contract_kept(array $contract, string $last, array $said, int $now):
  * Log a drift once when it appears or changes, and once when it clears.
  *
  * @param array{judging: list<string>, command: list<string>, failback?: list<string>, tailscale?: list<string>,
- *               removal?: list<string>, names?: list<string>} $contract
+ *               removal?: list<string>, names?: list<string>, watcher?: list<string>} $contract
  * @return array{line: ?string, prio: int, last: string}
  */
 function wf_contract_log(array $contract, string $last): array
 {
     $all = array_merge($contract['judging'], $contract['command'], $contract['failback'] ?? [], $contract['tailscale'] ?? [],
-        $contract['removal'] ?? [], $contract['names'] ?? []);
+        $contract['removal'] ?? [], $contract['names'] ?? [], $contract['watcher'] ?? []);
     $now = implode("\n", $all);
     if ($now === $last) {
         return ['line' => null, 'prio' => LOG_NOTICE, 'last' => $last];
@@ -362,7 +401,8 @@ function wf_contract_log(array $contract, string $last): array
         : (($contract['failback'] ?? []) !== [] ? 'failback suspended'
         : (($contract['tailscale'] ?? []) !== [] ? 'Tailscale restarts off'
         : (($contract['removal'] ?? []) !== [] ? 'only a package removal, when configd does not answer'
-        : 'a gateway name core now accepts may read as unresolved'))));
+        : (($contract['names'] ?? []) !== [] ? 'a gateway name core now accepts may read as unresolved'
+        : 'every hold and release restarts all gateway monitors')))));
     return ['line' => "core-contract: core changed what the plugin relies on ({$effect}): " . implode('; ', $all),
             'prio' => LOG_WARNING, 'last' => $now];
 }

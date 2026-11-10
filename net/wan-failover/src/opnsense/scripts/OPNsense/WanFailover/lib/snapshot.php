@@ -246,7 +246,8 @@ function wf_snapshot(): array
         'legacy_held' => $legacy, 'force_down' => $forceDown,
         'contract' => ['judging' => array_values(array_unique($judging)), 'command' => $command, 'failback' => $failback,
                        'tailscale' => $tailscale, 'removal' => wf_contract_removal($interfaceActions, $read($a . 'actions_cron.conf')),
-                       'names' => $names],
+                       'names' => $names,
+                       'watcher' => wf_contract_watcher($read(WF_CORE_WATCHER_SCRIPT), $read(WF_CORE_DPINGER_INC))],
     ];
 }
 
