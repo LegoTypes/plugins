@@ -136,8 +136,8 @@ class NeighborPlan(TypedDict):
 class NeighborRecord(TypedDict):
     """ neighbors.json, the tick's record (neighbors_schema): when it was written, the tick's result ("ok" or
     the code it answered with), since when the tick is working or failing as it is now, whether a failing run
-    was reported in the log, what the tick counted, and, when a tick that only removes left no key of ours, the
-    settings file it read as off (its identity, or that it was absent); empty for every other tick
+    was reported in the log, and what the tick counted. The file is there exactly while the plugin may hold
+    keys in core's cache
     """
     at: float
     result: str
@@ -149,7 +149,6 @@ class NeighborRecord(TypedDict):
     keys: int
     over_limit: int
     samples: list[str]
-    cleared: str
 
 
 def alias_ttl(text: str) -> int | None:
@@ -716,8 +715,6 @@ def neighbors_schema(obj: object) -> NeighborRecord | None:
         return None
     if not _is_number(obj.get("since")) or not isinstance(obj.get("reported"), bool):
         return None
-    if not isinstance(obj.get("cleared"), str):
-        return None
     samples = obj.get("samples")
     if not all(_is_tally(obj.get(name)) for name in _NEIGHBOR_TALLIES):
         return None
@@ -725,4 +722,4 @@ def neighbors_schema(obj: object) -> NeighborRecord | None:
         return None
     return {"at": obj["at"], "result": obj["result"], "since": obj["since"], "reported": obj["reported"],
             "added": obj["added"], "removed": obj["removed"], "refreshed": obj["refreshed"], "keys": obj["keys"],
-            "over_limit": obj["over_limit"], "samples": samples, "cleared": obj["cleared"]}
+            "over_limit": obj["over_limit"], "samples": samples}

@@ -2101,7 +2101,7 @@ def _neighbors_record(cfg):
 def _record(cfg, **fields):
     """ a record as a tick with the setting on leaves it, with fields changed """
     record = {"at": 4000.0, "result": "ok", "since": 4000.0, "reported": False, "added": 1, "removed": 0,
-              "refreshed": 0, "keys": 1, "over_limit": 0, "samples": [], "cleared": ""}
+              "refreshed": 0, "keys": 1, "over_limit": 0, "samples": []}
     record.update(fields)
     os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
     _neighbors_file(cfg).write_text(json.dumps(record))
@@ -2245,6 +2245,7 @@ def test_neighbors_remove_waits_for_a_running_tick(env):
 
     # a lock held for longer than that is busy, with nothing changed
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    _record(cfg)
     del slept[:]
     with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
         fcntl.flock(held, fcntl.LOCK_EX)
@@ -2464,6 +2465,8 @@ def test_neighbors_source_arp_ndp_removes_ours(env):
     assert _tick(cfg) == _ok(changed=True, removed=2)
     assert _cache(tmp) == OWN
     assert not (tmp / "ndp_args").exists()
+    # the setting is on: the record stays, as the evidence that the tick runs, though no key is left
+    assert (_neighbors_record(cfg)["result"], _neighbors_record(cfg)["keys"]) == ("ok", 0)
     assert _tick(cfg, now=5060.0) == _ok()
 
 
@@ -2946,7 +2949,7 @@ def test_neighbors_record_schema_and_mode(env):
     _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
     assert _tick(cfg, now=5000.0)["added"] == 2
     record = {"at": 5000.0, "result": "ok", "since": 5000.0, "reported": False, "added": 2, "removed": 0,
-              "refreshed": 0, "keys": 2, "over_limit": 0, "samples": ["2001:db8::7", "2001:db8::8"], "cleared": ""}
+              "refreshed": 0, "keys": 2, "over_limit": 0, "samples": ["2001:db8::7", "2001:db8::8"]}
     assert _neighbors_record(cfg) == record == lib.neighbors_schema(record)
     modes = {p.name: stat.S_IMODE(os.lstat(p).st_mode) for p in pathlib.Path(cfg["state_dir"]).iterdir()}
     assert modes == {"neighbors.json": 0o600, "neighbors.lock": 0o600}
@@ -2961,14 +2964,12 @@ def test_neighbors_record_schema_and_mode(env):
     # a record from the future (a clock step) is replaced
     assert _tick(cfg, now=100.0) == _ok(keys=2)
     assert (_neighbors_record(cfg)["at"], _neighbors_record(cfg)["since"]) == (100.0, 100.0)
-    # turned off, the tick that removes the keys says in the record that it left none, and for which settings file
+    assert stat.S_IMODE(os.lstat(_neighbors_file(cfg)).st_mode) == 0o600
+    # turned off, the tick that takes the keys out takes the record with them: it is there exactly while the
+    # plugin may hold keys
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
     assert _tick(cfg, now=6000.0) == _ok(changed=True, removed=2)
-    st = os.stat(tmp / "macaliascache.conf")
-    cleared = "%d:%d:%d:%d" % (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
-    assert _neighbors_record(cfg) == dict(record, at=6000.0, since=100.0, added=0, removed=2, keys=0, samples=[],
-                                          cleared=cleared)
-    assert stat.S_IMODE(os.lstat(_neighbors_file(cfg)).st_mode) == 0o600
+    assert sorted(os.listdir(cfg["state_dir"])) == ["neighbors.lock"]
     assert _no_temps(cfg, tmp)
 
 
@@ -2976,8 +2977,7 @@ def test_neighbors_first_tick_with_nothing_to_do_records_that_it_ran(env):
     cfg, tmp = env
     assert _tick(cfg, now=5000.0) == _ok()
     assert _neighbors_record(cfg) == {"at": 5000.0, "result": "ok", "since": 5000.0, "reported": False, "added": 0,
-                                      "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": [],
-                                      "cleared": ""}
+                                      "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": []}
 
 
 def test_neighbors_record_of_a_refusal(env):
@@ -2987,7 +2987,7 @@ def test_neighbors_record_of_a_refusal(env):
     assert _tick(cfg, now=5000.0) == HOSTS_UNAVAILABLE
     assert _neighbors_record(cfg) == {"at": 5000.0, "result": "hosts_unavailable", "since": 5000.0, "reported": False,
                                       "added": 0, "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0,
-                                      "samples": [], "cleared": ""}
+                                      "samples": []}
     kept = _file_id(_neighbors_file(cfg))
     assert _tick(cfg, now=5060.0) == HOSTS_UNAVAILABLE
     assert _file_id(_neighbors_file(cfg)) == kept
@@ -3075,9 +3075,11 @@ def test_neighbors_without_a_record_it_can_write_the_tick_adds_no_key(env, monke
     out = _tick(cfg)
     assert out["error"] == "state_unusable" and str(_neighbors_file(cfg)) in out["detail"]
     assert _file_id(tmp / "arp.cache") == before
-    assert not (tmp / "ndp_args").exists()
     assert logged[0] == []
     _locks_free(cfg)
+    # with nothing to add it has nothing to refuse
+    _neighbor_table(tmp, [])
+    assert _tick(cfg, now=5060.0) == _ok()
 
 
 def test_neighbors_failing_line_is_not_repeated_while_the_record_cannot_be_written(env, monkeypatch, logged):
@@ -3452,8 +3454,7 @@ def test_flush_keeps_wanted_neighbors(env):
     # nothing is left for the tick to do. No tick had run, so the flush made the tick's record before it wrote
     # the keys: keys of ours are never in the cache without one
     assert _neighbors_record(cfg) == {"at": 5000.0, "result": "ok", "since": 5000.0, "reported": False, "added": 0,
-                                      "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": [],
-                                      "cleared": ""}
+                                      "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": []}
     assert stat.S_IMODE(os.lstat(_neighbors_file(cfg)).st_mode) == 0o600
     assert _tick(cfg, now=5060.0) == _ok(keys=2)
 
@@ -3746,16 +3747,11 @@ def test_status_failing_names_the_latest_result_of_the_run(env):
     assert macalias.cmd_status(cfg, now=5700.0)["neighbors"]["failing"] == {"result": "busy", "since": 5000.0}
 
 
-# off and nothing held: the tick is inert
-
-def _settings_token(tmp):
-    st = os.stat(tmp / "macaliascache.conf")
-    return "%d:%d:%d:%d" % (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
-
+# off and nothing held: the tick is inert. The record is there exactly while the plugin may hold keys
 
 def _off_and_nothing_held(cfg, tmp, state):
     """ a firewall with the setting off that holds no key of ours: the file never rendered, the file as an
-    install renders it, or the setting turned off again and the keys removed by the tick that followed
+    install renders it, or the setting on once and off again, with the keys removed by the tick that followed
     """
     conf = tmp / "macaliascache.conf"
     if state == "no-file":
@@ -3767,7 +3763,7 @@ def _off_and_nothing_held(cfg, tmp, state):
         assert _tick(cfg, now=4000.0)["added"] == 1
         conf.write_text("[general]\nneighbors=0\n")
         assert _tick(cfg, now=4060.0) == _ok(changed=True, removed=1)
-        assert _neighbors_record(cfg)["cleared"] == _settings_token(tmp)
+        assert not _neighbors_file(cfg).exists()
         (tmp / "ndp_args").unlink()
 
 
@@ -3779,6 +3775,14 @@ def _break(cfg, tmp, what):
         os.symlink(tmp / "real.cache", tmp / "arp.cache")
     elif what == "arpcache-drift":
         _fix_core(cfg, "arpcache", "/tmp/alias_filter_arp.cache")
+    elif what == "core-update":
+        # what an update of core does: the templates rendered again, and here a changed arpcache.py with them
+        conf = tmp / "macaliascache.conf"
+        if conf.exists():
+            conf.write_text(conf.read_text())
+            os.utime(conf, ns=(1, os.stat(conf).st_mtime_ns + 10 ** 9))
+        _fix_core(cfg, "arpcache", "/tmp/alias_filter_arp.cache")
+        _fix_core(cfg, "neighbor_merge", "if macaddr.startswith(pattern.lower()):")
     elif what == "update-lock-drift":
         _core(cfg, "update_lock").unlink()
     elif what == "lock-fifo":
@@ -3793,8 +3797,8 @@ def _break(cfg, tmp, what):
         cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
 
 
-BROKEN = ["nothing", "cache-empty", "cache-symlink", "arpcache-drift", "update-lock-drift", "lock-fifo", "ndp-missing",
-          "alias-table-unparseable", "hosts-failing"]
+BROKEN = ["nothing", "cache-empty", "cache-symlink", "arpcache-drift", "core-update", "update-lock-drift", "lock-fifo",
+          "ndp-missing", "alias-table-unparseable", "hosts-failing"]
 
 
 def _tree(tmp):
@@ -3807,12 +3811,14 @@ def _tree(tmp):
 
 
 @pytest.mark.parametrize("what", BROKEN)
-@pytest.mark.parametrize("state", ["no-file", "default-file", "cleared"])
+@pytest.mark.parametrize("state", ["no-file", "default-file", "once-on"])
 @pytest.mark.parametrize("remove_all", [False, True], ids=["tick", "remove"])
 def test_neighbors_off_and_nothing_held_does_nothing_at_all(env, monkeypatch, logged, state, what, remove_all):
     # the feature is off and the plugin holds nothing in core's cache: whatever is wrong with core's files, its
     # cache or its lock is nothing to it. No program, no lock, no read of the cache, no file written, no line
-    # logged, however long it lasts; one JSON object all the same. The package's removal finds the same
+    # logged, however long it lasts; one JSON object all the same. The package's removal finds the same. It holds
+    # for a firewall never turned on, which has no state directory either, and for one turned on once: an
+    # update of core that renders the templates and changes arpcache.py leaves no trace on it
     cfg, tmp = env
     _off_and_nothing_held(cfg, tmp, state)
     _break(cfg, tmp, what)
@@ -3828,17 +3834,42 @@ def test_neighbors_off_and_nothing_held_does_nothing_at_all(env, monkeypatch, lo
             assert _tick(cfg, now=now, remove_all=remove_all) == _ok()
     assert _tree(tmp) == before
     assert logged == ([], [])
-    if state != "cleared":
+    # no record, so status has nothing to call failing
+    assert not _neighbors_file(cfg).exists()
+    if state != "once-on":
         assert not os.path.exists(cfg["state_dir"])
 
 
+@pytest.mark.parametrize("kind", ["state-dir-is-a-file", "cannot-check"])
+def test_neighbors_record_path_that_cannot_be_checked_is_not_nothing_held(env, monkeypatch, kind):
+    # only a record that is not there says nothing is held: one whose path cannot even be looked at does not
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    if kind == "state-dir-is-a-file":
+        pathlib.Path(cfg["state_dir"]).write_text("x")
+        assert _tick(cfg)["error"] == "state_unusable"
+        assert _nkey("2001:db8::7") in _cache(tmp)
+        return
+    real_lstat = os.lstat
+
+    def lstat(arg, *args, **kwargs):
+        if os.fspath(arg) == str(_neighbors_file(cfg)):
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES), arg)
+        return real_lstat(arg, *args, **kwargs)
+
+    monkeypatch.setattr(macalias.os, "lstat", lstat)
+    assert _tick(cfg) == _ok(changed=True, removed=1)
+    assert _cache(tmp) == OWN
+
+
 def test_neighbors_first_tick_after_off_reads_the_cache_under_core_lock_then_is_inert(env, monkeypatch):
-    # the record of a tick with the setting on may say no key while a flush has put some there since: the first
-    # tick after the setting went off does not trust it, nor a read of the cache without core's lock, under
-    # which a flush may be about to write
+    # the record of a tick with the setting on may say no key while a flush has put some there since: the tick
+    # after the setting went off does not go by what the record counts, nor by a read of the cache without
+    # core's lock, under which a flush may be about to write
     cfg, tmp = env
     assert _tick(cfg, now=5000.0) == _ok()
-    assert (_neighbors_record(cfg)["keys"], _neighbors_record(cfg)["cleared"]) == (0, "")
+    assert _neighbors_record(cfg)["keys"] == 0
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 5010.0),
                 _nkey("2001:db8::8"): _nentry("2001:db8::8", 5010.0)})
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
@@ -3848,15 +3879,16 @@ def test_neighbors_first_tick_after_off_reads_the_cache_under_core_lock_then_is_
         _seed(tmp, {})
         # no key is left, and the tick still does not conclude so without the lock
         assert _tick(cfg, now=5120.0)["error"] == "busy"
-    assert _neighbors_record(cfg)["cleared"] == ""
+    # a removal that could not complete leaves the record: the next minute tries again
+    assert _state(cfg) == ("busy", 5060.0, False)
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 5010.0)})
     assert _tick(cfg, now=5180.0) == _ok(changed=True, removed=1)
-    assert _neighbors_record(cfg)["cleared"] == _settings_token(tmp)
+    assert not _neighbors_file(cfg).exists()
     _no_core_lock(monkeypatch)
     assert _tick(cfg, now=5240.0) == _ok()
 
 
-def test_neighbors_off_with_nothing_to_remove_is_cleared_by_one_pass(env, monkeypatch):
+def test_neighbors_off_with_nothing_to_remove_ends_with_one_pass(env, monkeypatch):
     cfg, tmp = env
     assert _tick(cfg, now=5000.0) == _ok()
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
@@ -3869,38 +3901,112 @@ def test_neighbors_off_with_nothing_to_remove_is_cleared_by_one_pass(env, monkey
         assert _tick(cfg, now=now) == _ok()
     assert locks == [1]
     assert _file_id(tmp / "arp.cache") == before
-    assert (_neighbors_record(cfg)["at"], _neighbors_record(cfg)["cleared"]) == (5060.0, _settings_token(tmp))
+    assert not _neighbors_file(cfg).exists()
     _locks_free(cfg)
 
 
-def test_neighbors_cleared_holds_for_the_settings_file_it_names_alone(env):
-    # a key of ours is written only by a tick or a flush that read the setting as on. Reading it as on after the
-    # clearing means the file was rendered again, and then the record no longer names it: on and off again, the
-    # tick makes its pass whatever the record of the first off says
+def _core_lock_held(cfg):
+    with open(cfg["lock_file"], "a") as probe:
+        try:
+            fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+    return False
+
+
+def _watch_writes(monkeypatch, cfg, events):
+    """ events gains, in order, each write of core's cache or of the record and the record's deletion, with
+    whether core's lock was held at that moment
+    """
+    real_write, real_unlink = macalias._write_json_atomic, os.unlink
+    names = {cfg["cache_file"]: "cache", str(_neighbors_file(cfg)): "record"}
+
+    def write(path, *args, **kwargs):
+        if path in names:
+            events.append(("write " + names[path], _core_lock_held(cfg)))
+        return real_write(path, *args, **kwargs)
+
+    def unlink(path, *args, **kwargs):
+        if os.fspath(path) == str(_neighbors_file(cfg)):
+            events.append(("delete record", _core_lock_held(cfg)))
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(macalias, "_write_json_atomic", write)
+    monkeypatch.setattr(macalias.os, "unlink", unlink)
+
+
+def test_neighbors_record_is_deleted_under_core_lock_once_no_key_is_left(env, monkeypatch):
+    # both sides are serialised by core's lock: the record goes, after the cache was written without our keys,
+    # while the tick still holds the lock under which a flush would have to seed
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    events = []
+    _watch_writes(monkeypatch, cfg, events)
+    assert _tick(cfg, now=5060.0) == _ok(changed=True, removed=1)
+    assert events == [("write cache", True), ("delete record", True)]
+    _locks_free(cfg)
+
+
+def test_neighbors_key_is_written_under_core_lock_with_the_record_in_place(env, monkeypatch):
+    # a tick with the setting on that finds no record makes it under core's lock, before the cache gets a key
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    events = []
+    _watch_writes(monkeypatch, cfg, events)
+    assert _tick(cfg) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    assert events[:2] == [("write record", True), ("write cache", True)]
+    # and so does a flush, after it has read the setting again
+    monkeypatch.undo()
+    _neighbors_file(cfg).unlink()
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
+    del events[:]
+    _watch_writes(monkeypatch, cfg, events)
+    assert macalias.cmd_flush(cfg, clock=lambda: 6000.0, sleep=lambda s: None)["neighbors"] == {
+        "added": 2, "over_limit": 0}
+    assert events == [("write record", True), ("write cache", True)]
+
+
+def test_flush_after_an_off_tick_deleted_the_record_makes_it_again(env):
+    # off: the tick removes the key and the record. On again, a flush seeds before any tick has run: the record
+    # is back with the key, so the tick after the next off finds the key and removes it
     cfg, tmp = env
     conf = tmp / "macaliascache.conf"
-    _off_and_nothing_held(cfg, tmp, "cleared")
-    first = _neighbors_record(cfg)["cleared"]
-    conf.write_text("[general]\nneighbors=1\n")
-    os.utime(conf, ns=(1, os.stat(conf).st_mtime_ns + 1000))
-    # a flush with the setting on puts a key there, and no tick runs before the setting is off again
-    assert _flush(cfg)["neighbors"] == {"added": 1, "over_limit": 0}
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=4000.0)["added"] == 1
     conf.write_text("[general]\nneighbors=0\n")
-    os.utime(conf, ns=(1, os.stat(conf).st_mtime_ns + 1000))
-    assert _settings_token(tmp) != first
+    assert _tick(cfg, now=4060.0) == _ok(changed=True, removed=1)
+    assert not _neighbors_file(cfg).exists()
+    conf.write_text("[general]\nneighbors=1\n")
+    assert _flush(cfg)["neighbors"] == {"added": 1, "over_limit": 0}
+    assert _neighbors_file(cfg).exists() and _nkey("2001:db8::7") in _cache(tmp)
+    conf.write_text("[general]\nneighbors=0\n")
     assert _tick(cfg, now=6000.0) == _ok(changed=True, removed=1)
-    assert _neighbors_record(cfg)["cleared"] == _settings_token(tmp)
+    assert _cache(tmp) == SEEDED
+    assert not _neighbors_file(cfg).exists()
     assert _tick(cfg, now=6060.0) == _ok()
-    # the same file rendered again with the same content is another file to the record: one more pass
-    os.utime(conf, ns=(1, os.stat(conf).st_mtime_ns + 1000))
-    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 6000.0)})
-    assert _tick(cfg, now=6120.0) == _ok(changed=True, removed=1)
+
+
+def test_flush_with_the_setting_off_leaves_the_record_for_the_tick_to_end(env, monkeypatch):
+    # a flush with the setting off drops the keys with everything stale; the record goes at the next tick, which
+    # looks under core's lock
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=4000.0)["added"] == 1
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    assert _flush(cfg)["neighbors"] == {"skipped": "off"}
+    assert _cache(tmp) == SEEDED and _neighbors_file(cfg).exists()
+    assert _tick(cfg, now=5060.0) == _ok()
+    assert not _neighbors_file(cfg).exists()
+    _no_core_lock(monkeypatch)
+    assert _tick(cfg, now=5120.0) == _ok()
 
 
 @pytest.mark.parametrize("content", ["{", "[]", '{"at": 4000.0, "result": "ok", "keys": 0}'],
                          ids=["cut-short", "list", "older-shape"])
 def test_neighbors_off_with_a_record_it_cannot_read_makes_its_pass(env, content):
-    # only a record that is not there says nothing was ever held
+    # a record that is there says keys may be held, whatever it holds
     cfg, tmp = env
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
@@ -3908,22 +4014,31 @@ def test_neighbors_off_with_a_record_it_cannot_read_makes_its_pass(env, content)
     _neighbors_file(cfg).write_text(content)
     _neighbors_file(cfg).chmod(0o600)
     assert _tick(cfg) == _ok(changed=True, removed=1)
+    assert not _neighbors_file(cfg).exists()
     assert _tick(cfg, now=5060.0) == _ok()
 
 
-def test_neighbors_removal_with_keys_recorded_still_says_why_it_failed(env):
-    # the package's removal is silent only when nothing is held
+def test_neighbors_removal_with_keys_recorded_still_says_why_it_failed(env, logged):
+    # the package's removal is silent only when nothing is held; a removal that could not complete leaves the
+    # record, and the failing state works as for any tick
     cfg, tmp = env
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
     _record(cfg)
     _fix_core(cfg, "arpcache", "/tmp/alias_filter_arp.cache")
     assert _tick(cfg, remove_all=True)["error"] == "core_changed"
     assert _nkey("2001:db8::7") in _cache(tmp)
+    assert _state(cfg) == ("core_changed", 5000.0, False)
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    assert _tick(cfg, now=5600.0)["error"] == "core_changed"
+    assert len(logged[0]) == 1 and logged[0][0][1].startswith("neighbors: core_changed for 600 s: ")
+    block = macalias.cmd_status(cfg, now=5630.0)["neighbors"]
+    assert (block["enabled"], block["keys"], block["failing"]) == (
+        False, 1, {"result": "core_changed", "since": 5000.0})
 
 
 def test_flush_reads_the_setting_again_under_core_lock(env, monkeypatch):
     # the setting went off while the flush waited for core's lock, and the tick that followed removed the keys
-    # and said so: the flush must not put any back
+    # and the record: the flush must not put a key back
     cfg, tmp = env
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
     real_acquire = macalias.acquire_lock
@@ -3967,13 +4082,55 @@ def test_cache_unreadable_says_whether_the_file_or_its_content_is_refused(env):
     assert json.loads((tmp / "second-link").read_text()) == OWN
 
 
-def test_neighbors_remove_beside_a_setting_that_is_on_clears_nothing(env):
-    # only a file that reads off can be named as cleared: after a removal by hand with the setting on, a flush
-    # may put keys back, and the next removal must find them
+def test_neighbors_off_with_a_cache_it_cannot_read_keeps_the_record_and_reports(env, logged):
+    # the removal could not look: the record stays, the result is recorded and reported like any other
     cfg, tmp = env
-    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
-    _record(cfg)
-    assert _tick(cfg, remove_all=True) == _ok(changed=True, removed=1)
-    assert _neighbors_record(cfg)["cleared"] == ""
-    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 5010.0)})
-    assert _tick(cfg, now=5060.0, remove_all=True) == _ok(changed=True, removed=1)
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    (tmp / "arp.cache").write_text("")
+    del logged[0][:]
+    for now in (5060.0, 5660.0):
+        assert _tick(cfg, now=now) == {"error": "cache_unreadable", "detail": CACHE_UNREADABLE % cfg["cache_file"]}
+    assert _state(cfg) == ("cache_unreadable", 5060.0, True)
+    assert len(logged[0]) == 1
+    _seed(tmp, {})
+    assert _tick(cfg, now=5720.0) == _ok()
+    assert not _neighbors_file(cfg).exists()
+    assert logged[0][-1][1] == "neighbors: working again after cache_unreadable"
+
+
+def test_neighbors_remove_beside_a_setting_that_is_on(env):
+    # a removal by hand with the setting on takes the keys and the record; the next tick or flush that adds
+    # makes the record again, so the next removal finds what they added
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    assert _tick(cfg, now=5010.0, remove_all=True) == _ok(changed=True, removed=1)
+    assert not _neighbors_file(cfg).exists()
+    assert _flush(cfg)["neighbors"] == {"added": 1, "over_limit": 0}
+    assert _neighbors_file(cfg).exists()
+    assert _tick(cfg, now=5020.0, remove_all=True) == _ok(changed=True, removed=1)
+    assert not _neighbors_file(cfg).exists()
+    assert _tick(cfg, now=5060.0) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    assert _neighbors_record(cfg)["keys"] == 1
+    assert _tick(cfg, now=5070.0, remove_all=True) == _ok(changed=True, removed=1)
+    assert _cache(tmp) == SEEDED
+
+
+def test_neighbors_record_deleted_by_hand_is_made_again_by_the_next_tick(env):
+    # with the setting on and keys in the cache, a record that is gone is back after the next tick, whether or
+    # not that tick has anything to change
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    _neighbors_file(cfg).unlink()
+    assert _tick(cfg, now=5060.0) == _ok(keys=1)
+    assert _neighbors_record(cfg)["keys"] == 1
+    _neighbors_file(cfg).unlink()
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
+    assert _tick(cfg, now=5120.0) == _ok(changed=True, added=1, keys=2, samples=["2001:db8::8"])
+    assert _neighbors_record(cfg)["keys"] == 2
+    # and so the keys go when the setting does
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    assert _tick(cfg, now=5180.0) == _ok(changed=True, removed=2)

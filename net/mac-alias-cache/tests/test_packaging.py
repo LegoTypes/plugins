@@ -210,7 +210,6 @@ def setting_written(tmp_path):
 def test_a_real_removal_takes_the_keys_out_of_cores_cache_and_an_upgrade_keeps_them(tmp_path):
     assert hook("+PRE_DEINSTALL.pre").startswith("#!/bin/sh\n")
     fake_removal(tmp_path, [REMOVED])
-    pathlib.Path(str(tmp_path) + SETTINGS_FILE).write_text("[general]\nneighbors=1\n")
     assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
     # the setting is off in the rendered file, so a tick of cron's that starts meanwhile removes too
     assert setting_written(tmp_path) == "[general]\nneighbors=0\n"
@@ -219,21 +218,13 @@ def test_a_real_removal_takes_the_keys_out_of_cores_cache_and_an_upgrade_keeps_t
     assert lines_of(tmp_path, "sleeps") == []
 
 
-@pytest.mark.parametrize("content", [None, "[general]\nneighbors=0\n"], ids=["absent", "off"])
-def test_a_removal_leaves_a_settings_file_that_says_off_as_it_is(tmp_path, content):
-    # the script knows a firewall that holds nothing by its record and the settings file it names: a file that
-    # is off already, or not there, is not written again, and then the removal has nothing to do and nothing to
-    # say, whatever is wrong with core's files
+@pytest.mark.parametrize("content", ["[general]\nneighbors=1\n", "[general]\nneighbors=0\n", "neighbors on\n"],
+                         ids=["on", "off", "unusable"])
+def test_a_removal_turns_the_setting_off_in_the_rendered_file_whatever_it_held(tmp_path, content):
     fake_removal(tmp_path, [REMOVED])
-    conf = pathlib.Path(str(tmp_path) + SETTINGS_FILE)
-    if content is not None:
-        conf.write_text(content)
-        os.utime(conf, (1000, 1000))
+    pathlib.Path(str(tmp_path) + SETTINGS_FILE).write_text(content)
     assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
-    assert lines_of(tmp_path, "calls") == ["neighbors remove"]
-    assert setting_written(tmp_path) == content
-    if content is not None:
-        assert os.stat(conf).st_mtime == 1000
+    assert setting_written(tmp_path) == "[general]\nneighbors=0\n"
 
 
 def test_an_upgrade_runs_no_removal(tmp_path):
@@ -362,6 +353,11 @@ def test_the_package_describes_both_of_its_functions_and_the_limits():
                   "90 seconds", "restarts", "12 hours", "update frequency", "off by default", "1 MiB",
                   "about 6,000 entries", "about a minute"):
         assert words in " ".join(description.split()), words
+    # what the changelog promises of a firewall with the setting off is what the tick does
+    entry = " ".join(text_of(PLUGIN, "pkg-descr").split("\n1.4\n", 1)[1].split("\n1.3\n", 1)[0].split())
+    assert ("While the setting is off and the plugin holds nothing in core's cache, which is so where it was never on "
+            "and from the run that found no key of its own left after it was turned off, the minute job does nothing "
+            "at all: it reads no file of core's, runs no program and takes no lock") in entry
     # the release's entry says the setting is off and where it is turned on
     entry = " ".join(text_of(PLUGIN, "pkg-descr").split("\n1.4\n", 1)[1].split("\n1.3\n", 1)[0].split())
     assert "off by default" in entry and "Firewall > Diagnostics > MAC Alias Cache" in entry

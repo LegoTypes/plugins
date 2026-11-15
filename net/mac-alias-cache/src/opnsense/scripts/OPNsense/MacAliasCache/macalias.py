@@ -581,40 +581,30 @@ def read_host_listing(cfg: Config) -> tuple[str, list[object]] | None:
     return source, rows
 
 
-def _setting(cfg: Config) -> tuple[bool, str, str]:
-    """ (whether the neighbor table is used, how the settings file read, which file that was). "ok": the value
-    the file holds. "absent": off, the model's default, for a file the template has not rendered, so an
-    upgrade changes no alias before the setting is turned on. "unusable": off, for a file that is there and is
-    not a regular file of root's with one clean setting. The third names the file as read, by inode, both
-    times and size, "absent" for none and nothing for an unusable one: any rendering gives another name
+def read_setting(cfg: Config) -> tuple[bool, str]:
+    """ (whether the neighbor table is used, how the settings file read). "ok": the value the file holds.
+    "absent": off, the model's default, for a file the template has not rendered, so an upgrade changes no
+    alias before the setting is turned on. "unusable": off, for a file that is there and is not a regular
+    file of root's with one clean setting
     """
     path = cfg["settings_file"]
     try:
         os.lstat(path)
     except FileNotFoundError:
-        return False, "absent", "absent"
+        return False, "absent"
     except OSError:
-        return False, "unusable", ""
+        return False, "unusable"
     f = _open_regular(path)
     if f is None:
-        return False, "unusable", ""
+        return False, "unusable"
     try:
         with f:
-            st = os.fstat(f.fileno())
             text = f.read(_SETTING_MAX_CHARS + 1)
     # ValueError includes UnicodeDecodeError
     except (OSError, ValueError):
-        return False, "unusable", ""
+        return False, "unusable"
     value = lib.parse_setting(text) if len(text) <= _SETTING_MAX_CHARS else None
-    if value is None:
-        return False, "unusable", ""
-    return value, "ok", "%s:%s:%s:%s" % (st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size)
-
-
-def read_setting(cfg: Config) -> tuple[bool, str]:
-    """ (whether the neighbor table is used, how the settings file read), as _setting reads them """
-    enabled, state, _file = _setting(cfg)
-    return enabled, state
+    return (False, "unusable") if value is None else (value, "ok")
 
 
 def _read_output(proc: subprocess.Popen[bytes], limit: int, timeout: float) -> bytes | None:
@@ -1042,9 +1032,10 @@ def _flush(cfg, clock, sleep):
         over_limit = 0
         if neighbors_skipped is None:
             wanted, over_limit = lib.wanted_neighbors(tables, lib.host_pairs(good), neighbors, read_cache(cfg) or {})
-        # keys of ours are written only while the setting reads on and a record of the tick's is in place
-        # (_nothing_held): the setting is read again here, under core's lock, as it may have gone off while
-        # the flush waited for it, and a flush before the first tick makes the record
+        # a key of ours is written only under core's lock, while the setting reads on and with the tick's
+        # record in place (_nothing_held): the setting is read again here, as it may have gone off while the
+        # flush waited for the lock, and the record is made when there is none, before the first tick or
+        # after a tick deleted it
         if wanted and read_setting(cfg) != (True, "ok"):
             neighbors_skipped = "off"
         elif wanted and _ensure_neighbors_record(cfg, now) is not None:
@@ -1113,15 +1104,16 @@ def _cache_unreadable(cfg: Config) -> NeighborsError:
 
 
 def _neighbors(cfg: Config, now: float, sleep, setting: tuple[bool, str], removing: bool
-               ) -> NeighborsDone | NeighborsError:
-    """ one tick under its own lock: what it answers, with core's cache written when the plan asked for it.
-    removing is a tick that only removes (the setting off, or `neighbors remove`): it reads no alias table,
-    which is not the removal's to need, and stops only for what a removal uses
+               ) -> tuple[NeighborsDone | NeighborsError, bool]:
+    """ one tick under its own lock: what it answers, with core's cache written when the plan asked for it,
+    and whether it deleted its record. removing is a tick that only removes (the setting off, or `neighbors
+    remove`): it reads no alias table, which is not the removal's to need, stops only for what a removal
+    uses, and deletes the record once no key of ours is left (_nothing_held)
     """
     tables: dict[str, lib.Table] = {} if removing else read_tables(cfg)
     refused = neighbors_refusal(problems(cfg, tables, read_core_texts(cfg), setting), removing)
     if refused:
-        return refused
+        return refused, False
 
     # every key of ours is removed when the setting is off, no MAC alias is enabled or host discovery is
     # off (core then reads the neighbor table itself); only host discovery's own list merges
@@ -1131,12 +1123,13 @@ def _neighbors(cfg: Config, now: float, sleep, setting: tuple[bool, str], removi
     if not removing and lib.mac_aliases(tables):
         listing = read_host_listing(cfg)
         if listing is None:
-            return {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}
+            return {"error": "hosts_unavailable", "detail": "host list could not be read; nothing changed"}, False
         source, rows = listing
         if source == "discovery":
             table = read_neighbors(cfg)
             if table is None:
-                return {"error": "neighbors_unavailable", "detail": "neighbor table could not be read; nothing changed"}
+                return {"error": "neighbors_unavailable",
+                        "detail": "neighbor table could not be read; nothing changed"}, False
             merge, hosts, neighbors = True, lib.host_pairs(rows), table
 
     def planned(cache: dict[str, object]) -> tuple[lib.NeighborPlan, int]:
@@ -1148,21 +1141,22 @@ def _neighbors(cfg: Config, now: float, sleep, setting: tuple[bool, str], removi
 
     # the normal minute ends here: a cache read without a lock that needs no change is left alone, with no
     # lock taken and nothing written. A cache that cannot be read says nothing, so it is read under the lock;
-    # and so is the cache of a tick that only removes, whose word that no key is left must hold against a
-    # flush that is about to write (_nothing_held)
+    # and so is the cache of a tick that only removes, which ends by deleting its record: that no key is left
+    # must be true under the lock a flush seeds under
     cache = None if removing else read_cache(cfg)
     if cache is not None:
         plan, over_limit = planned(cache)
         if not (plan["add"] or plan["refresh"] or plan["remove"]):
-            return _neighbors_done(plan, cache, over_limit, False)
+            return _neighbors_done(plan, cache, over_limit, False), False
 
     # sweep orphans from a prior kill between mkstemp and os.replace before writing again
     _sweep_stale_temps(cfg["cache_file"], now)
     lock = acquire_lock(cfg, sleep, cfg["neighbors_lock_timeout"])
     if isinstance(lock, dict):
-        return {"error": lock["error"], "detail": lock["detail"]}
+        return {"error": lock["error"], "detail": lock["detail"]}, False
     if lock is None:
-        return {"error": "busy", "detail": "alias update lock held for %ss" % cfg["neighbors_lock_timeout"]}
+        return {"error": "busy", "detail": "alias update lock held for %ss" % cfg["neighbors_lock_timeout"]}, False
+    released = False
     try:
         # under core's lock only the cache is read and written: the host list and the neighbor table are
         # the ones read before it, and the plan is made again from this read. A cache that is there and is
@@ -1170,15 +1164,24 @@ def _neighbors(cfg: Config, now: float, sleep, setting: tuple[bool, str], removi
         # replaces the file, is the remedy
         cache = read_cache(cfg)
         if cache is None:
-            return _cache_unreadable(cfg)
+            return _cache_unreadable(cfg), False
         plan, over_limit = planned(cache)
         changed = bool(plan["add"] or plan["refresh"] or plan["remove"])
+        if plan["add"] or plan["refresh"]:
+            # the record before the key (_nothing_held)
+            unrecorded = _ensure_neighbors_record(cfg, now)
+            if unrecorded:
+                return {"error": "state_unusable", "detail": unrecorded}, False
         if changed:
             cache = lib.apply_neighbor_plan(cache, plan, now)
             _write_json_atomic(cfg["cache_file"], cache)
+        if removing and lib.count_neighbor_keys(cache) == 0:
+            # no key of ours is left, whether or not there was one to remove: the record goes, still under
+            # the lock (_nothing_held)
+            released = _delete_neighbors_record(cfg)
     finally:
         _unlock(lock)
-    return _neighbors_done(plan, cache, over_limit, changed)
+    return _neighbors_done(plan, cache, over_limit, changed), released
 
 
 def _internal(error: Exception) -> NeighborsError:
@@ -1186,12 +1189,11 @@ def _internal(error: Exception) -> NeighborsError:
     return {"error": "internal", "detail": "%s: %s" % (type(error).__name__, error)}
 
 
-def _neighbors_record(reply: NeighborsDone | NeighborsError, now: float, since: float, reported: bool, cleared: str
+def _neighbors_record(reply: NeighborsDone | NeighborsError, now: float, since: float, reported: bool
                       ) -> lib.NeighborRecord:
     """ neighbors.json for a reply: a tick that changed nothing counts nothing """
     record: lib.NeighborRecord = {"at": now, "result": "ok", "since": since, "reported": reported, "added": 0,
-                                  "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": [],
-                                  "cleared": cleared}
+                                  "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": []}
     if "error" in reply:
         record["result"] = reply["error"]
         return record
@@ -1201,30 +1203,29 @@ def _neighbors_record(reply: NeighborsDone | NeighborsError, now: float, since: 
     return record
 
 
-def _nothing_held(cfg: Config, settings_file: str) -> bool:
-    """ The rule that lets a firewall with the feature off be left alone. Nothing of ours is in core's cache
-    when the tick has no record, or when its record says cleared for the settings file as it is now. A key of
-    ours is written only by a tick or a flush that read the setting as on, and only with a record in place.
-    Cleared is written by a tick that only removes and left no key, under its own lock, which keeps every
-    other tick out, and from a read of the cache under core's lock, which a flush holds from its own reading
-    of the setting to its write. So a key written after a clearing was written by a reader of "on", for which
-    the file was rendered again, and then the record no longer names it. A record that is there and cannot be
-    read says nothing
+def _nothing_held(cfg: Config) -> bool:
+    """ The rule that lets a firewall with the feature off be left alone: the tick's record is there exactly
+    while the plugin may hold keys in core's cache, so with the setting off and no record there is nothing
+    to do. Both sides are serialised by core's lock. A key of ours is written only under it, by a tick or a
+    flush that read the setting as on, and only with the record in place: each makes the record under the
+    lock, before the key, when there is none, and writes no key when it cannot. The record is deleted only
+    under it, by a tick that only removes (the setting off, or `neighbors remove`), after it read the cache
+    under the lock and left no key of ours there. So no key is in the cache without the record. A removal
+    that could not complete leaves the record, and the next minute tries again. A record path that cannot
+    be looked at says nothing
     """
-    path = state_paths(cfg)["neighbors_file"]
     try:
-        os.lstat(path)
+        os.lstat(state_paths(cfg)["neighbors_file"])
     except FileNotFoundError:
         return True
     except OSError:
         return False
-    record = _read_json(path, lib.neighbors_schema)
-    return record is not None and settings_file != "" and record["cleared"] == settings_file
+    return False
 
 
 def _ensure_neighbors_record(cfg: Config, now: float) -> str | None:
-    """ before a key of ours may be written: a record of the tick's is in place, made here when there is
-    none (_nothing_held). None, or why it could not be made
+    """ under core's lock, before a key of ours is written: the tick's record is in place, made here when
+    there is none (_nothing_held). None, or why it could not be made
     """
     path = state_paths(cfg)["neighbors_file"]
     try:
@@ -1236,25 +1237,38 @@ def _ensure_neighbors_record(cfg: Config, now: float) -> str | None:
         return None
     idle = _neighbors_done({"add": [], "refresh": [], "remove": []}, {}, 0, False)
     try:
-        _write_json_atomic(path, _neighbors_record(idle, now, now, False, ""), mode=0o600)
+        _write_json_atomic(path, _neighbors_record(idle, now, now, False), mode=0o600)
     except OSError as e:
         return "plugin neighbor record at %s cannot be written (%s); nothing changed" % (path, e.strerror)
     return None
 
 
-def _keep_neighbors_record(cfg: Config, reply: NeighborsDone | NeighborsError, now: float, cleared: str = ""
-                           ) -> None:
-    """ record the tick's result and log what is worth a line. The record is written when the tick wrote
-    core's cache, when its result, the count the limit cut or what it cleared is another than recorded, when a
-    failing run is reported, and when the record is more than an hour old (or from the future), so its age says
-    whether a tick completes; an unchanged minute writes nothing. A run of results other than ok is a state
-    once it has lasted NEIGHBOR_FAILING seconds, whatever codes it passes through: one warning line then, and
-    one notice when a reported run ends; both only with the record written, which is what keeps them from
-    being logged again. The line for addresses added or removed is logged with or without it. A record that
-    cannot be written leaves the reply as it is: status lists what is wrong with its path
+def _delete_neighbors_record(cfg: Config) -> bool:
+    """ under core's lock, with no key of ours left in the cache: the record is deleted (_nothing_held).
+    False when it is still there
+    """
+    try:
+        os.unlink(state_paths(cfg)["neighbors_file"])
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return False
+    return True
+
+
+def _keep_neighbors_record(cfg: Config, reply: NeighborsDone | NeighborsError, now: float,
+                           previous: lib.NeighborRecord | None, released: bool = False) -> None:
+    """ record the tick's result and log what is worth a line; previous is the record as the tick found it.
+    The record is written when the tick wrote core's cache, when its result or the count the limit cut is
+    another than recorded, when a failing run is reported, and when the record is more than an hour old (or
+    from the future), so its age says whether a tick completes; an unchanged minute writes nothing, and a
+    tick that deleted its record (released) writes none. A run of results other than ok is a state once it
+    has lasted NEIGHBOR_FAILING seconds, whatever codes it passes through: one warning line then, and one
+    notice when a reported run ends; both only with the record written or deleted, which is what keeps them
+    from being logged again. The line for addresses added or removed is logged with or without it. A record
+    that cannot be written leaves the reply as it is: status lists what is wrong with its path
     """
     path = state_paths(cfg)["neighbors_file"]
-    previous = _read_json(path, lib.neighbors_schema)
     result = reply["error"] if "error" in reply else "ok"
     failing = result != "ok"
     continued = previous is not None and (previous["result"] != "ok") == failing
@@ -1262,14 +1276,14 @@ def _keep_neighbors_record(cfg: Config, reply: NeighborsDone | NeighborsError, n
     reported = previous is not None and continued and failing and previous["reported"]
     report = failing and not reported and now - since >= lib.NEIGHBOR_FAILING
     recovered = previous is not None and not failing and previous["result"] != "ok" and previous["reported"]
-    due = (previous is None or previous["result"] != result or report or previous["cleared"] != cleared
+    due = (previous is None or previous["result"] != result or report
            or not 0 <= now - previous["at"] <= lib.NEIGHBOR_REFRESH
            or ("error" not in reply and (reply["changed"] or reply["over_limit"] != previous["over_limit"])))
-    written = False
-    if due:
+    written = released
+    if due and not released:
         try:
             _sweep_stale_temps(path, now)
-            _write_json_atomic(path, _neighbors_record(reply, now, since, reported or report, cleared), mode=0o600)
+            _write_json_atomic(path, _neighbors_record(reply, now, since, reported or report), mode=0o600)
             written = True
         except OSError:
             pass
@@ -1290,15 +1304,14 @@ def _keep_neighbors_record(cfg: Config, reply: NeighborsDone | NeighborsError, n
 
 def _tick(cfg: Config, clock, sleep, remove_all: bool) -> NeighborsDone | NeighborsError:
     now = clock()
-    enabled, state, settings_file = _setting(cfg)
-    # a settings file that is there and cannot be read is no "off": the tick refuses, so one caught while it
-    # is rendered costs no key
+    # `neighbors remove` is not the setting's to stop, and does not read it. A settings file that is there
+    # and cannot be read is no "off": the tick refuses, so one caught while it is rendered costs no key
+    enabled, state = (False, "ok") if remove_all else read_setting(cfg)
     removing = remove_all or (state != "unusable" and not enabled)
-    idle = _neighbors_done({"add": [], "refresh": [], "remove": []}, {}, 0, False)
-    if removing and _nothing_held(cfg, settings_file):
-        # off, and nothing of ours in core's cache: no check, no program, no lock, no read of the cache, no
-        # record and no line, whatever state core's files are in
-        return idle
+    if removing and _nothing_held(cfg):
+        # nothing of ours in core's cache: no check, no program, no lock, no read of the cache, no state
+        # directory, no record and no line, whatever state core's files are in
+        return _neighbors_done({"add": [], "refresh": [], "remove": []}, {}, 0, False)
     problem = ensure_state_dir(cfg)
     if problem:
         # nowhere to record it: status shows the problem
@@ -1311,24 +1324,18 @@ def _tick(cfg: Config, clock, sleep, remove_all: bool) -> NeighborsDone | Neighb
         if remove_all:
             return {"error": "busy", "detail": "another neighbor tick held its lock for %ss" % wait}
         return {"error": "busy", "detail": "another neighbor tick is running"}
+    path = state_paths(cfg)["neighbors_file"]
     if isinstance(own_lock, dict):
-        _keep_neighbors_record(cfg, own_lock, now)
+        _keep_neighbors_record(cfg, own_lock, now, _read_json(path, lib.neighbors_schema))
         return own_lock
     try:
-        if not removing and enabled:
-            unrecorded = _ensure_neighbors_record(cfg, now)
-            if unrecorded:
-                return {"error": "state_unusable", "detail": unrecorded}
+        previous = _read_json(path, lib.neighbors_schema)
+        released = False
         try:
-            # `neighbors remove` is not the setting's to stop
-            reply = _neighbors(cfg, now, sleep, (False, "ok") if remove_all else (enabled, state), removing)
+            reply, released = _neighbors(cfg, now, sleep, (enabled, state), removing)
         except Exception as e:
             reply = _internal(e)
-        # cleared names a settings file that reads off: `neighbors remove` beside a setting that is on clears
-        # nothing for the ticks and flushes that follow
-        off = state != "unusable" and not enabled
-        left_none = off and "error" not in reply and reply["keys"] == 0
-        _keep_neighbors_record(cfg, reply, now, settings_file if left_none else "")
+        _keep_neighbors_record(cfg, reply, now, previous, released)
     finally:
         _unlock(own_lock)
     return reply
