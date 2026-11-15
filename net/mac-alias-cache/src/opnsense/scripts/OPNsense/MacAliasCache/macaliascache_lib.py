@@ -91,7 +91,7 @@ NDP_MAX_BYTES = 1048576
 NEIGHBOR_MAX_PER_MAC = 32
 NEIGHBOR_MAX_TOTAL = 1024
 # a key still wanted is written again once its last_seen is this old, well inside core's 12 h; a record of the
-# tick older than twice that, while keys exist, says the tick is not running
+# tick older than twice that, while keys exist, says no tick has completed a run
 NEIGHBOR_REFRESH = 3600
 NEIGHBOR_STALE = 7200
 # a tick's result other than ok is a state, to log once and to show, when it has lasted this long: one minute

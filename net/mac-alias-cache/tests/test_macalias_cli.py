@@ -3578,8 +3578,8 @@ def test_status_over_limit_comes_from_a_working_tick_only(env):
 
 
 def test_status_stale_after_7200s(env):
-    # a tick that runs writes its record at least every hour, so a record older than two hours beside keys of
-    # ours says the cron job is not running
+    # a tick that completes a run writes its record at least every hour, so a record older than two hours beside
+    # keys of ours says none has: cron is not running, or the tick ends before it can record
     cfg, tmp = env
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
     assert _tick(cfg, now=5000.0)["added"] == 1
