@@ -580,14 +580,15 @@ def read_host_listing(cfg: Config) -> tuple[str, list[object]] | None:
 
 def read_setting(cfg: Config) -> tuple[bool, str]:
     """ (whether the neighbor table is used, how the settings file read). "ok": the value the file holds.
-    "absent": on, the model's default, for a file the template has not rendered. "unusable": off, for a
-    file that is there and is not a regular file of root's with one clean setting
+    "absent": off, the model's default, for a file the template has not rendered, so an upgrade changes no
+    alias before the setting is turned on. "unusable": off, for a file that is there and is not a regular
+    file of root's with one clean setting
     """
     path = cfg["settings_file"]
     try:
         os.lstat(path)
     except FileNotFoundError:
-        return True, "absent"
+        return False, "absent"
     except OSError:
         return False, "unusable"
     f = _open_regular(path)
@@ -837,18 +838,12 @@ def cmd_status(cfg, now):
     state_ok = not any(problem["item"] == "state_dir" for problem in found)
     last = _read_json(state_paths(cfg)["last_file"], lib.last_schema) if state_ok else None
     record = _read_json(state_paths(cfg)["neighbors_file"], lib.neighbors_schema) if state_ok else None
-    notes = lib.core_fixes(texts)
-    if setting[1] == "absent":
-        # the template has not rendered the file: nothing for the user to do, so never shown on the page
-        notes.append({"item": "neighbors_setting", "shown": False,
-                      "note": "the plugin's settings file at %s is absent, so the default is used: the neighbor "
-                              "table is on" % cfg["settings_file"]})
     return {
         "source": source,
         "aliases": lib.alias_view(tables, cache, good, pf_counts, now),
         "last_flush": last,
         "problems": found,
-        "notes": notes,
+        "notes": lib.core_fixes(texts),
         "neighbors": _neighbors_status(found, setting, source, cache, record, now),
     }
 

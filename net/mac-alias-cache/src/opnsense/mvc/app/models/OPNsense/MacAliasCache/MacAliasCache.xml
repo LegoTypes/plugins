@@ -5,7 +5,7 @@
     <items>
         <general>
             <neighbors type="BooleanField">
-                <Default>1</Default>
+                <Default>0</Default>
                 <Required>Y</Required>
             </neighbors>
         </general>

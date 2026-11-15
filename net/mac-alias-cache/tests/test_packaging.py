@@ -52,13 +52,13 @@ def test_the_cron_file_installs_where_cron_reads_it_and_the_script_can_be_run():
 def test_the_template_renders_the_settings_file_the_script_reads():
     assert text_of(TEMPLATES, "+TARGETS") == "macaliascache.conf:%s\n" % SETTINGS_FILE
     assert macalias.DEFAULTS["settings_file"] == SETTINGS_FILE
-    # the saved value, and the model's default of 1 both for a node that is missing and for one that is empty
+    # the saved value, and the model's default of 0 both for a node that is missing and for one that is empty
     assert text_of(TEMPLATES, "macaliascache.conf") == (
         "[general]\n"
         "{% if helpers.exists('OPNsense.MacAliasCache.general.neighbors') %}\n"
-        "neighbors={{ OPNsense.MacAliasCache.general.neighbors|default('1', true) }}\n"
+        "neighbors={{ OPNsense.MacAliasCache.general.neighbors|default('0', true) }}\n"
         "{% else %}\n"
-        "neighbors=1\n"
+        "neighbors=0\n"
         "{% endif %}\n")
 
 
@@ -72,19 +72,19 @@ def rendered(value):
     if value is None:
         chosen = lines[4]
     else:
-        chosen = lines[2].replace("{{ OPNsense.MacAliasCache.general.neighbors|default('1', true) }}", value or "1")
+        chosen = lines[2].replace("{{ OPNsense.MacAliasCache.general.neighbors|default('0', true) }}", value or "0")
     return "%s\n%s\n" % (lines[0], chosen)
 
 
 def test_what_the_template_renders_is_what_the_script_parses():
-    assert rendered("1") == rendered("") == rendered(None) == "[general]\nneighbors=1\n"
-    assert rendered("0") == "[general]\nneighbors=0\n"
+    assert rendered("0") == rendered("") == rendered(None) == "[general]\nneighbors=0\n"
+    assert rendered("1") == "[general]\nneighbors=1\n"
     assert lib.parse_setting(rendered("1")) is True
     assert lib.parse_setting(rendered("0")) is False
-    assert lib.parse_setting(rendered(None)) is True
+    assert lib.parse_setting(rendered(None)) is False
 
 
-def test_the_model_holds_the_one_setting_on_by_default():
+def test_the_model_holds_the_one_setting_off_by_default():
     model = ET.parse(os.path.join(MVC, "models", "OPNsense", "MacAliasCache", "MacAliasCache.xml")).getroot()
     assert model.tag == "model"
     assert model.findtext("mount") == "//OPNsense/MacAliasCache"
@@ -95,7 +95,11 @@ def test_the_model_holds_the_one_setting_on_by_default():
     field = items.find("general/neighbors")
     assert field.attrib == {"type": "BooleanField"}
     # a default, so it is required: the template needs no check for an empty value
-    assert {child.tag: child.text for child in field} == {"Default": "1", "Required": "Y"}
+    # off: an upgrade changes no alias until the administrator turns the setting on, and a file that was never
+    # rendered reads the same
+    assert {child.tag: child.text for child in field} == {"Default": "0", "Required": "Y"}
+    assert macalias.read_setting(dict(macalias.DEFAULTS, settings_file=os.path.join(PLUGIN, "no-such-file"))) == (
+        False, "absent")
     # the template reads the node the model mounts
     assert "OPNsense.MacAliasCache.general.neighbors" in text_of(TEMPLATES, "macaliascache.conf")
 
@@ -210,9 +214,17 @@ def test_changelog_has_version():
 def test_the_package_describes_both_of_its_functions_and_the_limits():
     comment = makefile()["PLUGIN_COMMENT"]
     assert "neighbor table" in comment and "host discovery" in comment
+    # the one line the firmware page lists: the ports convention is 70 characters at most, no article first, no
+    # full stop last
+    assert len(comment) <= 70 and not comment.endswith(".") and comment[0].isupper()
     description = text_of(PLUGIN, "pkg-descr").split("Plugin Changelog\n", 1)[0]
     for words in ("configctl macaliascache flush", "neighbor table", "IPv6 only", "32 addresses", "1024 in all",
-                  "90 seconds", "restarts", "12 hours", "update frequency"):
+                  "90 seconds", "restarts", "12 hours", "update frequency", "off by default", "1 MiB",
+                  "about 6,000 entries", "about a minute"):
         assert words in " ".join(description.split()), words
+    # the release's entry says the setting is off and where it is turned on
+    entry = " ".join(text_of(PLUGIN, "pkg-descr").split("\n1.4\n", 1)[1].split("\n1.3\n", 1)[0].split())
+    assert "off by default" in entry and "Firewall > Diagnostics > MAC Alias Cache" in entry
+    assert "Add addresses from the neighbor table" in entry
     # pkg-descr is shown as plain text in a narrow column
     assert max(len(line) for line in text_of(PLUGIN, "pkg-descr").splitlines()) <= 80

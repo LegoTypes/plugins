@@ -121,7 +121,7 @@
         function neighborsText(data) {
             var n = data.neighbors;
             if (!n) return '';
-            if (!n.enabled) return "{{ lang._('Neighbor table: off') }}";
+            if (!n.enabled) return "{{ lang._('Neighbor table: off (the setting below turns it on)') }}";
             if (data.source === 'arp-ndp') return "{{ lang._('Neighbor table: not used (host discovery is off)') }}";
             if (data.source !== 'discovery') return '';
             return "{{ lang._('Neighbor table: on,') }} " + n.keys + ' ' + (n.keys === 1
@@ -307,6 +307,13 @@
                 }]
             });
         });
+        // reconfigure answers with its tick's reply: busy means another update held a lock, and the next minute's
+        // tick makes the change
+        function applied(data) {
+            var busy = data && data.neighbors && data.neighbors.error === 'busy';
+            $('#apply-note').text(busy ? "{{ lang._('The setting is saved. Another update was running, so the change acts within a minute.') }}" : '').toggle(!!busy);
+        }
+
         mapDataToFormUI({'frm_general': '/api/macaliascache/settings/get'});
         // Apply saves the setting, and applies it only once it is saved: the settings file is rendered and one
         // neighbor tick runs, so the page then shows the new state
@@ -316,14 +323,17 @@
                 saveFormToEndpoint('/api/macaliascache/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
                 return dfObj;
             },
-            onAction: function () { refresh(); }
+            onAction: function (data) {
+                applied(data);
+                refresh();
+            }
         });
         refresh();
     });
 </script>
 
 <div class="content-box" style="padding: 1em;">
-    <p>{{ lang._('MAC aliases resolve through a cache that keeps the last addresses of a MAC which host discovery no longer reports for up to 12 hours. Flush & rebuild re-reads every MAC alias, and every alias nesting one, from current host discovery data. While host discovery is on, the plugin also adds, each minute, the IPv6 addresses the neighbor table has for a listed MAC and host discovery lacks.') }}</p>
+    <p>{{ lang._('MAC aliases resolve through a cache that keeps the last addresses of a MAC which host discovery no longer reports for up to 12 hours. Flush & rebuild re-reads every MAC alias, and every alias nesting one, from current host discovery data. With the setting below on and host discovery on, the plugin also adds, each minute, the IPv6 addresses the neighbor table has for a listed MAC and host discovery lacks.') }}</p>
     <div id="banners"></div>
     <button class="btn btn-primary" id="btn-flush"><i class="fa fa-recycle fa-fw"></i> {{ lang._('Flush & rebuild') }}</button>
     <button class="btn btn-default" id="btn-refresh"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
@@ -348,5 +358,6 @@
 </div>
 <div class="content-box">
     {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+    <div class="alert alert-info" id="apply-note" style="display: none;"></div>
 </div>
 {{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/macaliascache/service/reconfigure'}) }}

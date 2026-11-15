@@ -79,7 +79,7 @@ def env(tmp_path):
         echo '{"source": "discovery", "rows": [["vlan0.120", "aa:bb:cc:00:00:01", "192.0.2.50"]]}'
     """)
     # the neighbor table and the plugin's settings file are fixtures too, or a case would run the workstation's
-    # own ndp and read its files: an empty table, and the setting as the template renders its default
+    # own ndp and read its files: an empty table, and the setting as the template renders it once turned on
     (tmp_path / "ndp.json").write_text(json.dumps({"ndp": {"neighbor-cache": []}}))
     ndp = _exe(tmp_path / "ndp", f"""
         echo "$@" >> "{tmp_path}/ndp_args"
@@ -2384,13 +2384,21 @@ def test_neighbors_no_mac_alias_removes_ours(env):
     assert _cache(tmp) == OWN
 
 
-def test_neighbors_setting_absent_is_on(env):
-    # a file the template never rendered: the model's default, on
+def test_neighbors_setting_absent_is_off(env):
+    # a file the template has not rendered: the model's default, off. An upgrade changes no alias before the
+    # administrator has turned the setting on
     cfg, tmp = env
     (tmp / "macaliascache.conf").unlink()
-    assert macalias.read_setting(cfg) == (True, "absent")
+    assert macalias.read_setting(cfg) == (False, "absent")
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
-    assert _tick(cfg) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    before = _file_id(tmp / "arp.cache")
+    assert _tick(cfg) == _ok()
+    assert _file_id(tmp / "arp.cache") == before
+    assert not (tmp / "ndp_args").exists()
+    # and it removes like any off
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
+    assert _tick(cfg, now=5060.0) == _ok(changed=True, removed=1)
+    assert macalias.problems(cfg) == []
 
 
 def test_read_setting_reads_the_rendered_file(env):
@@ -2398,8 +2406,10 @@ def test_read_setting_reads_the_rendered_file(env):
     assert macalias.read_setting(cfg) == (True, "ok")
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
     assert macalias.read_setting(cfg) == (False, "ok")
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=1\n")
+    assert macalias.read_setting(cfg) == (True, "ok")
     cfg["settings_file"] = str(tmp / "no-such-directory" / "macaliascache.conf")
-    assert macalias.read_setting(cfg) == (True, "absent")
+    assert macalias.read_setting(cfg) == (False, "absent")
 
 
 @pytest.mark.parametrize("kind", ["two", "garbage", "empty", "oversized", "undecodable", "symlink", "directory", "fifo",
@@ -3264,7 +3274,6 @@ def test_neighbors_problems_and_core_files_join_the_tables(env):
 # the neighbor table in a flush and in status
 
 SEEDED = {NMAC: {"items": ["192.0.2.50"], "last_seen": 5000.0}}
-SETTING_ABSENT_NOTE = "the plugin's settings file at %s is absent, so the default is used: the neighbor table is on"
 
 
 def test_flush_keeps_wanted_neighbors(env):
@@ -3362,11 +3371,15 @@ def test_flush_setting_off_drops_our_keys(env):
     assert not (tmp / "ndp_args").exists()
 
 
-def test_flush_setting_absent_is_on(env):
+def test_flush_setting_absent_is_off(env):
     cfg, tmp = env
     (tmp / "macaliascache.conf").unlink()
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
-    assert _flush(cfg)["neighbors"] == {"added": 1, "over_limit": 0}
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4990.0)})
+    out = _flush(cfg)
+    assert out["neighbors"] == {"skipped": "off"}
+    assert _cache(tmp) == SEEDED
+    assert not (tmp / "ndp_args").exists()
 
 
 def test_flush_host_discovery_off_adds_no_neighbor_key(env):
@@ -3507,15 +3520,14 @@ def test_status_a_running_tick_is_never_stale(env):
         now += 900
 
 
-def test_status_setting_absent_note(env):
-    # the default is used; a note of status, not shown on the page and no problem
+def test_status_setting_absent_is_off_and_no_note(env):
+    # the default: nothing for the user to be told
     cfg, tmp = env
     (tmp / "macaliascache.conf").unlink()
     out = macalias.cmd_status(cfg, now=0.0)
-    assert out["neighbors"] == {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None,
+    assert out["neighbors"] == {"enabled": False, "active": False, "keys": 0, "over_limit": 0, "last": None,
                                 "stale": False, "failing": None, "setting": "absent"}
-    assert out["notes"] == [{"item": "neighbors_setting", "note": SETTING_ABSENT_NOTE % cfg["settings_file"],
-                             "shown": False}]
+    assert out["notes"] == []
     assert out["problems"] == []
 
 

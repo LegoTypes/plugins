@@ -139,7 +139,10 @@ def test_the_setting_is_cores_form_saved_then_applied():
             "function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });\n"
             "                return dfObj;\n"
             "            },\n"
-            "            onAction: function () { refresh(); }\n"
+            "            onAction: function (data) {\n"
+            "                applied(data);\n"
+            "                refresh();\n"
+            "            }\n"
             "        });\n") in block
     assert text.count("/api/macaliascache/service/reconfigure") == 1
 
@@ -151,7 +154,7 @@ def test_the_neighbor_table_is_a_muted_line_and_never_a_banner_in_normal_operati
     assert ("        function neighborsText(data) {\n"
             "            var n = data.neighbors;\n"
             "            if (!n) return '';\n"
-            "            if (!n.enabled) return \"{{ lang._('Neighbor table: off') }}\";\n"
+            "            if (!n.enabled) return \"{{ lang._('Neighbor table: off (the setting below turns it on)') }}\";\n"
             "            if (data.source === 'arp-ndp') return \"{{ lang._('Neighbor table: not used (host discovery is "
             "off)') }}\";\n"
             "            if (data.source !== 'discovery') return '';\n"
@@ -254,3 +257,19 @@ def test_the_stale_warning_says_what_is_known():
     stale = block.split("if (inUse && data.neighbors.stale) {", 1)[1].split("}\n", 1)[0]
     assert "has not completed a run for over two hours" in stale
     assert "is not running" not in block
+
+
+def test_apply_says_when_the_change_acts_within_a_minute():
+    # reconfigure runs one tick so that the change acts now; when another update held the tick's or core's lock it
+    # answered busy, and the next minute's tick makes the change
+    block = script()
+    assert ("        function applied(data) {\n"
+            "            var busy = data && data.neighbors && data.neighbors.error === 'busy';\n"
+            "            $('#apply-note').text(busy ? \"{{ lang._('The setting is saved. Another update was running, so "
+            "the change acts within a minute.') }}\" : '').toggle(!!busy);\n"
+            "        }\n") in block
+    assert '<div class="alert alert-info" id="apply-note" style="display: none;"></div>' in body()
+
+
+def test_the_page_says_the_setting_turns_the_neighbor_table_on():
+    assert "With the setting below on and host discovery on, the plugin also adds" in body()
