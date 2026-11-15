@@ -1,0 +1,13 @@
+<model>
+    <mount>//OPNsense/MacAliasCache</mount>
+    <version>1.0.0</version>
+    <description>MAC alias cache settings</description>
+    <items>
+        <general>
+            <neighbors type="BooleanField">
+                <Default>1</Default>
+                <Required>Y</Required>
+            </neighbors>
+        </general>
+    </items>
+</model>

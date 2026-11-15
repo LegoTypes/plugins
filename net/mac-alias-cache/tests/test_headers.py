@@ -5,6 +5,7 @@ import subprocess
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 PLUGIN = "net/mac-alias-cache"
 MVC = PLUGIN + "/src/opnsense/mvc/app/controllers/OPNsense/MacAliasCache/"
+MODELS = PLUGIN + "/src/opnsense/mvc/app/models/OPNsense/MacAliasCache/"
 SCRIPTS = PLUGIN + "/src/opnsense/scripts/OPNsense/MacAliasCache/"
 # Built from parts so that this file never holds the fixed marker the release grep looks for.
 MARKER = "Copyright" + " (C)"
@@ -13,7 +14,9 @@ HANDLE = MARKER + " 2026 cayossarian"
 # Path -> the comment prefix in front of the header line.
 EXPECTED = {
     MVC + "Api/ServiceController.php": " * ",
+    MVC + "Api/SettingsController.php": " * ",
     MVC + "IndexController.php": " * ",
+    MODELS + "MacAliasCache.php": " * ",
     SCRIPTS + "macalias.py": "",
     SCRIPTS + "macaliascache_lib.py": "",
 }
@@ -46,13 +49,14 @@ BSD_TEXT = (
 
 
 def tracked():
+    """ the plugin's files git knows, tracked or new and not ignored, that are in the working tree """
     out = subprocess.run(
-        ["git", "-C", ROOT, "ls-files", PLUGIN],
+        ["git", "-C", ROOT, "ls-files", "--cached", "--others", "--exclude-standard", PLUGIN],
         check=True,
         capture_output=True,
         text=True,
     ).stdout
-    return out.splitlines()
+    return [path for path in out.splitlines() if os.path.isfile(os.path.join(ROOT, path))]
 
 
 def lines_of(path):
@@ -60,7 +64,7 @@ def lines_of(path):
         return f.read().splitlines()
 
 
-def test_only_four_files_carry_a_header_and_each_is_the_handle_only():
+def test_only_the_code_files_carry_a_header_and_each_is_the_handle_only():
     found = {}
     for path in tracked():
         hits = [line for line in lines_of(path) if re.search(re.escape(MARKER), line)]
@@ -117,3 +121,9 @@ def test_a_cut_header_is_reported():
         assert header_problems(inserted, prefix), (path, "line inserted inside the text")
         shifted = whole[: start + 1] + [prefix.rstrip()] + whole[start + 1 :]
         assert header_problems(shifted, prefix), (path, "text shifted down by one")
+
+
+def test_every_code_file_of_the_package_carries_the_header():
+    # every PHP and Python file under src is code of the plugin's own
+    code = {path for path in tracked() if path.startswith(PLUGIN + "/src/") and path.endswith((".php", ".py"))}
+    assert code == set(EXPECTED)

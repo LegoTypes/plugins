@@ -23,7 +23,7 @@
 
         function errorText(data) {
             var map = {
-                busy: "{{ lang._('Another flush or alias refresh is running. Try again in a moment.') }}",
+                busy: "{{ lang._('Another flush, an alias refresh or the neighbor table update is running. Try again in a moment.') }}",
                 too_soon: "{{ lang._('A flush ran less than 10 seconds ago.') }}",
                 hosts_unavailable: "{{ lang._('The host list could not be read (host discovery unavailable); nothing was changed.') }}",
                 hosts_malformed: "{{ lang._('The host list has no usable rows (no MAC and address in the expected columns); nothing was changed.') }}",
@@ -96,9 +96,30 @@
             return "{{ lang._('Host list:') }} " + plain(source);
         }
 
+        // the problems of the neighbor addresses alone, and the two conditions status computes for them, are shown
+        // only while the neighbor table is in use: with the setting off or host discovery off the user can do
+        // nothing about them. A settings file that cannot be read reads as off, and is the one shown then
+        var neighborItems = ['neighbor_merge', 'ndp', 'neighbors_setting', 'neighbors_file'];
+
+        function neighborsInUse(data) {
+            var n = data.neighbors || {};
+            return (n.enabled === true || n.setting === 'unusable') && data.source === 'discovery';
+        }
+
+        function neighborsText(data) {
+            var n = data.neighbors;
+            if (!n) return '';
+            if (!n.enabled) return "{{ lang._('Neighbor table: off') }}";
+            if (data.source === 'arp-ndp') return "{{ lang._('Neighbor table: not used (host discovery is off)') }}";
+            if (data.source !== 'discovery') return '';
+            return "{{ lang._('Neighbor table: on,') }} " + n.keys + ' ' + (n.keys === 1
+                ? "{{ lang._('address added') }}" : "{{ lang._('addresses added') }}");
+        }
+
         function render(data) {
             var banners = [];
             var sourceLine = '';
+            var neighborsLine = '';
             var resultShown = $('#result').is(':visible');
             var lastFlushText = '';
             var lastSummaryBuilt = [];
@@ -115,9 +136,18 @@
                 } else {
                     sourceLine = sourceText(data.source);
                 }
+                neighborsLine = neighborsText(data);
+                var inUse = neighborsInUse(data);
                 $.each(data.problems || [], function (i, p) {
+                    if (neighborItems.indexOf(p.item) >= 0 && !inUse) return;
                     banners.push(banner(p.blocks_flush ? 'danger' : 'warning', plain(p.problem || p.item)));
                 });
+                if (inUse && data.neighbors.stale) {
+                    banners.push(banner('warning', "{{ lang._('The neighbor table has not been read for over two hours, so the minute job of the plugin is not running, and the addresses it added leave the aliases 12 hours after they were last written. Restart cron, or reinstall the plugin.') }}"));
+                }
+                if (inUse && data.neighbors.over_limit > 0) {
+                    banners.push(banner('warning', "{{ lang._('The limit of 32 addresses for one MAC and 1024 in all kept addresses of the neighbor table out of the aliases. A MAC with that many addresses is unusual; check the device. Addresses left out:') }} " + data.neighbors.over_limit));
+                }
                 $.each(data.notes || [], function (i, n) {
                     if (n.shown) {
                         banners.push(banner('info', plain(n.note)));
@@ -145,6 +175,9 @@
                         $.each(m.current_items, function (k, ip) {
                             if (m.cache_items.indexOf(ip) < 0) list.append($('<li class="text-muted"/>').text(ip + ' ' + "{{ lang._('(current, not yet cached)') }}"));
                         });
+                        $.each(m.neighbor_items || [], function (k, item) {
+                            list.append($('<li/>').text(item.ip + ' ' + "{{ lang._('(from the neighbor table)') }}"));
+                        });
                         cell.append($('<strong/>').text(m.mac + ' — ' + "{{ lang._('cache age') }} " + fmtAge(m.cache_age_s)), list);
                     });
                     if (!a.macs.length) cell.text("{{ lang._('No host currently matches these entries.') }}");
@@ -170,6 +203,7 @@
             $('#banners').empty().append(banners);
             $('#last-flush').text(lastFlushText);
             $('#source').text(sourceLine);
+            $('#neighbors').text(neighborsLine);
             $('#last-flush-summary').empty().append(lastSummaryBuilt);
             $('#aliases tbody').replaceWith(tbody);
         }
@@ -189,6 +223,9 @@
                 var totals = summaryTotals(data.summary);
                 built.push(summaryHeading(resultHeadingText(totals)));
                 built.push(summaryTable(data.summary, data.no_expiry || []));
+                if (data.neighbors && data.neighbors.skipped === 'neighbors_unavailable') {
+                    built.push(banner('warning', "{{ lang._('The neighbor table could not be read, so its addresses were not added by this flush. The next minute adds them.') }}"));
+                }
                 if (data.rows_rejected > 0) {
                     built.push($('<div class="alert alert-warning"/>').text(data.rows_rejected === 1
                         ? "{{ lang._('1 host row was ignored (no MAC and address in the expected columns)') }}"
@@ -229,7 +266,7 @@
             BootstrapDialog.show({
                 type: BootstrapDialog.TYPE_DANGER,
                 title: "{{ lang._('MAC Alias Cache') }}",
-                message: "{{ lang._('Rebuild all MAC aliases and the aliases nesting them from current host discovery data? Addresses no longer reported will be removed from firewall rules.') }}",
+                message: "{{ lang._('Rebuild all MAC aliases and the aliases nesting them from current host discovery data and the neighbor table? Addresses no longer reported will be removed from firewall rules.') }}",
                 buttons: [{
                     label: "{{ lang._('No') }}",
                     action: function (dialogRef) { dialogRef.close(); }
@@ -251,17 +288,29 @@
                 }]
             });
         });
+        mapDataToFormUI({'frm_general': '/api/macaliascache/settings/get'});
+        // Apply saves the setting, and applies it only once it is saved: the settings file is rendered and one
+        // neighbor tick runs, so the page then shows the new state
+        $('#reconfigureAct').SimpleActionButton({
+            onPreAction: function () {
+                var dfObj = new $.Deferred();
+                saveFormToEndpoint('/api/macaliascache/settings/set', 'frm_general', function () { dfObj.resolve(); }, true, function () { dfObj.reject(); });
+                return dfObj;
+            },
+            onAction: function () { refresh(); }
+        });
         refresh();
     });
 </script>
 
 <div class="content-box" style="padding: 1em;">
-    <p>{{ lang._('MAC aliases resolve through a cache that keeps the last addresses of a MAC which host discovery no longer reports for up to 12 hours. Flush & rebuild re-reads every MAC alias, and every alias nesting one, from current host discovery data.') }}</p>
+    <p>{{ lang._('MAC aliases resolve through a cache that keeps the last addresses of a MAC which host discovery no longer reports for up to 12 hours. Flush & rebuild re-reads every MAC alias, and every alias nesting one, from current host discovery data. While host discovery is on, the plugin also adds, each minute, the IPv6 addresses the neighbor table has for a listed MAC and host discovery lacks.') }}</p>
     <div id="banners"></div>
     <button class="btn btn-primary" id="btn-flush"><i class="fa fa-recycle fa-fw"></i> {{ lang._('Flush & rebuild') }}</button>
     <button class="btn btn-default" id="btn-refresh"><i class="fa fa-refresh fa-fw"></i> {{ lang._('Refresh view') }}</button>
     <span id="last-flush" class="text-muted" style="margin-left: 1em;"></span>
     <span id="source" class="text-muted" style="margin-left: 1em;"></span>
+    <span id="neighbors" class="text-muted" style="margin-left: 1em;"></span>
     <div id="last-flush-summary" style="margin-top: 1em;"></div>
     <div id="result" style="display: none; margin-top: 1em;"></div>
     <table class="table table-striped" id="aliases" style="margin-top: 1em;">
@@ -278,3 +327,7 @@
         <tbody></tbody>
     </table>
 </div>
+<div class="content-box">
+    {{ partial("layout_partials/base_form", ['fields': generalForm, 'id': 'frm_general']) }}
+</div>
+{{ partial('layout_partials/base_apply_button', {'data_endpoint': '/api/macaliascache/service/reconfigure'}) }}

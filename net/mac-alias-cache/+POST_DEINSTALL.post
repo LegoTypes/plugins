@@ -1,0 +1,5 @@
+# A real removal: the rendered settings file and the plugin's runtime state go with its files. An upgrade keeps them, so
+# the new version runs on with the setting as rendered and the tick's record.
+if [ -z "${PKG_UPGRADE:-}" ]; then
+    rm -rf /usr/local/etc/macaliascache.conf /var/run/macaliascache
+fi

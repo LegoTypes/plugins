@@ -1,0 +1,8 @@
+<form>
+    <field>
+        <id>macaliascache.general.neighbors</id>
+        <label>Add addresses from the neighbor table</label>
+        <type>checkbox</type>
+        <help>While host discovery is on, each MAC alias also gets the IPv6 addresses the neighbor table of the firewall has for its MACs and host discovery does not list. An address joins its alias within about 90 seconds and stays 12 hours after it left the neighbor table. At most 32 addresses for one MAC and 1024 in all. Off removes these addresses from the aliases within about a minute.</help>
+    </field>
+</form>

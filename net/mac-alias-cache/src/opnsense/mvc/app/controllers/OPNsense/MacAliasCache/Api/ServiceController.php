@@ -56,4 +56,22 @@ class ServiceController extends ApiControllerBase
         $this->throwReadOnly();
         return $this->decode((new Backend())->configdRun('macaliascache flush'));
     }
+
+    /**
+     * The page's Apply, after its Save: render the settings file the script reads, then run one neighbor tick so
+     * that "off" removes the plugin's keys now and not at the next minute. A reload configd does not answer with OK
+     * left the file as it was, so it fails; what the tick answers rides along and never fails a saved setting.
+     */
+    public function reconfigureAction()
+    {
+        if (!$this->request->isPost()) {
+            return ['status' => 'failed'];
+        }
+        $this->throwReadOnly();
+        $backend = new Backend();
+        if (trim((string)$backend->configdRun('template reload OPNsense/MacAliasCache')) !== 'OK') {
+            return ['status' => 'failed'];
+        }
+        return ['status' => 'ok', 'neighbors' => $this->decode($backend->configdRun('macaliascache neighbors'))];
+    }
 }

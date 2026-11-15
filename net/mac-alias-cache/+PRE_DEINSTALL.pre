@@ -1,0 +1,17 @@
+#!/bin/sh
+# A real removal takes the plugin's keys out of core's MAC alias cache, as turning the setting off does, and core's
+# next minute run takes their addresses out of the aliases. Left there, they would feed the aliases for up to 12 hours
+# with no page left to remove them. An upgrade keeps them.
+if [ -z "${PKG_UPGRADE:-}" ] && [ -x /usr/local/opnsense/scripts/OPNsense/MacAliasCache/macalias.py ]; then
+    # The setting goes off in the rendered file first: a tick cron starts before pkg removes the cron file then removes
+    # the keys too, instead of adding them again. +POST_DEINSTALL.post removes the file; the saved setting stays.
+    printf '[general]\nneighbors=0\n' > /usr/local/etc/macaliascache.conf || true
+    # A tick that is running holds the tick's lock, and core's own run its lock: both answer busy, so wait and ask again.
+    for attempt in 1 2 3 4 5; do
+        reply=$(/usr/local/opnsense/scripts/OPNsense/MacAliasCache/macalias.py neighbors remove 2> /dev/null) || true
+        case "$reply" in
+            *'"error": "busy"'*) sleep 2 ;;
+            *) break ;;
+        esac
+    done
+fi

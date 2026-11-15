@@ -1,0 +1,8 @@
+# The plugin's own cron.d file, not core's Cron: the tick runs at second 30, and core's Cron schedules by the
+# minute at best and runs a job of its page as nobody, whom the plugin's actions refuse.
+
+# The neighbor tick (macalias.py neighbors): adds to core's MAC alias cache the IPv6 addresses the kernel's
+# neighbor table has for a MAC of a MAC alias and host discovery lacks, and removes them again. It runs at
+# second 30: core's own alias update starts at second 0, takes about a second, and leaves the cache at 0 bytes
+# on disk until it ends. An unchanged minute takes no lock and writes nothing.
+* * * * *	root	sleep 30 && /usr/local/opnsense/scripts/OPNsense/MacAliasCache/macalias.py neighbors > /dev/null
