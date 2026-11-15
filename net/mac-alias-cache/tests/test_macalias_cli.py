@@ -3005,3 +3005,275 @@ def test_neighbors_problems_and_core_files_join_the_tables(env):
     _core(cfg, "arpcache").unlink()
     assert [p["item"] for p in macalias.problems(cfg)] == ["arpcache"]
     assert _tick(cfg)["error"] == "core_changed"
+
+
+# the neighbor table in a flush and in status
+
+SEEDED = {NMAC: {"items": ["192.0.2.50"], "last_seen": 5000.0}}
+SETTING_ABSENT_NOTE = "the plugin's settings file at %s is absent, so the default is used: the neighbor table is on"
+
+
+def test_flush_keeps_wanted_neighbors(env):
+    # a flush rebuilds from current data, and the neighbor table is current data: an address it lists for a
+    # listed MAC stays, with the choice the tick would make; a key no table lists any more goes like every
+    # stale entry
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "fe80::7"), ("dd:ee:ff:00:00:03", "2001:db8::3")])
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 1000.0),
+                _nkey("2001:db8::9"): _nentry("2001:db8::9", 4990.0)})
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["neighbors"] == {"added": 2, "over_limit": 0}
+    assert _cache(tmp) == dict(SEEDED, **{_nkey("2001:db8::7"): _nentry("2001:db8::7", 5000.0),
+                                          _nkey("fe80::7"): _nentry("fe80::7", 5000.0)})
+    assert (tmp / "update_args").read_text().split() == ["--aliases", "DevMacs,Parent"]
+    # nothing is left for the tick to do, and the flush wrote no record of the tick's
+    assert not _neighbors_file(cfg).exists()
+    assert _tick(cfg, now=5060.0) == _ok(keys=2)
+
+
+def test_flush_skips_a_neighbor_address_host_discovery_lists(env):
+    cfg, tmp = env
+    _list_hosts(cfg, tmp, [["vlan0.120", NMAC, "192.0.2.50"], ["vlan0.120", NMAC, "2001:DB8::7"]])
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
+    out = _flush(cfg)
+    assert out["neighbors"] == {"added": 1, "over_limit": 0}
+    assert _cache(tmp) == {NMAC: {"items": ["192.0.2.50", "2001:DB8::7"], "last_seen": 5000.0},
+                           _nkey("2001:db8::8"): _nentry("2001:db8::8", 5000.0)}
+
+
+def test_flush_keeps_the_held_keys_over_the_limit(env):
+    cfg, tmp = env
+    addresses = ["2001:db8::%x" % n for n in range(1, 41)]
+    _neighbor_table(tmp, [(NMAC, ip) for ip in addresses])
+    _seed(tmp, {_nkey(ip): _nentry(ip, 4000.0) for ip in addresses[37:]})
+    out = _flush(cfg)
+    assert out["neighbors"] == {"added": 32, "over_limit": 8}
+    assert sorted(_cache(tmp)) == sorted([NMAC] + [_nkey(ip) for ip in addresses[:29] + addresses[37:]])
+
+
+def test_flush_reads_neighbors_before_core_lock(env, monkeypatch):
+    # and before any side effect: the cache write, the expiry marks and core's update all come after
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    events = []
+    real_popen = subprocess.Popen
+    real_acquire, real_write = macalias.acquire_lock, macalias._write_json_atomic
+
+    class Popen(real_popen):
+        def __init__(self, argv, *args, **kwargs):
+            events.append("run " + os.path.basename(argv[0]))
+            super().__init__(argv, *args, **kwargs)
+
+    def acquire(*args, **kwargs):
+        events.append("lock")
+        return real_acquire(*args, **kwargs)
+
+    def write(path, *args, **kwargs):
+        events.append("write " + os.path.basename(path))
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(macalias.subprocess, "Popen", Popen)
+    monkeypatch.setattr(macalias, "acquire_lock", acquire)
+    monkeypatch.setattr(macalias, "_write_json_atomic", write)
+    out = _flush(cfg)
+    assert out["neighbors"] == {"added": 1, "over_limit": 0}
+    assert events[:3] == ["run ndp", "lock", "run list_hosts.py"]
+    assert events.count("run ndp") == 1
+    assert events.index("write arp.cache") > events.index("lock")
+
+
+@pytest.mark.parametrize("body", ["exit 1\n", "echo not-json\n", "echo '{\"ndp\": {}}'\n"],
+                         ids=["fails", "non-json", "other-shape"])
+def test_flush_neighbors_unreadable_flushes_as_before(env, body):
+    cfg, tmp = env
+    cfg["ndp"] = [_exe(tmp / "bad_ndp", body), "-an", "--libxo", "json"]
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4990.0)})
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["neighbors"] == {"skipped": "neighbors_unavailable"}
+    assert _cache(tmp) == SEEDED
+    assert out["update_tables"] == UPDATE_OK
+
+
+def test_flush_setting_off_drops_our_keys(env):
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4990.0)})
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["neighbors"] == {"skipped": "off"}
+    assert _cache(tmp) == SEEDED
+    assert not (tmp / "ndp_args").exists()
+
+
+def test_flush_setting_absent_is_on(env):
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").unlink()
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _flush(cfg)["neighbors"] == {"added": 1, "over_limit": 0}
+
+
+def test_flush_host_discovery_off_adds_no_neighbor_key(env):
+    # core reads the neighbor table itself then, and the flush seeds its rows as before
+    cfg, tmp = env
+    _arp_ndp_hosts(cfg, tmp)
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
+    out = _flush(cfg)
+    assert out["neighbors"] == {"skipped": "not_discovery"}
+    assert _cache(tmp) == {NMAC: {"items": ["192.0.2.50", "2001:db8::7"], "last_seen": 5000.0}}
+
+
+@pytest.mark.parametrize("kind, reason", [
+    ("contract", "core_changed"), ("ndp", "core_changed"), ("setting", "setting_unusable"),
+    ("record", "state_unusable"),
+])
+def test_flush_adds_no_neighbor_key_when_the_tick_would_refuse(env, kind, reason):
+    # what stops the tick is advisory for the flush: it runs, and leaves the neighbor addresses to the tick
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    if kind == "contract":
+        _fix_core(cfg, "neighbor_merge", "if macaddr.startswith(pattern.lower()):")
+    elif kind == "ndp":
+        pathlib.Path(cfg["ndp"][0]).chmod(0o644)
+    elif kind == "setting":
+        (tmp / "macaliascache.conf").write_text("neighbors on\n")
+    else:
+        os.mkdir(cfg["state_dir"], 0o700)
+        _neighbors_file(cfg).mkdir()
+    out = _flush(cfg)
+    assert "error" not in out
+    assert out["neighbors"] == {"skipped": reason}
+    assert _cache(tmp) == SEEDED
+    assert not (tmp / "ndp_args").exists()
+
+
+def test_flush_without_mac_aliases_reads_no_neighbor_table(env):
+    cfg, tmp = env
+    (tmp / "filter_tables.conf").write_text("<tabledef/>")
+    assert _flush(cfg) == {"aliases": [], "note": "no mac aliases"}
+    assert not (tmp / "ndp_args").exists()
+
+
+def test_status_neighbors_block(env):
+    cfg, tmp = env
+    idle = {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None, "stale": False, "setting": "ok"}
+    out = macalias.cmd_status(cfg, now=5000.0)
+    assert out["neighbors"] == idle
+    assert out["aliases"][0]["macs"][0]["neighbor_items"] == []
+    # status runs no ndp and writes nothing of the tick's
+    assert not (tmp / "ndp_args").exists()
+    assert os.listdir(cfg["state_dir"]) == []
+
+    addresses = ["2001:db8::%x" % n for n in range(1, 41)]
+    _neighbor_table(tmp, [(NMAC, ip) for ip in addresses])
+    assert _tick(cfg, now=5000.0)["added"] == 32
+    out = macalias.cmd_status(cfg, now=5030.0)
+    assert out["neighbors"] == dict(idle, keys=32, over_limit=8, last=_neighbors_record(cfg))
+    assert out["neighbors"]["last"]["at"] == 5000.0
+    mac = out["aliases"][0]["macs"][0]
+    # the MAC's own entry and the plugin's keys apart; the keys are no MACs of their own
+    assert [row["mac"] for row in out["aliases"][0]["macs"]] == [NMAC]
+    assert mac["cache_items"] == ["192.0.2.50", "192.0.2.99"]
+    assert mac["neighbor_items"] == sorted(({"ip": ip, "age_s": 30} for ip in addresses[:32]),
+                                           key=lambda item: item["ip"])
+    assert out["problems"] == [] and out["notes"] == []
+
+
+def test_status_neighbors_off_and_not_active(env):
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    record = _neighbors_record(cfg)
+    on = {"enabled": True, "active": True, "keys": 1, "over_limit": 0, "last": record, "stale": False, "setting": "ok"}
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == on
+    # host discovery off, the host list unreadable, a tick refusal: on, and not active
+    good_hosts = cfg["list_hosts"]
+    _arp_ndp_hosts(cfg, tmp)
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == dict(on, active=False)
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == dict(on, active=False)
+    cfg["list_hosts"] = good_hosts
+    pathlib.Path(cfg["ndp"][0]).chmod(0o644)
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == dict(on, active=False)
+    pathlib.Path(cfg["ndp"][0]).chmod(0o755)
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == dict(on, enabled=False, active=False)
+    (tmp / "macaliascache.conf").write_text("neighbors on\n")
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == dict(on, enabled=False, active=False,
+                                                                     setting="unusable")
+
+
+def test_status_over_limit_comes_from_a_working_tick_only(env):
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::%x" % n) for n in range(1, 41)])
+    assert _tick(cfg, now=5000.0)["over_limit"] == 8
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+    assert _tick(cfg, now=5060.0) == HOSTS_UNAVAILABLE
+    block = macalias.cmd_status(cfg, now=5090.0)["neighbors"]
+    assert (block["keys"], block["over_limit"], block["last"]["result"]) == (32, 0, "hosts_unavailable")
+
+
+def test_status_stale_after_7200s(env):
+    # a tick that runs writes its record at least every hour, so a record older than two hours beside keys of
+    # ours says the cron job is not running
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    assert macalias.cmd_status(cfg, now=5000.0 + 7200)["neighbors"]["stale"] is False
+    assert macalias.cmd_status(cfg, now=5000.0 + 7201)["neighbors"]["stale"] is True
+    # a clock that stepped back is no evidence
+    assert macalias.cmd_status(cfg, now=100.0)["neighbors"]["stale"] is False
+    # not active: nothing to warn about
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    assert macalias.cmd_status(cfg, now=5000.0 + 7201)["neighbors"]["stale"] is False
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=1\n")
+    # no key of ours: nothing a dead tick would let expire
+    _seed(tmp, {})
+    block = macalias.cmd_status(cfg, now=5000.0 + 7201)["neighbors"]
+    assert (block["active"], block["keys"], block["stale"]) == (True, 0, False)
+    # keys and no record at all: a flush put them there and the first tick is still to come
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    _neighbors_file(cfg).unlink()
+    block = macalias.cmd_status(cfg, now=5000.0 + 7201)["neighbors"]
+    assert (block["keys"], block["last"], block["stale"]) == (1, None, False)
+
+
+def test_status_a_running_tick_is_never_stale(env):
+    # keys no table lists any more are not written again, and the record still stays young
+    cfg, tmp = env
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    now = 5000.0
+    while now <= 5000.0 + 3 * 3600:
+        assert _tick(cfg, now=now) == _ok(keys=1)
+        assert macalias.cmd_status(cfg, now=now + 899)["neighbors"]["stale"] is False
+        now += 900
+
+
+def test_status_setting_absent_note(env):
+    # the default is used; a note of status, not shown on the page and no problem
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").unlink()
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["neighbors"] == {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None,
+                                "stale": False, "setting": "absent"}
+    assert out["notes"] == [{"item": "neighbors_setting", "note": SETTING_ABSENT_NOTE % cfg["settings_file"],
+                             "shown": False}]
+    assert out["problems"] == []
+
+
+def test_status_neighbors_record_is_not_read_from_an_unusable_state_dir(env):
+    cfg, tmp = env
+    pathlib.Path(cfg["state_dir"]).write_text("x")
+    out = macalias.cmd_status(cfg, now=0.0)
+    assert out["neighbors"] == {"enabled": True, "active": False, "keys": 0, "over_limit": 0, "last": None,
+                                "stale": False, "setting": "ok"}
+
+
+def test_status_ignores_a_neighbors_record_of_another_shape(env):
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    _neighbors_file(cfg).write_text('{"at": "5000", "result": "ok"}')
+    _neighbors_file(cfg).chmod(0o600)
+    assert macalias.cmd_status(cfg, now=5000.0)["neighbors"]["last"] is None

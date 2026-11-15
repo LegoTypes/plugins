@@ -41,7 +41,7 @@ import sys
 import syslog
 import tempfile
 import time
-from typing import TypedDict, final
+from typing import TextIO, TypedDict, final
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import macaliascache_lib as lib  # noqa: E402
@@ -299,8 +299,8 @@ def _setting_problem(cfg, setting):
     """
     if setting[1] != "unusable":
         return None
-    return _problem("neighbors_setting", "the plugin's settings file at %s holds no setting the plugin can read, so the "
-                    "neighbor table is not used; save the setting on the plugin's page to write the file again"
+    return _problem("neighbors_setting", "the plugin's settings file at %s holds no setting the plugin can read, so "
+                    "the neighbor table is not used; save the setting on the plugin's page to write the file again"
                     % cfg["settings_file"], False)
 
 
@@ -788,10 +788,32 @@ def _run_update(cfg: Config, names: list[str]) -> UpdateRun:
             "complete": rc == 0 and reply["status"] is not None}
 
 
+def _neighbors_status(found, setting: tuple[bool, str], source: object, cache: dict[str, object],
+                      record: lib.NeighborRecord | None, now: float) -> dict[str, object]:
+    """ status of the neighbor addresses: whether the setting is on and how its file read, whether a tick
+    would merge (on, host discovery as the source, nothing that stops the tick), the keys of the plugin's
+    own in core's cache, how many addresses the limits cut at the last working tick, the tick's record, and
+    whether that record is stale: a tick that runs writes it at least every hour, so one older than
+    NEIGHBOR_STALE beside keys of ours says the cron job is not running
+    """
+    active = setting[0] and source == "discovery" and neighbors_refusal(found) is None
+    keys = lib.count_neighbor_keys(cache)
+    return {
+        "enabled": setting[0],
+        "active": active,
+        "keys": keys,
+        "over_limit": record["over_limit"] if record is not None and record["result"] == "ok" else 0,
+        "last": record,
+        "stale": active and keys > 0 and record is not None and now - record["at"] > lib.NEIGHBOR_STALE,
+        "setting": setting[1],
+    }
+
+
 def cmd_status(cfg, now):
     tables = read_tables(cfg)
     texts = read_core_texts(cfg)
-    found = problems(cfg, tables, texts)
+    setting = read_setting(cfg)
+    found = problems(cfg, tables, texts, setting)
     source, hosts = read_hosts(cfg)
     good, _rejected = lib.validate_rows(hosts)
     cache = _read_json(cfg["cache_file"], lib.cache_schema) or {}
@@ -804,12 +826,20 @@ def cmd_status(cfg, now):
     # nothing inside a state directory that failed its check is read
     state_ok = not any(problem["item"] == "state_dir" for problem in found)
     last = _read_json(state_paths(cfg)["last_file"], lib.last_schema) if state_ok else None
+    record = _read_json(state_paths(cfg)["neighbors_file"], lib.neighbors_schema) if state_ok else None
+    notes = lib.core_fixes(texts)
+    if setting[1] == "absent":
+        # the template has not rendered the file: nothing for the user to do, so never shown on the page
+        notes.append({"item": "neighbors_setting", "shown": False,
+                      "note": "the plugin's settings file at %s is absent, so the default is used: the neighbor "
+                              "table is on" % cfg["settings_file"]})
     return {
         "source": source,
         "aliases": lib.alias_view(tables, cache, good, pf_counts, now),
         "last_flush": last,
         "problems": found,
-        "notes": lib.core_fixes(texts),
+        "notes": notes,
+        "neighbors": _neighbors_status(found, setting, source, cache, record, now),
     }
 
 
@@ -841,12 +871,12 @@ def acquire_plugin_lock(cfg):
     return refusal([lock]) if isinstance(lock, dict) else lock
 
 
-def acquire_neighbors_lock(cfg):
+def acquire_neighbors_lock(cfg: Config) -> TextIO | NeighborsError | None:
     """ the neighbor tick's own lock in the state directory, so ticks never pile up and the Flush button
     never answers busy because of one: the handle, None when another tick holds it (no waiting), or the
     tick's state_unusable reply when the path cannot be opened safely
     """
-    lock = _acquire_state_lock(state_paths(cfg)["neighbors_lock"], "neighbor")
+    lock: TextIO | dict[str, object] | None = _acquire_state_lock(state_paths(cfg)["neighbors_lock"], "neighbor")
     return neighbors_refusal([lock]) if isinstance(lock, dict) else lock
 
 
@@ -894,6 +924,26 @@ def cmd_flush(cfg, clock=time.time, sleep=time.sleep):
     return reply
 
 
+def _flush_neighbors(cfg: Config, tables: dict[str, lib.Table], found, setting: tuple[bool, str]
+                     ) -> tuple[list[lib.Pair], str | None]:
+    """ the neighbor table for a flush's seed, read when a tick would merge it: (pairs, None), or no pair
+    and why none is added: a code the tick would refuse with, "off" for the setting, or
+    "neighbors_unavailable" for a table that cannot be read. Without a MAC alias there is nothing to seed
+    and the table is not read
+    """
+    refused = neighbors_refusal(found)
+    if refused:
+        return [], refused["error"]
+    if not setting[0]:
+        return [], "off"
+    if not lib.mac_aliases(tables):
+        return [], None
+    table = read_neighbors(cfg)
+    if table is None:
+        return [], "neighbors_unavailable"
+    return table, None
+
+
 def _flush(cfg, clock, sleep):
     # every refusal comes before any write
     problem = ensure_state_dir(cfg)
@@ -910,9 +960,14 @@ def _flush(cfg, clock, sleep):
     try:
         # read once, so the names the problem list checks are the names the flush uses
         tables = read_tables(cfg)
-        refused = refusal(problems(cfg, tables))
+        setting = read_setting(cfg)
+        found = problems(cfg, tables, setting=setting)
+        refused = refusal(found)
         if refused:
             return refused
+        # the neighbor table is read before core's lock is taken and before any side effect; a table
+        # that cannot be read leaves the flush as it is without one
+        neighbors, neighbors_skipped = _flush_neighbors(cfg, tables, found, setting)
         last_file = state_paths(cfg)["last_file"]
         lock = acquire_lock(cfg, sleep)
         if isinstance(lock, dict):
@@ -951,6 +1006,18 @@ def _flush(cfg, clock, sleep):
                     "rejected": rejected}
         seeded = lib.seed_cache(good, now)
 
+        # the neighbor table is current data too: with host discovery as the source the seed also carries
+        # the keys the tick would want, the ones the cache holds first, so the tick finds nothing to change.
+        # Otherwise the plugin's keys go like every other stale entry
+        if neighbors_skipped is None and source != "discovery":
+            neighbors_skipped = "not_discovery"
+        if neighbors_skipped is None:
+            wanted, over_limit = lib.wanted_neighbors(tables, lib.host_pairs(good), neighbors, read_cache(cfg) or {})
+            seeded = lib.apply_neighbor_plan(seeded, {"add": wanted, "refresh": [], "remove": []}, now)
+            neighbors_reply: dict[str, object] = {"added": len(wanted), "over_limit": over_limit}
+        else:
+            neighbors_reply = {"skipped": neighbors_skipped}
+
         before = {name: pf_set(cfg, name) for name in names}
 
         # the cache is replaced with current data only, in core's format, so stale MACs are dropped
@@ -980,7 +1047,8 @@ def _flush(cfg, clock, sleep):
     summary = lib.summarise(before, after)
     _write_json_atomic(last_file, {"at": now, "summary": summary}, mode=0o600)
     return {"before": before, "after": after, "summary": summary, "update_tables": update, "emptied": emptied,
-            "no_expiry": lib.no_expiry(tables), "rows_rejected": len(rows) - len(good), "rejected": rejected}
+            "no_expiry": lib.no_expiry(tables), "rows_rejected": len(rows) - len(good), "rejected": rejected,
+            "neighbors": neighbors_reply}
 
 
 def _neighbors_done(plan: lib.NeighborPlan, cache: dict[str, object], over_limit: int, changed: bool) -> NeighborsDone:
@@ -1096,8 +1164,8 @@ def _keep_neighbors_record(cfg: Config, reply: NeighborsDone | NeighborsError, p
     if result in _UNRECORDED_RESULTS:
         return
     wrote = "error" not in reply and reply["changed"]
-    current = previous is not None and previous["result"] == result and 0 <= now - previous["at"] <= lib.NEIGHBOR_REFRESH
-    if wrote or not current:
+    fresh = previous is not None and 0 <= now - previous["at"] <= lib.NEIGHBOR_REFRESH
+    if wrote or previous is None or previous["result"] != result or not fresh:
         path = state_paths(cfg)["neighbors_file"]
         _sweep_stale_temps(path, now)
         _write_json_atomic(path, _neighbors_record(reply, now), mode=0o600)
