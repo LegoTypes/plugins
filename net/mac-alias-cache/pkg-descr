@@ -7,8 +7,64 @@ rebuilds every MAC alias, and every alias nesting one, from current
 host discovery data on demand (Firewall > Diagnostics > MAC Alias Cache,
 or "configctl macaliascache flush").
 
+It also gives each MAC alias the IPv6 addresses host discovery misses.
+Host discovery records an address when it sees a host send a neighbor
+solicitation or advertisement from it. A host that answers for a privacy
+address from its stable address never gets a row for the privacy
+address (opnsense/hostwatch#39), and a rule on the alias then misses
+the connections the host opens from it. While host discovery is on, the
+plugin adds to core's cache, each minute, the IPv6 addresses the
+kernel's neighbor table has for a MAC of a MAC alias and host discovery
+does not list for that MAC; core's own alias update puts them in the
+alias. A setting on the plugin's page, on by default, turns this off
+and takes the addresses out again.
+
+Limits of the addresses from the neighbor table:
+
+* IPv6 only, and only while host discovery is on (with it off, core
+  reads the neighbor table itself); at most 32 addresses for one MAC
+  and 1024 in all
+* Up to about 90 seconds pass between the firewall first resolving a
+  new address and the alias holding it: the plugin reads the neighbor
+  table at second 30 of each minute, core rebuilds the aliases at
+  second 0. Three minutes in the rare minute core skips an alias it has
+  just rebuilt. A connection opened earlier keeps the rule it matched
+* After the firewall itself restarts, core's cache and the neighbor
+  table start empty: each of these addresses is out of its alias until
+  its host talks again and both runs have passed, and the connections
+  hosts reopen in those first minutes keep the rule they matched
+* An address stays 12 hours after it left the neighbor table, the
+  lifetime of core's cache; a flush drops it at once
+* A MAC alias with an update frequency is rebuilt at that frequency,
+  not each minute, so it gains and loses these addresses only then
+
 Plugin Changelog
 ================
+
+1.4
+
+* While host discovery is on, every MAC alias also holds the IPv6
+  addresses the kernel's neighbor table has for its MACs and host
+  discovery does not list. A job of the package's own
+  (/usr/local/etc/cron.d/macaliascache, each minute at second 30) adds
+  them to core's MAC alias cache under keys of its own, and core's own
+  alias update applies them; a minute with nothing to change takes no
+  lock and writes nothing. At most 32 addresses for one MAC and 1024 in
+  all
+* A setting on the page, on by default, turns this off: the plugin's
+  keys leave the cache at once and their addresses leave the aliases at
+  core's next run. Removing the package does the same
+* A flush keeps these addresses, as the neighbor table is current data
+  too; with the setting off it drops them like every stale entry
+* Status and the page list the addresses that came from the neighbor
+  table under their MAC. The page warns, while the setting is on and
+  host discovery is the source, when core no longer merges such keys,
+  when the limit kept addresses out and when the minute job is not
+  running
+* A third configd action, neighbors, runs one such update; like the
+  others it is served to wheel and wwwonly alone
+* The note for core's fix of core #10114 no longer says the plugin
+  would be unnecessary
 
 1.3
 

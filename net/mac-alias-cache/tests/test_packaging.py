@@ -181,3 +181,38 @@ def test_the_package_has_no_install_script_of_its_own():
     # the package's own steps render the template, restart configd and run the model's migration
     assert sorted(name for name in os.listdir(PLUGIN) if name.startswith("+")) == [
         "+POST_DEINSTALL.post", "+PRE_DEINSTALL.pre"]
+
+
+def makefile():
+    """ the Makefile's variables, as name -> value """
+    pairs = re.findall(r"^(PLUGIN_[A-Z_]+)=\s*(.*)$", text_of(PLUGIN, "Makefile"), re.MULTILINE)
+    return dict(pairs)
+
+
+def changelog():
+    """ the versions pkg-descr's changelog has an entry for, newest first: each stands alone on a line """
+    entries = text_of(PLUGIN, "pkg-descr").split("Plugin Changelog\n================\n", 1)[1]
+    return re.findall(r"^(\d+\.\d+(?:_\d+)?)$", entries, re.MULTILINE)
+
+
+def test_changelog_has_version():
+    variables = makefile()
+    version = variables["PLUGIN_VERSION"]
+    if "PLUGIN_REVISION" in variables:
+        version += "_" + variables["PLUGIN_REVISION"]
+    # a feature release: the minor version, with no revision
+    assert version == "1.4"
+    versions = changelog()
+    assert versions[0] == version
+    assert len(versions) == len(set(versions)) and versions[1] == "1.3"
+
+
+def test_the_package_describes_both_of_its_functions_and_the_limits():
+    comment = makefile()["PLUGIN_COMMENT"]
+    assert "neighbor table" in comment and "host discovery" in comment
+    description = text_of(PLUGIN, "pkg-descr").split("Plugin Changelog\n", 1)[0]
+    for words in ("configctl macaliascache flush", "neighbor table", "IPv6 only", "32 addresses", "1024 in all",
+                  "90 seconds", "restarts", "12 hours", "update frequency"):
+        assert words in " ".join(description.split()), words
+    # pkg-descr is shown as plain text in a narrow column
+    assert max(len(line) for line in text_of(PLUGIN, "pkg-descr").splitlines()) <= 80
