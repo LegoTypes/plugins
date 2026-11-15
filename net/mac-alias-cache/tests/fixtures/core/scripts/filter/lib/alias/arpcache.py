@@ -6,3 +6,5 @@
         for item in hosts.get('rows', []):
                 current_macs[item[1]] = {'items': [], 'last_seen': cls._now}
             current_macs[item[1]]['items'].append(item[2])
+            if macaddr.startswith(pattern.lower()):
+                for item in self._data[macaddr]['items']:

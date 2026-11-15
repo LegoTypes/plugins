@@ -705,7 +705,8 @@ CANNOT_CHECK = {
 EMPTIED_NOTE = ("core may now flush emptied tables itself (core #10950); "
                 "the plugin's own flush is redundant but harmless")
 EXPIRY_NOTE = ("core's arpcache.py no longer holds the lines that add a fixed 12 h (core #10114); "
-               "MAC aliases may now drop a vanished address on their own, which would make this plugin unnecessary")
+               "MAC aliases may now drop a vanished address on their own, and the neighbor-table addresses this plugin "
+               "adds may no longer reach the aliases")
 
 
 def _items(out, item):
