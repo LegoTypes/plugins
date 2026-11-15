@@ -644,6 +644,14 @@ def test_parse_neighbors_rows():
     assert lib.parse_neighbors(ndp_text([])) == []
 
 
+def test_parse_neighbors_uses_a_static_row():
+    # a neighbor the administrator declared (Interfaces: Neighbors) or the firewall's own address: core's own
+    # reading of the table uses such a row, and so does this one, whatever else the row says
+    rows = [ndp_row("2001:db8::5", MAC1, permanent=True), ndp_row("2001:db8::6", MAC2, expires_sec=0, expired=True),
+            ndp_row("2001:db8::7", MAC3, permanent=False, router=True, proxy=True)]
+    assert lib.parse_neighbors(ndp_text(rows)) == [(MAC1, "2001:db8::5"), (MAC2, "2001:db8::6"), (MAC3, "2001:db8::7")]
+
+
 @pytest.mark.parametrize("text", [
     "", "not-json", "[]", "5", "null", '"ndp"', '{"ndp": []}', '{"ndp": null}', '{"ndp": {"neighbor-cache": {}}}',
     '{"ndp": {"neighbor-cache": "x"}}', '{"ndp": {"neighbor-cache": null}}', '{"neighbor-cache": []}', "{}",

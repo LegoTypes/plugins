@@ -665,6 +665,21 @@ def test_main_always_prints_json_and_exits_zero(capsys):
             "error": "usage", "detail": "macalias.py status|flush|neighbors [remove]"}
 
 
+@pytest.mark.parametrize("argv, command", [
+    (["status"], "cmd_status"), (["flush"], "cmd_flush"), (["neighbors"], "cmd_neighbors"),
+    (["neighbors", "remove"], "cmd_neighbors")], ids=["status", "flush", "neighbors", "neighbors-remove"])
+def test_main_answers_an_exception_in_a_command_with_one_json_object_and_exit_zero(monkeypatch, capsys, argv, command):
+    # configd wants JSON, and cron mails a traceback to root: whatever a command raises is the error "internal"
+    def broken(*args, **kwargs):
+        raise ValueError("no such thing")
+
+    monkeypatch.setattr(macalias, command, broken)
+    assert macalias.main(argv) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"error": "internal", "detail": "ValueError: no such thing"}
+    assert captured.out.count("\n") == 1 and captured.err == ""
+
+
 def _flush(cfg):
     return macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=lambda s: None)
 
@@ -2257,6 +2272,51 @@ def test_neighbors_busy_on_core_lock_not_logged(env, logged):
     assert [message for _priority, message in logged[0]] == ["neighbors: 1 added (2001:db8::7), 0 removed"]
     assert _state(cfg) == ("ok", 5060.0, False)
     _locks_free(cfg)
+
+
+def test_neighbors_waits_its_own_five_seconds_for_core_lock_not_the_flushs_fifteen(env):
+    # a root process each minute must not queue behind core's lock for long: the wait is the tick's own, measured
+    # here through the sleeps it asks for
+    cfg, tmp = env
+    cfg.update(lock_timeout=15.0, neighbors_lock_timeout=5.0, lock_retry=0.25)
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    slept = []
+    with open(cfg["lock_file"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = macalias.cmd_neighbors(cfg, clock=lambda: 5000.0, sleep=slept.append)
+    assert out == {"error": "busy", "detail": "alias update lock held for 5.0s"}
+    assert 5.0 <= sum(slept) < 5.0 + cfg["lock_retry"] and set(slept) == {0.25}
+    # the flush waits its own, longer time
+    del slept[:]
+    with open(cfg["lock_file"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = macalias.cmd_flush(cfg, clock=lambda: 5000.0, sleep=slept.append)
+    assert out["error"] == "busy" and 15.0 <= sum(slept) < 15.0 + cfg["lock_retry"]
+
+
+def test_neighbors_plan_under_the_lock_is_made_from_the_locked_read(env, monkeypatch):
+    # between the read without a lock and the lock, a flush wrote the key: the plan of the first read (add it)
+    # is not the one applied. The read under the lock finds nothing to change, so nothing is written
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    seeded = dict(SEEDED, **{_nkey("2001:db8::7"): _nentry("2001:db8::7", 4999.0)})
+    _whole_cache_at_the_lock(monkeypatch, tmp, seeded)
+    writes = []
+    real_write = macalias._write_json_atomic
+    monkeypatch.setattr(macalias, "_write_json_atomic",
+                        lambda path, *args, **kwargs: (writes.append(path), real_write(path, *args, **kwargs)))
+    assert _tick(cfg) == _ok(keys=1)
+    assert cfg["cache_file"] not in writes
+    assert _cache(tmp) == seeded
+    _locks_free(cfg)
+
+    # and the other way: the key the first read saw is gone at the lock, where another address is to be removed
+    monkeypatch.undo()
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7"), ("dd:ee:ff:00:00:03", "2001:db8::9")])
+    _whole_cache_at_the_lock(monkeypatch, tmp, dict(OWN, **{_nkey("2001:db8::9"): _nentry("2001:db8::9", 4000.0)}))
+    assert _tick(cfg, now=5060.0) == _ok(changed=True, added=1, removed=1, keys=1, samples=["2001:db8::7"])
+    assert _cache(tmp) == dict(OWN, **{_nkey("2001:db8::7"): _nentry("2001:db8::7", 5060.0)})
 
 
 def _whole_cache_at_the_lock(monkeypatch, tmp, cache):

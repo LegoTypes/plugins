@@ -154,8 +154,10 @@ def test_the_neighbor_table_is_a_muted_line_and_never_a_banner_in_normal_operati
     assert ("        function neighborsText(data) {\n"
             "            var n = data.neighbors;\n"
             "            if (!n) return '';\n"
-            "            if (!n.enabled) return \"{{ lang._('Neighbor table: off (the setting below turns it on)') }}\";\n"
-            "            if (data.source === 'arp-ndp') return \"{{ lang._('Neighbor table: not used (host discovery is "
+            "            if (!n.enabled) return \"{{ lang._('Neighbor table: off (the setting below turns it on)') "
+            "}}\";\n"
+            "            if (data.source === 'arp-ndp') return \"{{ lang._('Neighbor table: not used (host discovery "
+            "is "
             "off)') }}\";\n"
             "            if (data.source !== 'discovery') return '';\n"
             "            return \"{{ lang._('Neighbor table: on,') }} \" + n.keys + ' ' + (n.keys === 1\n"
@@ -197,7 +199,8 @@ def test_neighbor_only_problems_show_only_while_the_neighbor_table_is_in_use():
             "        }\n") in block
     assert ("                $.each(data.problems || [], function (i, p) {\n"
             "                    if (neighborItems.indexOf(p.item) >= 0 && !inUse) return;\n"
-            "                    banners.push(banner(p.blocks_flush ? 'danger' : 'warning', plain(p.problem || p.item)));\n"
+            "                    banners.push(banner(p.blocks_flush ? 'danger' : 'warning', "
+            "plain(p.problem || p.item)));\n"
             "                });\n") in block
     # the two conditions status computes are warnings on the same terms, and none blocks anything
     assert ("                if (inUse && data.neighbors.stale) {\n"
@@ -216,14 +219,16 @@ def test_the_page_names_the_neighbor_table_where_it_describes_what_a_flush_does(
     assert "the IPv6 addresses the neighbor table has for a listed MAC and host discovery lacks" in body()
     assert ("{{ lang._('Rebuild all MAC aliases and the aliases nesting them from current host discovery data and the "
             "neighbor table? Addresses no longer reported will be removed from firewall rules.') }}") in text
-    assert ("busy: \"{{ lang._('Another flush, an alias refresh or the neighbor table update is running. Try again in a "
+    assert ("busy: \"{{ lang._('Another flush, an alias refresh or the neighbor table update is running. Try again in "
+            "a "
             "moment.') }}\",") in text
 
 
 def test_the_flush_result_says_when_the_neighbor_addresses_were_not_added():
     block = script()
     assert ("                if (data.neighbors && data.neighbors.skipped === 'neighbors_unavailable') {\n"
-            "                    built.push(banner('warning', \"{{ lang._('The neighbor table could not be read, so its "
+            "                    built.push(banner('warning', \"{{ lang._('The neighbor table could not be read, so "
+            "its "
             "addresses were not added by this flush. The next minute adds them.') }}\"));\n"
             "                }\n") in block
 
@@ -265,7 +270,8 @@ def test_apply_says_when_the_change_acts_within_a_minute():
     block = script()
     assert ("        function applied(data) {\n"
             "            var busy = data && data.neighbors && data.neighbors.error === 'busy';\n"
-            "            $('#apply-note').text(busy ? \"{{ lang._('The setting is saved. Another update was running, so "
+            "            $('#apply-note').text(busy ? \"{{ lang._('The setting is saved. Another update was running, "
+            "so "
             "the change acts within a minute.') }}\" : '').toggle(!!busy);\n"
             "        }\n") in block
     assert '<div class="alert alert-info" id="apply-note" style="display: none;"></div>' in body()

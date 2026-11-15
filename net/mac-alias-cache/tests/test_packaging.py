@@ -135,8 +135,9 @@ def test_the_form_is_the_one_checkbox_with_plain_help():
 def test_reconfigure_renders_the_file_then_runs_one_tick_and_refuses_a_read_only_user():
     service = text_of(MVC, "controllers", "OPNsense", "MacAliasCache", "Api", "ServiceController.php")
     body = service.split("public function reconfigureAction()", 1)[1].split("\n    }\n", 1)[0]
-    steps = ["$this->request->isPost()", "$this->throwReadOnly();", "configdRun('template reload OPNsense/MacAliasCache')",
-             "!== 'OK'", "configdRun('macaliascache neighbors')"]
+    steps = ["$this->request->isPost()", "$this->throwReadOnly();",
+             "configdRun('template reload OPNsense/MacAliasCache')", "!== 'OK'",
+             "configdRun('macaliascache neighbors')"]
     positions = [body.index(step) for step in steps]
     assert positions == sorted(positions)
     assert body.count("return ['status' => 'failed'];") == 2
