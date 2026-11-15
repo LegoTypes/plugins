@@ -1,5 +1,9 @@
-# A real removal: the rendered settings file and the plugin's runtime state go with its files. An upgrade keeps them, so
-# the new version runs on with the setting as rendered and the tick's record.
+# A real removal: the rendered settings file and the plugin's runtime state go with its files, and so does the
+# compiled Python that root's runs of the scripts left beside them, which pkg does not own and which keeps the
+# scripts' directory from being removed. An upgrade keeps them all, so the new version runs on with the setting as
+# rendered and the tick's record.
 if [ -z "${PKG_UPGRADE:-}" ]; then
-    rm -rf /usr/local/etc/macaliascache.conf /var/run/macaliascache
+    rm -rf /usr/local/etc/macaliascache.conf /var/run/macaliascache \
+        /usr/local/opnsense/scripts/OPNsense/MacAliasCache/__pycache__
+    rmdir /usr/local/opnsense/scripts/OPNsense/MacAliasCache 2> /dev/null || true
 fi

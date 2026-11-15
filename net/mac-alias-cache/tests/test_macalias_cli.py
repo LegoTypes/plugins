@@ -2114,6 +2114,7 @@ def test_neighbors_defaults_are_the_box_and_the_specified_limits():
     assert (defaults["ndp_timeout"], defaults["ndp_max_bytes"]) == (5.0, 1048576)
     assert defaults["settings_file"] == "/usr/local/etc/macaliascache.conf"
     assert defaults["neighbors_lock_timeout"] == 5.0
+    assert defaults["neighbors_remove_wait"] == 10.0
     # ndp is a program of its own, not one of core's files
     assert "ndp" not in defaults["core_files"]
 
@@ -2192,6 +2193,38 @@ def test_neighbors_busy_on_own_lock(env, logged):
     assert not (tmp / "ndp_args").exists()
     assert not _neighbors_file(cfg).exists()
     assert logged[0] == []
+
+
+def test_neighbors_remove_waits_for_a_running_tick(env):
+    # the package's removal must not lose to the minute's tick: it waits for the tick's own lock, up to 10 s,
+    # where a tick answers busy at once
+    cfg, tmp = env
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    os.makedirs(cfg["state_dir"], 0o700, exist_ok=True)
+    slept = []
+    with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 3:
+                fcntl.flock(held, fcntl.LOCK_UN)
+
+        out = macalias.cmd_neighbors(cfg, clock=lambda: 5000.0, sleep=sleep, remove_all=True)
+    assert out == _ok(changed=True, removed=1)
+    assert slept == [cfg["lock_retry"]] * 3
+    assert _cache(tmp) == OWN
+    _locks_free(cfg)
+
+    # a lock held for longer than that is busy, with nothing changed
+    _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
+    del slept[:]
+    with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = macalias.cmd_neighbors(cfg, clock=lambda: 5060.0, sleep=slept.append, remove_all=True)
+    assert out == {"error": "busy", "detail": "another neighbor tick held its lock for 10.0s"}
+    assert 10.0 <= sum(slept) < 10.0 + cfg["lock_retry"] and set(slept) == {cfg["lock_retry"]}
+    assert _nkey("2001:db8::7") in _cache(tmp)
 
 
 def test_neighbors_tick_and_flush_do_not_share_a_lock(env):

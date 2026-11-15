@@ -69,6 +69,7 @@ class Config(TypedDict):
     lock_timeout: float
     lock_retry: float
     neighbors_lock_timeout: float
+    neighbors_remove_wait: float
     min_interval: float
     update_timeout: int
 
@@ -100,6 +101,8 @@ DEFAULTS: Config = {
     "lock_retry": 0.25,
     # the tick runs at second 30, off core's own run at second 0, so core's lock is free when it asks
     "neighbors_lock_timeout": 5.0,
+    # `neighbors remove`, the package's removal, waits this long for a tick that is running
+    "neighbors_remove_wait": 10.0,
     "min_interval": 10.0,
     "update_timeout": 60,
 }
@@ -848,24 +851,31 @@ def cmd_status(cfg, now):
     }
 
 
-def _acquire_state_lock(path, item, name, blocks_flush):
-    """ a lock of the plugin's own in the state directory, never waited for: the handle, None when
-    it is held, or the problem of its item when the path cannot be opened safely
+def _acquire_state_lock(path, item, name, blocks_flush, sleep=None, wait=0.0, retry=0.25):
+    """ a lock of the plugin's own in the state directory: the handle, None when it is held, or the problem
+    of its item when the path cannot be opened safely. It is not waited for, unless wait says for how many
+    seconds, asked again every retry seconds through sleep
     """
     fd = _open_lock(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, 0o600)
     if fd is None:
         return _problem(item, "the plugin's %s lock at %s is not a regular file with one link "
                               "that the plugin can open safely" % (name, path), blocks_flush)
     handle = _fdopen(fd, "w")
+    waited = 0.0
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        handle.close()
-        return None
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return handle
+            except BlockingIOError:
+                if sleep is None or waited >= wait:
+                    handle.close()
+                    return None
+            sleep(retry)
+            waited += retry
     except BaseException:
         handle.close()
         raise
-    return handle
 
 
 def acquire_plugin_lock(cfg):
@@ -876,13 +886,14 @@ def acquire_plugin_lock(cfg):
     return refusal([lock]) if isinstance(lock, dict) else lock
 
 
-def acquire_neighbors_lock(cfg: Config) -> TextIO | NeighborsError | None:
+def acquire_neighbors_lock(cfg: Config, sleep=None, wait: float = 0.0) -> TextIO | NeighborsError | None:
     """ the neighbor tick's own lock in the state directory, so ticks never pile up and the Flush button
-    never answers busy because of one: the handle, None when another tick holds it (no waiting), or the
-    tick's state_unusable reply when the path cannot be opened safely
+    never answers busy because of one: the handle, None when another tick holds it, or the tick's
+    state_unusable reply when the path cannot be opened safely. A tick does not wait for it; the package's
+    removal does, for wait seconds, so it does not lose to the minute's tick
     """
     lock: TextIO | dict[str, object] | None = _acquire_state_lock(
-        state_paths(cfg)["neighbors_lock"], "neighbors_lock", "neighbor", False)
+        state_paths(cfg)["neighbors_lock"], "neighbors_lock", "neighbor", False, sleep, wait, cfg["lock_retry"])
     return neighbors_refusal([lock]) if isinstance(lock, dict) else lock
 
 
@@ -1203,9 +1214,12 @@ def _tick(cfg: Config, clock, sleep, remove_all: bool) -> NeighborsDone | Neighb
         # nowhere to record it: status shows the problem
         return {"error": "state_unusable", "detail": problem["problem"]}
     # one tick at a time, and never the flush lock: a second tick answers at once, and leaves the record
-    # to the tick that holds the lock
-    own_lock = acquire_neighbors_lock(cfg)
+    # to the tick that holds the lock; the removal waits for that tick to end
+    wait = cfg["neighbors_remove_wait"] if remove_all else 0.0
+    own_lock = acquire_neighbors_lock(cfg, sleep, wait)
     if own_lock is None:
+        if remove_all:
+            return {"error": "busy", "detail": "another neighbor tick held its lock for %ss" % wait}
         return {"error": "busy", "detail": "another neighbor tick is running"}
     if isinstance(own_lock, dict):
         _keep_neighbors_record(cfg, own_lock, now)

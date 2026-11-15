@@ -1,4 +1,5 @@
 import os
+import pathlib
 import re
 import stat
 import subprocess
@@ -149,30 +150,148 @@ def hook(name):
     return text_of(PLUGIN, name)
 
 
-def test_a_real_removal_takes_the_keys_out_of_cores_cache_and_an_upgrade_keeps_them():
-    text = hook("+PRE_DEINSTALL.pre")
-    assert text.startswith("#!/bin/sh\n")
-    lines = code_lines(text)
-    # everything the hook does is inside the one guard: a real removal, with the script still there
-    assert lines[0] == 'if [ -z "${PKG_UPGRADE:-}" ] && [ -x %s ]; then' % SCRIPT
-    assert lines[-1] == "fi"
-    assert all(line.startswith("    ") for line in lines[1:-1])
-    body = "\n".join(lines[1:-1])
-    # the setting is turned off in the rendered file first, so a tick of cron's that starts meanwhile removes too
-    assert body.index("printf '[general]\\nneighbors=0\\n' > %s" % SETTINGS_FILE) < body.index("neighbors remove")
-    assert "%s neighbors remove" % SCRIPT in body
-    assert lib.parse_setting("[general]\nneighbors=0\n") is False
-    # a package script must not fail the removal
-    assert "|| true" in body
+SCRIPTS_DIR = os.path.dirname(SCRIPT)
+BUSY = '{"error": "busy", "detail": "alias update lock held for 5.0s"}'
+REMOVED = '{"result": "ok", "changed": true, "added": 0, "removed": 2, "refreshed": 0, "keys": 0, "over_limit": 0, ' \
+    '"samples": []}'
+REFUSED = '{"error": "core_changed", "detail": "core changed"}'
 
 
-def test_a_real_removal_leaves_no_settings_file_and_no_state():
-    text = hook("+POST_DEINSTALL.post")
-    lines = code_lines(text)
-    assert lines == ['if [ -z "${PKG_UPGRADE:-}" ]; then', "    rm -rf %s %s" % (SETTINGS_FILE, STATE_DIR), "fi"]
+def run_hook(name, tmp_path, env=None):
+    """ the package script name run by sh as pkg runs it, with every path of the box it names pointed into
+    tmp_path, and a sleep of the harness's own first on PATH that records its arguments and returns at once
+    """
+    for path in (SCRIPT, SCRIPTS_DIR, SETTINGS_FILE):
+        assert path.startswith("/usr/local/")
+    assert STATE_DIR.startswith("/var/run/") and "/usr/local/" not in str(tmp_path) and "/var/run/" not in str(tmp_path)
+    text = hook(name).replace("/var/run/", "%s/var/run/" % tmp_path).replace("/usr/local/", "%s/usr/local/" % tmp_path)
+    script = tmp_path / "hook.sh"
+    script.write_text(text)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    sleeper = bin_dir / "sleep"
+    sleeper.write_text('#!/bin/sh\necho "$@" >> "%s/sleeps"\n' % tmp_path)
+    sleeper.chmod(0o755)
+    run_env = {"PATH": "%s:/bin:/usr/bin" % bin_dir}
+    run_env.update(env or {})
+    proc = subprocess.run(["/bin/sh", str(script)], capture_output=True, text=True, env=run_env, timeout=30)
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout
+
+
+def fake_removal(tmp_path, replies, executable=True):
+    """ a macalias.py at the installed path under tmp_path that records its arguments and prints the next of
+    replies on each call, nothing once they are used up
+    """
+    script = pathlib.Path(str(tmp_path) + SCRIPT)
+    script.parent.mkdir(parents=True)
+    pathlib.Path(str(tmp_path) + os.path.dirname(SETTINGS_FILE)).mkdir(parents=True)
+    for number, reply in enumerate(replies, 1):
+        (tmp_path / ("reply.%d" % number)).write_text(reply + "\n")
+    script.write_text(
+        '#!/bin/sh\necho "$@" >> "%s/calls"\nn=$(grep -c . "%s/calls")\n'
+        '[ -f "%s/reply.$n" ] && cat "%s/reply.$n"\nexit 0\n' % ((tmp_path,) * 4))
+    script.chmod(0o755 if executable else 0o644)
+
+
+def lines_of(tmp_path, name):
+    path = tmp_path / name
+    return path.read_text().splitlines() if path.exists() else []
+
+
+def setting_written(tmp_path):
+    path = pathlib.Path(str(tmp_path) + SETTINGS_FILE)
+    return path.read_text() if path.exists() else None
+
+
+def test_a_real_removal_takes_the_keys_out_of_cores_cache_and_an_upgrade_keeps_them(tmp_path):
+    assert hook("+PRE_DEINSTALL.pre").startswith("#!/bin/sh\n")
+    fake_removal(tmp_path, [REMOVED])
+    assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
+    # the setting is off in the rendered file, so a tick of cron's that starts meanwhile removes too
+    assert setting_written(tmp_path) == "[general]\nneighbors=0\n"
+    assert lib.parse_setting(setting_written(tmp_path)) is False
+    assert lines_of(tmp_path, "calls") == ["neighbors remove"]
+    assert lines_of(tmp_path, "sleeps") == []
+
+
+def test_an_upgrade_runs_no_removal(tmp_path):
+    fake_removal(tmp_path, [REMOVED])
+    assert run_hook("+PRE_DEINSTALL.pre", tmp_path, {"PKG_UPGRADE": "1"}) == ""
+    assert lines_of(tmp_path, "calls") == [] and setting_written(tmp_path) is None
+
+
+def test_a_removal_without_the_script_does_nothing(tmp_path):
+    fake_removal(tmp_path, [REMOVED], executable=False)
+    assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
+    assert lines_of(tmp_path, "calls") == [] and setting_written(tmp_path) is None
+
+
+def test_the_removal_asks_again_while_the_answer_is_busy(tmp_path):
+    # core's own alias update can hold its lock for longer than the removal waits for it
+    fake_removal(tmp_path, [BUSY, BUSY, REMOVED])
+    assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
+    assert lines_of(tmp_path, "calls") == ["neighbors remove"] * 3
+    assert lines_of(tmp_path, "sleeps") == ["2", "2"]
+
+
+def test_a_removal_that_stays_busy_gives_up_with_one_line_and_no_last_sleep(tmp_path):
+    fake_removal(tmp_path, [BUSY] * 6)
+    out = run_hook("+PRE_DEINSTALL.pre", tmp_path)
+    assert lines_of(tmp_path, "calls") == ["neighbors remove"] * 3
+    assert lines_of(tmp_path, "sleeps") == ["2", "2"]
+    assert out.splitlines() == [
+        "os-mac-alias-cache: the plugin's keys were not removed from core's MAC alias cache and expire there within "
+        "12 hours: " + BUSY]
+
+
+def test_a_removal_that_is_refused_or_answers_nothing_says_so_in_one_line(tmp_path):
+    fake_removal(tmp_path, [REFUSED])
+    out = run_hook("+PRE_DEINSTALL.pre", tmp_path)
+    assert lines_of(tmp_path, "calls") == ["neighbors remove"] and lines_of(tmp_path, "sleeps") == []
+    assert out.splitlines() == [
+        "os-mac-alias-cache: the plugin's keys were not removed from core's MAC alias cache and expire there within "
+        "12 hours: " + REFUSED]
+    (tmp_path / "reply.1").unlink()
+    (tmp_path / "calls").unlink()
+    out = run_hook("+PRE_DEINSTALL.pre", tmp_path)
+    assert out.splitlines() == [
+        "os-mac-alias-cache: the plugin's keys were not removed from core's MAC alias cache and expire there within "
+        "12 hours: no reply"]
+
+
+def leftovers(tmp_path):
+    """ what the package does not own and a removal must not leave: the rendered settings file, the state
+    directory with a record, and the compiled Python root's runs made beside the scripts
+    """
+    made = [pathlib.Path(str(tmp_path) + SETTINGS_FILE), pathlib.Path(str(tmp_path) + STATE_DIR) / "neighbors.json",
+            pathlib.Path(str(tmp_path) + SCRIPTS_DIR) / "__pycache__" / "macaliascache_lib.cpython-311.pyc"]
+    for path in made:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x")
+    return [made[0], made[1].parent, made[2].parent, made[2].parent.parent]
+
+
+def test_a_real_removal_leaves_no_settings_file_no_state_and_no_compiled_python(tmp_path):
+    paths = leftovers(tmp_path)
+    assert run_hook("+POST_DEINSTALL.post", tmp_path) == ""
+    assert [path for path in paths if path.exists()] == []
     assert macalias.DEFAULTS["state_dir"] == STATE_DIR
     # the saved setting is the user's and stays in the configuration
-    assert "config.xml" not in text and "config.xml" not in hook("+PRE_DEINSTALL.pre")
+    assert "config.xml" not in hook("+POST_DEINSTALL.post") and "config.xml" not in hook("+PRE_DEINSTALL.pre")
+
+
+def test_a_removal_leaves_a_scripts_directory_that_holds_something_else(tmp_path):
+    paths = leftovers(tmp_path)
+    (paths[3] / "kept").write_text("x")
+    assert run_hook("+POST_DEINSTALL.post", tmp_path) == ""
+    assert [path.name for path in paths if path.exists()] == ["MacAliasCache"]
+
+
+def test_an_upgrade_keeps_the_settings_file_the_state_and_the_compiled_python(tmp_path):
+    paths = leftovers(tmp_path)
+    assert run_hook("+POST_DEINSTALL.post", tmp_path, {"PKG_UPGRADE": "1"}) == ""
+    assert [path for path in paths if not path.exists()] == []
 
 
 def test_the_package_scripts_are_valid_sh():
