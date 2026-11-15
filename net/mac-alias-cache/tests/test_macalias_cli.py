@@ -2477,7 +2477,7 @@ def test_neighbors_ndp_unreadable(env, monkeypatch, kind):
         "fails": "exit 1\n",
         "fails-after-json": "echo '%s'\nexit 1\n" % good,
         "non-json": "echo 'Neighbor Linklayer Address Netif Expire S Flags'\n",
-        "other-shape": "echo '{\"ndp\": {}}'\n",
+        "other-shape": "echo '{\"ndp\": {\"neighbor-cache\": {}}}'\n",
         "over-the-limit": "echo '%s'\nhead -c 4096 /dev/zero | tr '\\0' ' '\n" % good,
         "times-out": "echo '%s'\nexec sleep 30\n" % good,
         "cannot-start": "exit 0\n",
@@ -2511,6 +2511,40 @@ def test_read_neighbors_reads_the_table_up_to_the_limit(env):
     assert macalias.read_neighbors(cfg) == [(NMAC, "2001:db8::7"), (NMAC, "fe80::7")]
     cfg["ndp_max_bytes"] -= 1
     assert macalias.read_neighbors(cfg) is None
+
+
+def test_neighbors_table_without_a_row_is_an_empty_table(env):
+    # ndp's reply with no neighbor at all is read, not unreadable: nothing is wanted, and a key whose address
+    # left the table is left to core's 12 h as with any other table
+    cfg, tmp = env
+    (tmp / "ndp.json").write_text('{"ndp": {}}')
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
+    assert macalias.read_neighbors(cfg) == []
+    assert _tick(cfg) == _ok(keys=1)
+    assert _flush(cfg)["neighbors"] == {"added": 0, "over_limit": 0}
+
+
+def test_neighbors_never_writes_an_address_no_host_can_have(env):
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "::"), (NMAC, "::1"), (NMAC, "ff02::1"), (NMAC, "::ffff:192.0.2.1"),
+                          (NMAC, "2001:db8::7")])
+    assert _tick(cfg) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    assert _cache(tmp) == dict(OWN, **{_nkey("2001:db8::7"): _nentry("2001:db8::7", 5000.0)})
+
+
+def test_neighbors_limit_bounds_what_the_cache_holds_over_time(env):
+    # 32 fresh addresses of the listed MAC each minute, the minute before's gone from the table: the cache never
+    # holds more than 32 keys of the MAC, and the tick says what it removed for them
+    cfg, tmp = env
+    for minute in range(4):
+        _neighbor_table(tmp, [(NMAC, "2001:db8:%x::%x" % (minute + 1, n)) for n in range(1, 33)])
+        out = _tick(cfg, now=5000.0 + 60 * minute)
+        assert (out["added"], out["removed"], out["keys"], out["over_limit"]) == (32, 32 if minute else 0, 32, 0)
+        assert sorted(_cache(tmp)) == sorted([NMAC] + [_nkey("2001:db8:%x::%x" % (minute + 1, n)) for n in range(1, 33)])
+    # a table that shrinks keeps the newest of the old keys in the room left
+    _neighbor_table(tmp, [(NMAC, "2001:db8:9::%x" % n) for n in range(1, 31)])
+    out = _tick(cfg, now=5300.0)
+    assert (out["added"], out["removed"], out["keys"]) == (30, 30, 32)
 
 
 def test_neighbors_ndp_not_executable_is_a_problem_and_refuses(env):
@@ -3083,7 +3117,7 @@ def test_flush_reads_neighbors_before_core_lock(env, monkeypatch):
     assert events.index("write arp.cache") > events.index("lock")
 
 
-@pytest.mark.parametrize("body", ["exit 1\n", "echo not-json\n", "echo '{\"ndp\": {}}'\n"],
+@pytest.mark.parametrize("body", ["exit 1\n", "echo not-json\n", "echo '{\"ndp\": []}'\n"],
                          ids=["fails", "non-json", "other-shape"])
 def test_flush_neighbors_unreadable_flushes_as_before(env, body):
     cfg, tmp = env

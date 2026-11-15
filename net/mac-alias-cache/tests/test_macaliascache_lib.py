@@ -1,4 +1,5 @@
 import copy
+import ipaddress
 import json
 import os
 
@@ -626,6 +627,8 @@ def test_parse_neighbors_rows():
         ndp_row("2001:db8::2", MAC1),
         ndp_row("2001:db8::9", "(incomplete)"),
         ndp_row("192.0.2.5", MAC1),
+        ndp_row("::", MAC1), ndp_row("::1", MAC1), ndp_row("ff02::1", MAC1), ndp_row("ff02::1:ff00:77%vlan0.10", MAC1),
+        ndp_row("::ffff:192.0.2.5", MAC1), ndp_row("::ffff:c000:205", MAC1),
         ndp_row("laptop.lan", MAC1),
         ndp_row("%vlan0.10", MAC1),
         ndp_row(5, MAC1), ndp_row(True, MAC1), ndp_row(None, MAC1), ndp_row(["2001:db8::7"], MAC1),
@@ -635,18 +638,28 @@ def test_parse_neighbors_rows():
         ["2001:db8::8", MAC1], "2001:db8::8 " + MAC1, None, 7, True,
     ])
     # a static row is used, the MAC is lowered, the zone is cut, the address is canonical, a pair is listed once;
-    # an incomplete row, an IPv4 row and every row of another shape are skipped
+    # an incomplete row, an IPv4 row, an address no host can have (unspecified, loopback, multicast, IPv4-mapped)
+    # and every row of another shape are skipped
     assert lib.parse_neighbors(text) == [(MAC1, "2001:db8::2"), (MAC1, "fe80::1"), (MAC2, "2001:db8::1")]
     assert lib.parse_neighbors(ndp_text([])) == []
 
 
 @pytest.mark.parametrize("text", [
-    "", "not-json", "[]", "5", "null", '"ndp"', '{"ndp": []}', '{"ndp": {}}', '{"ndp": {"neighbor-cache": {}}}',
-    '{"ndp": {"neighbor-cache": "x"}}', '{"neighbor-cache": []}', "[" * 200000,
-], ids=["empty", "not-json", "list", "number", "null", "string", "ndp-list", "no-cache", "cache-object", "cache-string",
-        "no-ndp", "nested-beyond-the-parser"])
+    "", "not-json", "[]", "5", "null", '"ndp"', '{"ndp": []}', '{"ndp": null}', '{"ndp": {"neighbor-cache": {}}}',
+    '{"ndp": {"neighbor-cache": "x"}}', '{"ndp": {"neighbor-cache": null}}', '{"neighbor-cache": []}', "{}",
+    "[" * 200000,
+], ids=["empty", "not-json", "list", "number", "null", "string", "ndp-list", "ndp-null", "cache-object", "cache-string",
+        "cache-null", "no-ndp", "empty-object", "nested-beyond-the-parser"])
 def test_parse_neighbors_refuses_text_of_another_shape(text):
     assert lib.parse_neighbors(text) is None
+
+
+def test_parse_neighbors_without_a_neighbor_cache_is_an_empty_table():
+    # ndp's reply with no row to list: its own object is there, the list is not. A table that could not be read
+    # is another thing, and never taken for this one
+    assert lib.parse_neighbors('{"ndp": {}}') == []
+    assert lib.parse_neighbors('{"__version": "1", "ndp": {}}') == []
+    assert lib.parse_neighbors('{"ndp": {"neighbor-cache": []}}') == []
 
 
 def test_host_pairs_are_lower_case_and_canonical():
@@ -660,7 +673,7 @@ def test_neighbor_key_round_trip():
     assert lib.neighbor_key(MAC1, "2001:db8::2") == "aa:bb:cc:00:00:01#2001:db8::2"
     assert lib.parse_neighbor_key("aa:bb:cc:00:00:01#2001:db8::2") == (MAC1, "2001:db8::2")
     pairs = lib.parse_neighbors(ndp_text([
-        ndp_row("2001:DB8::00A2", "AA:BB:CC:00:00:01"), ndp_row("fe80::1%vlan0.10", MAC2), ndp_row("::1", MAC3)]))
+        ndp_row("2001:DB8::00A2", "AA:BB:CC:00:00:01"), ndp_row("fe80::1%vlan0.10", MAC2), ndp_row("fd00::3", MAC3)]))
     assert len(pairs) == 3
     for pair in pairs:
         assert lib.parse_neighbor_key(lib.neighbor_key(*pair)) == pair
@@ -672,9 +685,11 @@ def test_neighbor_key_round_trip():
     "aa:bb:cc:00:00:01:02#2001:db8::1", "aa:bb:cc:00:00:01 2001:db8::1", "aa:bb:cc:00:00:01#2001:db8::1#2001:db8::2",
     "aa:bb:cc:00:00:01#fe80::1%hn0", "aa:bb:cc:00:00:01#", "#2001:db8::1", "aa:bb:cc:00:00:01#2001:db8::1\n",
     "aa:bb:cc:00:00:01#laptop.lan", "", None, 5, True, b"aa:bb:cc:00:00:01#2001:db8::1", (MAC1, "2001:db8::1"),
+    "aa:bb:cc:00:00:01#::", "aa:bb:cc:00:00:01#::1", "aa:bb:cc:00:00:01#ff02::1", "aa:bb:cc:00:00:01#::ffff:192.0.2.5",
+    "aa:bb:cc:00:00:01#::ffff:c000:205",
 ], ids=["upper-case-mac", "upper-case-address", "address-not-shortest", "ipv4", "no-separator", "mac-of-16",
         "mac-of-20", "space", "two-separators", "zone", "no-address", "no-mac", "newline", "name", "empty", "none",
-        "int", "bool", "bytes", "pair"])
+        "int", "bool", "bytes", "pair", "unspecified", "loopback", "multicast", "ipv4-mapped", "ipv4-mapped-hex"])
 def test_parse_neighbor_key_refuses(value):
     # a key called ours is one neighbor_key could have written
     assert lib.parse_neighbor_key(value) is None
@@ -722,7 +737,8 @@ def test_wanted_disabled_alias():
 
 def test_wanted_ignores_a_neighbor_that_is_not_ipv6():
     tables = lib.parse_tables(ONE_MAC_XML)
-    assert lib.wanted_neighbors(tables, set(), [(MAC1, "192.0.2.5"), (MAC1, "laptop.lan"), (MAC1, "2001:db8::1")],
+    assert lib.wanted_neighbors(tables, set(), [(MAC1, "192.0.2.5"), (MAC1, "laptop.lan"), (MAC1, "2001:db8::1"),
+                                                (MAC1, "::"), (MAC1, "::1"), (MAC1, "ff02::1")],
                                 set()) == ([key(MAC1, "2001:db8::1")], 0)
 
 
@@ -736,9 +752,12 @@ def test_wanted_limits_stable():
     expected = sorted(key(MAC1, ip) for ip in addresses[:29] + addresses[37:])
     assert lib.wanted_neighbors(tables, set(), neighbors, held) == (expected, 8)
     assert lib.wanted_neighbors(tables, set(), neighbors, set(expected)) == (expected, 8)
-    # a held key that is no candidate takes no place
-    assert lib.wanted_neighbors(tables, set(), neighbors, held | {key(MAC1, "2001:db8::ffff"), key(MAC2, "fe80::2")}
-                                ) == (expected, 8)
+    # a held key whose address has left the table takes no place among the addresses now in it: those come first.
+    # It takes what room they leave, which here is none, so the plan removes it; the other MAC's key has room
+    gone, other = key(MAC1, "2001:db8::ffff"), key(MAC2, "fe80::2")
+    assert lib.wanted_neighbors(tables, set(), neighbors, held | {gone, other}) == (expected, 8)
+    cache = {name: entry(name.split("#")[1], 5000.0) for name in held | {gone, other}}
+    assert lib.neighbor_plan(cache, expected, set(), set(neighbors), 5000.0)["remove"] == [gone]
     # more held than the limit: the lowest held
     everything = {key(MAC1, ip) for ip in addresses}
     assert lib.wanted_neighbors(tables, set(), neighbors, everything) == (
@@ -987,3 +1006,122 @@ def test_neighbor_addresses_are_the_keys_addresses_lowest_first():
             "odd", MAC1, "AA:BB:CC:00:00:01#2001:db8::1"]
     assert lib.neighbor_addresses(keys) == ["2001:db8::2", "2001:db8::10", "fe80::1"]
     assert lib.neighbor_addresses([]) == []
+
+
+# the limits bound what the cache holds: rule (d) of the plan
+
+def test_plan_limit_keeps_the_newest_stale_keys_in_the_room_left():
+    # 30 addresses of the MAC are in the table and 5 keys of its addresses that left it are held: two of those fit
+    # under the limit of 32, the two seen last; one whose last_seen is no number goes before any that has one
+    now = 9000.0
+    current = ["2001:db8::%x" % n for n in range(1, 31)]
+    wanted = sorted(key(MAC1, ip) for ip in current)
+    cache = {name: entry(name.split("#")[1], now) for name in wanted}
+    stale = {key(MAC1, "2001:db8:1::1"): 8000.0, key(MAC1, "2001:db8:1::2"): 8600.0, key(MAC1, "2001:db8:1::3"): 8300.0,
+             key(MAC1, "2001:db8:1::4"): "8900", key(MAC1, "2001:db8:1::5"): 8100.0}
+    for name, seen in stale.items():
+        cache[name] = entry(name.split("#")[1], seen)
+    cache[MAC1] = {"items": ["192.0.2.50"], "last_seen": now}
+    neighbors = {(MAC1, ip) for ip in current}
+    plan = lib.neighbor_plan(cache, wanted, set(), neighbors, now)
+    assert plan == {"add": [], "refresh": [], "remove": [
+        key(MAC1, "2001:db8:1::1"), key(MAC1, "2001:db8:1::4"), key(MAC1, "2001:db8:1::5")]}
+    after = lib.apply_neighbor_plan(cache, plan, now)
+    assert lib.count_neighbor_keys(after) == 32
+    # the choice is the same once it is made
+    assert lib.neighbor_plan(after, wanted, set(), neighbors, now + 60) == {"add": [], "refresh": [], "remove": []}
+    # with a wider limit all five stay, with a narrower one none
+    assert lib.neighbor_plan(cache, wanted, set(), neighbors, now, per_mac=35)["remove"] == []
+    assert lib.neighbor_plan(cache, wanted, set(), neighbors, now, per_mac=30)["remove"] == sorted(stale)
+
+
+def test_plan_limit_counts_keys_to_add_before_stale_keys():
+    # the addresses now in the table come first, held or not: 32 new ones take every place of the MAC
+    now = 9000.0
+    old = [key(MAC1, "2001:db8:1::%x" % n) for n in range(1, 33)]
+    new = [key(MAC1, "2001:db8:2::%x" % n) for n in range(1, 33)]
+    cache = {name: entry(name.split("#")[1], now - 60) for name in old}
+    neighbors = {lib.parse_neighbor_key(name) for name in new}
+    plan = lib.neighbor_plan(cache, new, set(), neighbors, now)
+    assert plan == {"add": sorted(new), "refresh": [], "remove": sorted(old)}
+    assert lib.count_neighbor_keys(lib.apply_neighbor_plan(cache, plan, now)) == 32
+
+
+def test_plan_total_limit_counts_stale_keys():
+    # three MACs with two stale keys each and a total of 4: one wanted key, then the three stale keys seen last
+    now = 9000.0
+    macs = [MAC1, MAC2, "aa:bb:cc:00:00:09"]
+    cache = {}
+    for index, mac in enumerate(macs):
+        cache[key(mac, "2001:db8:1::1")] = entry("2001:db8:1::1", 8000.0 + index)
+        cache[key(mac, "2001:db8:1::2")] = entry("2001:db8:1::2", 8500.0 + index)
+    wanted = [key(MAC1, "2001:db8::1")]
+    plan = lib.neighbor_plan(cache, wanted, set(), {(MAC1, "2001:db8::1")}, now, total=4)
+    assert plan["add"] == wanted
+    assert plan["remove"] == sorted(key(mac, "2001:db8:1::1") for mac in macs)
+    assert lib.count_neighbor_keys(lib.apply_neighbor_plan(cache, plan, now)) == 4
+    # rules (a) and (b) come first: a key they remove takes no room from one that may stay
+    moved = {(MAC3, "2001:db8:1::2")}
+    plan = lib.neighbor_plan(cache, [], set(), moved, now, total=3)
+    assert plan["remove"] == sorted(key(mac, "2001:db8:1::2") for mac in macs)
+    assert lib.neighbor_plan({name: value for name, value in cache.items() if name.endswith("::1")}, [], set(), set(),
+                             now, total=2)["remove"] == [key(MAC1, "2001:db8:1::1")]
+
+
+def test_plan_default_limits_are_the_specified_ones():
+    now = 9000.0
+    cache = {key(MAC1, "2001:db8:1::%x" % n): entry("2001:db8:1::%x" % n, 8000.0 + n) for n in range(1, 41)}
+    removed = lib.neighbor_plan(cache, [], set(), set(), now)["remove"]
+    assert removed == sorted(key(MAC1, "2001:db8:1::%x" % n) for n in range(1, 9))
+    many = {key("aa:bb:cc:00:%02x:%02x" % (m // 256, m % 256), "2001:db8:1::1"): entry("2001:db8:1::1", 8000.0)
+            for m in range(1100)}
+    assert len(lib.neighbor_plan(many, [], set(), set(), now)["remove"]) == 1100 - 1024
+
+
+def canon(text):
+    return str(ipaddress.ip_address(text))
+
+
+def _minute(tables, cache, neighbors, now):
+    """ one tick's work on a cache: what is wanted, the plan, the cache after it """
+    wanted, over_limit = lib.wanted_neighbors(tables, set(), neighbors, cache)
+    plan = lib.neighbor_plan(cache, wanted, set(), set(neighbors), now)
+    return lib.apply_neighbor_plan(cache, plan, now), plan, over_limit
+
+
+def test_limits_bound_what_the_cache_holds_for_one_mac_over_time():
+    # 32 fresh addresses of one listed MAC each minute, the minute before's gone from the table: the keys of the
+    # MAC never pass 32, where each minute used to add 32 more for core's 12 hours
+    tables = lib.parse_tables(ONE_MAC_XML)
+    cache = {MAC1: {"items": ["192.0.2.50"], "last_seen": 0.0}}
+    for minute in range(12):
+        neighbors = [(MAC1, canon("2001:db8:0:%x::%x" % (minute, n))) for n in range(1, 33)]
+        cache, plan, over_limit = _minute(tables, cache, neighbors, minute * 60.0)
+        assert lib.count_neighbor_keys(cache) == 32, minute
+        assert (len(plan["add"]), len(plan["remove"]), over_limit) == (32, 32 if minute else 0, 0), minute
+    assert cache[MAC1] == {"items": ["192.0.2.50"], "last_seen": 0.0}
+    # addresses that come and go more slowly keep the newest of the old beside them
+    for minute in range(12, 16):
+        neighbors = [(MAC1, canon("2001:db8:0:%x::%x" % (minute, n))) for n in range(1, 11)]
+        cache, plan, over_limit = _minute(tables, cache, neighbors, minute * 60.0)
+        assert lib.count_neighbor_keys(cache) == 32, minute
+    held = sorted(lib.parse_neighbor_key(name)[1] for name in cache if lib.parse_neighbor_key(name))
+    assert held == sorted(["2001:db8:0:%x::%x" % (minute, n) for minute in (13, 14, 15) for n in range(1, 11)]
+                          + ["2001:db8:0:c::1", "2001:db8:0:c::2"])
+
+
+def test_limits_bound_what_the_cache_holds_for_a_prefix_entry_over_time():
+    # an entry that is a prefix of 40 MACs, each with 32 fresh addresses a minute: never more than 1024 in all, and
+    # what is left out is counted
+    tables = lib.parse_tables(PREFIX_XML)
+    cache = {}
+    for minute in range(5):
+        neighbors = [("aa:bb:cc:00:00:%02x" % m, canon("2001:db8:%x:%x::%x" % (m + 1, minute + 1, n)))
+                     for m in range(40) for n in range(1, 33)]
+        cache, plan, over_limit = _minute(tables, cache, neighbors, minute * 60.0)
+        assert lib.count_neighbor_keys(cache) == 1024, minute
+        assert over_limit == 40 * 32 - 1024, minute
+        per_mac = {}
+        for name in cache:
+            per_mac[name.split("#")[0]] = per_mac.get(name.split("#")[0], 0) + 1
+        assert max(per_mac.values()) <= 32, minute

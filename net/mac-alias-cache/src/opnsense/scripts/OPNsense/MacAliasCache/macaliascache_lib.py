@@ -87,7 +87,7 @@ CORE_FIXES = (
 NDP = "/usr/sbin/ndp"
 NDP_ARGV = (NDP, "-an", "--libxo", "json")
 NDP_MAX_BYTES = 1048576
-# the most keys of the plugin's own in core's cache: for one MAC, and in all
+# the most keys of the plugin's own that core's cache holds after a tick or a flush: for one MAC, and in all
 NEIGHBOR_MAX_PER_MAC = 32
 NEIGHBOR_MAX_TOTAL = 1024
 # a key still wanted is written again once its last_seen is this old, well inside core's 12 h; a record of the
@@ -279,18 +279,26 @@ def seed_cache(good, now):
 
 
 def _ipv6(text: str) -> ipaddress.IPv6Address | None:
-    """ text as an IPv6 address, None for anything else valid_ip takes or refuses """
+    """ text as an IPv6 address a host can have, None for anything else valid_ip takes or refuses and for an
+    address the kernel should never list as a neighbor: the unspecified one, loopback, multicast, IPv4-mapped.
+    Core loads its cache unchecked, so none of them is ever written there
+    """
     if not valid_ip(text):
         return None
     address = ipaddress.ip_address(text)
-    return address if isinstance(address, ipaddress.IPv6Address) else None
+    if not isinstance(address, ipaddress.IPv6Address):
+        return None
+    if address.is_unspecified or address.is_loopback or address.is_multicast or address.ipv4_mapped is not None:
+        return None
+    return address
 
 
 def parse_neighbors(text: str) -> list[Pair] | None:
     """ `ndp -an --libxo json` text -> the sorted pairs of its usable rows: a full MAC, lowered here because
     core compares its cache keys as written, and an IPv6 address in canonical form with its %zone cut as
     list_hosts.py cuts it. A static row is used, as core's own reading of the table uses it; an incomplete
-    row and a row of any other shape are skipped. None when the text is not {"ndp": {"neighbor-cache": [...]}}
+    row and a row of any other shape are skipped. None when the text is not {"ndp": {"neighbor-cache": [...]}};
+    an "ndp" object without "neighbor-cache" is ndp's reply with no row, an empty table
     """
     try:
         data = json.loads(text)
@@ -298,7 +306,9 @@ def parse_neighbors(text: str) -> list[Pair] | None:
     except (ValueError, RecursionError):
         return None
     table = data.get("ndp") if isinstance(data, dict) else None
-    rows = table.get("neighbor-cache") if isinstance(table, dict) else None
+    if not isinstance(table, dict):
+        return None
+    rows = table.get("neighbor-cache", [])
     if not isinstance(rows, list):
         return None
     pairs: set[Pair] = set()
@@ -352,11 +362,12 @@ def parse_neighbor_key(key: object) -> Pair | None:
 
 def wanted_neighbors(tables: Mapping[str, Table], hosts: set[Pair], neighbors: Iterable[Pair], held: Iterable[str],
                      per_mac: int = NEIGHBOR_MAX_PER_MAC, total: int = NEIGHBOR_MAX_TOTAL) -> tuple[list[str], int]:
-    """ (the sorted keys the cache should hold, how many more the limits cut): for every neighbor MAC an entry
-    of an enabled mac alias matches by core's prefix rule, each IPv6 address of the neighbor table that host
-    discovery does not list for that MAC. At most per_mac for one MAC, then at most total in all; over a limit
-    the keys already held come first, then the lowest addresses, the MACs in sorted order, so the same tables
-    and the cache this choice made give the same choice again
+    """ (the sorted keys the cache should hold and keep fresh, how many more the limits cut): for every
+    neighbor MAC an entry of an enabled mac alias matches by core's prefix rule, each IPv6 address of the
+    neighbor table that host discovery does not list for that MAC. At most per_mac for one MAC, then at most
+    total in all; over a limit the keys already held come first, then the lowest addresses, the MACs in sorted
+    order, so the same tables and the cache this choice made give the same choice again. A held key whose
+    address has left the table takes no place here: neighbor_plan gives it the room these leave
     """
     entries = {entry for listed in mac_aliases(tables).values() for entry in listed}
     held = set(held)
@@ -406,31 +417,52 @@ def _entry_due(entry: object, ip: str, now: float, refresh_after: int) -> bool:
     return last_seen > now or now - last_seen > refresh_after
 
 
+def _last_seen(entry: object) -> float:
+    """ when a key was last written, for ranking: one whose value holds no such number ranks oldest """
+    last_seen = entry.get("last_seen") if isinstance(entry, dict) else None
+    return last_seen if _is_number(last_seen) else -math.inf
+
+
 def neighbor_plan(cache: Mapping[str, object], wanted: list[str] | None, hosts: set[Pair], neighbors: set[Pair],
-                  now: float, refresh_after: int = NEIGHBOR_REFRESH) -> NeighborPlan:
-    """ what to change in cache so that it holds the wanted keys; wanted None removes every key of the
-    plugin's own and adds none. Otherwise a key of ours is removed (a) when host discovery lists its address
-    for its MAC, whose own entry then carries it, and (b) when host discovery or the neighbor table lists its
-    address and neither lists it with its MAC: the address moved. A key whose address no table lists is left
-    to core's 12 h. A wanted key is added when absent and written again when its value is due (_entry_due)
+                  now: float, refresh_after: int = NEIGHBOR_REFRESH, per_mac: int = NEIGHBOR_MAX_PER_MAC,
+                  total: int = NEIGHBOR_MAX_TOTAL) -> NeighborPlan:
+    """ what to change in cache so that it holds the wanted keys and, of the plugin's own, never more than
+    per_mac for one MAC and total in all; wanted None removes every key of the plugin's own and adds none.
+    Otherwise a key of ours is removed (a) when host discovery lists its address for its MAC, whose own entry
+    then carries it, (b) when host discovery or the neighbor table lists its address and neither lists it
+    with its MAC: the address moved, and (d) when the limits leave it no room: the wanted keys, whose
+    addresses are in the neighbor table now, come first, and the other keys of ours, left to core's 12 h,
+    take the room that remains, the ones written last first. A wanted key is added when absent and written
+    again when its value is due (_entry_due)
     """
     ours = _own_keys(cache)
     if wanted is None:
         return {"add": [], "refresh": [], "remove": sorted(ours)}
     listed = hosts | neighbors
     addresses = {ip for _mac, ip in listed}
-    remove = sorted(key for key, pair in ours.items()
-                    if pair in hosts or (pair[1] in addresses and pair not in listed))
-    add, refresh = [], []
-    for key in sorted(set(wanted) - set(remove)):
+    gone = {key for key, pair in ours.items() if pair in hosts or (pair[1] in addresses and pair not in listed)}
+    keep: dict[str, Pair] = {}
+    for key in set(wanted) - gone:
         pair = parse_neighbor_key(key)
-        if pair is None:
-            continue
+        if pair is not None:
+            keep[key] = pair
+    used: dict[str, int] = {}
+    for mac, _ip in keep.values():
+        used[mac] = used.get(mac, 0) + 1
+    idle: dict[str, list[tuple[float, str]]] = {}
+    for key, (mac, _ip) in ours.items():
+        if key not in keep and key not in gone:
+            idle.setdefault(mac, []).append((-_last_seen(cache[key]), key))
+    spare = [ranked for mac, found in idle.items() for ranked in sorted(found)[:max(per_mac - used.get(mac, 0), 0)]]
+    left = {key for _age, key in sorted(spare)[:max(total - len(keep), 0)]}
+    add, refresh = [], []
+    for key, (_mac, ip) in sorted(keep.items()):
         if key not in cache:
             add.append(key)
-        elif _entry_due(cache[key], pair[1], now, refresh_after):
+        elif _entry_due(cache[key], ip, now, refresh_after):
             refresh.append(key)
-    return {"add": add, "refresh": refresh, "remove": remove}
+    return {"add": add, "refresh": refresh,
+            "remove": sorted(key for key in ours if key not in keep and key not in left)}
 
 
 def apply_neighbor_plan(cache: Mapping[str, object], plan: NeighborPlan, now: float) -> dict[str, object]:
