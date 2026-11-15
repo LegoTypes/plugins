@@ -41,6 +41,8 @@ _MAC = re.compile(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}")
 # core's AliasNameField pattern (26.7.7), verbatim, without its reserved words
 _ALIAS_NAME = re.compile(r"([a-zA-Z]|(([_a-zA-Z][a-zA-Z0-9]|[a-zA-Z][_a-zA-Z0-9])[_a-zA-Z0-9]{0,29}))")
 _SAMPLES = 5
+# the most addresses a tick's reply, record and log line name
+NEIGHBOR_SAMPLES = _SAMPLES
 _SAMPLE_LENGTH = 60
 
 # the paths of core's that the flush writes, locks and marks, as core 26.7.7 names them; the
@@ -384,6 +386,12 @@ def _own_keys(cache: Mapping[str, object]) -> dict[str, Pair]:
 def count_neighbor_keys(cache: Mapping[str, object]) -> int:
     """ how many keys of the plugin's own a cache holds """
     return len(_own_keys(cache))
+
+
+def neighbor_addresses(keys: Iterable[str]) -> list[str]:
+    """ the addresses of the keys of the plugin's own among keys, each once, the lowest first """
+    found = {pair[1] for pair in map(parse_neighbor_key, keys) if pair is not None}
+    return sorted(found, key=ipaddress.ip_address)
 
 
 def _entry_due(entry: object, ip: str, now: float, refresh_after: int) -> bool:

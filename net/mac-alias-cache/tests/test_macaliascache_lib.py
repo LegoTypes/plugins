@@ -980,3 +980,10 @@ def test_neighbors_schema():
         "json"])
 def test_parse_setting(text, value):
     assert lib.parse_setting(text) is value
+
+
+def test_neighbor_addresses_are_the_keys_addresses_lowest_first():
+    keys = [key(MAC1, "2001:db8::10"), key(MAC2, "2001:db8::2"), key(MAC1, "fe80::1"), key(MAC1, "2001:db8::2"),
+            "odd", MAC1, "AA:BB:CC:00:00:01#2001:db8::1"]
+    assert lib.neighbor_addresses(keys) == ["2001:db8::2", "2001:db8::10", "fe80::1"]
+    assert lib.neighbor_addresses([]) == []
