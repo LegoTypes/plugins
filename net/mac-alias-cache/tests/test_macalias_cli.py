@@ -3828,7 +3828,11 @@ def test_neighbors_off_and_nothing_held_does_nothing_at_all(env, monkeypatch, lo
     monkeypatch.setattr(macalias, "read_cache", lambda cfg_: pytest.fail("core's cache was read"))
     monkeypatch.setattr(macalias, "problems", lambda *args, **kwargs: pytest.fail("the contract was checked"))
     monkeypatch.setattr(macalias, "_write_json_atomic", lambda *args, **kwargs: pytest.fail("a file was written"))
-    monkeypatch.setattr(macalias, "_open_lock", lambda *args, **kwargs: pytest.fail("a lock was opened"))
+    monkeypatch.setattr(macalias, "acquire_lock", lambda *args, **kwargs: pytest.fail("core's lock was asked for"))
+    # the removal alone asks for the tick's own lock, where a state directory says a tick has run: it must not
+    # answer while a tick is at work
+    if not (remove_all and state == "once-on"):
+        monkeypatch.setattr(macalias, "_open_lock", lambda *args, **kwargs: pytest.fail("a lock was opened"))
     with _within(10):
         for now in (5000.0, 5060.0, 5700.0, 9400.0, 48300.0):
             assert _tick(cfg, now=now, remove_all=remove_all) == _ok()
@@ -4134,3 +4138,90 @@ def test_neighbors_record_deleted_by_hand_is_made_again_by_the_next_tick(env):
     # and so the keys go when the setting does
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
     assert _tick(cfg, now=5180.0) == _ok(changed=True, removed=2)
+
+
+def test_neighbors_remove_waits_for_the_first_tick_before_it_finds_nothing_held(env):
+    # the first tick with the setting on has no record until it writes its key. A removal beside it must not
+    # answer ok at once and leave that key: it waits for the tick's lock, and looks for the record after
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700)
+    slept = []
+    with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+
+        def sleep(seconds):
+            slept.append(seconds)
+            if len(slept) == 2:
+                # the tick makes its record, writes its key and ends
+                _record(cfg)
+                _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4999.0)})
+                fcntl.flock(held, fcntl.LOCK_UN)
+
+        out = macalias.cmd_neighbors(cfg, clock=lambda: 5000.0, sleep=sleep, remove_all=True)
+    assert slept == [cfg["lock_retry"]] * 2
+    assert out == _ok(changed=True, removed=1)
+    assert _cache(tmp) == OWN and not _neighbors_file(cfg).exists()
+    _locks_free(cfg)
+
+    # a tick that does not end within the wait: busy, never ok with its key to come
+    del slept[:]
+    with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        out = macalias.cmd_neighbors(cfg, clock=lambda: 5060.0, sleep=slept.append, remove_all=True)
+    assert out == {"error": "busy", "detail": "another neighbor tick held its lock for 10.0s"}
+    assert sum(slept) >= 10.0
+
+    # a tick with the setting off keeps its order: no record, so no lock is asked for and nothing waits
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    with open(macalias.state_paths(cfg)["neighbors_lock"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert macalias.cmd_neighbors(cfg, clock=lambda: 5120.0, sleep=lambda s: pytest.fail("waited")) == _ok()
+
+
+def test_neighbors_record_that_cannot_be_deleted_is_not_counted_as_deleted(env, monkeypatch):
+    # the keys are out and the record is still there: the tick records what it did, and the next one makes its
+    # pass again, until the record can go
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    real_unlink = os.unlink
+
+    def unlink(path, *args, **kwargs):
+        if os.fspath(path) == str(_neighbors_file(cfg)):
+            raise OSError(errno.EPERM, os.strerror(errno.EPERM), path)
+        return real_unlink(path, *args, **kwargs)
+
+    locks = []
+    real_acquire = macalias.acquire_lock
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(macalias.os, "unlink", unlink)
+        patch.setattr(macalias, "acquire_lock",
+                      lambda *args, **kwargs: locks.append(1) or real_acquire(*args, **kwargs))
+        assert _tick(cfg, now=5060.0) == _ok(changed=True, removed=1)
+        record = _neighbors_record(cfg)
+        assert (record["at"], record["result"], record["removed"], record["keys"]) == (5060.0, "ok", 1, 0)
+        assert _tick(cfg, now=5120.0) == _ok()
+        assert _neighbors_file(cfg).exists()
+        assert locks == [1, 1]
+    assert _tick(cfg, now=5180.0) == _ok()
+    assert not _neighbors_file(cfg).exists()
+
+
+def test_neighbors_lock_that_cannot_be_opened_is_a_run_that_is_reported(env, logged):
+    # the tick cannot take its own lock, so it holds nothing while it records the result: the run still began
+    # when the record says it did, and is reported once it has lasted ten minutes
+    cfg, tmp = env
+    os.makedirs(cfg["state_dir"], 0o700)
+    path = macalias.state_paths(cfg)["neighbors_lock"]
+    os.mkdir(path)
+    for now in (5000.0, 5300.0, 5599.0):
+        assert _tick(cfg, now=now)["error"] == "state_unusable"
+    assert _state(cfg) == ("state_unusable", 5000.0, False)
+    assert logged[0] == []
+    assert _tick(cfg, now=5600.0)["error"] == "state_unusable"
+    assert _tick(cfg, now=5660.0)["error"] == "state_unusable"
+    assert _state(cfg) == ("state_unusable", 5000.0, True)
+    assert [message for _priority, message in logged[0]] == [
+        "neighbors: state_unusable for 600 s: " + NEIGHBORS_LOCK_NOT_REGULAR % path
+        + " that the plugin can open safely"]

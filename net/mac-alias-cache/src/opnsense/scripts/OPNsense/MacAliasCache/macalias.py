@@ -1308,10 +1308,16 @@ def _tick(cfg: Config, clock, sleep, remove_all: bool) -> NeighborsDone | Neighb
     # and cannot be read is no "off": the tick refuses, so one caught while it is rendered costs no key
     enabled, state = (False, "ok") if remove_all else read_setting(cfg)
     removing = remove_all or (state != "unusable" and not enabled)
-    if removing and _nothing_held(cfg):
-        # nothing of ours in core's cache: no check, no program, no lock, no read of the cache, no state
-        # directory, no record and no line, whatever state core's files are in
-        return _neighbors_done({"add": [], "refresh": [], "remove": []}, {}, 0, False)
+    idle = _neighbors_done({"add": [], "refresh": [], "remove": []}, {}, 0, False)
+    # nothing of ours in core's cache: no check, no program, no lock, no read of the cache, no state
+    # directory, no record and no line, whatever state core's files are in. The tick finds that by its record
+    # alone. `neighbors remove` does so only where no tick has run, which the missing state directory says:
+    # the first tick with the setting on has no record until it writes its key, so with a state directory
+    # the removal takes the tick's lock first, and looks for the record once no tick is at work
+    if removing and not remove_all and _nothing_held(cfg):
+        return idle
+    if remove_all and not os.path.lexists(cfg["state_dir"]):
+        return idle
     problem = ensure_state_dir(cfg)
     if problem:
         # nowhere to record it: status shows the problem
@@ -1329,6 +1335,8 @@ def _tick(cfg: Config, clock, sleep, remove_all: bool) -> NeighborsDone | Neighb
         _keep_neighbors_record(cfg, own_lock, now, _read_json(path, lib.neighbors_schema))
         return own_lock
     try:
+        if remove_all and _nothing_held(cfg):
+            return idle
         previous = _read_json(path, lib.neighbors_schema)
         released = False
         try:
