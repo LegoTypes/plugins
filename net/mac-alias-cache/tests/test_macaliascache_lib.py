@@ -959,7 +959,7 @@ def test_alias_view_mac_with_only_neighbor_keys():
 
 
 NEIGHBOR_RECORD = {"at": 5000.0, "result": "ok", "since": 4000.0, "reported": False, "added": 2, "removed": 0,
-                   "refreshed": 1, "keys": 3, "over_limit": 0, "samples": ["2001:db8::1", "2001:db8::2"]}
+                   "refreshed": 1, "keys": 3, "over_limit": 0, "samples": ["2001:db8::1", "2001:db8::2"], "cleared": ""}
 
 
 def test_neighbors_schema():
@@ -967,6 +967,8 @@ def test_neighbors_schema():
     assert lib.neighbors_schema(dict(NEIGHBOR_RECORD, extra=1, samples=[])) == dict(NEIGHBOR_RECORD, samples=[])
     failing = dict(NEIGHBOR_RECORD, at=5000, since=4000, result="core_changed", reported=True)
     assert lib.neighbors_schema(failing) == failing
+    cleared = dict(NEIGHBOR_RECORD, keys=0, cleared="12:34:56:22")
+    assert lib.neighbors_schema(cleared) == cleared
     # a result is a state once it has lasted ten minutes
     assert lib.NEIGHBOR_FAILING == 600 < lib.NEIGHBOR_REFRESH
     for bad in (
@@ -976,6 +978,8 @@ def test_neighbors_schema():
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "keys"},
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "since"},
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "reported"},
+        {name: value for name, value in NEIGHBOR_RECORD.items() if name != "cleared"},
+        dict(NEIGHBOR_RECORD, cleared=None), dict(NEIGHBOR_RECORD, cleared=True), dict(NEIGHBOR_RECORD, cleared=12),
         dict(NEIGHBOR_RECORD, since="4000"), dict(NEIGHBOR_RECORD, since=True),
         dict(NEIGHBOR_RECORD, since=float("inf")), dict(NEIGHBOR_RECORD, reported=1),
         dict(NEIGHBOR_RECORD, reported="false"), dict(NEIGHBOR_RECORD, reported=None),

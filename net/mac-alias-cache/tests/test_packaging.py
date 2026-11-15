@@ -5,6 +5,8 @@ import stat
 import subprocess
 import xml.etree.ElementTree as ET
 
+import pytest
+
 import macalias
 import macaliascache_lib as lib
 
@@ -208,12 +210,30 @@ def setting_written(tmp_path):
 def test_a_real_removal_takes_the_keys_out_of_cores_cache_and_an_upgrade_keeps_them(tmp_path):
     assert hook("+PRE_DEINSTALL.pre").startswith("#!/bin/sh\n")
     fake_removal(tmp_path, [REMOVED])
+    pathlib.Path(str(tmp_path) + SETTINGS_FILE).write_text("[general]\nneighbors=1\n")
     assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
     # the setting is off in the rendered file, so a tick of cron's that starts meanwhile removes too
     assert setting_written(tmp_path) == "[general]\nneighbors=0\n"
     assert lib.parse_setting(setting_written(tmp_path)) is False
     assert lines_of(tmp_path, "calls") == ["neighbors remove"]
     assert lines_of(tmp_path, "sleeps") == []
+
+
+@pytest.mark.parametrize("content", [None, "[general]\nneighbors=0\n"], ids=["absent", "off"])
+def test_a_removal_leaves_a_settings_file_that_says_off_as_it_is(tmp_path, content):
+    # the script knows a firewall that holds nothing by its record and the settings file it names: a file that
+    # is off already, or not there, is not written again, and then the removal has nothing to do and nothing to
+    # say, whatever is wrong with core's files
+    fake_removal(tmp_path, [REMOVED])
+    conf = pathlib.Path(str(tmp_path) + SETTINGS_FILE)
+    if content is not None:
+        conf.write_text(content)
+        os.utime(conf, (1000, 1000))
+    assert run_hook("+PRE_DEINSTALL.pre", tmp_path) == ""
+    assert lines_of(tmp_path, "calls") == ["neighbors remove"]
+    assert setting_written(tmp_path) == content
+    if content is not None:
+        assert os.stat(conf).st_mtime == 1000
 
 
 def test_an_upgrade_runs_no_removal(tmp_path):

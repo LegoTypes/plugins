@@ -242,14 +242,17 @@ def test_a_tick_that_keeps_failing_is_a_warning_in_plain_words_while_the_setting
     # sentence for each result the tick can answer while the setting is on, and shows no code where it has one
     block = script()
     texts = block.split("var failingText = {", 1)[1].split("};", 1)[0]
-    assert re.findall(r"^\s+([a-z_]+): \"\{\{ lang\._\('", texts, re.MULTILINE) == list(FAILING_CODES)
+    codes = re.findall(r"^\s+([a-z_]+): \"\{\{ lang\._\('", texts, re.MULTILINE)
+    assert codes == list(FAILING_CODES) + ["cache_unsafe"]
     for line in texts.strip().splitlines():
         assert "The neighbor table update" in line and "changes nothing" in line
-    assert "A flush writes the cache anew." in texts
+    assert texts.count("A flush writes the cache anew.") == 2
     assert "1 MiB" in texts
-    assert ("                if (data.neighbors && data.neighbors.enabled === true && data.neighbors.failing) {\n"
+    # also with the setting off while keys remain: a removal that keeps failing leaves them for up to 12 hours
+    assert ("                if (data.neighbors && data.neighbors.failing\n"
+            "                        && (data.neighbors.enabled === true || data.neighbors.keys > 0)) {\n"
             "                    var failing = data.neighbors.failing;\n"
-            "                    banners.push(banner('warning', (failingText[failing.result]\n") in block
+            "                    banners.push(banner('warning', (failingText[failingCode(data)]\n") in block
     assert "new Date(failing.since * 1000).toLocaleString()" in block
     for line in block.splitlines():
         if "failingText[" in line or "data.neighbors.failing" in line:
@@ -279,3 +282,19 @@ def test_apply_says_when_the_change_acts_within_a_minute():
 
 def test_the_page_says_the_setting_turns_the_neighbor_table_on():
     assert "With the setting below on and host discovery on, the plugin also adds" in body()
+
+
+def test_the_cache_warning_says_whether_the_file_or_its_content_is_refused():
+    # the result is one code; status lists the cache_file problem beside it when the file itself is refused
+    block = script()
+    assert ("        function failingCode(data) {\n"
+            "            var code = data.neighbors.failing.result;\n"
+            "            var unsafe = false;\n"
+            "            $.each(data.problems || [], function (i, p) { if (p.item === 'cache_file') unsafe = true; "
+            "});\n"
+            "            return code === 'cache_unreadable' && unsafe ? 'cache_unsafe' : code;\n"
+            "        }\n") in block
+    texts = block.split("var failingText = {", 1)[1].split("};", 1)[0]
+    lines = {line.split(":", 1)[0].strip(): line for line in texts.strip().splitlines()}
+    assert "finds no JSON object in the MAC alias cache of core" in lines["cache_unreadable"]
+    assert "is not a regular file of root with one link" in lines["cache_unsafe"]

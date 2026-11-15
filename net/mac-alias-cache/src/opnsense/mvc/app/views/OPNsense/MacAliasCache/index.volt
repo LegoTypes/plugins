@@ -106,12 +106,22 @@
             busy: "{{ lang._('The neighbor table update keeps finding the alias update lock of core held, so it changes nothing.') }}",
             hosts_unavailable: "{{ lang._('The neighbor table update cannot read the host list of host discovery, so it changes nothing.') }}",
             neighbors_unavailable: "{{ lang._('The neighbor table update cannot read the neighbor table, so it changes nothing: ndp fails, runs longer than 5 seconds or lists more than 1 MiB (about 6,000 entries).') }}",
-            cache_unreadable: "{{ lang._('The neighbor table update cannot read the MAC alias cache of core safely, so it changes nothing. A flush writes the cache anew.') }}",
+            cache_unreadable: "{{ lang._('The neighbor table update finds no JSON object in the MAC alias cache of core, so it changes nothing. A flush writes the cache anew.') }}",
             state_unusable: "{{ lang._('The neighbor table update cannot use the state files of the plugin, so it changes nothing.') }}",
             lock_unusable: "{{ lang._('The neighbor table update cannot use the alias update lock of core safely, so it changes nothing.') }}",
             core_changed: "{{ lang._('The neighbor table update no longer finds what it relies on in the files of core, so it changes nothing.') }}",
-            internal: "{{ lang._('The neighbor table update ends in an error of its own, so it changes nothing. The system log has the detail.') }}"
+            internal: "{{ lang._('The neighbor table update ends in an error of its own, so it changes nothing. The system log has the detail.') }}",
+            cache_unsafe: "{{ lang._('The neighbor table update does not merge into the MAC alias cache of core, which is not a regular file of root with one link, so it changes nothing. A flush writes the cache anew.') }}"
         };
+
+        // the tick answers cache_unreadable for a cache it does not merge into; status lists the cache_file problem
+        // beside it when it is the file itself that is refused, not what it holds
+        function failingCode(data) {
+            var code = data.neighbors.failing.result;
+            var unsafe = false;
+            $.each(data.problems || [], function (i, p) { if (p.item === 'cache_file') unsafe = true; });
+            return code === 'cache_unreadable' && unsafe ? 'cache_unsafe' : code;
+        }
 
         function neighborsInUse(data) {
             var n = data.neighbors || {};
@@ -154,9 +164,10 @@
                     if (neighborItems.indexOf(p.item) >= 0 && !inUse) return;
                     banners.push(banner(p.blocks_flush ? 'danger' : 'warning', plain(p.problem || p.item)));
                 });
-                if (data.neighbors && data.neighbors.enabled === true && data.neighbors.failing) {
+                if (data.neighbors && data.neighbors.failing
+                        && (data.neighbors.enabled === true || data.neighbors.keys > 0)) {
                     var failing = data.neighbors.failing;
-                    banners.push(banner('warning', (failingText[failing.result]
+                    banners.push(banner('warning', (failingText[failingCode(data)]
                         || "{{ lang._('The neighbor table update fails, so it changes nothing:') }} " + plain(failing.result) + '.')
                         + " {{ lang._('This has lasted since') }} " + new Date(failing.since * 1000).toLocaleString()
                         + ". {{ lang._('The addresses it added leave the aliases 12 hours after they were last written.') }}"));

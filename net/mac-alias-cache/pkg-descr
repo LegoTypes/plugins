@@ -67,6 +67,9 @@ Plugin Changelog
 * Turned off again, the plugin's keys leave the cache at once and their
   addresses leave the aliases at core's next run, also when core has
   changed what the adding relies on. Removing the package does the same
+* With the setting off and none of its keys in core's cache, the minute
+  job does nothing at all: it reads no file of core's, runs no program
+  and takes no lock
 * A flush keeps these addresses, as the neighbor table is current data
   too; with the setting off it drops them like every stale entry
 * Status and the page list the addresses that came from the neighbor
