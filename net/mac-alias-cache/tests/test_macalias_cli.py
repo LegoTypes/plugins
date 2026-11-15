@@ -134,9 +134,9 @@ def problems_name_only_mapped_items():
         check(found)
         return real_refusal(found)
 
-    def neighbors_refusal(found):
+    def neighbors_refusal(found, *args, **kwargs):
         check(found)
-        return real_neighbors_refusal(found)
+        return real_neighbors_refusal(found, *args, **kwargs)
 
     # a separate MonkeyPatch, so a case's own monkeypatch.undo() leaves this in place
     with pytest.MonkeyPatch.context() as patch:
@@ -1754,7 +1754,8 @@ def test_a_refusal_carries_the_advisory_problem_and_is_decided_without_it(env):
 
 
 def test_the_advisory_items_have_no_refusal_code_and_refuse_nothing():
-    assert macalias._ADVISORY_ITEMS == ("alias_ttl", "neighbor_merge", "ndp", "neighbors_setting", "neighbors_file")
+    assert macalias._ADVISORY_ITEMS == ("alias_ttl", "neighbor_merge", "ndp", "neighbors_setting", "neighbors_file",
+                                        "neighbors_lock")
     assert set(macalias._ADVISORY_ITEMS) & set(macalias._REFUSAL_CODE) == set()
     for item in macalias._ADVISORY_ITEMS:
         assert macalias.refusal([{"item": item, "problem": "p", "blocks_flush": False}]) is None
@@ -2080,6 +2081,12 @@ def _neighbors_record(cfg):
     return json.loads(_neighbors_file(cfg).read_text())
 
 
+def _state(cfg):
+    """ the record's result, when it began and whether it was reported """
+    record = _neighbors_record(cfg)
+    return record["result"], record["since"], record["reported"]
+
+
 def _file_id(path):
     st = os.stat(path)
     return st.st_ino, st.st_mtime_ns, st.st_size
@@ -2209,11 +2216,13 @@ def test_neighbors_busy_on_core_lock_not_logged(env, logged):
         out = _tick(cfg)
     assert out == {"error": "busy", "detail": "alias update lock held for 0.2s"}
     assert _file_id(tmp / "arp.cache") == before
-    # busy is no state: nothing is logged and nothing is recorded, now or when the next tick works
+    # one busy minute is recorded as the tick's result and is no state yet: nothing is logged, now or when the
+    # next tick works
     assert logged[0] == []
-    assert not _neighbors_file(cfg).exists()
+    assert _state(cfg) == ("busy", 5000.0, False)
     assert _tick(cfg, now=5060.0) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
     assert [message for _priority, message in logged[0]] == ["neighbors: 1 added (2001:db8::7), 0 removed"]
+    assert _state(cfg) == ("ok", 5060.0, False)
     _locks_free(cfg)
 
 
@@ -2445,14 +2454,25 @@ def test_neighbors_remove_argument(env, monkeypatch, capsys):
     assert _cache(tmp) == OWN
     assert not (tmp / "ndp_args").exists()
 
+    # neither the settings file, the neighbor table's program, the host list's, the merge contract, the alias
+    # table file nor the record's own path is the removal's to need
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
     (tmp / "macaliascache.conf").write_text("neighbors on\n")
     pathlib.Path(cfg["ndp"][0]).chmod(0o644)
     _core(cfg, "list_hosts").chmod(0o644)
     _fix_core(cfg, "neighbor_merge", "if macaddr.startswith(pattern.lower()):")
     assert _tick(cfg, now=5120.0)["error"] == "core_changed"
+    (tmp / "filter_tables.conf").write_text("<tabledef><table>")
+    _neighbors_file(cfg).unlink()
+    _neighbors_file(cfg).mkdir()
+    reads = []
+    monkeypatch.setattr(macalias, "read_tables", lambda cfg_: reads.append(cfg_) or pytest.fail("the alias table read"))
+    monkeypatch.setattr(macalias, "read_setting", lambda cfg_: pytest.fail("the setting read"))
     assert _tick(cfg, now=5120.0, remove_all=True) == _ok(changed=True, removed=1)
     assert _cache(tmp) == OWN
+    monkeypatch.undo()
+    _neighbors_file(cfg).rmdir()
+    (tmp / "filter_tables.conf").write_text(TABLES)
 
     # what the removal writes through still refuses it
     _seed(tmp, {_nkey("2001:db8::7"): _nentry("2001:db8::7", 4000.0)})
@@ -2540,7 +2560,8 @@ def test_neighbors_limit_bounds_what_the_cache_holds_over_time(env):
         _neighbor_table(tmp, [(NMAC, "2001:db8:%x::%x" % (minute + 1, n)) for n in range(1, 33)])
         out = _tick(cfg, now=5000.0 + 60 * minute)
         assert (out["added"], out["removed"], out["keys"], out["over_limit"]) == (32, 32 if minute else 0, 32, 0)
-        assert sorted(_cache(tmp)) == sorted([NMAC] + [_nkey("2001:db8:%x::%x" % (minute + 1, n)) for n in range(1, 33)])
+        assert sorted(_cache(tmp)) == sorted(
+            [NMAC] + [_nkey("2001:db8:%x::%x" % (minute + 1, n)) for n in range(1, 33)])
     # a table that shrinks keeps the newest of the old keys in the room left
     _neighbor_table(tmp, [(NMAC, "2001:db8:9::%x" % n) for n in range(1, 31)])
     out = _tick(cfg, now=5300.0)
@@ -2562,9 +2583,14 @@ def test_neighbors_ndp_not_executable_is_a_problem_and_refuses(env):
     assert "error" not in _flush(cfg)
 
 
+def _refuses(item, blocks, removing=False):
+    return macalias.neighbors_refusal([{"item": item, "problem": "p", "blocks_flush": blocks}], removing)
+
+
 def test_neighbors_refusal_table():
-    assert macalias._NEIGHBORS_REFUSAL_CODE == {
-        "state_dir": "state_unusable", "plugin_lock": "state_unusable", "cache_file": "state_unusable",
+    table = macalias._NEIGHBORS_REFUSAL_CODE
+    assert table == {
+        "state_dir": "state_unusable", "neighbors_lock": "state_unusable", "cache_file": "state_unusable",
         "neighbors_file": "state_unusable",
         "lock_file": "lock_unusable",
         "arpcache": "core_changed", "update_lock": "core_changed", "list_hosts": "core_changed",
@@ -2572,29 +2598,41 @@ def test_neighbors_refusal_table():
         "neighbors_setting": "setting_unusable",
     }
     assert macalias._NEIGHBORS_REFUSAL_ORDER == ("state_unusable", "lock_unusable", "core_changed", "setting_unusable")
-    assert set(macalias._NEIGHBORS_REFUSAL_CODE.values()) == set(macalias._NEIGHBORS_REFUSAL_ORDER)
+    assert set(table.values()) == set(macalias._NEIGHBORS_REFUSAL_ORDER)
+    # a tick that only removes (the setting off, neighbors remove) stops for what a removal uses, and nothing else
+    assert macalias._REMOVAL_ITEMS == ("state_dir", "neighbors_lock", "cache_file", "lock_file", "arpcache",
+                                       "update_lock")
+    assert set(macalias._REMOVAL_ITEMS) < set(table)
     # every item is one problems() can list
-    assert set(macalias._NEIGHBORS_REFUSAL_CODE) <= set(macalias._REFUSAL_CODE) | set(macalias._ADVISORY_ITEMS)
-    # these never stop the tick
-    for item in ("md5_marker", "targeted_mode", "last_file", "alias_name", "alias_ttl"):
-        assert item not in macalias._NEIGHBORS_REFUSAL_CODE
-        blocks = item not in macalias._ADVISORY_ITEMS
-        assert macalias.neighbors_refusal([{"item": item, "problem": "p", "blocks_flush": blocks}]) is None
-    # an item of the table refuses whether or not it blocks a flush; the first class wins, every text is carried
-    for item, code in macalias._NEIGHBORS_REFUSAL_CODE.items():
-        for blocks in ((False,) if item in macalias._ADVISORY_ITEMS else (True, False)):
-            assert macalias.neighbors_refusal([{"item": item, "problem": "p", "blocks_flush": blocks}]) == {
-                "error": code, "detail": "p"}
+    assert set(table) <= set(macalias._REFUSAL_CODE) | set(macalias._ADVISORY_ITEMS)
+    # these never stop the tick: what only a flush uses, the flush's own lock among it
+    for item in ("md5_marker", "targeted_mode", "last_file", "plugin_lock", "alias_name", "alias_ttl"):
+        assert item not in table
+        for removing in (False, True):
+            assert _refuses(item, item not in macalias._ADVISORY_ITEMS, removing) is None
+    for item, code in table.items():
+        own = item in macalias._ADVISORY_ITEMS
+        # an item of the neighbor addresses' own stops the tick as it is; one of the flush's only in the form that
+        # blocks a flush, so a cache that is merely not root's regular file is left for the tick to find unreadable
+        assert _refuses(item, not own) == {"error": code, "detail": "p"}
+        if not own:
+            assert _refuses(item, False) is None
+        assert _refuses(item, not own, True) == ({"error": code, "detail": "p"} if item in macalias._REMOVAL_ITEMS
+                                                else None)
     assert macalias.neighbors_refusal([]) is None
-    assert macalias.neighbors_refusal([
+    found = [
         {"item": "neighbors_setting", "problem": "a", "blocks_flush": False},
         {"item": "alias_ttl", "problem": "b", "blocks_flush": False},
         {"item": "ndp", "problem": "c", "blocks_flush": False},
         {"item": "lock_file", "problem": "d", "blocks_flush": True},
-    ]) == {"error": "lock_unusable", "detail": "a; c; d"}
+        {"item": "cache_file", "problem": "e", "blocks_flush": False},
+    ]
+    # the first class wins and every stopping text is carried
+    assert macalias.neighbors_refusal(found) == {"error": "lock_unusable", "detail": "a; c; d"}
+    assert macalias.neighbors_refusal(found, True) == {"error": "lock_unusable", "detail": "d"}
 
 
-@pytest.mark.parametrize("item, change", [
+CONTRACT_CHANGES = [
     ("neighbor_merge", "cls._data.update(cls.current_cache())"),
     ("neighbor_merge", "if cls._now - cls._data[macaddr]['last_seen'] > cls._address_ttl:"),
     ("neighbor_merge", "if macaddr.startswith(pattern.lower()):"),
@@ -2602,16 +2640,22 @@ def test_neighbors_refusal_table():
     ("arpcache", "/tmp/alias_filter_arp.cache"),
     ("update_lock", "/tmp/filter_update_tables.lock"),
     ("list_hosts", None),
-], ids=["replace", "expiry", "prefix-match", "items", "cache-path", "lock-path", "list-hosts"])
-@pytest.mark.parametrize("setting", ["1", "0"], ids=["on", "off"])
-def test_neighbors_contract_failure_removes_nothing(env, item, change, setting):
-    # a refused tick removes nothing, with the setting off too
-    cfg, tmp = env
-    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=%s\n" % setting)
+]
+CONTRACT_IDS = ["replace", "expiry", "prefix-match", "items", "cache-path", "lock-path", "list-hosts"]
+
+
+def _change_core(cfg, item, change):
     if change is None:
         _core(cfg, item).chmod(0o644)
     else:
         _fix_core(cfg, item, change)
+
+
+@pytest.mark.parametrize("item, change", CONTRACT_CHANGES, ids=CONTRACT_IDS)
+def test_neighbors_contract_failure_removes_nothing(env, item, change):
+    # with the setting on a refused tick adds nothing and removes nothing
+    cfg, tmp = env
+    _change_core(cfg, item, change)
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
     _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
     before = _file_id(tmp / "arp.cache")
@@ -2628,7 +2672,40 @@ def test_neighbors_contract_failure_removes_nothing(env, item, change, setting):
     assert not (tmp / "ndp_args").exists()
 
 
-@pytest.mark.parametrize("item", ["md5_marker", "targeted_mode", "last_file", "alias_name", "alias_ttl"])
+@pytest.mark.parametrize("item, change", CONTRACT_CHANGES, ids=CONTRACT_IDS)
+def test_neighbors_off_removes_whatever_the_merge_is_refused_for(env, item, change):
+    # the switch works when the user is most likely to reach for it, after core changed: off removes the keys
+    # unless core changed what the removal itself writes through (its cache's path and format, its lock)
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    _change_core(cfg, item, change)
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
+    before = _file_id(tmp / "arp.cache")
+    out = _tick(cfg)
+    if item in ("arpcache", "update_lock"):
+        assert out["error"] == "core_changed"
+        assert _file_id(tmp / "arp.cache") == before
+    else:
+        assert out == _ok(changed=True, removed=1)
+        assert _cache(tmp) == OWN
+    assert not (tmp / "ndp_args").exists()
+
+
+def test_neighbors_off_removes_without_the_neighbor_table_the_alias_table_or_the_record(env, monkeypatch):
+    cfg, tmp = env
+    (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+    _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
+    pathlib.Path(cfg["ndp"][0]).chmod(0o644)
+    (tmp / "filter_tables.conf").write_text("<tabledef><table>")
+    os.mkdir(cfg["state_dir"], 0o700)
+    _neighbors_file(cfg).mkdir()
+    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
+    monkeypatch.setattr(macalias, "read_tables", lambda cfg_: pytest.fail("the alias table read"))
+    assert _tick(cfg) == _ok(changed=True, removed=1)
+    assert _cache(tmp) == OWN
+
+
+@pytest.mark.parametrize("item", ["md5_marker", "targeted_mode", "last_file", "plugin_lock", "alias_name", "alias_ttl"])
 def test_neighbors_tick_runs_with_a_problem_that_is_the_flushs_alone(env, item):
     cfg, tmp = env
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
@@ -2637,6 +2714,9 @@ def test_neighbors_tick_runs_with_a_problem_that_is_the_flushs_alone(env, item):
     elif item == "last_file":
         os.mkdir(cfg["state_dir"], 0o700)
         _last(cfg).mkdir()
+    elif item == "plugin_lock":
+        os.mkdir(cfg["state_dir"], 0o700)
+        os.mkfifo(macalias.state_paths(cfg)["plugin_lock"])
     elif item == "alias_name":
         (tmp / "filter_tables.conf").write_text(BAD_NAME_TABLES)
     else:
@@ -2661,34 +2741,71 @@ def test_neighbors_logs_only_on_change(env, logged):
         assert _tick(cfg, now=now)["result"] == "ok"
     assert _cache(tmp)[_nkey(addresses[0])] == _nentry(addresses[0], 8601.0)
     assert lines == []
-    # a refusal is logged when it starts, not each minute, and once more when it ends
+    # a result other than ok that is over within ten minutes is no state: recorded, never logged
     good_hosts = cfg["list_hosts"]
     cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
-    for now in (8700.0, 8760.0, 8820.0):
+    for now in (8700.0, 8760.0, 8700.0 + 599):
         assert _tick(cfg, now=now) == HOSTS_UNAVAILABLE
-    assert lines == [(warning, "neighbors: hosts_unavailable: host list could not be read; nothing changed")]
-    del lines[:]
+    assert _state(cfg) == ("hosts_unavailable", 8700.0, False)
+    cfg["list_hosts"] = good_hosts
+    assert _tick(cfg, now=9300.0) == _ok(keys=7)
+    assert _state(cfg) == ("ok", 9300.0, False)
+    assert lines == []
+    # one that lasts ten minutes is logged once, whatever codes it passes through, and its end once
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+    assert _tick(cfg, now=10000.0) == HOSTS_UNAVAILABLE
     pathlib.Path(cfg["ndp"][0]).chmod(0o644)
-    assert _tick(cfg, now=8880.0)["error"] == "core_changed"
-    assert _tick(cfg, now=8940.0)["error"] == "core_changed"
-    assert lines == [(warning, "neighbors: core_changed: " + NDP_MISSING % cfg["ndp"][0])]
+    assert _tick(cfg, now=10300.0)["error"] == "core_changed"
+    assert _state(cfg) == ("core_changed", 10000.0, False)
+    assert lines == []
+    assert _tick(cfg, now=10600.0)["error"] == "core_changed"
+    assert lines == [(warning, "neighbors: core_changed for 600 s: " + NDP_MISSING % cfg["ndp"][0])]
+    assert _state(cfg) == ("core_changed", 10000.0, True)
     del lines[:]
     pathlib.Path(cfg["ndp"][0]).chmod(0o755)
+    for now in (10660.0, 14000.0, 17000.0):
+        assert _tick(cfg, now=now) == HOSTS_UNAVAILABLE
+    assert _state(cfg) == ("hosts_unavailable", 10000.0, True)
+    assert lines == []
     cfg["list_hosts"] = good_hosts
-    assert _tick(cfg, now=9000.0) == _ok(keys=7)
-    assert _tick(cfg, now=9060.0) == _ok(keys=7)
-    assert lines == [(notice, "neighbors: working again after core_changed")]
+    # the keys were last written at 8601, more than an hour before: the first working tick writes them again
+    assert _tick(cfg, now=17060.0) == _ok(changed=True, refreshed=7, keys=7)
+    assert _tick(cfg, now=17120.0) == _ok(keys=7)
+    assert lines == [(notice, "neighbors: working again after hosts_unavailable")]
+    assert _state(cfg) == ("ok", 17060.0, False)
     del lines[:]
     # an address host discovery now lists itself leaves, and one arrives
     _list_hosts(cfg, tmp, [["vlan0.120", NMAC, "192.0.2.50"], ["vlan0.120", NMAC, addresses[0]]])
     _neighbor_table(tmp, [(NMAC, ip) for ip in addresses + ["2001:db8::99"]])
-    assert _tick(cfg, now=9120.0) == _ok(changed=True, added=1, removed=1, keys=7, samples=["2001:db8::99"])
+    assert _tick(cfg, now=17180.0) == _ok(changed=True, added=1, removed=1, keys=7, samples=["2001:db8::99"])
     assert lines == [(notice, "neighbors: 1 added (2001:db8::99), 1 removed")]
     del lines[:]
     (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
-    assert _tick(cfg, now=9180.0) == _ok(changed=True, removed=7)
+    assert _tick(cfg, now=17240.0) == _ok(changed=True, removed=7)
     assert lines == [(notice, "neighbors: 0 added, 7 removed")]
     assert all(len(message) < 400 for _priority, message in lines)
+
+
+def test_neighbors_a_failure_that_cannot_be_recorded_is_never_logged(env, logged):
+    # the record is what says a line was written: with none, the tick stays quiet rather than log each minute
+    cfg, tmp = env
+    os.mkdir(cfg["state_dir"], 0o700)
+    _neighbors_file(cfg).mkdir()
+    for now in (5000.0, 5600.0, 6200.0, 9000.0):
+        assert _tick(cfg, now=now)["error"] == "state_unusable"
+    assert logged[0] == []
+
+
+def test_neighbors_clock_step_back_restarts_the_ten_minutes(env, logged):
+    cfg, tmp = env
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+    assert _tick(cfg, now=5000.0) == HOSTS_UNAVAILABLE
+    assert _tick(cfg, now=1000.0) == HOSTS_UNAVAILABLE
+    assert _state(cfg) == ("hosts_unavailable", 1000.0, False)
+    assert _tick(cfg, now=1599.0) == HOSTS_UNAVAILABLE
+    assert logged[0] == []
+    assert _tick(cfg, now=1600.0) == HOSTS_UNAVAILABLE
+    assert len(logged[0]) == 1
 
 
 @pytest.mark.parametrize("failing", ["openlog", "syslog"])
@@ -2709,8 +2826,8 @@ def test_neighbors_record_schema_and_mode(env):
     cfg, tmp = env
     _neighbor_table(tmp, [(NMAC, "2001:db8::7"), (NMAC, "2001:db8::8")])
     assert _tick(cfg, now=5000.0)["added"] == 2
-    record = {"at": 5000.0, "result": "ok", "added": 2, "removed": 0, "refreshed": 0, "keys": 2, "over_limit": 0,
-              "samples": ["2001:db8::7", "2001:db8::8"]}
+    record = {"at": 5000.0, "result": "ok", "since": 5000.0, "reported": False, "added": 2, "removed": 0,
+              "refreshed": 0, "keys": 2, "over_limit": 0, "samples": ["2001:db8::7", "2001:db8::8"]}
     assert _neighbors_record(cfg) == record == lib.neighbors_schema(record)
     modes = {p.name: stat.S_IMODE(os.lstat(p).st_mode) for p in pathlib.Path(cfg["state_dir"]).iterdir()}
     assert modes == {"neighbors.json": 0o600, "neighbors.lock": 0o600}
@@ -2728,7 +2845,7 @@ def test_neighbors_record_schema_and_mode(env):
     assert _neighbors_record(cfg) == dict(record, at=9601.0, added=0, keys=0, samples=[])
     # a record from the future (a clock step) is replaced
     assert _tick(cfg, now=100.0) == _ok()
-    assert _neighbors_record(cfg)["at"] == 100.0
+    assert (_neighbors_record(cfg)["at"], _neighbors_record(cfg)["since"]) == (100.0, 100.0)
     assert stat.S_IMODE(os.lstat(_neighbors_file(cfg)).st_mode) == 0o600
     assert _no_temps(cfg, tmp)
 
@@ -2736,8 +2853,8 @@ def test_neighbors_record_schema_and_mode(env):
 def test_neighbors_first_tick_with_nothing_to_do_records_that_it_ran(env):
     cfg, tmp = env
     assert _tick(cfg, now=5000.0) == _ok()
-    assert _neighbors_record(cfg) == {"at": 5000.0, "result": "ok", "added": 0, "removed": 0, "refreshed": 0,
-                                      "keys": 0, "over_limit": 0, "samples": []}
+    assert _neighbors_record(cfg) == {"at": 5000.0, "result": "ok", "since": 5000.0, "reported": False, "added": 0,
+                                      "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0, "samples": []}
 
 
 def test_neighbors_record_of_a_refusal(env):
@@ -2745,11 +2862,75 @@ def test_neighbors_record_of_a_refusal(env):
     _seed(tmp, {_nkey("2001:db8::8"): _nentry("2001:db8::8", 4000.0)})
     cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
     assert _tick(cfg, now=5000.0) == HOSTS_UNAVAILABLE
-    assert _neighbors_record(cfg) == {"at": 5000.0, "result": "hosts_unavailable", "added": 0, "removed": 0,
-                                      "refreshed": 0, "keys": 0, "over_limit": 0, "samples": []}
+    assert _neighbors_record(cfg) == {"at": 5000.0, "result": "hosts_unavailable", "since": 5000.0, "reported": False,
+                                      "added": 0, "removed": 0, "refreshed": 0, "keys": 0, "over_limit": 0,
+                                      "samples": []}
     kept = _file_id(_neighbors_file(cfg))
     assert _tick(cfg, now=5060.0) == HOSTS_UNAVAILABLE
     assert _file_id(_neighbors_file(cfg)) == kept
+
+
+def test_neighbors_record_follows_the_count_the_limit_cut(env):
+    # status reads the count from the record, so a minute in which only that count changes writes it
+    cfg, tmp = env
+    addresses = ["2001:db8::%x" % n for n in range(1, 41)]
+    _neighbor_table(tmp, [(NMAC, ip) for ip in addresses[:32]])
+    assert _tick(cfg, now=5000.0) == _ok(changed=True, added=32, keys=32, samples=addresses[:5])
+    _neighbor_table(tmp, [(NMAC, ip) for ip in addresses])
+    assert _tick(cfg, now=5060.0) == _ok(keys=32, over_limit=8)
+    assert (_neighbors_record(cfg)["at"], _neighbors_record(cfg)["over_limit"]) == (5060.0, 8)
+    assert macalias.cmd_status(cfg, now=5090.0)["neighbors"]["over_limit"] == 8
+    kept = _file_id(_neighbors_file(cfg))
+    assert _tick(cfg, now=5120.0) == _ok(keys=32, over_limit=8)
+    assert _file_id(_neighbors_file(cfg)) == kept
+    _neighbor_table(tmp, [(NMAC, ip) for ip in addresses[:32]])
+    assert _tick(cfg, now=5180.0) == _ok(keys=32)
+    assert macalias.cmd_status(cfg, now=5190.0)["neighbors"]["over_limit"] == 0
+
+
+def test_neighbors_an_unexpected_error_is_a_recorded_result_and_never_raised(env, monkeypatch, logged):
+    # cron mails what a job prints on stderr, and configd wants JSON: an alias table file that cannot be parsed,
+    # or anything else unforeseen, is the result "internal"
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    (tmp / "filter_tables.conf").write_text("<tabledef><table>")
+    before = _file_id(tmp / "arp.cache")
+    out = _tick(cfg, now=5000.0)
+    assert out["error"] == "internal" and out["detail"].startswith("ParseError: ") and set(out) == {"error", "detail"}
+    assert _state(cfg) == ("internal", 5000.0, False)
+    assert _file_id(tmp / "arp.cache") == before
+    (tmp / "filter_tables.conf").unlink()
+    out = _tick(cfg, now=5600.0)
+    assert out["error"] == "internal" and out["detail"].startswith("FileNotFoundError: ")
+    assert len(logged[0]) == 1
+    assert logged[0][0][1].startswith("neighbors: internal for 600 s: FileNotFoundError: ")
+    _locks_free(cfg)
+    (tmp / "filter_tables.conf").write_text(TABLES)
+
+    # an error before the tick has its lock is answered the same way
+    def broken(cfg_):
+        raise RuntimeError("no state")
+
+    monkeypatch.setattr(macalias, "ensure_state_dir", broken)
+    assert _tick(cfg, now=5660.0) == {"error": "internal", "detail": "RuntimeError: no state"}
+
+
+def test_neighbors_record_that_cannot_be_written_leaves_the_reply_and_the_log_line(env, monkeypatch, logged):
+    # core's cache is written by then: the reply says so and the line is logged, with no record to show for it
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    real_write = macalias._write_json_atomic
+
+    def write(path, *args, **kwargs):
+        if path == str(_neighbors_file(cfg)):
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), path)
+        return real_write(path, *args, **kwargs)
+
+    monkeypatch.setattr(macalias, "_write_json_atomic", write)
+    assert _tick(cfg) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    assert not _neighbors_file(cfg).exists()
+    assert [message for _priority, message in logged[0]] == ["neighbors: 1 added (2001:db8::7), 0 removed"]
+    _locks_free(cfg)
 
 
 @pytest.mark.parametrize("content", ["{", "[]", '{"at": "5000", "result": "ok"}',
@@ -2860,14 +3041,15 @@ def test_neighbors_refuses_when_its_lock_is_not_a_regular_file(env, logged, kind
         out = _tick(cfg)
         unchanged = _file_id(tmp / "arp.cache") == before
         flushed = _flush(cfg)
-    # status names the tick's lock under the lock item, and it is no obstacle to a flush
+    # status names the tick's lock under an item of its own, and it is no obstacle to a flush
     assert status["problems"] == [
-        {"item": "plugin_lock", "problem": NEIGHBORS_LOCK_NOT_REGULAR % path, "blocks_flush": False}]
+        {"item": "neighbors_lock", "problem": NEIGHBORS_LOCK_NOT_REGULAR % path, "blocks_flush": False}]
     assert out == {"error": "state_unusable",
                    "detail": NEIGHBORS_LOCK_NOT_REGULAR % path + " that the plugin can open safely"}
     assert unchanged
     assert "error" not in flushed
-    assert not _neighbors_file(cfg).exists()
+    # the state directory itself is usable, so the result is recorded
+    assert _state(cfg) == ("state_unusable", 5000.0, False)
     assert logged[0] == []
     assert elsewhere.read_text() == ""
 
@@ -2875,21 +3057,63 @@ def test_neighbors_refuses_when_its_lock_is_not_a_regular_file(env, logged, kind
 def test_neighbors_refuses_on_what_the_flush_refuses_for_the_state_and_the_lock(env):
     cfg, tmp = env
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
-    os.mkdir(cfg["state_dir"], 0o700)
-    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
-    assert _tick(cfg)["error"] == "state_unusable"
-    os.rmdir(macalias.state_paths(cfg)["plugin_lock"])
     os.mkfifo(cfg["lock_file"])
     with _within(5):
         assert _tick(cfg) == {"error": "lock_unusable", "detail": LOCK_NOT_REGULAR % cfg["lock_file"]}
     os.unlink(cfg["lock_file"])
-    # a cache core may be loading forged content from is not merged into: the flush is the remedy
-    (tmp / "arp.cache").rename(tmp / "real.cache")
-    os.symlink(tmp / "real.cache", tmp / "arp.cache")
-    assert _tick(cfg) == {"error": "state_unusable", "detail": CACHE_FORGED % cfg["cache_file"]}
-    assert json.loads((tmp / "real.cache").read_text()) == OWN
-    assert "error" not in _flush(cfg)
+    (tmp / "arp.cache").unlink()
+    (tmp / "arp.cache").mkdir()
+    assert _tick(cfg) == {"error": "state_unusable", "detail": CACHE_DIRECTORY % cfg["cache_file"]}
+    (tmp / "arp.cache").rmdir()
+    _seed(tmp, {})
     assert _tick(cfg, now=5060.0)["added"] == 1
+
+
+def test_neighbors_flush_lock_is_not_the_ticks(env):
+    # two locks, two items: a flush lock that cannot be used stops the flush and not the tick
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    os.mkdir(cfg["state_dir"], 0o700)
+    os.mkdir(macalias.state_paths(cfg)["plugin_lock"])
+    assert [(p["item"], p["blocks_flush"]) for p in macalias.problems(cfg)] == [("plugin_lock", True)]
+    assert _flush(cfg)["error"] == "state_unusable"
+    assert _tick(cfg) == _ok(changed=True, added=1, keys=1, samples=["2001:db8::7"])
+    assert macalias.cmd_status(cfg, now=5030.0)["neighbors"]["active"] is True
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hard-link", "foreign-owner", "fifo"])
+def test_neighbors_cache_it_cannot_read_safely_is_cache_unreadable(env, monkeypatch, logged, kind):
+    # a second link to core's cache is one command for any local account: it must not turn the tick off with no
+    # trace. The tick does not merge into such a cache, says so as a result that is recorded and reported like
+    # any other, and a flush, which replaces the file, is the remedy
+    cfg, tmp = env
+    cache = tmp / "arp.cache"
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    if kind == "symlink":
+        cache.rename(tmp / "real.cache")
+        os.symlink(tmp / "real.cache", cache)
+    elif kind == "fifo":
+        cache.unlink()
+        os.mkfifo(cache)
+    else:
+        field, value = (_NLINK, 2) if kind == "hard-link" else (_UID, os.geteuid() + 1)
+        _patch_stat(monkeypatch, "lstat", cache, field, value)
+        _patch_stat(monkeypatch, "fstat", cache, field, value)
+    with _within(10):
+        assert [(p["item"], p["blocks_flush"]) for p in macalias.problems(cfg)] == [("cache_file", False)]
+        for now in (5000.0, 5300.0, 5600.0):
+            assert _tick(cfg, now=now) == {"error": "cache_unreadable", "detail": CACHE_UNREADABLE % cfg["cache_file"]}
+    assert _state(cfg) == ("cache_unreadable", 5000.0, True)
+    assert [message for _priority, message in logged[0]] == [
+        "neighbors: cache_unreadable for 600 s: " + CACHE_UNREADABLE % cfg["cache_file"]]
+    if kind == "symlink":
+        assert json.loads((tmp / "real.cache").read_text()) == OWN
+    with _within(10):
+        assert "error" not in macalias.cmd_flush(cfg, clock=lambda: 5700.0, sleep=lambda s: None)
+    assert stat.S_ISREG(os.lstat(cache).st_mode)
+    assert _tick(cfg, now=5760.0)["result"] == "ok"
+    assert logged[0][-1][1] == "neighbors: working again after cache_unreadable"
+    _locks_free(cfg)
 
 
 def test_neighbors_core_lock_that_turns_unusable_after_the_check_refuses(env, monkeypatch):
@@ -3008,12 +3232,8 @@ def test_neighbors_releases_its_locks_after_every_exit(env, monkeypatch, case):
             raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), path)
 
         monkeypatch.setattr(macalias, "_write_json_atomic", broken)
-    if case == "raises":
-        with pytest.raises(OSError):
-            _tick(cfg)
-    else:
-        out = _tick(cfg)
-        assert out.get("error", "ok") == {"added": "ok", "unchanged": "ok"}.get(case, case)
+    out = _tick(cfg)
+    assert out.get("error", "ok") == {"added": "ok", "unchanged": "ok", "raises": "internal"}.get(case, case)
     if held:
         held.close()
     _locks_free(cfg)
@@ -3192,7 +3412,8 @@ def test_flush_without_mac_aliases_reads_no_neighbor_table(env):
 
 def test_status_neighbors_block(env):
     cfg, tmp = env
-    idle = {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None, "stale": False, "setting": "ok"}
+    idle = {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None, "stale": False,
+            "failing": None, "setting": "ok"}
     out = macalias.cmd_status(cfg, now=5000.0)
     assert out["neighbors"] == idle
     assert out["aliases"][0]["macs"][0]["neighbor_items"] == []
@@ -3220,7 +3441,8 @@ def test_status_neighbors_off_and_not_active(env):
     _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
     assert _tick(cfg, now=5000.0)["added"] == 1
     record = _neighbors_record(cfg)
-    on = {"enabled": True, "active": True, "keys": 1, "over_limit": 0, "last": record, "stale": False, "setting": "ok"}
+    on = {"enabled": True, "active": True, "keys": 1, "over_limit": 0, "last": record, "stale": False,
+          "failing": None, "setting": "ok"}
     assert macalias.cmd_status(cfg, now=5030.0)["neighbors"] == on
     # host discovery off, the host list unreadable, a tick refusal: on, and not active
     good_hosts = cfg["list_hosts"]
@@ -3291,7 +3513,7 @@ def test_status_setting_absent_note(env):
     (tmp / "macaliascache.conf").unlink()
     out = macalias.cmd_status(cfg, now=0.0)
     assert out["neighbors"] == {"enabled": True, "active": True, "keys": 0, "over_limit": 0, "last": None,
-                                "stale": False, "setting": "absent"}
+                                "stale": False, "failing": None, "setting": "absent"}
     assert out["notes"] == [{"item": "neighbors_setting", "note": SETTING_ABSENT_NOTE % cfg["settings_file"],
                              "shown": False}]
     assert out["problems"] == []
@@ -3302,7 +3524,7 @@ def test_status_neighbors_record_is_not_read_from_an_unusable_state_dir(env):
     pathlib.Path(cfg["state_dir"]).write_text("x")
     out = macalias.cmd_status(cfg, now=0.0)
     assert out["neighbors"] == {"enabled": True, "active": False, "keys": 0, "over_limit": 0, "last": None,
-                                "stale": False, "setting": "ok"}
+                                "stale": False, "failing": None, "setting": "ok"}
 
 
 def test_status_ignores_a_neighbors_record_of_another_shape(env):
@@ -3311,3 +3533,39 @@ def test_status_ignores_a_neighbors_record_of_another_shape(env):
     _neighbors_file(cfg).write_text('{"at": "5000", "result": "ok"}')
     _neighbors_file(cfg).chmod(0o600)
     assert macalias.cmd_status(cfg, now=5000.0)["neighbors"]["last"] is None
+
+
+def test_status_failing_after_600s(env):
+    # a tick that fails every minute must show: its result is a state once it has lasted ten minutes, whether or
+    # not a tick has run since to say so in the log
+    cfg, tmp = env
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=5000.0)["added"] == 1
+    assert macalias.cmd_status(cfg, now=9000.0)["neighbors"]["failing"] is None
+    (tmp / "ndp.json").write_text("x" * 100)
+    assert _tick(cfg, now=5060.0) == NEIGHBORS_UNAVAILABLE
+    block = macalias.cmd_status(cfg, now=5060.0 + 599)["neighbors"]
+    assert (block["failing"], block["active"], block["keys"], block["last"]["result"]) == (
+        None, True, 1, "neighbors_unavailable")
+    assert macalias.cmd_status(cfg, now=5660.0)["neighbors"]["failing"] == {
+        "result": "neighbors_unavailable", "since": 5060.0}
+    # it lasts while the result does, through the hourly rewrites of the record, and is never stale meanwhile
+    for now in (5720.0, 9000.0, 12700.0, 48300.0):
+        assert _tick(cfg, now=now) == NEIGHBORS_UNAVAILABLE
+        block = macalias.cmd_status(cfg, now=now + 30)["neighbors"]
+        assert (block["failing"], block["stale"]) == ({"result": "neighbors_unavailable", "since": 5060.0}, False)
+    _neighbor_table(tmp, [(NMAC, "2001:db8::7")])
+    assert _tick(cfg, now=48360.0)["result"] == "ok"
+    assert macalias.cmd_status(cfg, now=48390.0)["neighbors"]["failing"] is None
+
+
+def test_status_failing_names_the_latest_result_of_the_run(env):
+    cfg, tmp = env
+    cfg["list_hosts"] = [_exe(tmp / "bad_hosts", "exit 1\n"), "-n"]
+    assert _tick(cfg, now=5000.0) == HOSTS_UNAVAILABLE
+    with open(cfg["lock_file"], "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        (tmp / "arp.cache").write_text("")
+        (tmp / "macaliascache.conf").write_text("[general]\nneighbors=0\n")
+        assert _tick(cfg, now=5300.0)["error"] == "busy"
+    assert macalias.cmd_status(cfg, now=5700.0)["neighbors"]["failing"] == {"result": "busy", "since": 5000.0}

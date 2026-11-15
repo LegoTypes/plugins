@@ -186,7 +186,8 @@ def test_neighbor_only_problems_show_only_while_the_neighbor_table_is_in_use():
     # with the setting off or host discovery off there is nothing for the user to do about them. A settings
     # file that cannot be read reads as off, and is the one problem shown then
     block = script()
-    assert "var neighborItems = ['neighbor_merge', 'ndp', 'neighbors_setting', 'neighbors_file'];" in block
+    assert ("var neighborItems = ['neighbor_merge', 'ndp', 'neighbors_setting', 'neighbors_file', "
+            "'neighbors_lock'];") in block
     assert ("        function neighborsInUse(data) {\n"
             "            var n = data.neighbors || {};\n"
             "            return (n.enabled === true || n.setting === 'unusable') && data.source === 'discovery';\n"
@@ -222,3 +223,34 @@ def test_the_flush_result_says_when_the_neighbor_addresses_were_not_added():
             "                    built.push(banner('warning', \"{{ lang._('The neighbor table could not be read, so its "
             "addresses were not added by this flush. The next minute adds them.') }}\"));\n"
             "                }\n") in block
+
+
+FAILING_CODES = ("busy", "hosts_unavailable", "neighbors_unavailable", "cache_unreadable", "state_unusable",
+                 "lock_unusable", "core_changed", "internal")
+
+
+def test_a_tick_that_keeps_failing_is_a_warning_in_plain_words_while_the_setting_is_on():
+    # status says so once a result other than ok has lasted ten minutes (neighbors.failing); the page has a
+    # sentence for each result the tick can answer while the setting is on, and shows no code where it has one
+    block = script()
+    texts = block.split("var failingText = {", 1)[1].split("};", 1)[0]
+    assert re.findall(r"^\s+([a-z_]+): \"\{\{ lang\._\('", texts, re.MULTILINE) == list(FAILING_CODES)
+    for line in texts.strip().splitlines():
+        assert "The neighbor table update" in line and "changes nothing" in line
+    assert "A flush writes the cache anew." in texts
+    assert "1 MiB" in texts
+    assert ("                if (data.neighbors && data.neighbors.enabled === true && data.neighbors.failing) {\n"
+            "                    var failing = data.neighbors.failing;\n"
+            "                    banners.push(banner('warning', (failingText[failing.result]\n") in block
+    assert "new Date(failing.since * 1000).toLocaleString()" in block
+    for line in block.splitlines():
+        if "failingText[" in line or "data.neighbors.failing" in line:
+            assert "danger" not in line
+
+
+def test_the_stale_warning_says_what_is_known():
+    # a record that old says no run completed; why is not known (cron, a lock, the state directory)
+    block = script()
+    stale = block.split("if (inUse && data.neighbors.stale) {", 1)[1].split("}\n", 1)[0]
+    assert "has not completed a run for over two hours" in stale
+    assert "is not running" not in block

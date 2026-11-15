@@ -99,7 +99,19 @@
         // the problems of the neighbor addresses alone, and the two conditions status computes for them, are shown
         // only while the neighbor table is in use: with the setting off or host discovery off the user can do
         // nothing about them. A settings file that cannot be read reads as off, and is the one shown then
-        var neighborItems = ['neighbor_merge', 'ndp', 'neighbors_setting', 'neighbors_file'];
+        var neighborItems = ['neighbor_merge', 'ndp', 'neighbors_setting', 'neighbors_file', 'neighbors_lock'];
+
+        // the neighbor tick's result once it has been another than ok for ten minutes (status: neighbors.failing)
+        var failingText = {
+            busy: "{{ lang._('The neighbor table update keeps finding the alias update lock of core held, so it changes nothing.') }}",
+            hosts_unavailable: "{{ lang._('The neighbor table update cannot read the host list of host discovery, so it changes nothing.') }}",
+            neighbors_unavailable: "{{ lang._('The neighbor table update cannot read the neighbor table, so it changes nothing: ndp fails, runs longer than 5 seconds or lists more than 1 MiB (about 6,000 entries).') }}",
+            cache_unreadable: "{{ lang._('The neighbor table update cannot read the MAC alias cache of core safely, so it changes nothing. A flush writes the cache anew.') }}",
+            state_unusable: "{{ lang._('The neighbor table update cannot use the state files of the plugin, so it changes nothing.') }}",
+            lock_unusable: "{{ lang._('The neighbor table update cannot use the alias update lock of core safely, so it changes nothing.') }}",
+            core_changed: "{{ lang._('The neighbor table update no longer finds what it relies on in the files of core, so it changes nothing.') }}",
+            internal: "{{ lang._('The neighbor table update ends in an error of its own, so it changes nothing. The system log has the detail.') }}"
+        };
 
         function neighborsInUse(data) {
             var n = data.neighbors || {};
@@ -142,8 +154,15 @@
                     if (neighborItems.indexOf(p.item) >= 0 && !inUse) return;
                     banners.push(banner(p.blocks_flush ? 'danger' : 'warning', plain(p.problem || p.item)));
                 });
+                if (data.neighbors && data.neighbors.enabled === true && data.neighbors.failing) {
+                    var failing = data.neighbors.failing;
+                    banners.push(banner('warning', (failingText[failing.result]
+                        || "{{ lang._('The neighbor table update fails, so it changes nothing:') }} " + plain(failing.result) + '.')
+                        + " {{ lang._('This has lasted since') }} " + new Date(failing.since * 1000).toLocaleString()
+                        + ". {{ lang._('The addresses it added leave the aliases 12 hours after they were last written.') }}"));
+                }
                 if (inUse && data.neighbors.stale) {
-                    banners.push(banner('warning', "{{ lang._('The neighbor table has not been read for over two hours, so the minute job of the plugin is not running, and the addresses it added leave the aliases 12 hours after they were last written. Restart cron, or reinstall the plugin.') }}"));
+                    banners.push(banner('warning', "{{ lang._('The neighbor table update has not completed a run for over two hours, so the addresses it added leave the aliases 12 hours after they were last written. Check that cron is running, and the problems shown here.') }}"));
                 }
                 if (inUse && data.neighbors.over_limit > 0) {
                     banners.push(banner('warning', "{{ lang._('The limit of 32 addresses for one MAC and 1024 in all kept addresses of the neighbor table out of the aliases. A MAC with that many addresses is unusual; check the device. Addresses left out:') }} " + data.neighbors.over_limit));

@@ -950,20 +950,27 @@ def test_alias_view_mac_with_only_neighbor_keys():
                                     "neighbor_items": [{"ip": "fe80::1", "age_s": 60}]}]
 
 
-NEIGHBOR_RECORD = {"at": 5000.0, "result": "ok", "added": 2, "removed": 0, "refreshed": 1, "keys": 3, "over_limit": 0,
-                   "samples": ["2001:db8::1", "2001:db8::2"]}
+NEIGHBOR_RECORD = {"at": 5000.0, "result": "ok", "since": 4000.0, "reported": False, "added": 2, "removed": 0,
+                   "refreshed": 1, "keys": 3, "over_limit": 0, "samples": ["2001:db8::1", "2001:db8::2"]}
 
 
 def test_neighbors_schema():
     assert lib.neighbors_schema(NEIGHBOR_RECORD) == NEIGHBOR_RECORD
     assert lib.neighbors_schema(dict(NEIGHBOR_RECORD, extra=1, samples=[])) == dict(NEIGHBOR_RECORD, samples=[])
-    assert lib.neighbors_schema(dict(NEIGHBOR_RECORD, at=5000, result="core_changed")) == dict(
-        NEIGHBOR_RECORD, at=5000, result="core_changed")
+    failing = dict(NEIGHBOR_RECORD, at=5000, since=4000, result="core_changed", reported=True)
+    assert lib.neighbors_schema(failing) == failing
+    # a result is a state once it has lasted ten minutes
+    assert lib.NEIGHBOR_FAILING == 600 < lib.NEIGHBOR_REFRESH
     for bad in (
         [], "x", None, 5,
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "at"},
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "result"},
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "keys"},
+        {name: value for name, value in NEIGHBOR_RECORD.items() if name != "since"},
+        {name: value for name, value in NEIGHBOR_RECORD.items() if name != "reported"},
+        dict(NEIGHBOR_RECORD, since="4000"), dict(NEIGHBOR_RECORD, since=True),
+        dict(NEIGHBOR_RECORD, since=float("inf")), dict(NEIGHBOR_RECORD, reported=1),
+        dict(NEIGHBOR_RECORD, reported="false"), dict(NEIGHBOR_RECORD, reported=None),
         {name: value for name, value in NEIGHBOR_RECORD.items() if name != "samples"},
         dict(NEIGHBOR_RECORD, at="5000"), dict(NEIGHBOR_RECORD, at=True), dict(NEIGHBOR_RECORD, at=float("nan")),
         dict(NEIGHBOR_RECORD, result=None), dict(NEIGHBOR_RECORD, result=1),

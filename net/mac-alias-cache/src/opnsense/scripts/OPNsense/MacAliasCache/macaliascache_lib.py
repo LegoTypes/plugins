@@ -94,6 +94,9 @@ NEIGHBOR_MAX_TOTAL = 1024
 # tick older than twice that, while keys exist, says the tick is not running
 NEIGHBOR_REFRESH = 3600
 NEIGHBOR_STALE = 7200
+# a tick's result other than ok is a state, to log once and to show, when it has lasted this long: one minute
+# with a busy lock or a host list that cannot be read is none
+NEIGHBOR_FAILING = 600
 # what the plugin's own cache keys rely on in core: every key the host list does not name is kept until it is
 # 12 h old, and an alias entry takes the items of every key that starts with it. Drift is a problem of the
 # neighbor addresses alone and never blocks a flush
@@ -131,9 +134,14 @@ class NeighborPlan(TypedDict):
 
 
 class NeighborRecord(TypedDict):
-    """ neighbors.json, the tick's record of its last write or change of result (neighbors_schema) """
+    """ neighbors.json, the tick's record (neighbors_schema): when it was written, the tick's result ("ok" or
+    the code it answered with), since when the tick is working or failing as it is now, whether a failing run
+    was reported in the log, and what the tick counted
+    """
     at: float
     result: str
+    since: float
+    reported: bool
     added: int
     removed: int
     refreshed: int
@@ -699,14 +707,18 @@ _NEIGHBOR_TALLIES = ("added", "removed", "refreshed", "keys", "over_limit")
 
 def neighbors_schema(obj: object) -> NeighborRecord | None:
     """ neighbors.json as a tick writes it, with only its own keys: the time, the result ("ok" or the code
-    the tick answered with), the counts and at most five sample addresses; None for anything else
+    the tick answered with), since when and whether reported, the counts and at most five sample addresses;
+    None for anything else
     """
     if not isinstance(obj, dict) or not _is_number(obj.get("at")) or not isinstance(obj.get("result"), str):
+        return None
+    if not _is_number(obj.get("since")) or not isinstance(obj.get("reported"), bool):
         return None
     samples = obj.get("samples")
     if not all(_is_tally(obj.get(name)) for name in _NEIGHBOR_TALLIES):
         return None
     if not isinstance(samples, list) or len(samples) > _SAMPLES or not _is_strings(samples):
         return None
-    return {"at": obj["at"], "result": obj["result"], "added": obj["added"], "removed": obj["removed"],
-            "refreshed": obj["refreshed"], "keys": obj["keys"], "over_limit": obj["over_limit"], "samples": samples}
+    return {"at": obj["at"], "result": obj["result"], "since": obj["since"], "reported": obj["reported"],
+            "added": obj["added"], "removed": obj["removed"], "refreshed": obj["refreshed"], "keys": obj["keys"],
+            "over_limit": obj["over_limit"], "samples": samples}
