@@ -548,7 +548,7 @@ wf_register_suite('state', function (): int {
 
     /* the failback gate's record (wf_rules_record_load(), wf_rules_record_save()), in a run directory of its own */
     $rd = wf_t_scratch('rules');
-    $rr = ['checksum' => '0x0a', 'pfctl' => str_repeat('a', 64), 'boot_id' => 'b'];
+    $rr = ['checksum' => '0x0a', 'pfctl' => str_repeat('a', 64), 'check' => str_repeat('c', 64), 'boot_id' => 'b'];
     wf_rules_record_save("{$rd}/run/rules_read.json", $rr);
     file_put_contents("{$rd}/order.json", json_encode(array_reverse($rr)));
     wf_check($t, "rules record: a saved record loads back as saved, and one in another key order loads in the gate's order",
@@ -567,8 +567,11 @@ wf_register_suite('state', function (): int {
         && $as(json_encode($rr + ['extra' => 'x'])) === null
         && $bad(['checksum' => 'aa']) === null && $bad(['checksum' => '0xAA']) === null
         && $bad(['checksum' => "0x0a\n"]) === null && $bad(['pfctl' => 'abc']) === null
-        && $bad(['pfctl' => str_repeat('a', 64) . "\n"]) === null && $bad(['boot_id' => '']) === null
+        && $bad(['pfctl' => str_repeat('a', 64) . "\n"]) === null && $bad(['check' => 'abc']) === null
+        && $bad(['check' => str_repeat('C', 64)]) === null && $bad(['boot_id' => '']) === null
         && $bad(['boot_id' => 5]) === null);
+    wf_check($t, "rules record: one without the check's hash loads as none",
+        $as(json_encode(array_diff_key($rr, ['check' => true]))) === null);
     file_put_contents("{$rd}/target.json", json_encode($rr));
     symlink("{$rd}/target.json", "{$rd}/link.json");
     $kept = (string)file_get_contents("{$rd}/target.json");

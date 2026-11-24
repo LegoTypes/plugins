@@ -417,11 +417,13 @@ wf_register_suite('contract', function (): int {
         && $malformed(['rules_unread_count' => '2', 'rules_unread_since' => 'soon']) === $unreadSaid(3, $t0)
         && $malformed(['rules_unread_count' => '2']) === $unreadSaid(3, $t0));
 
-    /* The rules gate (wf_rules_gate()): the record of the last clean listing, the pfctl hash and boot id, and stand-ins
-     * for the checksum read and the listing that give the answers a case lists, in order, and count their calls */
-    $gate = function (?array $record, array $sums, array $lists, string $pfctl = 'h', string $boot = 'b'): array {
+    /* The rules gate (wf_rules_gate()): the record of the last clean listing, the pfctl hash, the check's own hash and
+     * the boot id, and stand-ins for the checksum read and the listing that give the answers a case lists, in order,
+     * and count their calls */
+    $gate = function (?array $record, array $sums, array $lists, string $pfctl = 'h', string $boot = 'b',
+        string $check = 'c'): array {
         $calls = ['sum' => 0, 'list' => 0];
-        $r = wf_rules_gate($record, $pfctl, $boot,
+        $r = wf_rules_gate($record, $pfctl, $check, $boot,
             function () use (&$sums, &$calls): ?string {
                 $calls['sum']++;
                 return array_shift($sums);
@@ -432,18 +434,21 @@ wf_register_suite('contract', function (): int {
             });
         return $r + ['calls' => $calls];
     };
-    $rec = ['checksum' => '0xaa', 'pfctl' => 'h', 'boot_id' => 'b'];
+    $rec = ['checksum' => '0xaa', 'pfctl' => 'h', 'check' => 'c', 'boot_id' => 'b'];
     $g = $gate(null, ['0xaa', '0xaa'], [$rules]);
-    wf_check($t, 'rules gate: no record lists once and records the checksum, pfctl hash and boot id',
+    wf_check($t, "rules gate: no record lists once and records the checksum, pfctl hash, the check's hash and boot id",
         $g['drift'] === null && $g['record'] === $rec && $g['calls'] === ['sum' => 2, 'list' => 1]);
     $g = $gate($rec, ['0xaa'], []);
-    wf_check($t, 'rules gate: a record of this checksum, pfctl and boot lists nothing and records nothing',
+    wf_check($t, 'rules gate: a record of this checksum, pfctl, check and boot lists nothing and records nothing',
         $g['drift'] === null && $g['record'] === null && $g['calls'] === ['sum' => 1, 'list' => 0]);
     $sum = $gate(['checksum' => '0xbb'] + $rec, ['0xaa', '0xaa'], [$rules]);
     $hash = $gate($rec, ['0xaa', '0xaa'], [$rules], 'h2');
     $boot = $gate($rec, ['0xaa', '0xaa'], [$rules], 'h', 'b2');
-    wf_check($t, 'rules gate: a record of another checksum, pfctl or boot lists again',
-        $sum['calls']['list'] === 1 && $sum['drift'] === null && $sum['record'] === $rec
+    $check = $gate($rec, ['0xaa', '0xaa'], [$rules], 'h', 'b', 'c2');
+    wf_check($t, "rules gate: a record of another checksum, pfctl, check or boot lists again, so an upgrade whose check "
+        . "changed never inherits the last version's verdict",
+        $check['calls']['list'] === 1 && $check['record'] === array_replace($rec, ['check' => 'c2'])
+        && $sum['calls']['list'] === 1 && $sum['drift'] === null && $sum['record'] === $rec
         && $hash['calls']['list'] === 1 && $hash['record'] === array_replace($rec, ['pfctl' => 'h2'])
         && $boot['calls']['list'] === 1 && $boot['record'] === array_replace($rec, ['boot_id' => 'b2']));
     $g = $gate($rec, [null], [$rules]);
@@ -463,8 +468,10 @@ wf_register_suite('contract', function (): int {
         $g['drift'] === null && $g['record'] === null && $g['calls'] === ['sum' => 2, 'list' => 1]);
     $noHash = $gate(null, ['0xaa', '0xaa'], [$rules], '');
     $noBoot = $gate(null, ['0xaa', '0xaa'], [$rules], 'h', '');
-    wf_check($t, 'rules gate: no pfctl hash or no boot id records nothing',
-        $noHash['record'] === null && $noHash['calls']['list'] === 1 && $noHash['drift'] === null
+    $noCheck = $gate(null, ['0xaa', '0xaa'], [$rules], 'h', 'b', '');
+    wf_check($t, 'rules gate: no pfctl hash, no check hash or no boot id records nothing',
+        $noCheck['record'] === null && $noCheck['calls']['list'] === 1
+        && $noHash['record'] === null && $noHash['calls']['list'] === 1 && $noHash['drift'] === null
         && $noBoot['record'] === null && $noBoot['calls']['list'] === 1 && $noBoot['drift'] === null);
     $same = true;
     foreach ([$rules, $moved['out'], null, ''] as $raw) {

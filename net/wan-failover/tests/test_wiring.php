@@ -219,6 +219,22 @@ wf_register_suite('wiring', function (): int {
     if ($misplaced !== []) {
         printf("    gate at %s; misplaced: %s\n", $gate === false ? '(not found)' : (string)$gate, implode(' | ', $misplaced));
     }
+    /* the failback gate's record has one writer: the evaluation, under its lock, past the boot check; the page's holds
+     * read, --dry and --snapshot reuse it and never write */
+    $saves = 0;
+    $tree = new RecursiveIteratorIterator(new RecursiveDirectoryIterator(dirname($evaluate), FilesystemIterator::SKIP_DOTS));
+    foreach ($tree as $file) {
+        if (preg_match('/\.(php|inc)\z/', (string)$file) === 1) {
+            $saves += (int)preg_match_all('/(?<!function )wf_rules_record_save\(/', (string)file_get_contents((string)$file));
+        }
+    }
+    $saveAt = strpos($src, 'wf_rules_record_save(WF_RULES_READ');
+    $lockAt = strpos($src, "\$lock = wf_lock_open(WF_RUN_DIR . '/evaluate.lock');");
+    $bootAt = strpos($src, "    if (wf_booting()) {\n");
+    wf_check($t, "the failback gate's record is saved in one place, evaluate.php's evaluation after its lock and the boot "
+        . 'check',
+        $saves === 1 && $saveAt !== false && $lockAt !== false && $bootAt !== false && $saveAt > $lockAt
+        && $saveAt > $bootAt);
     wf_check($t, "evaluate.php's dry run says what the failback gate would do, through wf_failback_dry()",
         str_contains($src, 'wf_log(wf_failback_dry($n, wf_snapshot_pf($wanTargets), $wanTargets, $fb[\'top\']));')
         && !str_contains($src, 'would kill'));

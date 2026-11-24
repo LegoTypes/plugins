@@ -105,6 +105,22 @@ function wf_pfctl_hash(): string
     return is_string($hash) ? $hash : '';
 }
 
+/**
+ * The sha256 of the plugin's own rule-format check, the files that define it (wf_rules_drift() in contract.php,
+ * wf_rules_selfcheck() and what it calls in pfstate.php), part of the failback gate's record (wf_rules_gate()), so a
+ * version whose check changed lists once instead of inheriting the last verdict; '' when either cannot be read.
+ */
+function wf_rules_check_hash(): string
+{
+    $ctx = hash_init('sha256');
+    foreach ([__DIR__ . '/contract.php', __DIR__ . '/pfstate.php'] as $file) {
+        if (!is_readable($file) || !@hash_update_file($ctx, $file)) {
+            return '';
+        }
+    }
+    return hash_final($ctx);
+}
+
 /** The live IPv4 default route as a route target (gateway@interface), or null without one. */
 function wf_live_default(): ?string
 {
@@ -144,14 +160,14 @@ function wf_model_list(\OPNsense\Base\FieldTypes\BaseField $field): array
  *               legacy_held: list<string>, force_down: array<string, bool>,
  *               contract: array{judging: list<string>, command: list<string>, failback: list<string>, tailscale: list<string>,
  *                               removal: list<string>, names: list<string>},
- *               rules_record: ?array{checksum: string, pfctl: string, boot_id: string}}
+ *               rules_record: ?array{checksum: string, pfctl: string, check: string, boot_id: string}}
  *     wans: by gateway name; disabled and monitor_disable are the gateway's own settings, either of which means the
  *     engine can never judge it (wf_unjudgeable());
  *     holds: the hold records by gateway name, as found; whose they are is the planner's to prove (wf_reconcile());
  *     legacy_held: the gateways 1.3_1's held list names while it is still in the config;
  *     contract.failback: read only while failback is on, since its drift suspends failback alone; WF_UNREAD_RULES in it
  *     is a rule listing that could not be read, which wf_contract_kept() resolves before anything acts on it. The
- *     rules are listed only when pf's checksum, pfctl or the boot differ from the last clean listing's (wf_rules_gate());
+ *     rules are listed only when pf's checksum, pfctl, the check or the boot differ from the last clean listing's;
  *     rules_record: that gate's new record, null when there is none; only an evaluation, under its lock, saves it
  */
 function wf_snapshot(): array
@@ -251,8 +267,8 @@ function wf_snapshot(): array
     $failbackOn = $mdl->failback->isEqual('1');
     $rules = ['drift' => null, 'record' => null];
     if ($failbackOn) {
-        $rules = wf_rules_gate(wf_rules_record_load(WF_RULES_READ), wf_pfctl_hash(), $bootId, 'wf_pf_checksum_read',
-            fn (): ?string => wf_pf_listing('wf_pfctl_run', ['-vvsr']));
+        $rules = wf_rules_gate(wf_rules_record_load(WF_RULES_READ), wf_pfctl_hash(), wf_rules_check_hash(), $bootId,
+            'wf_pf_checksum_read', fn (): ?string => wf_pf_listing('wf_pfctl_run', ['-vvsr']));
     }
     $failback = $failbackOn ? wf_contract_failback_drift($rules['drift'],
         wf_contract_groups_read(WF_CORE_GROUPS_CLASS, WF_CORE_GROUPS_METHOD)) : [];

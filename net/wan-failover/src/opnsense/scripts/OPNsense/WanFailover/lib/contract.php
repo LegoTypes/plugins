@@ -352,27 +352,29 @@ function wf_contract_failback_drift(?string $rulesDrift, array $groups): array
 
 /**
  * The failback contract's rule drift, listing pf's rules only when they may have changed. $record is the last clean
- * listing's key: pf's ruleset checksum, the hash of /sbin/pfctl and kern.boot_id. While all three match, the clean
- * verdict stands without a listing; pfctl's hash and the boot cover a pfctl or kernel update under an unchanged
- * checksum. Otherwise the rules are listed and their drift is the answer. Only a clean verdict is recorded, and only
+ * listing's key: pf's ruleset checksum, the hash of /sbin/pfctl, the hash of the plugin's own check
+ * (wf_rules_check_hash()) and kern.boot_id. While all four match, the clean verdict stands without a listing; pfctl's
+ * hash and the boot cover a pfctl or kernel update under an unchanged checksum, and the check's hash an upgrade whose
+ * check reads the listing otherwise. Otherwise the rules are listed and their drift is the answer. Only a clean verdict is recorded, and only
  * when the checksum read before the listing is the one read after it (no load during it) and every part of the key is
  * known: a drift or an unread listing is listed again while it stands, so it clears or counts as before
  * (wf_contract_kept()). A record returned is the caller's to save; null means nothing new to save.
  *
- * @param ?array{checksum: string, pfctl: string, boot_id: string} $record the saved record, or null for none
+ * @param ?array{checksum: string, pfctl: string, check: string, boot_id: string} $record the saved record, or null
  * @param callable(): ?string $checksum pf's ruleset checksum (wf_pf_checksum()), null when unreadable
  * @param callable(): ?string $listing the rule listing (wf_pf_listing()), null when unread
- * @return array{drift: ?string, record: ?array{checksum: string, pfctl: string, boot_id: string}}
+ * @return array{drift: ?string, record: ?array{checksum: string, pfctl: string, check: string, boot_id: string}}
  */
-function wf_rules_gate(?array $record, string $pfctl, string $bootId, callable $checksum, callable $listing): array
+function wf_rules_gate(?array $record, string $pfctl, string $check, string $bootId, callable $checksum,
+    callable $listing): array
 {
     $before = $checksum();
-    $key = ['checksum' => $before, 'pfctl' => $pfctl, 'boot_id' => $bootId];
+    $key = ['checksum' => $before, 'pfctl' => $pfctl, 'check' => $check, 'boot_id' => $bootId];
     if ($before !== null && $record === $key) {
         return ['drift' => null, 'record' => null];
     }
     $drift = wf_rules_drift($listing());
-    $known = $before !== null && $pfctl !== '' && $bootId !== '';
+    $known = $before !== null && $pfctl !== '' && $check !== '' && $bootId !== '';
     return ['drift' => $drift, 'record' => $drift === null && $known && $checksum() === $before ? $key : null];
 }
 
