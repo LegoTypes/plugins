@@ -3,7 +3,9 @@
 # regenerate cron once they are gone (the pre-deinstall stop still saw the plugin installed), each through configd
 # when it answers OK within 30 s, else the command core's actions file runs for it, run directly (configctl exits 0
 # on no reply and on an error reply, so only OK counts). The reload drops the counting table with its rule; the
-# rules' verification record goes too.
+# rules' verification record goes too. A minute job cron started before the removal, still asleep before its second
+# (40 s past the minute, from 1.8_1), is not cron's to stop: it calls the action once more, which configd answers with
+# an error once the files are gone, or which the removal marker stops while they are not.
 [ "$(/usr/bin/timeout 30 /usr/local/sbin/configctl filter reload)" = OK ] || /usr/local/etc/rc.filter_configure || true
 [ "$(/usr/bin/timeout 30 /usr/local/sbin/configctl cron restart)" = OK ] || /usr/local/sbin/pluginctl -s cron restart || true
 rm -f /var/run/unboundupstream/rules.json
