@@ -202,13 +202,17 @@ function uu_test_evaluate_lock()
 /** The second of each minute at which the minute job's evaluation starts (unboundupstream_cron()'s sleep). */
 const UU_TEST_JOB_SECOND = 40;
 
-/** Wait up to 60 s until the minute job's next evaluation is at least $margin seconds away. */
+/**
+ * Wait up to 60 s until both cron's next minute, when it starts the minute job, and that job's evaluation are at least
+ * $margin seconds away: a job cron starts during the window evaluates after it, a job already asleep within it.
+ */
 function uu_test_clear_of_tick(int $margin): bool
 {
     $deadline = hrtime(true) + 60000000000;
     while (hrtime(true) < $deadline) {
-        $until = (UU_TEST_JOB_SECOND - (int)date('s') + 60) % 60;
-        if ($until >= $margin) {
+        $second = (int)date('s');
+        $evaluates = (UU_TEST_JOB_SECOND - $second + 60) % 60;
+        if ($second >= 1 && 60 - $second >= $margin && $evaluates >= $margin) {
             return true;
         }
         usleep(200000);
@@ -983,8 +987,8 @@ VOLT;
         && trim((string)shell_exec('/usr/local/sbin/configctl unboundupstream status')) === 'unboundupstream is not running');
 
     /* (e2) with the plugin disabled, a state recording a footprint keeps the minute job, so a stop that
-     * could not restore is retried; without one the job goes. The evaluate lock is held throughout and the minute's
-     * evaluation is at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
+     * could not restore is retried; without one the job goes. The evaluate lock is held throughout and both the minute
+     * and the minute job's evaluation are at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
      * runs; the saved state, the crontab and cron's running state are put back as found */
     $e2 = null;
     $e2Aside = UU_STATE_PATH . '.e2';
