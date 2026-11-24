@@ -401,6 +401,42 @@ function wf_state_save(string $path, array $state): void
 }
 
 /**
+ * The failback gate's record of its last clean rule listing (wf_rules_gate()): pf's ruleset checksum, the sha256 of
+ * /sbin/pfctl and kern.boot_id, in the gate's key order. Anything else at the path (none, a link, not a regular file,
+ * not exactly this shape) is none, which costs only a listing: the record is a cache, never a reason to act, and is
+ * kept apart from state.json, where a bad field would release every hold.
+ *
+ * @return ?array{checksum: string, pfctl: string, boot_id: string}
+ */
+function wf_rules_record_load(string $path): ?array
+{
+    $text = wf_read_regular_file($path)['text'];
+    $data = $text === null ? null : json_decode($text, true);
+    if (!is_array($data) || count($data) !== 3) {
+        return null;
+    }
+    $checksum = $data['checksum'] ?? null;
+    $pfctl = $data['pfctl'] ?? null;
+    $bootId = $data['boot_id'] ?? null;
+    if (!is_string($checksum) || preg_match('/^0x[0-9a-f]+\z/', $checksum) !== 1
+        || !is_string($pfctl) || preg_match('/^[0-9a-f]{64}\z/', $pfctl) !== 1 || !is_string($bootId) || $bootId === '') {
+        return null;
+    }
+    return ['checksum' => $checksum, 'pfctl' => $pfctl, 'boot_id' => $bootId];
+}
+
+/**
+ * Save the failback gate's record (wf_rules_record_load()) whole, in a directory of the plugin's.
+ *
+ * @param array{checksum: string, pfctl: string, boot_id: string} $record
+ */
+function wf_rules_record_save(string $path, array $record): void
+{
+    wf_private_dir(dirname($path));
+    wf_write_private($path, json_encode($record, JSON_THROW_ON_ERROR) . "\n");
+}
+
+/**
  * Which hold records are the plugin's. A record proves a hold only by the boot that took it: this boot, or, passed
  * by the planner's boot detector alone, the boot before. A proven record is owned while its gateway reads force_down
  * 1, and was released by hand once it reads 0. Any other record (a restored backup, a hand-edited config) is foreign:

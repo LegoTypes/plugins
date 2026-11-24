@@ -545,5 +545,40 @@ wf_register_suite('state', function (): int {
     wf_check($t, '(h3) a log line is one printable line: CR and LF become "; ", other control bytes and UTF-8 C1 pairs "?"',
         wf_log_text("hold record for WAN\x1b[2J_B\r\nforged\xc2\x85x") === 'hold record for WAN?[2J_B; ; forged?x'
         && wf_log_text("caf\xc3\xa9 \xff") === "caf\xc3\xa9 \xff");
+
+    /* the failback gate's record (wf_rules_record_load(), wf_rules_record_save()), in a run directory of its own */
+    $rd = wf_t_scratch('rules');
+    $rr = ['checksum' => '0x0a', 'pfctl' => str_repeat('a', 64), 'boot_id' => 'b'];
+    wf_rules_record_save("{$rd}/run/rules_read.json", $rr);
+    file_put_contents("{$rd}/order.json", json_encode(array_reverse($rr)));
+    wf_check($t, "rules record: a saved record loads back as saved, and one in another key order loads in the gate's order",
+        wf_rules_record_load("{$rd}/run/rules_read.json") === $rr && wf_rules_record_load("{$rd}/order.json") === $rr);
+    wf_check($t, 'rules record: the save makes its directory 0700 and the file 0600',
+        wf_t_mode("{$rd}/run") === 0700 && wf_t_mode("{$rd}/run/rules_read.json") === 0600);
+    $as = function (string $text) use ($rd): ?array {
+        file_put_contents("{$rd}/bad.json", $text);
+        return wf_rules_record_load("{$rd}/bad.json");
+    };
+    $bad = fn (array $with): ?array => $as(json_encode(array_replace($rr, $with)));
+    wf_check($t, 'rules record: a missing file, not JSON, a missing or extra key and a malformed value each load as none',
+        wf_rules_record_load("{$rd}/absent.json") === null && $as('{') === null && $as('[]') === null
+        && $as('"0x0a"') === null && $as(json_encode(array_values($rr))) === null
+        && $as(json_encode(array_diff_key($rr, ['boot_id' => true]))) === null
+        && $as(json_encode($rr + ['extra' => 'x'])) === null
+        && $bad(['checksum' => 'aa']) === null && $bad(['checksum' => '0xAA']) === null
+        && $bad(['checksum' => "0x0a\n"]) === null && $bad(['pfctl' => 'abc']) === null
+        && $bad(['pfctl' => str_repeat('a', 64) . "\n"]) === null && $bad(['boot_id' => '']) === null
+        && $bad(['boot_id' => 5]) === null);
+    file_put_contents("{$rd}/target.json", json_encode($rr));
+    symlink("{$rd}/target.json", "{$rd}/link.json");
+    $kept = (string)file_get_contents("{$rd}/target.json");
+    $viaLink = wf_rules_record_load("{$rd}/link.json");
+    $newer = array_replace($rr, ['checksum' => '0x0b']);
+    wf_rules_record_save("{$rd}/link.json", $newer);
+    wf_check($t, 'rules record: a symbolic link at the path loads as none, and a save replaces the link without writing '
+        . 'through it',
+        $viaLink === null && !is_link("{$rd}/link.json") && wf_rules_record_load("{$rd}/link.json") === $newer
+        && file_get_contents("{$rd}/target.json") === $kept);
+    wf_t_rmtree($rd);
     return wf_tally_report('state', $t);
 });
