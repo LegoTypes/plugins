@@ -89,7 +89,7 @@
  * (config, live status, held tunnels) as JSON and writes nothing; --plan-from=FILE
  * decides from a snapshot saved that way and prints what --dry would.
  *
- * Runs from cron.d/wgclienttunnels through wgct.sh tick, four times a minute (offsets 0/15/30/45s).
+ * Runs from cron.d/wgclienttunnels through wgct.sh tick, four times a minute (offsets 5/20/35/50 s).
  */
 
 require "/usr/local/opnsense/mvc/script/load_phalcon.php";
@@ -171,7 +171,7 @@ if ($dryRun ? wgct_migration_pending() : wgct_pending_refuses('tick', $logTag)) 
 
 /*
  * Single-instance guard (health.lock under /var/run). Cron fires this script four times a minute
- * (0/15/30/45s). A tick that changes a gateway blocks below until core is in
+ * (5/20/35/50 s). A tick that changes a gateway blocks below until core is in
  * step and the alarm replay has run, which can outlast the 15s spacing; when
  * the tick falls back to a full routing reconfigure (dpinger torn down and
  * rebuilt), two overlapping runs would race one teardown against another's

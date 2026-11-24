@@ -77,6 +77,15 @@ Features:
 Plugin Changelog
 ================
 
+3.13_1
+
+* No cron round starts at second 0 any more, where core's own minute
+  jobs start: the health mirror ticks 5, 20, 35 and 50 s past the
+  minute (still every 15 s) and the route reconcile 10 s past it, clear
+  of wan-failover's and unbound-upstream's seconds too. cron starts each
+  round afresh every minute, so the offsets stay put. A hook's reconcile
+  and a page action still run at once
+
 3.13
 
 * Every configd action of the plugin names allowed_groups (wheel,
