@@ -67,6 +67,12 @@ lines=$(grep -v -E '^[[:space:]]*(#|$)' "$CRON" 2>&1)
 bad=$(printf '%s\n' "$lines" | grep -v -E '^([^[:space:]]+[[:space:]]+){5}root[[:space:]]+(sleep [0-9]+ && )?/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct[.]sh( [a-z_-]+)*$')
 [ -n "$lines" ] || bad="no cron line in $CRON"
 report "cron runs only wgct.sh" "$bad"
+# the rounds' seconds past the minute: the mirror's ticks every 15 s from 5 and the reconcile at 10, so none starts at
+# second 0 with core's own jobs, and none on wan-failover's (25) or unbound-upstream's (40) second
+got=$(printf '%s\n' "$lines" | awk '{ s = ($7 == "sleep") ? $8 : 0; c = ($7 == "sleep") ? $10 : $7; for (i = ($7 == "sleep") ? 11 : 8; i <= NF; i++) c = c " " $i; sub(/.*\//, "", c); print s ":" c }' | sort -t: -k1,1n | tr '\n' ' ')
+want='5:wgct.sh tick 10:wgct.sh reconcile --cron 20:wgct.sh tick 35:wgct.sh tick 50:wgct.sh tick '
+[ "$got" = "$want" ] && bad="" || bad="the rounds by second: '$got', expected '$want'"
+report "the cron rounds start at 5, 20, 35 and 50 s past the minute (ticks) and at 10 (reconcile), none at second 0" "$bad"
 
 commands=$(grep '^command:' "$ACTIONS" 2>&1)
 bad=$(printf '%s\n' "$commands" | grep -v -E '^command:(/usr/local/opnsense/scripts/OPNsense/WGClientTunnels/wgct[.]sh |/usr/local/bin/flock -o -w 120 /tmp/filter_reload_gateway[.]lock )')
