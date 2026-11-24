@@ -8,5 +8,7 @@ fi
 # Core's removal step does not regenerate cron, so the plugin's minute job would stay in crontab, calling an action
 # that is gone: cron is restarted once the plugin's files are gone, through configd when it answers OK within 30 s
 # (configctl exits 0 on an error reply too), else core's own command for it. It needs no guard: pkg does not run an
-# old package's post-deinstall on an upgrade, and a cron restart would do no harm there.
+# old package's post-deinstall on an upgrade, and a cron restart would do no harm there. A minute job cron started
+# before the removal, still asleep before its second (25 s past the minute, from 1.8_1), is not cron's to stop: it
+# calls the action once more, which configd, still holding the old action, runs and answers with an error.
 /usr/bin/timeout 30 /usr/local/sbin/configctl cron restart | grep -qx OK || /usr/local/sbin/pluginctl -s cron restart || true
