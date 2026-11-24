@@ -21,12 +21,12 @@ Plugin Changelog
 
 1.8_1
 
-* The minute evaluation starts 25 s past the minute instead of on it.
-  Core's own minute jobs start at second 0, and wg-client-tunnels and
-  unbound-upstream have seconds of their own, so the evaluation no
-  longer shares that second with them. cron starts the job afresh each
-  minute, so the offset stays put. An evaluation that a gateway alarm
-  or a page action asks for still runs at once
+* The minute evaluation starts 25 s past the minute instead of on it,
+  so it no longer shares second 0 with core's own minute jobs (from
+  wg-client-tunnels 3.13_1 and unbound-upstream 1.8_1 on, those take
+  seconds of their own too). cron starts the job afresh each minute,
+  so the offset stays put. An evaluation that a gateway alarm or a page
+  action asks for still runs at once
 
 1.8
 
