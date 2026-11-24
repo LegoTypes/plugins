@@ -199,13 +199,16 @@ function uu_test_evaluate_lock()
     return $lock;
 }
 
-/** Wait up to 60 s until cron's next minute tick is at least $margin seconds away. */
+/** The second of each minute at which the minute job's evaluation starts (unboundupstream_cron()'s sleep). */
+const UU_TEST_JOB_SECOND = 40;
+
+/** Wait up to 60 s until the minute job's next evaluation is at least $margin seconds away. */
 function uu_test_clear_of_tick(int $margin): bool
 {
     $deadline = hrtime(true) + 60000000000;
     while (hrtime(true) < $deadline) {
-        $second = (int)date('s');
-        if ($second >= 1 && 60 - $second >= $margin) {
+        $until = (UU_TEST_JOB_SECOND - (int)date('s') + 60) % 60;
+        if ($until >= $margin) {
             return true;
         }
         usleep(200000);
@@ -981,7 +984,7 @@ VOLT;
 
     /* (e2) with the plugin disabled, a state recording a footprint keeps the minute job, so a stop that
      * could not restore is retried; without one the job goes. The evaluate lock is held throughout and the minute's
-     * tick is at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
+     * evaluation is at least 20 s away, so no evaluation reads or replaces the hand-written state and no tick of the job
      * runs; the saved state, the crontab and cron's running state are put back as found */
     $e2 = null;
     $e2Aside = UU_STATE_PATH . '.e2';
@@ -997,7 +1000,7 @@ VOLT;
             throw new RuntimeException('an evaluation held the evaluate lock for 60 s');
         }
         if (!uu_test_clear_of_tick(20)) {
-            throw new RuntimeException('the minute\'s tick did not move 20 s away within 60 s');
+            throw new RuntimeException('the minute job\'s evaluation did not move 20 s away within 60 s');
         }
         uu_test_state_aside(UU_STATE_PATH, $e2Aside, function (callable $place) use (&$e2): void {
             $recorded = uu_state_new();
@@ -1031,7 +1034,8 @@ VOLT;
             fclose($e2Lock);
         }
     }
-    $minuteJob = [['autocron' => [$job, '*']]];
+    /* the minute job starts its evaluation 40 s past the minute, clear of core's jobs at second 0 */
+    $minuteJob = [['autocron' => ['/bin/sleep ' . UU_TEST_JOB_SECOND . ' && ' . $job, '*']]];
     if ($e2 !== null && ($e2['cron_with'] !== $minuteJob || $e2['status_with'] !== 'unboundupstream is running')) {
         printf("  with the footprint: cron %s, status '%s', crontab lines with the job: %d\n",
             json_encode($e2['cron_with']), $e2['status_with'], substr_count($e2['tab_with'], $job));

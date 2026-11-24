@@ -19,6 +19,15 @@ its queries leave through that member's tunnel and never the WAN.
 Plugin Changelog
 ================
 
+1.8_1
+
+* The minute evaluation starts 40 s past the minute instead of on it.
+  Core's own minute jobs start at second 0, and wg-client-tunnels and
+  wan-failover have seconds of their own, so the evaluation no longer
+  shares that second with them. cron starts the job afresh each minute,
+  so the offset stays put. An evaluation that a gateway alarm or a page
+  action asks for still runs at once
+
 1.8
 
 * Every configd action of the plugin names allowed_groups (wheel,
