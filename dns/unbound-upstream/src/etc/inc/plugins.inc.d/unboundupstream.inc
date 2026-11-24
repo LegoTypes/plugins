@@ -188,8 +188,10 @@ function unboundupstream_cron()
     }
     if ($enabled || unboundupstream_footprint_recorded()) {
         /* every minute, and while a footprint is recorded even disabled, so a stop that could not restore is retried
-         * until it does; generate_cron_job() defaults the minute to 0, so pass '*' */
-        $jobs[]['autocron'] = ['/usr/local/sbin/configctl unboundupstream evaluate', '*'];
+         * until it does; 40 s past the minute: core's own jobs start at second 0 and wg-client-tunnels and
+         * wan-failover have slots of their own, and cron starts each line afresh every minute, so the offset never
+         * drifts. generate_cron_job() defaults the minute to 0, so pass '*' */
+        $jobs[]['autocron'] = ['/bin/sleep 40 && /usr/local/sbin/configctl unboundupstream evaluate', '*'];
     }
     return $jobs;
 }
