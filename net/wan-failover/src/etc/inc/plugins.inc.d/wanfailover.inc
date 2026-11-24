@@ -41,8 +41,10 @@ function wanfailover_cron()
         $enabled = false;
     }
     if ($enabled) {
-        /* every minute; generate_cron_job() defaults the minute to 0, so pass '*' */
-        $jobs[]['autocron'] = ['/usr/local/sbin/configctl wanfailover evaluate', '*'];
+        /* every minute, 25 s past it: core's own jobs start at second 0 and wg-client-tunnels and unbound-upstream have
+         * slots of their own, so the evaluation does not share a second with them; cron starts each line afresh every
+         * minute, so the offset never drifts. generate_cron_job() defaults the minute to 0, so pass '*' */
+        $jobs[]['autocron'] = ['/bin/sleep 25 && /usr/local/sbin/configctl wanfailover evaluate', '*'];
     }
     return $jobs;
 }

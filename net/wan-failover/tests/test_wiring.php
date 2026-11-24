@@ -328,12 +328,13 @@ wf_register_suite('wiring', function (): int {
             $open === [] ? '(none)' : implode(' ', $open));
     }
     /* core lists an action that has a description on its cron page and runs a job made there as nobody, whom every
-     * section refuses; the plugin's own minute job is root's, registered by its command (wanfailover_cron()) */
+     * section refuses; the plugin's own minute job is root's, registered by its command (wanfailover_cron()), 25 s past
+     * the minute, clear of core's jobs at second 0 and of wg-client-tunnels' and unbound-upstream's slots */
     $inc = (string)@file_get_contents(dirname(__DIR__) . '/src/etc/inc/plugins.inc.d/wanfailover.inc');
     wf_check($t, "the tree's action file gives no action a description, so core offers none as a scheduled job, and the "
-        . "plugin's own minute job is registered by its command",
+        . "plugin's own minute job is registered by its command, 25 s past the minute",
         $own !== '' && preg_match('/^description:/m', $own) === 0
-        && str_contains($inc, "\$jobs[]['autocron'] = ['/usr/local/sbin/configctl wanfailover evaluate', '*'];"));
+        && str_contains($inc, "\$jobs[]['autocron'] = ['/bin/sleep 25 && /usr/local/sbin/configctl wanfailover evaluate', '*'];"));
     /* an evaluation whose config change did not land says what tries it again and exits 1, in every mode; one the
      * removal's marker overtook ends as the marker's rule has it, with exit status 0 */
     $said = strpos($src, "\n        if (\$applied['problem'] !== null) {\n            \$removing = wf_removing();\n"
