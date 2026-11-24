@@ -24,13 +24,17 @@ Plugin Changelog
 * The failback check, which makes sure pf still prints rule labels and
   route-to targets the way failback reads them, no longer lists pf's
   whole ruleset on every evaluation. It keeps its last clean result,
-  with the pf ruleset checksum, the pfctl binary and the boot it was
-  read under, in /var/run/wanfailover/rules_read.json, and lists the
-  rules again only when one of those changed, or while a drift or an
-  unreadable listing stands. What the check reports, suspends and logs
-  is unchanged. pf's checksum changes with every ruleset load, an
-  identical one too, so the first evaluation after each filter reload
-  (rules applied, a gateway alarm) still lists once
+  with the pf ruleset checksum, the pfctl binary, the plugin's own check
+  and the boot it was read under, in
+  /var/run/wanfailover/rules_read.json. It lists the rules again when
+  any of those changed, when the checksum cannot be read, when there is
+  no such record (a ruleset load during the last listing leaves none),
+  and while a drift or an unreadable listing stands. What the check
+  reports, suspends and logs is unchanged. Where pfctl folds rules into
+  tables it names at random (on a firewall with many interfaces, their
+  antispoof rules), pf's checksum changes with every ruleset load, an
+  identical one too, so there the first evaluation after each filter
+  reload still lists once
 
 1.7
 
