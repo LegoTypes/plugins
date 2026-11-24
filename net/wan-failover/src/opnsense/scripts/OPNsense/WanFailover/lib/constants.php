@@ -34,9 +34,11 @@ declare(strict_types=1);
  * reads back it reads as a regular file only, at most WF_FILE_MAX_BYTES.
  */
 
-const WF_RUN_DIR = '/var/run/wanfailover';           /* the evaluate lock, Monit event, crash-test flag and removal marker */
+const WF_RUN_DIR = '/var/run/wanfailover';           /* the evaluate lock, Monit event, crash-test flag, removal marker and
+                                                        the rules record */
 const WF_STATE = '/var/db/wanfailover/state.json';
 const WF_EVENT = WF_RUN_DIR . '/event';
+const WF_RULES_READ = WF_RUN_DIR . '/rules_read.json'; /* the failback gate's last clean rule listing (wf_rules_gate()) */
 const WF_NOTIFIED = WF_RUN_DIR . '/notified';        /* the fingerprint of the event Monit last reported */
 const WF_TRACE = '/var/log/wanfailover/trace';
 const WF_CRASH_FLAG = WF_RUN_DIR . '/crash_at';      /* a test names a crash point here; the point consumes it */

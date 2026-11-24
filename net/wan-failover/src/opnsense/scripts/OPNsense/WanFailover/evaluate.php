@@ -201,6 +201,14 @@ function wf_main(string $mode, array $args): int
         wf_holds_import_legacy($bootId, wf_state_proof(wf_state_load(WF_STATE, '')));
     }
     $snap = wf_snapshot();
+    /* the failback gate's record of a clean rule listing: only an evaluation, under its lock, keeps it */
+    if ($snap['rules_record'] !== null) {
+        try {
+            wf_rules_record_save(WF_RULES_READ, $snap['rules_record']);
+        } catch (\Throwable) {
+            /* a record that cannot be written costs only the next evaluation's listing */
+        }
+    }
     $loaded = wf_state_load(WF_STATE, $snap['boot_id']);
     if ($loaded['corrupt']) {
         wf_log('state file unreadable (' . wf_state_problem($loaded) . '); starting from a fresh state', LOG_WARNING);
