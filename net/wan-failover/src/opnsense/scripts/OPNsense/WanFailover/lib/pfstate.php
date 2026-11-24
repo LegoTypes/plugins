@@ -291,6 +291,12 @@ function wf_pf_listing(callable $run, array $args): ?string
     return null;
 }
 
+/** pf's ruleset checksum as `pfctl -si -v` prints it ("Checksum: 0x..."), lowercased, or null when it prints none. */
+function wf_pf_checksum(string $siOut): ?string
+{
+    return preg_match('/^Checksum:\s+(0x[0-9a-f]+)\s*$/mi', $siOut, $m) === 1 ? strtolower($m[1]) : null;
+}
+
 /**
  * The states pf routes via $target (gateway@interface), whatever the target's token, that carry an id.
  *

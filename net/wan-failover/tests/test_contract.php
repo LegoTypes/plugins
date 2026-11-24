@@ -416,5 +416,66 @@ wf_register_suite('contract', function (): int {
         && $malformed(['rules_unread_count' => '-5']) === $unreadSaid(1, $t0)
         && $malformed(['rules_unread_count' => '2', 'rules_unread_since' => 'soon']) === $unreadSaid(3, $t0)
         && $malformed(['rules_unread_count' => '2']) === $unreadSaid(3, $t0));
+
+    /* The rules gate (wf_rules_gate()): the record of the last clean listing, the pfctl hash and boot id, and stand-ins
+     * for the checksum read and the listing that give the answers a case lists, in order, and count their calls */
+    $gate = function (?array $record, array $sums, array $lists, string $pfctl = 'h', string $boot = 'b'): array {
+        $calls = ['sum' => 0, 'list' => 0];
+        $r = wf_rules_gate($record, $pfctl, $boot,
+            function () use (&$sums, &$calls): ?string {
+                $calls['sum']++;
+                return array_shift($sums);
+            },
+            function () use (&$lists, &$calls): ?string {
+                $calls['list']++;
+                return array_shift($lists);
+            });
+        return $r + ['calls' => $calls];
+    };
+    $rec = ['checksum' => '0xaa', 'pfctl' => 'h', 'boot_id' => 'b'];
+    $g = $gate(null, ['0xaa', '0xaa'], [$rules]);
+    wf_check($t, 'rules gate: no record lists once and records the checksum, pfctl hash and boot id',
+        $g['drift'] === null && $g['record'] === $rec && $g['calls'] === ['sum' => 2, 'list' => 1]);
+    $g = $gate($rec, ['0xaa'], []);
+    wf_check($t, 'rules gate: a record of this checksum, pfctl and boot lists nothing and records nothing',
+        $g['drift'] === null && $g['record'] === null && $g['calls'] === ['sum' => 1, 'list' => 0]);
+    $sum = $gate(['checksum' => '0xbb'] + $rec, ['0xaa', '0xaa'], [$rules]);
+    $hash = $gate($rec, ['0xaa', '0xaa'], [$rules], 'h2');
+    $boot = $gate($rec, ['0xaa', '0xaa'], [$rules], 'h', 'b2');
+    wf_check($t, 'rules gate: a record of another checksum, pfctl or boot lists again',
+        $sum['calls']['list'] === 1 && $sum['drift'] === null && $sum['record'] === $rec
+        && $hash['calls']['list'] === 1 && $hash['record'] === array_replace($rec, ['pfctl' => 'h2'])
+        && $boot['calls']['list'] === 1 && $boot['record'] === array_replace($rec, ['boot_id' => 'b2']));
+    $g = $gate($rec, [null], [$rules]);
+    wf_check($t, 'rules gate: an unreadable checksum lists and records nothing',
+        $g['drift'] === null && $g['record'] === null && $g['calls'] === ['sum' => 1, 'list' => 1]);
+    $g = $gate(null, ['0xaa', '0xaa'], [null]);
+    wf_check($t, 'rules gate: an unread listing is WF_UNREAD_RULES and records nothing',
+        $g['drift'] === $rulesUnread && $g['record'] === null && $g['calls']['list'] === 1);
+    $g = $gate(null, ['0xaa', '0xaa'], [$moved['out']]);
+    $next = $gate(null, ['0xaa', '0xaa'], [$rules]);
+    wf_check($t, 'rules gate: a format drift is WF_DRIFT_RULES_FORMAT and records nothing, so the next evaluation lists '
+        . 'again',
+        $g['drift'] === $rulesDrift && $g['record'] === null
+        && $next['calls']['list'] === 1 && $next['record'] === $rec);
+    $g = $gate(null, ['0xaa', '0xbb'], [$rules]);
+    wf_check($t, 'rules gate: a load during the listing keeps its verdict and records nothing',
+        $g['drift'] === null && $g['record'] === null && $g['calls'] === ['sum' => 2, 'list' => 1]);
+    $noHash = $gate(null, ['0xaa', '0xaa'], [$rules], '');
+    $noBoot = $gate(null, ['0xaa', '0xaa'], [$rules], 'h', '');
+    wf_check($t, 'rules gate: no pfctl hash or no boot id records nothing',
+        $noHash['record'] === null && $noHash['calls']['list'] === 1 && $noHash['drift'] === null
+        && $noBoot['record'] === null && $noBoot['calls']['list'] === 1 && $noBoot['drift'] === null);
+    $same = true;
+    foreach ([$rules, $moved['out'], null, ''] as $raw) {
+        foreach ([$read($groups), $read(['G1' => []])] as $gr) {
+            $same = $same && wf_contract_failback($raw, $gr) === wf_contract_failback_drift(wf_rules_drift($raw), $gr);
+        }
+    }
+    wf_check($t, "failback contract: wf_contract_failback() is the listing's drift and then the groups' drift", $same);
+    wf_check($t, "pf checksum: pfctl -si -v's Checksum line is read, lowercased; none is null",
+        wf_pf_checksum("Status: Enabled for 3 days 01:02:03           Debug: Urgent\n\nHostid:   0x12345678\n"
+            . "Checksum: 0x0123456789ABCDEF0123456789abcdef\n\nState Table\n") === '0x0123456789abcdef0123456789abcdef'
+        && wf_pf_checksum("Status: Enabled\n") === null && wf_pf_checksum('') === null);
     return wf_tally_report('contract', $t);
 });
