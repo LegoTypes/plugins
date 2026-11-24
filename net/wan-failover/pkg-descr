@@ -19,6 +19,15 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.8_1
+
+* The minute evaluation starts 25 s past the minute instead of on it.
+  Core's own minute jobs start at second 0, and wg-client-tunnels and
+  unbound-upstream have seconds of their own, so the evaluation no
+  longer shares that second with them. cron starts the job afresh each
+  minute, so the offset stays put. An evaluation that a gateway alarm
+  or a page action asks for still runs at once
+
 1.8
 
 * The failback check, which makes sure pf still prints rule labels and
