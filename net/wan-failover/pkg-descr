@@ -19,6 +19,19 @@ the default route actually changed.
 Plugin Changelog
 ================
 
+1.8
+
+* The failback check, which makes sure pf still prints rule labels and
+  route-to targets the way failback reads them, no longer lists pf's
+  whole ruleset on every evaluation. It keeps its last clean result,
+  with the pf ruleset checksum, the pfctl binary and the boot it was
+  read under, in /var/run/wanfailover/rules_read.json, and lists the
+  rules again only when one of those changed, or while a drift or an
+  unreadable listing stands. What the check reports, suspends and logs
+  is unchanged. pf's checksum changes with every ruleset load, an
+  identical one too, so the first evaluation after each filter reload
+  (rules applied, a gateway alarm) still lists once
+
 1.7
 
 * Every configd action of the plugin names allowed_groups (wheel,
