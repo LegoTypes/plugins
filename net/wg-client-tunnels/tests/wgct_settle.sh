@@ -28,12 +28,12 @@
 # firewall. They poll the condition a test needs and never sleep a fixed time.
 #
 #   in_flight             exit 0 while a mirror tick, prime, reconcile, hook or routing configure runs (their processes;
-#                         an offset round still asleep is not one)
+#                         an offset round still asleep, a tick or the cron's reconcile, is not one)
 #   settle [MAX]          wait (at most MAX s, default 90) until nothing above runs
 #   cron_quiesce          stop cron and wait (at most 90 s) until no round of the plugin's cron is left and nothing
-#                         runs. An offset mirror round is `sh -c "sleep N && .../wgct.sh tick"`: while its sleep runs
-#                         it has run nothing, so the sleep is ended rather than waited out (up to 45 s); the round then
-#                         skips its whole tick (`&&`), the mirror and the prime. Prints the seconds waited.
+#                         runs. An offset round is `sh -c "sleep N && .../wgct.sh tick"` (or `reconcile --cron`):
+#                         while its sleep runs it has run nothing, so the sleep is ended rather than waited out (up to
+#                         50 s); the round then skips its whole command (`&&`). Prints the seconds waited.
 #   reconcile_drained [MAX] wait (at most MAX s, default 150) until no reconcile is queued (wgct.sh's
 #                         reconcile.pending, a `_reconcile_wait` waiter) and nothing runs: what a config save's syshook
 #                         set off has ended
@@ -62,9 +62,10 @@
 # Their own variables are named ws_*, so a test's are left alone.
 
 WS_PHP="/usr/local/bin/php -d log_errors=0"
-# A tick is matched as the script it runs (sh execs it in the round's process once the sleep ends): a round still asleep
-# is `/bin/sh -c sleep N && .../wgct.sh tick` and must not match.
-WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|^/bin/sh [^ ]*wgct[.]sh tick|wgct[.]sh (reconcile|_reconcile|hook)|rc[.]routing_configure|trigger_config_changed_events|rc[.]syshook'
+# A tick or the cron's reconcile is matched as the script it runs (sh execs it in the round's process once the sleep
+# ends): a round still asleep is `/bin/sh -c sleep N && .../wgct.sh tick` (or `... reconcile --cron`, from 3.13_1) and
+# must not match.
+WS_PENDING='^/usr/local/bin/php .*(health_mirror|prime)[.]php|^/bin/sh [^ ]*wgct[.]sh (tick|reconcile)|wgct[.]sh (_reconcile|hook)|rc[.]routing_configure|trigger_config_changed_events|rc[.]syshook'
 # the plugin's cron rounds, as cron runs them (cron.d/wgclienttunnels)
 WS_CRON='^/bin/sh -c (sleep [0-9]+ && )?/usr/local/(bin/php /usr/local/)?opnsense/scripts/OPNsense/WGClientTunnels/'
 
